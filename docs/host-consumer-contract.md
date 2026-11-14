@@ -7539,7 +7539,16 @@ nothing moved out of it (message bodies included). This new file only carries *r
   that same rewrite **also prunes older rounds'** `partial-text` rows: the reader only ever asks for the crash round
   (`readPartialTextRecoveryRow(records, crashRound)`, and the resume side takes
   `readPartialTextRecoveryRounds().at(-1)`), so an older round's slot is a dead row the moment a newer round's row
-  arrives. Every `tool-executed` row survives that rewrite — such rows are cleared **only at run start**, by
+  arrives. Two guards keep the pruning from eating a live fact (both found by independent acceptance, #827): a
+  `partial-text` row whose `round` is **older** than the newest `partial-text` row already on disk is **ignored**
+  (`appendRecoveryRow` returns `false`) instead of replacing it — a dead old-round slot never evicts the only live
+  one — and the rewrite re-checks the sidecar's `(size, mtimeMs)` stamp before `rename`, **re-merging from a fresh
+  read** when another writer slipped in (repeated contention degrades it to a plain append, which can leave two
+  `partial-text` rows; readers take the last, so the semantics hold). This channel still assumes **one writer per
+  run**: the append lock lives on the store instance, not on the directory, so a host pointing two instances at one
+  directory must serialize at the host boundary (the same rule the notes adapter states above) — those guards are
+  best-effort, not a cross-process lock. Every `tool-executed` row survives that rewrite — such rows are
+  cleared **only at run start**, by
   `clearRecoveryRows` (a whole-file `rm`, deliberately not at round start). A host that tails this file for an incremental
   mirror **will see rows vanish** — mirror by re-reading the file (or treat each `partial-text` write as replacing
   that round's last one); do not assume a line, once read, stays in the file.

@@ -51,6 +51,10 @@ const finalRound = (/** @type {string} */ text) => ({
 /** 只挑恢复行（按落盘顺序）。 */
 const recoveryRows = (/** @type {any[]} */ records) => records.filter((row) => isRecoveryRow(row));
 
+/** 只挑某一类恢复事件（`"tool-executed"` / `"partial-text"`），省掉每处再写一遍 filter。 */
+const byEvent = (/** @type {any[]} */ records, /** @type {string} */ event) =>
+  recoveryRows(records).filter((row) => row.recoveryEvent === event);
+
 // ── 1) 载体形状 ──────────────────────────────────────────────────────────────
 
 test("#769 载体形状：恢复行一条一个事件、messages 为空（不载正文），两种事件各带自己的判别字段", () => {
@@ -303,23 +307,66 @@ async function assertCrossRoundPruning(store, runId, rawRows) {
   }
 }
 
-test("#827 跳轮之后重放旧轮正文 ⇒ 真写回（旧键不得被缓存认成「已写过」）", async () => {
-  // 自剪枝把旧轮那行从文件里拿掉了，而它的键若还留在 `recoveryDedupCaches` 里，重放会被判
-  // 「已写过」而静默丢行 —— 跳轮面的幂等口径必须仍是「按盘上真存在的行判」。
-  const dir = await makeTmp("erix-827-prune-cache-");
+test("#827 守卫 ①（file）：旧轮的重放不许挤掉新轮唯一的槽", async () => {
+  // copilot 独立验收发现的 bug（#827）：剪枝原本丢掉**全部** partial 行，于是「旧轮重放」会用一条
+  // **本来就该死的行**换掉唯一活着的槽 —— 实测 `readPartialTextRecoveryRow(rows, 2)` 变 undefined，
+  // `readPartialTextRecoveryRounds()` 只剩 [1] ⇒ 恢复侧把崩溃轮看丢了。方向必须反过来：更新的轮在场
+  // 时，旧轮那次写整次忽略。（本格取代原先那格把坏行为固化成预期的测试。）
+  const dir = await makeTmp("erix-827-stale-round-");
   const store = createFileTranscriptStore({ dir });
-  const runId = "prune-cache";
-  assert.equal(await store.appendRecoveryRow(runId,
-    buildPartialTextRecoveryRow({ runId, round: 1, text: "aaaa", ts: "2024-01-01T00:00:00.000Z" })), true);
-  assert.equal(await store.appendRecoveryRow(runId,
-    buildPartialTextRecoveryRow({ runId, round: 2, text: "bbbb" })), true, "跳轮：旧轮那行被剪掉");
-  assert.equal(await store.appendRecoveryRow(runId,
-    buildPartialTextRecoveryRow({ runId, round: 1, text: "aaaa", ts: "2024-01-01T00:00:00.000Z" })), true,
-    "重放被剪掉的旧轮行必须报「真落了一行」，而不是静默返 false");
-  const partials = recoveryRows(await store.listRecoveryRows(runId))
-    .filter((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT);
-  assert.deepEqual(partials.map((r) => [r.round, r.text]), [[1, "aaaa"]],
-    "重放之后只剩重放那一条（本轮写入场又把旧轮剪掉，同一口径）");
+  const runId = "stale-round";
+  const put = (round, text) => store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round, text }));
+  assert.equal(await put(1, "aaaa"), true);
+  assert.equal(await put(2, "bbbb"), true);
+  assert.equal(await put(1, "aaaa"), false,
+    "第 1 轮的重放被守卫挡下 ⇒ 报「没落新行」，不是 true");
+  const records = recoveryRows(await store.listRecoveryRows(runId));
+  assert.deepEqual(byEvent(records, RECOVERY_EVENT_PARTIAL_TEXT).map((r) => [r.round, r.text]),
+    [[2, "bbbb"]], "第 2 轮那条槽必须原样在场（被旧轮行挤掉就是丢事实）");
+  assert.deepEqual(readPartialTextRecoveryRounds(records), [2], "恢复侧仍然认得崩溃轮");
+  assert.equal(readPartialTextRecoveryRow(records, 2)?.text, "bbbb", "读第 2 轮拿回正文");
+  assert.equal(await put(3, "cccc"), true, "更新的轮照旧写入 —— 守卫不许顺手把正常路径也挡掉");
+  assert.deepEqual(byEvent(await store.listRecoveryRows(runId), RECOVERY_EVENT_PARTIAL_TEXT)
+    .map((r) => [r.round, r.text]), [[3, "cccc"]]);
+});
+
+test("#827 守卫 ①（memory）：与 file 同语义，两份实现不得分叉", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "stale-round-mem";
+  const put = (round, text) => store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round, text }));
+  await put(1, "aaaa");
+  await put(2, "bbbb");
+  assert.equal(await put(1, "aaaa"), false, "memory：旧轮重放同样被挡下");
+  const records = recoveryRows(await store.listRecoveryRows(runId));
+  assert.deepEqual(byEvent(records, RECOVERY_EVENT_PARTIAL_TEXT).map((r) => [r.round, r.text]),
+    [[2, "bbbb"]], "memory：新轮槽原样在场");
+  assert.equal(readPartialTextRecoveryRow(records, 2)?.text, "bbbb");
+});
+
+test("#827 守卫 ②（file）：同目录两个 store 实例交错写 ⇒ 一条 tool-executed 都不丢", async () => {
+  // 整文件重写**新引入**的回归面（改前是纯 `O_APPEND`，追加天然不会互相盖）：`appendLocks` 是**每个
+  // 实例自己的**、不是目录级的 ⇒ 实例 A 的「读 → 整写 rename」能把实例 B 在 A 读完之后追加的行连行
+  // 盖掉（验收实测丢过一条 `tool-executed`，那是外部副作用的证据 = T2 事实）。守卫：合并前记
+  // `(size, mtimeMs)`、rename 前复核；被撞就**重新合并**（不是拿旧结果重写），连续撞则退化成追加。
+  const dir = await makeTmp("erix-827-two-instances-");
+  const a = createFileTranscriptStore({ dir });
+  const b = createFileTranscriptStore({ dir });
+  const runId = "two-instances";
+  await a.appendRecoveryRow(runId,
+    buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId: "pre" }));
+  const pa = a.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round: 2, text: "x".repeat(4000) })); // 故意不 await
+  const pb = Promise.all([1, 2, 3].map((n) => b.appendRecoveryRow(runId,
+    buildToolExecutedRecoveryRow({ runId, round: 2, toolUseId: `b${String(n)}` }))));
+  await Promise.all([pa, pb]);
+  const records = recoveryRows(await a.listRecoveryRows(runId));
+  assert.deepEqual(byEvent(records, RECOVERY_EVENT_TOOL_EXECUTED).map((r) => r.toolUseId).sort(),
+    ["b1", "b2", "b3", "pre"], "四条工具恢复行必须全在场（丢一条就是丢外部副作用证据）");
+  assert.equal(byEvent(records, RECOVERY_EVENT_PARTIAL_TEXT).length, 1,
+    "槽仍然只有一条（这条交错里守卫靠重新合并就收住了，没走追加退路）");
+  assert.equal(readPartialTextRecoveryRow(records, 2)?.text.length, 4000, "A 那条 partial 也必须在场");
 });
 
 test("#769 R3（D）幂等（run 层）：续跑后又执行下一个工具 ⇒ 出现第二条**不同键**的恢复行，第一条无重复", async () => {

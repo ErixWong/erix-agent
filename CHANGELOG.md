@@ -143,6 +143,46 @@
   现在拿到一声响亮的 4xx，而不是一份「派生事实悄悄错掉」的档案。
 
 ### Changed
+- **The crash-recovery sidecar's half-written-text rows are a slot now, not a log (issue #827
+  slice 1+2, issue #791, task 261113-07).** `partial-text` used to be appended once per commit,
+  each row carrying the round's *whole accumulated text* -- so one round cost
+  O(commits x length): measured 33 KB for a single 2,000-character round and 1.29 MB for three
+  long rounds. The reader only ever took the round's last row (`readPartialTextRecoveryRow`), so
+  the rest was pure waste. A round now keeps exactly one row, replaced by an atomic whole-file
+  rewrite (tmp + `rename`), and a newer round's row prunes older rounds' rows -- they were dead the
+  moment a newer round arrived, because the resume side only asks for the last partial round.
+  `tool-executed` rows are untouched by that rewrite: they are the evidence that a side effect
+  really happened, and they are cleared only at run start, by `clearRecoveryRows`. Measured after
+  the change: 6,442 B (was 29,024 B) for the short round, 95,563 B (was 430,058 B) for a
+  31,707-character round, 6,874 B (was 87,072 B) for three short rounds. Two guards came out of
+  independent acceptance: a `partial-text` row older than the newest one on disk is ignored
+  instead of evicting it (a dead old-round slot must not replace the only live one), and the
+  rewrite re-checks the sidecar's `(size, mtimeMs)` stamp before `rename`, re-merging on a
+  collision and degrading to a plain append under repeated contention. **Hosts that tail this file
+  for an incremental mirror will see rows replaced and disappear** -- mirror by re-reading, or
+  treat each `partial-text` write as replacing that round's row. The one-writer-per-run assumption
+  still holds (the append lock is per store instance, not per directory); the guards narrow that
+  window, they are not a cross-process lock.
+- **崩溃现场侧车里那条「半截正文」现在是槽，不是日志
+  （issue #827 第 1+2 刀，issue #791，工单 261113-07）。**
+  `partial-text` 原本每提交一次就追加一行，
+  每行都带该轮**到目前为止的全文** ⇒ 一轮字节 = O(提交数 × 正文长度)：
+  实测单轮 2,000 字要 33 KB，三个长轮 1.29 MB。读侧从来只取该轮最后一条
+  （`readPartialTextRecoveryRow`），其余都是纯浪费。现在一轮只留一行，
+  替换走整文件原子重写（tmp + `rename`），新轮行到场时剪掉旧轮行 ——
+  旧轮那条在新轮一到就是死行，因为续跑侧只问最后一个 partial 轮。
+  `tool-executed` 行不受这次重写波及：那是「副作用真的发生过」的证据，
+  只在 run 起跑时由 `clearRecoveryRows` 清掉。改后实测：短轮 6,442 B
+  （原 29,024 B），31,707 字的长轮 95,563 B（原 430,058 B），
+  三个短轮 6,874 B（原 87,072 B）。两条守卫来自独立验收：
+  比盘上最新那条更旧的 `partial-text` 行整次忽略、不许驱逐它
+  （死掉的旧轮槽不许换掉唯一活着的那条），以及整写前复核侧车的
+  `(size, mtimeMs)` 戳、撞了就重新合并、连续撞则退化成一次普通追加。
+  **tail 这份文件做增量镜像的宿主会看到行被替换、消失** —— 按重读
+  镜像，或把每次 `partial-text` 写入视为替换该轮那一行。
+  「一个 run 一个写者」的
+  前提仍成立（追加锁挂在 store 实例上、不是目录级）；守卫只收窄窗口，
+  不是跨进程锁。
 - **The 0.32.0 version cut goes through a PR, so the cut itself now sits inside this section's
   coverage interval (PR #818; merge b7ec603, task 261111-01).** 0.31.0's cut was a single-parent
   commit straight onto `main` (`ecc95603`), which the coverage gate never saw as a merge; this one

@@ -128,6 +128,19 @@ export function createMemoryTranscriptStore() {
         // 旧轮的死行），新行落在尾部（与 file store 的整写同位置）。`tool-executed` 一行不丢：
         // 工具真跑过、结果可能没入账，那行必须活到 run 结束（只由 `clearRecoveryRows` 在 run
         // 起跑时清）。理由与 file store 的 `replacePartialTextSlot` 逐字同口径，两份不得分叉。
+        // 守卫 ①（与 file store 的 `mergePartialTextSlot` 同语义，两份不得分叉）：旧轮的重放不许挤掉
+        // 更新的槽——读侧只认「文件里最后一个 partial 轮的轮号」，被旧行挤掉就等于把崩溃轮弄丢了。
+        let newestPartialRound = -Infinity;
+        for (const item of rows) {
+          const prior = /** @type {{ recoveryEvent?: unknown, round?: unknown }} */ (item);
+          if (prior === null || prior === undefined) continue;
+          if (prior.recoveryEvent !== RECOVERY_EVENT_PARTIAL_TEXT) continue;
+          if (typeof prior.round === "number" && prior.round > newestPartialRound) {
+            newestPartialRound = prior.round;
+          }
+        }
+        const incomingRound = /** @type {{ round?: unknown }} */ (record).round;
+        if (typeof incomingRound === "number" && incomingRound < newestPartialRound) return false;
         const kept = rows.filter((item) => item === null
           || /** @type {{ recoveryEvent?: unknown }} */ (item).recoveryEvent !== RECOVERY_EVENT_PARTIAL_TEXT);
         kept.push(copyRecord(record));

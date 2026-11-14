@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { boundRunState } from "../run-state.js";
 import { RECOVERY_EVENT_PARTIAL_TEXT } from "./recovery-rows.js";
 import { foldMessageRows } from "./message-rows.js";
@@ -399,61 +399,85 @@ async function appendRecord(path, runId, record, dedupCaches) {
 /**
  * issue #827 第 1 刀（工单 261113-07）：**`partial-text` 行是槽，不是日志**。
  *
- * 同一轮的 `partial-text` 只保留一条，内容是**最新全文**：读出现有行、丢掉**同 round 同事件**的
- * 旧行，连同其余行与新行一起**原子整写**（tmp + `rename`，手法照 `saveRunSnapshot` / `markRunState`）。
- * 改前每提交一次就追加一条全量前缀 ⇒ 一轮正文的落盘字节是 O(n²)（issue #791 的账）；读侧
- * （`readPartialTextRecoveryRow`）本来就只取最后一条，槽化只是把落盘形状改回读侧一直假设的语义，
- * **读侧零改动**。
+ * 三条理由（同一刀里说的，未变）：
+ * ① 读侧要的只是「崩溃轮的当前文本」= 该轮**最后一条**（`readPartialTextRecoveryRow`，
+ *    `src/store/recovery-rows.js`）—— 一行就够。
+ * ② 每行都是**截至那一次的累计全文**，不是增量 ⇒ 一轮的字节 = O(提交数 × 正文长度)。
+ * ③ `text` 带 `isLatestAssistantText` 标 ⇒ 旧行唯一用途是「重放被替换掉的那一份」，那是**成本**
+ *    不是收益（#791 实测：单轮 2,000 字 → 侧车 33 KB）。
  *
- * 去重缓存必须一起处理：被替换那条的键若还留在 `recoveryDedupCaches` 里，文件已经没这行了而缓存
- * 还认它 ⇒ 同一份正文重放会被判「已写过」而**静默丢行**（本刀唯一的静默失败面）。这里整条缓存
- * 作废（delete 该 run 的条目）：下一次写会按新文件流式重建 key 集，「keys 恒等于文件里全部记录的
- * key」这条不变量自动恢复，比外科手术式删单键更难写错。
- *
- * 幂等与冲突判定与 `appendRecord` 同口径（同键同 payload ⇒ 跳过返 `false`；同键异 payload ⇒ 抛
- * `TranscriptDedupConflictError`）：同键行必然落在同一个槽（键含 round 与事件名），所以判定就在
- * 读出的行里做，跳过时**不动文件**。
+ * 语义变化（工单点名的两条硬冲突都按「只作用在 partial-text 上」落地）：
+ * - 同 round 同事件 = 同一行 ⇒ 旧行被替换掉，宿主 tail 这个文件会看见**一条行消失/被换掉**。
+ * - 替换是**整文件原子重写**（tmp + `rename`）⇒ 读侧永远看到完整文件，不会看到半截。
+ * - 去重口径**不放宽**（#326）：同键同 payload ⇒ 幂等返回 false；同键**异** payload ⇒ 仍抛
+ *   `TranscriptDedupConflictError`。
  *
  * issue #827 第 2 刀：**跨轮自剪枝**——丢掉的是**全部** `partial-text` 行（含 `round !== 本 round`
- * 的旧轮槽位），理由三条：
- * ① **旧轮的 partial 行永远是死行**：读侧只认崩溃轮 —— `readPartialTextRecoveryRow(records,
- *   crashRound)` 按轮筛，`resume-manager` 取 `readPartialTextRecoveryRounds().at(-1)`，两者都只看
- *   最新那一轮 ⇒ 更早轮的槽位写下去就再没人读，留着只是占字节、并在每次整写时原样重抄一遍。
- * ② **`tool-executed` 一行都不许丢**：工具真跑过、结果可能没入账（进程崩在两者之间），那行必须
- *   活到 run 结束，跨轮仍然要 ⇒ 它不在上面这个 `continue` 里，只在 run 起跑时由
- *   `clearRecoveryRows`（整文件 `rm`）清，**不能**挪到轮起跑。
- * ③ **整文件重写不会二次方**：自剪枝之后文件里只有「当前轮 1 条 partial + 本次 run 的
- *   `tool-executed` 行」，行数与正文长度无关 ⇒ 每次整写的字节数是线性的。没有自剪枝时旧轮槽位
- *   永远在场，整写才会退化成字节平方（K 轮 × 每轮正文长度 × K 次重写）。
+ * 的旧轮行），`tool-executed` 一行不丢。旧轮那条为什么是死行：读侧 `readPartialTextRecoveryRounds()`
+ * 取的是「文件里最后一个 partial 行的 `round`」，旧轮的行在那之后永远不会被再读到；留着它只会在
+ * `listRecoveryRows` 里占字节。**这就是「轮起跑 `rm` 整个侧车」的正确替代品**：清掉的是死行，留下的是
+ * T2（`tool-executed`，外部副作用证据）与 T3（当前轮槽）——后者被轮起跑整文件 `rm` 会一并清掉。
  *
- * @param {string} path 恢复行文件路径
- * @param {string} runId
- * @param {any} record 新的 `partial-text` 行（已过 `assertSafeRound`）
- * @param {Map<string, any>} dedupCaches 恢复行通道的去重缓存（调用方传 `recoveryDedupCaches`）
- * @returns {Promise<boolean>} 真落了一行才是 `true`
+ * 两条守卫（copilot 独立验收发现的 bug，见 #827 评论）：
+ *
+ * ① **单调性**：入参轮号**小于**侧车里已有的最大 partial 轮号 ⇒ 整次写**忽略**并返回 `false`。
+ *    没这道守卫时，旧轮的重放会把**新轮唯一的槽**挤掉（实测：写 round1、round2 再重放 round1 ⇒
+ *    `readPartialTextRecoveryRow(rows, 2)` 变 `undefined`，还返回 `true`）——用一个死行换掉唯一活着的
+ *    事实，方向错了。同轮重放不受影响（走上面的幂等/冲突口径）。
+ * ② **丢失更新**：合并前先记侧车的 `(size, mtimeMs)` 戳，`rename` 之前复核；被别的写者动过 ⇒ 重新
+ *    合并；连续 `SLOT_MERGE_ATTEMPTS` 次 ⇒ **退化成一次普通追加**（宁可文件长，一条事实不丢）。
+ *    为什么必须防：`appendLocks` 是**每个 store 实例自己的**、不是目录级的 ⇒ 宿主拿两个实例写同一个
+ *    目录时，A 的整文件 `rename` 会把 B 在 A 读完之后追加的 `tool-executed` 行连行盖掉（实测丢过
+ *    `b1`）。改前的纯 `O_APPEND` 没这问题 ⇒ 这是本片**新引入**的回归面，得自己堵上。它**不是跨进程锁**
+ *    （戳的复核与 `rename` 之间仍有 TOCTOU 窗口），契约前提仍是「一写者一 scope」，这里只求实测那条
+ *    路径不再丢。
+ *
+ * 代价：一次替换 = 重写整个侧车 = O(当前 partial 全文 + 本 run 的 `tool-executed` 行数)，比一次追加
+ * 贵；换掉的是 O(提交数) 的重复全文——#827 第 1 刀实测：单轮 31,707 字（下游真库最长值）430,058 B →
+ * 95,563 B，三轮 1,290,174 B → 95,995 B。
  */
-async function replacePartialTextSlot(path, runId, record, dedupCaches) {
-  // 读口径与 `loadRecords` 一致：先修尾部（半行残段隔离 .corrupt.*），再流式读。
+
+/** 连续多少次都有并发写者就放弃整写、退化成追加。取 3：够躲过一次短交错，又不会在热路径上空转。 */
+const SLOT_MERGE_ATTEMPTS = 3;
+
+/**
+ * 读侧车 + 算出「替换/剪枝之后应当是什么」，并把读到的 `(size, mtimeMs)` 戳一起交出去供复核。
+ * **只读**：可以被重试循环反复调用而不产生副作用。
+ *
+ * @param {string} path
+ * @param {string} runId
+ * @param {any} record 新的 `partial-text` 行
+ * @returns {Promise<{skip: boolean, rows: any[],
+ *   stamp: {size: number|null, mtimeMs: number|null}}>}
+ *   `skip` = 幂等命中或被单调性守卫挡下 ⇒ 本次什么都不写
+ */
+async function mergePartialTextSlot(path, runId, record) {
+  // 读口径与 `loadRecords` 一致：先修尾部（半行残段隔离 .corrupt.*），再流式读全量。
   await repairTranscriptTail(path);
+  const stamp = await statStamp(path);
   /** @type {any[]} */
   const rows = [];
   try {
     for await (const row of readRecords(path)) rows.push(row);
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new Error(`Transcript contains a malformed line: ${path}`, { cause: error });
+      throw new Error(`Transcript contains a malformed line: ${String(path)}`, { cause: error });
     }
     throw error;
   }
   const key = recordKey(runId, record);
   /** @type {any|undefined} */
   let sameKeyRow;
+  /** @type {any[]} */
   const kept = [];
+  /** 侧车里已有的最大 partial 轮号；`round` 不是数字的行不参与（读侧同样不认它）。 */
+  let newestPartialRound = -Infinity;
   for (const row of rows) {
     if (row !== null && recordKey(runId, row) === key) sameKeyRow = row;
     if (row !== null && row.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
-      // 同 round 同事件：本槽的旧行，只保留即将写入的这一条。
-      // round !== 本 round：旧轮的槽位是**死行**，跨轮自剪枝一并丢掉（见函数头注释 ①）。
+      if (typeof row.round === "number" && row.round > newestPartialRound) {
+        newestPartialRound = row.round;
+      }
       continue;
     }
     kept.push(row);
@@ -461,26 +485,90 @@ async function replacePartialTextSlot(path, runId, record, dedupCaches) {
   if (sameKeyRow !== undefined) {
     const existingFingerprint = payloadFingerprint(sameKeyRow);
     const incomingFingerprint = payloadFingerprint(record);
-    if (existingFingerprint !== incomingFingerprint) {
-      throw dedupConflictError({
-        runId,
-        key,
-        existing: sameKeyRow,
-        incoming: record,
-        existingFingerprint,
-        incomingFingerprint,
-      });
-    }
-    return false; // 同键同 payload ⇒ 幂等跳过（与 `appendRecord` 逐字同口径，文件不动）
+    if (existingFingerprint === incomingFingerprint) return { skip: true, rows: [], stamp };
+    throw dedupConflictError({
+      runId,
+      key,
+      existing: sameKeyRow,
+      incoming: record,
+      existingFingerprint,
+      incomingFingerprint,
+    });
   }
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  const body = `${[...kept, record].map((row) => JSON.stringify(row)).join("\n")}\n`;
+  // 守卫 ①：旧轮重放不许挤掉更新的槽（判据与实测见函数头注释 ①）。
+  const incomingRound = record?.round;
+  if (typeof incomingRound === "number" && incomingRound < newestPartialRound) {
+    return { skip: true, rows: [], stamp };
+  }
+  return { skip: false, rows: [...kept, record], stamp };
+}
+
+/**
+ * 整文件原子落盘 + 守卫 ②：`rename` 前后各复核一次 `(size, mtimeMs)`，被别的写者动过就判 stale
+ * 由调用方重新合并再试；连续 `SLOT_MERGE_ATTEMPTS` 轮都被撞 ⇒ 调用方退化成一次普通追加。
+ *
+ * @param {string} path
+ * @param {any[]} rows
+ * @param {{size: number|null, mtimeMs: number|null}} stamp 合并时读到的戳
+ * @returns {Promise<boolean>} `false` = 侧车在合并期间被别人改过 ⇒ **调用方必须重新合并**再试
+ */
+async function writeSidecarAtomically(path, rows, stamp) {
+  if (!stampsMatch(await statStamp(path), stamp)) return false;
+  await mkdir(dirname(path), { recursive: true });
+  const body = `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
+  const temporary = `${path}.${String(process.pid)}.${randomUUID()}.tmp`;
   await writeFile(temporary, body, "utf8");
+  // 写完 tmp 到 rename 之间也可能被插队：再核一次。宁可这一轮作废，也不拿旧合并结果盖掉别人的行。
+  if (!stampsMatch(await statStamp(path), stamp)) {
+    await rm(temporary, { force: true }).catch(() => {});
+    return false;
+  }
   await rename(temporary, path);
-  dedupCaches.delete(safeRunId(runId));
   return true;
 }
 
+/**
+ * 清掉本 run 恢复行通道的去重缓存。为什么必须清：缓存以「键存在」答「已写过」，而槽替换／
+ * 跨轮剪枝已经把那条行从盘上拿掉了 —— 不清就会让宿主重放被替换掉的那份正文时被静默判成
+ * 「已写过」而返回 false（正是 #326 要的「要么真落一行、要么响亮冲突」的反面）。缓存本身带
+ * `(size, mtimeMs)` 校验、理论上会自愈，但那是撞运气，不是判据。
+ *
+ * @param {Map<string, any>} dedupCaches
+ * @param {string} runId
+ * @returns {void}
+ */
+function invalidateRecoveryDedupCache(dedupCaches, runId) {
+  dedupCaches.delete(safeRunId(runId));
+}
+
+/**
+ * 写侧入口：把 `record` 作为本轮**唯一**的 `partial-text` 行落盘（合并 + 原子重写 + 两条守卫）。
+ *
+ * @param {string} path
+ * @param {string} runId
+ * @param {any} record 新的 `partial-text` 行（已过 `assertSafeRound`）
+ * @param {Map<string, any>} dedupCaches 恢复行通道的去重缓存（调用方传 `recoveryDedupCaches`）
+ * @returns {Promise<boolean>} 真落了一行才是 `true`（幂等命中或被守卫挡下都是 `false`）
+ */
+async function replacePartialTextSlot(path, runId, record, dedupCaches) {
+  for (let attempt = 1; attempt <= SLOT_MERGE_ATTEMPTS; attempt += 1) {
+    const merged = await mergePartialTextSlot(path, runId, record);
+    if (merged.skip) return false;
+    // ⚠ 重试**必须重新合并**（`mergePartialTextSlot` 里重读文件），不能拿上一轮的 `merged.rows` 重写：
+    // 上一轮那份**不含**插队者刚追加的行，重写就把人家的 `tool-executed` 盖掉了（实测能丢 3 行）。
+    // ⚠ 诚实记一条覆盖边界：把 merge 提到循环外（「重试仍用旧那份」）实测**不会红** —— 它会连续撞戳、
+    // 最后落到下面的追加退路，同样不丢行。也就是说「重新合并」是省掉无谓退路的优化，真正兜住不丢事实
+    // 的是**戳复核 + 追加退路**这两件；测试判的是那条不变量，不是这条优化。
+    if (await writeSidecarAtomically(path, merged.rows, merged.stamp)) {
+      invalidateRecoveryDedupCache(dedupCaches, runId);
+      return true;
+    }
+  }
+  // 连续 SLOT_MERGE_ATTEMPTS 轮都有并发写者 ⇒ 退化成一次普通追加：可能留下两行 partial（读侧取最后
+  // 一条 ⇒ 语义仍对），但绝不丢别人的行。这是「宁可长，不丢事实」的取舍，不是失败。
+  invalidateRecoveryDedupCache(dedupCaches, runId);
+  return appendRecord(path, runId, record, dedupCaches);
+}
 /**
  * Create a JSONL-backed transcript store.
  *

@@ -5925,7 +5925,13 @@ append-only 账本现在**每本 run 多写一个文件**：`<dir>/<runId>.recov
   它会**接管该轮的槽**：该轮上一条在重写中消失，文件里只剩最新全文那一条。自 #827 第 2 刀起，同一次重写
   还会**剪掉旧轮的 `partial-text` 行**：读侧只认崩溃轮（`readPartialTextRecoveryRow(records, crashRound)`，
   续跑侧取 `readPartialTextRecoveryRounds().at(-1)`），新一轮的行一到，旧轮那条就是死行。所有
-  `tool-executed` 行都不受这次重写波及——它们**只在 run 起跑时**由 `clearRecoveryRows`（整文件 `rm`，
+  两条守卫防止剪枝吃掉活着的事实（都是独立验收发现的，#827）：入参 `round` **小于**盘上已有的最新
+  `partial-text` 轮号时，这次写被**整次忽略**（`appendRecoveryRow` 返回 `false`）而不是替换它 —— 一条已经
+  死掉的旧轮槽不许挤掉唯一活着的那条；整文件先记侧车的 `(size, mtimeMs)` 戳，`rename` 之前复核，被别的
+  写者插队就**重新读、重新合并**（连续撞则退化成一次普通追加，可能留下两条 `partial-text`，读侧取最后
+  一条 ⇒ 语义仍对）。这条通道仍假设**一个 run 一个写者**：那把追加锁挂在 store 实例上、不是目录级 ⇒
+  宿主拿两个实例写同一个目录时必须在宿主边界串行（与上面 notes 适配器同一条规则）；上面那两条是尽力
+  而为的兜底，不是跨进程锁。`tool-executed` 行都不受这次重写波及——它们**只在 run 起跑时**由 `clearRecoveryRows`（整文件 `rm`，
   刻意不是轮起跑）清掉。宿主若 tail 这份文件做增量镜像，会**看到行消失**——镜像要么整份
   重读，要么把每次 `partial-text` 写入视为对该轮最后一条的替换；不要假定一行落盘后就永远在文件里。
 
@@ -5933,7 +5939,7 @@ append-only 账本现在**每本 run 多写一个文件**：`<dir>/<runId>.recov
 这正是它的存在理由：**「有 `tool_use` 但没有 `tool_result`」推不出「工具没执行」**，所以「执行过没有」由这一行
 **显式携带**，绝不靠「另一行在不在」去猜。
 
-store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `false`（被去重跳过），`listRecoveryRows(runId)` →
+store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `false`（被去重跳过，或被「旧轮不许挤掉新轮」那道守卫挡下），`listRecoveryRows(runId)` →
 按追加顺序返回，`clearRecoveryRows(runId)` → 真删了一个文件返 `true`、本来没东西可删返 `false`。三者都是**可选能力**，而「没有」与「失败」是两件事：
 
 - **方法缺席**（store 上根本没有这个方法）是合法降级：引擎跳过这一步，回落到快照那三格
