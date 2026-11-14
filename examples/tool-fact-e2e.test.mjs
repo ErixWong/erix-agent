@@ -856,13 +856,9 @@ test("真模型端点 e2e：工具事实契约面（两线同键 / 字段面 / w
     // 第二副本 ⇒ 旧块写在轮行里才是「0.19 形状」的原样，快照留一份副本正好顺带钉住
     // 「快照正文不再被当成上下文」（重复的正文一份也不多喂）。
     await storeC.appendRound(runIdC, { round: 1, messages: legacyRoundMessages });
-    await storeC.saveRunSnapshot(runIdC, {
-      round: 1,
-      status: "done",
-      messages: legacyRoundMessages,
-      executedToolIds: ["legacy-1"],
-      toolResults: [legacyBlock],
-    });
+    // #838：run snapshot 已彻底退役（引擎不再写、不再读 `<runId>.snapshot.json`）⇒ 这里
+    // **不再种那份第二副本**。上面这条 `appendRound` 就是「0.19 形状」的原样（轮行自带
+    // 全量轮内消息），旧块 `legacy-1` 在账本里、判据一条没动 —— 删的只是那份多余的副本。
     // resume 后的新调用靠模型自愿调工具——真模型有权利直接根据历史作答（实测会偶尔发生）。
     // 那不会改变本场景的契约判据（旧块不回写 / TTL 按旧名折叠 / 投影一代回退），但会让
     // 「新块用新形状」这条**没有主语**。工单不许把它断弱成「有就查」，所以这里：
@@ -908,18 +904,10 @@ test("真模型端点 e2e：工具事实契约面（两线同键 / 字段面 / w
       assert.equal(legacy.executionStatus, "ok");
       assert.equal(legacy.artifactStatus, "ok");
       assert.equal(legacy.erix, undefined, "旧块不该被补上 erix 命名空间");
-      // ---- 写侧形状现状（#735 切片 2）：快照仍在写，但 `messages` 只剩轮残余，它**不再是**内存
-      // 半边的观察面。这三条钉的就是「不许回退写侧形状」：哪天写侧又交整段正文，第二、三条会红
-      // 并让人先去看 `test/loop-snapshot-round-residue-735.test.js`，而不是顺手把下面删成「有就查」。
-      assert.ok(snapshotPayloads.length > 0, "resume 期间没写任何 run snapshot（写侧探针空转，判据落空）");
-      const legacyInSnapshots = snapshotPayloads
-        .flatMap((payload) => blocksOf(payload?.messages, "tool_result"))
-        .filter((block) => block?.tool_use_id === "legacy-1");
-      assert.deepEqual(legacyInSnapshots.map((block) => Object.keys(block).sort()), [],
-        "#735 切片 2 的写侧形状变了：快照 `messages` 又把恢复进来的正文带回来了。内存半边的观察面在 store"
-        + " 读边界（`createBoundaryProbe`），这一格红了先对齐 test/loop-snapshot-round-residue-735.test.js 再动这里");
-      assert.ok(snapshotPayloads.some((payload) => (payload?.messages ?? []).includes(null)),
-        "快照 `messages` 里一个残余空位也没有（同上：写侧的轮残余没落地）");
+      // #838：run snapshot 已彻底退役（引擎不再写、不再读）⇒ F9b 的**写侧那一半**
+      // （「快照仍在写」+「快照 messages 只剩轮残余」）随载体一起退役：判据对象不存在了，
+      // 留着只会是一格恒假的断言。**磁盘那一半与内存那一半一条没动** —— 它们测的是
+      // 「引擎不回写宿主旧块」，与快照无关。
       // ---- 内存半边：引擎**内存里**那份上下文也不许改写宿主传进来的旧块（就地改写不落盘，磁盘面看不见）----
       const observed = boundary.observations().filter((o) => o.identity.tool_use_id === "legacy-1");
       // 在场断言（**不是**「有就查」）：探针必须真的在读边界盖上过旧块，并且它被**读过**。
@@ -955,7 +943,7 @@ test("真模型端点 e2e：工具事实契约面（两线同键 / 字段面 / w
         "structuredClone 竟然能克隆 Proxy 了 ⇒ 引擎的 cloneState 大概也换了 ⇒ 观察面可以重新评估 Proxy 面");
     }, `旧块仍带退役名=${RETIRED.filter((r) => Object.hasOwn(legacy ?? {}, r)).join(",")}，`
       + `边界探针=${boundary.observations().length} 块（旧块 ${boundary.observations().filter((o) => o.identity.tool_use_id === "legacy-1").length} 份，`
-      + `快照 ${snapshotPayloads.length} 份只做写侧形状判据）`);
+      + `快照 ${snapshotPayloads.length} 份（写侧已退役，这一项只是历史计数））`);
 
     check("F9c 一代读窗口：TTL 仍按旧块 erixRound 算年龄并折叠（年龄来源没断）", () => {
       const stats = {};
