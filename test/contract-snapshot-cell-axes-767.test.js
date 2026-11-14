@@ -314,8 +314,11 @@ function createPartialStreamProvider({ deltas, turns }) {
   };
 }
 
-async function capturePartialRun(deltas, runId) {
+async function capturePartialRun(deltas, runId, { withRecoveryChannel = true } = {}) {
   const store = createMemoryTranscriptStore();
+  // #827 第 4 刀：有账本恢复行通道时半截正文只落那一行（快照两格不写）；通道缺席时才回落到快照。
+  // 摘掉方法即可模拟「宿主没实现 appendRecoveryRow」——引擎按能力探测处理（`persist` 返回 false）。
+  if (!withRecoveryChannel) delete store.appendRecoveryRow;
   const payloads = [];
   const saveRunSnapshot = store.saveRunSnapshot.bind(store);
   store.saveRunSnapshot = async (id, snapshot) => {
@@ -353,29 +356,41 @@ let partialScenes = null;
 async function capturePartialScenes() {
   if (partialScenes !== null) return partialScenes;
   partialScenes = {
-    withText: await capturePartialRun(["我先", "读一下 a.txt。"], "contract-snapshot-axes-767-partial"),
+    withText: await capturePartialRun(["我先", "读一下 a.txt。"],
+      "contract-snapshot-axes-767-partial"),
     withoutText: await capturePartialRun([], "contract-snapshot-axes-767-no-partial"),
+    noChannel: await capturePartialRun(["我先", "读一下 a.txt。"],
+      "contract-snapshot-axes-767-partial-no-channel", { withRecoveryChannel: false }),
   };
+
   return partialScenes;
 }
 
-test("G2c 条件写入格：有半截正文 ⇒ 该格必须在场；没有半截正文 ⇒ 整格缺席（不许写 undefined）", async () => {
+test("G2c 条件写入格：账本通道在场 ⇒ 快照两格整格缺席；通道缺席 ⇒ 必须落快照（#827 第 4 刀）", async () => {
   const keys = tables.get("cn").rows
     .filter((row) => row.write === CONDITIONAL_WRITE)
     .map((row) => row.key);
-  assert.deepEqual(keys, ["partialText", "partialRound"], "条件写入格只有这两格，多一格少一格都要先回表看");
-  const { withText, withoutText } = await capturePartialScenes();
-  const present = withText.filter((payload) => Object.hasOwn(payload, "partialText"));
-  assert.ok(present.length > 0, "有半截正文的现场里没有任何载荷带 partialText ⇒ 条件分支从没进过（空转）");
+  assert.deepEqual(keys, ["partialText", "partialRound"], "条件写入格只有这两格，多一格少一格都不行");
+  const { withText, withoutText, noChannel } = await capturePartialScenes();
+  // ① 通道在场（内存 store 实现了 `appendRecoveryRow`）：快照**一格都不许带**半截正文 —— 权威是账本
+  //    恢复行，再写一份就是每次提交多付一整份快照（下游实测均 8,681 B）。这条是 #827 第 4 刀的主判据。
   assert.ok(
-    withText.some((payload) => !Object.hasOwn(payload, "partialText")),
-    "同一现场里轮末那条完整载荷也该整格缺席 ⇒ 条件假时是**整格不写**，不是写 undefined",
+    withText.every((payload) => !Object.hasOwn(payload, "partialText")
+      && !Object.hasOwn(payload, "partialRound")),
+    `账本通道在场时快照仍写了半截正文 ⇒ 又写了两份（keys：${JSON.stringify(withText.map(
+      (payload) => Object.keys(payload)))})`,
   );
+  // ② 通道缺席：半截正文必须落进快照，否则崩溃现场一处都没有（这条是上一条的反向证）。
+  const fallback = noChannel.filter((payload) => Object.hasOwn(payload, "partialText"));
+  assert.ok(fallback.length > 0,
+    "账本通道缺席时快照也没写 partialText ⇒ 半截正文一处都没落，崩溃即全丢");
+  // ③ 没有半截正文：两格都缺席（条件假时是整格不写，不是写 undefined）。
   assert.ok(
-    withoutText.every((payload) => !Object.hasOwn(payload, "partialText") && !Object.hasOwn(payload, "partialRound")),
-    `没有半截正文的现场里仍有载荷写了该格（keys：${JSON.stringify(Object.keys(withoutText[0]))}）`,
+    withoutText.every((payload) => !Object.hasOwn(payload, "partialText")
+      && !Object.hasOwn(payload, "partialRound")),
+    `没有半截正文的现场里仍有载荷写了该格（keys：${JSON.stringify(Object.keys(withoutText[0] ?? {}))}）`,
   );
-  for (const payload of withText) {
+  for (const payload of [...withText, ...noChannel, ...withoutText]) {
     // 同生同灭：只写一半 ⇒ 恢复侧读到 undefined 轮号或 undefined 正文，都是坏现场。
     assert.equal(
       Object.hasOwn(payload, "partialText"),
@@ -384,10 +399,10 @@ test("G2c 条件写入格：有半截正文 ⇒ 该格必须在场；没有半�
     );
     for (const key of keys) {
       if (!Object.hasOwn(payload, key)) continue;
-      assert.notEqual(payload[key], undefined, `\`${key}\` 在场时取值不能是 undefined（写 undefined ≠ 整格缺席）`);
+      assert.notEqual(payload[key], undefined, `\`${key}\` 在场时取值不能是 undefined（写 undefined 等于没写）`);
     }
   }
-  for (const payload of present) {
+  for (const payload of fallback) {
     assert.equal(typeof payload.partialText, "string");
     assert.ok(payload.partialText.length > 0, "在场的 partialText 必须是非空正文");
     assert.ok(Number.isSafeInteger(payload.partialRound), "partialRound 必须是安全整数");

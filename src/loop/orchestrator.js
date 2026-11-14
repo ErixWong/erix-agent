@@ -3559,11 +3559,11 @@ export async function runToolLoop(options) {
       attempt.dirty = false;
       const write = (async () => {
         try {
-          // issue #769：半截正文**先落账本恢复行、再写快照**。顺序有语义：恢复行是 append-only
-          // 的事件记录，快照是 latest-only 覆盖写；先落行者为「行落了、快照没落」留下可重放的现场
-          // （读侧因此可以把账本当首选，见 `resume-manager.js` 的 `readPartialTextRecoveryRow`）。
-          await appendPartialTextRecoveryRow(partialText, attempt.round);
-          await persistRunSnapshot({
+          // #769：正文先落账本行再写快照（行落了而快照没落仍可重放）。
+          // #827 第 4 刀：行落了就不写快照（每次提交省一整份快照）。
+          // 只有账本通道缺席（`persist` 返回 false）时才写。
+          const ledgerRowLanded = await appendPartialTextRecoveryRow(partialText, attempt.round);
+          if (!ledgerRowLanded) await persistRunSnapshot({
             round: attempt.round,
             status: "pending",
             partialText,
