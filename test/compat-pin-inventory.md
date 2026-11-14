@@ -462,7 +462,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/fold-llm-degrade-469.test.js` | 1 | `onEvent`×1 | COMPAT-PIN |
 | `test/compact/fold-note-honesty-741.test.js` | 0 | `onEvent`×2 | MIGRATE · NOT-OPTION-SURFACE（人手裁决 #741：两处 `onEvent` 都写在 `capabilities.hooks` 规位里，槽位名本身就是新家 ⇒ 扁平写点实测 0，无待迁项） |
 | `test/loop-host-steer-turn-753.test.js` | 8 | `onEvent`×6, `onObserverError`×2 | MIGRATE · S7c（8）（#753 C1 落树于 S7c 关闭之后：8 点全是顶层扁平回调搭台，重新排队迁 `capabilities.hooks`） |
-| `test/store/ledger-recovery-rows-769.test.js` | 2 | `onEvent`×2 | MIGRATE · S7c（2） |  <!-- #769 R3 人手裁决：两点都是 `runDirect` 顶层扁平 `onEvent` 搭台（收 `persistence_capability_degraded` 与终局事件），不在 `runToolLoop` 选项面规位里 ⇒ 沿 #495/#753 先例归 S7c，重新排队 -->
+| `test/store/ledger-recovery-rows-769.test.js` | 1 | `onEvent`×1 | MIGRATE · S7c（1） |  <!-- #769 R3 人手裁决：一个 `runDirect` 顶层扁平 `onEvent` 搭台同时收 `persistence_capability_degraded` 与终局事件，不在 `runToolLoop` 选项面规位里 ⇒ 沿 #495/#753 先例归 S7c，重新排队 -->
 
 > **人手裁决（#753 C1）：`test/loop-host-steer-turn-753.test.js` = `MIGRATE · S7c（8）`。**先记一句事实：
 > 本片的**新能力面写点**（`capabilities.hooks.nextUserTurn`）一子都不在本表里——AST 抽到的 8 点全是
@@ -507,13 +507,13 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7a`（已迁完：**迁移前** 37 个写点，现在 **0**） | 7 | 0（迁移前 37，已不在树里） |
 | `MIGRATE · S7a 遗留`（3 个 `finalGuard`；**已补进下行 S7c 的 90**，本行不重复计） | 3（⊂ 上行的 7） | 0（已计入 S7c） |
 | `MIGRATE · S7b`（已迁完 95 点，剩 0；迁移前 24 文件 / 124 点，明细见 S7b 清单） | 17 | 0 |
-| `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条；#753 C1 又在 S7c 关闭之后落树 8 点搭台；#769 R3 再落树 1 文件 / 2 点搭台（`test/store/ledger-recovery-rows-769.test.js` 两处顶层 `onEvent`）⇒ **重新排队**，口径见主表那两行的人手裁决；「文件」列仍按 §S7c 清单的行数 17 算（#753 同口径：重新排队但不进已关闭的清单）） | 17 | 10 |
+| `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条；#753 C1 又在 S7c 关闭之后落树 8 点搭台；#769 R3 再落树 1 文件 / 1 点搭台（`test/store/ledger-recovery-rows-769.test.js` 一个顶层 `onEvent`）⇒ **重新排队**，口径见主表那两行的人手裁决；「文件」列仍按 §S7c 清单的行数 17 算（#753 同口径：重新排队但不进已关闭的清单）） | 17 | 9 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 10 | 31 |  <!-- #741：`test/compact/fold-note-honesty-741.test.js` 并入本类（文件数 9→10，写点 0→0）：它的 `onEvent` 落在 `capabilities.hooks` 规位里，扁平写点实测 0 -->
 | `COMPAT-PIN` | 13 | 81 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 28 |
-| **合计（现在实测）** | **70** | **201** |
+| **合计（现在实测）** | **70** | **200** |
 
 脚注：
 
@@ -731,12 +731,12 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/judge.test.js` | 109 | `completion`×55, `reflection`×52, `stallDetection`×2 |
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 53 | `wrapup`×14, `context`×8, `reflection`×8, `retry`×6, `judgeProvider`×4, `onEvent`×4, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3, `completion`×1 |
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `finalGuard`×2, `completion`×1, `context`×1 |
-| `test/loop-resume.test.js` | 12 | `tools`×8, `resume`×4 |
+| `test/loop-resume.test.js` | 10 | `tools`×7, `resume`×3 |
 | `test/loop-option-gate-496.test.js` | 18 | `context`×8, `onFoldSummary`×7, `finalGuard`×6, `tools`×3, `deliverables`×2, `session`×2, `completion`×1, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
 | `test/loop-config-namespace-497.test.js` | 36 | `onEvent`×13, `reflection`×8, `tools`×6, `session`×4, `completion`×3, `wrapup`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `stallDetection`×1 |
-| `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
+| `test/loop-resume-anchor.test.js` | 33 | `completion`×7, `stallDetection`×7, `wrapup`×7, `resume`×6, `tools`×5, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 3 | `session`×2, `stallDetection`×1 |
-| `test/loop-resume-notice.test.js` | 10 | `tools`×9, `reflection`×1 |
+| `test/loop-resume-notice.test.js` | 0 | |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-core.test.js` | 26 | `finalGuard`×26, `tools`×15, `strategy`×5, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
 | `test/loop-capabilities-namespace-498.test.js` | 14 | `deliverables`×9, `onEvent`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `completion`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `session`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
@@ -750,7 +750,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-request-user-invariant.test.js` | 16 | `initialMessages`×5, `completion`×4, `stallDetection`×3, `tools`×3, `resume`×1 |
 | `test/loop-stream.test.js` | 14 | `completion`×5, `partialPersistence`×4, `wrapup`×4, `resume`×1 |
 | `test/output-aggregate-budget.test.js` | 15 | `outputHygiene`×7, `completion`×4, `reflection`×2, `context`×1, `resume`×1 |
-| `test/output-hygiene.test.js` | 14 | `completion`×7, `outputHygiene`×6, `resume`×1 |
+| `test/output-hygiene.test.js` | 11 | `outputHygiene`×6, `completion`×5 |
 | `test/wrapup.test.js` | 14 | `completion`×11, `reflection`×3 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1 |
 | `test/sessions.test.js` | 16 | `session`×16 |
@@ -765,7 +765,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-input-slice-498s3c.test.js` | 12 | `wrapup`×4, `completion`×2, `initialMessages`×2, `session`×2, `tools`×2 |
 | `test/loop-fr2.test.js` | 7 | `completion`×7 |
 | `test/model-metadata-diagnostics.test.js` | 9 | `completion`×5, `modelMetadata`×1, `outputHygiene`×1, `session`×1, `tools`×1 |
-| `test/persistence-diagnostics.test.js` | 11 | `completion`×9, `reflection`×2 |
+| `test/persistence-diagnostics.test.js` | 5 | `completion`×5 |
 | `test/run-state.test.js` | 1 | `resume`×1 |
 | `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2 |
 | `test/loop-termination.test.js` | 12 | `completion`×6, `stallDetection`×5, `reflection`×1 |
@@ -776,7 +776,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1 |
 | `test/loop-governance-switch-cells.test.js` | 10 | `completion`×4, `reflection`×4, `wrapup`×2 |
 | `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `resume`×1, `strategy`×1 |
-| `test/loop-resume-unpersisted-tool-results.test.js` | 11 | `resume`×7, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
+| `test/loop-resume-unpersisted-tool-results.test.js` | 8 | `resume`×4, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-tool-list.test.js` | 9 | `tools`×7, `prompt`×2 |
 | `test/loop-resume-fold-immunity.test.js` | 2 | `tools`×2 |
 | `test/notes-candidates-and-scopes.test.js` | 9 | `session`×7, `finalGuard`×2, `prompt`×2 |
@@ -793,7 +793,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/capture-honesty.test.js` | 6 | `prompt`×3, `session`×3 |
 | `test/examples/erix-run-async.test.js` | 6 | `tools`×4, `context`×1, `strategy`×1 |
 | `test/loop-folded-facts-sliding-resume.test.js` | 5 | `completion`×1, `stallDetection`×1, `strategy`×1, `tools`×1, `wrapup`×1 |
-| `test/loop-persistence-phase.test.js` | 7 | `completion`×2, `wrapup`×2, `partialPersistence`×1, `reflection`×1, `tools`×1 |
+| `test/loop-persistence-phase.test.js` | 5 | `completion`×2, `wrapup`×2, `tools`×1 |
 | `test/notes-final-guard.test.js` | 6 | `prompt`×3, `session`×3, `finalGuard`×2 |
 | `test/tool-fact-success-parity.test.js` | 2 | `onToolResult`×1, `outputHygiene`×1, `reflection`×1 |
 | `test/display/projection.test.js` | 4 | `wrapup`×2, `completion`×1, `reflection`×1 |
@@ -858,7 +858,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-run-slice-498s3a24.test.js` | 3 | `tools`×3 |
 | `test/assembly-policy-derivation-525.test.js` | 2 | `session`×1, `tools`×1 |
 | `test/loop-run-stream-538.test.js` | 2 | `session`×1, `tools`×1 |
-| `test/loop-547-provider-guard-channel.test.js` | 3 | `resume`×2, `tools`×1 |
+| `test/loop-547-provider-guard-channel.test.js` | 2 | `resume`×1, `tools`×1 |
 | `test/run-state-548-append-after-pending-tool-use.test.js` | 2 | `tools`×2 |
 | `test/session-container-513.test.js` | 13 | `session`×12, `tools`×1 |
 | `test/session-container-550.test.js` | 14 | `session`×12, `initialMessages`×1, `tools`×1 |
@@ -905,7 +905,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/prompt-note-coverage-746.test.js` | 1 | `tools`×1 |
 | `test/loop-resume-abandon-signals-730.test.js` | 5 | `completion`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-steer.test.js` | 4 | `tools`×3, `strategy`×1 |
-| `test/store/ledger-recovery-rows-769.test.js` | 6 | `resume`×6, `onEvent`×2 |
+| `test/store/ledger-recovery-rows-769.test.js` | 5 | `resume`×5, `onEvent`×1 |
 | `test/contract-snapshot-cell-axes-767.test.js` | 0 | |
 | `test/store/append-user-turn-settle-765.test.js` | 15 | `completion`×3, `resume`×3, `stallDetection`×3, `tools`×3, `wrapup`×3 |
 | `test/reasoning-sent-params-785.test.js` | 6 | `completion`×3, `stallDetection`×3 |

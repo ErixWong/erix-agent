@@ -1243,7 +1243,7 @@ test("#729 中段悬空（载体已带正文 + 同轮消息行）· 不给锚点
 // `invalid_messages`（`user tool_result has no matching assistant tool_use`）死。
 // 修后：「`round` 是整数时 `row.round` 必须**严格相等**」。
 
-test("#729 轮号过滤 · 候选行的 `round` 不是整数（折叠层不认它）⇒ 不给锚点、不写桩、二次恢复仍 ok", async () => {
+test("#729 轮号过滤 · 候选行的 `round` 不是整数（折叠层不认它）⇒ 不给锚点、不写桩，二次恢复如实拒绝未配对账本", async () => {
   // issue #811 之后那种行**进不了内置 store**（写侧当场抛 `TypeError`），所以现场由
   // `withUnvalidatedAppends` 落：宿主自研 store（驱动把整型列返回成字符串）或写侧守卫之前的档案。
   // 断言一条没改：读侧对那种行照旧宽容，而它照样**不许当锚点**。
@@ -1296,11 +1296,12 @@ test("#729 轮号过滤 · 候选行的 `round` 不是整数（折叠层不认�
     && record?.kind === "message").length, 1,
   "账本里 `round: 2` 的消息行必须仍只有 1 条（第 2 条 = 桩落了账）");
 
-  // 二次恢复：修前这里因为桩落了账（孤儿 `user`）而 `invalid_messages`。
+  // 退役旧的「二次恢复仍成功」判据：无合法锚点时桩必须只留在请求视图、不落账；
+  // 原账本仍缺 t2 的已结清结果，下一次 load 不能靠未落盘的桩闭合，因此应拒绝未配对的 tool_result。
   const secondProvider = createFakeProvider([endTurn("第二次续接完成")]);
   const again = await runLoop({ store, provider: secondProvider, executeTool: async () => "unused" });
-  assert.equal(again.ok, true,
-    "第二次恢复必须仍成功（修前：桩落成孤儿 `user` ⇒ `invalid_messages`；实测：" + String(again.error));
+  assert.equal(again.ok, false, "账本未被桩闭合，二次恢复不得谎报成功");
+  assert.match(again.error, /^invalid_messages: .*user tool_result has no matching assistant tool_use/u);
   assert.equal(stubRowsOf(rows).length, 0, "第二次恢复同样不许写桩行");
 });
 

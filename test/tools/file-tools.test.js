@@ -713,13 +713,19 @@ const READ_LINE_CAPACITY_ROLES = [
   // （+2.84%，越过 ±2%）。按本测试自己的口径复测这一行：行数 1,052 → 1,073、
   // 平均行字节 70.9154 → 71.5051、容量 3,696 → **3,666**、CJK 占比 0.36 → **0.3758**。
   // 描述里引用的 floor 那句（`fewest`）不写具体容量 ⇒ 描述不动。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 76_725, lines: 1_073, bytesPerLine: 71.5051, capacity: 3_666, cjkShare: 0.3758 } },
+  // 2026-11-15（#838 S3c）：S2 删除 `resume-manager.js` 写侧后，它从 76,725 B / 1,073 行变为
+  // 64,262 B / 994 行（71.5051 → 64.6499 B/line，容量 3,666 → 4,054，CJK 0.3758 → 0.33678）。
+  // 全树和样本 floor 因此都迁到 `option-normalization.js`（37,333 B / 549 行，68.0018 B/line，
+  // 容量 3,854，CJK 0.17052）；`fewest` 角色随之换锚。描述档位从 3,650 → 3,850，70.9 → 68.0。
+  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 37_333, lines: 549, bytesPerLine: 68.0018, capacity: 3_854, cjkShare: 0.17052 } },
   // CJK 字节占比最高的那一个（2026-10-13 到 2026-10-31 一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   // 2026-10-31 第一刷（issue #246 第一刀）：这个文件第一次被真实接线（`orchestrator.js` 的
   // `runSnapshotContext` 转发面），文件头注释里「本单不接线」那句改成接线事实（+14 B，**行数不变**）。
   // bytes 越过 ±2% 内侧（+0.53%）⇒ 按本测试自己的口径复测这一行（容量 4,387 → 4,364，描述里
   // 「fits 4,387」仍在 ±1% 内，故描述一字未改；CJK 占比 37.31% → 37.00%，描述里的 `37%` 逐字仍然成立）。
-  { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_643, lines: 44, bytesPerLine: 60.0682, capacity: 4_364, cjkShare: 0.37 } },
+  // 2026-11-15（#838 S3c）复测：2,643 → 2,631 B，60.0682 → 59.7955 B/line，
+  // 容量 4,364 → 4,384，CJK 占比 0.37 → 0.36602。
+  { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_631, lines: 44, bytesPerLine: 59.7955, capacity: 4_384, cjkShare: 0.36602 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
   // `src/loop/termination.js` 加了 finalGuard payload 的组装与四个上限常量（+8,638 B / +163 行，
   // 字节 +74%），它的容量从 7,227 掉到 6,255，已经不再是样本中位（实测中位 7,225）——

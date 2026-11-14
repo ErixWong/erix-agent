@@ -700,7 +700,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
           name: "work",
           input: {},
           erix: { toolCallKey: "tc_1234567890ab" },
-        }],
+        }, toolUseBlock("pending-2")],
       }],
     });
     await store.appendRound(runId, {
@@ -715,7 +715,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     let calls = 0;
     const events = [];
     await runToolLoop({
-      // 模型把己执行过的调用又发了一遍（复放路径），下一轮自然收尾。
+      // 未结清的后续调用让这段成为崩溃现场，已结清结果由账本复放进请求。
       provider: scriptedProvider([toolRound("done-1"), DONE]),
       config: { run: { resume: true, runId, completion: false } },
       store,
@@ -763,7 +763,10 @@ export function toolResultEnvelopeContract(label, getEntry) {
       dedupKey: `${runId}:msg:2:0`,
       kind: "message",
       seq: 0,
-      messages: [{ role: "assistant", content: [{ type: "tool_use", id: "old-1", name: "work", input: {} }] }],
+      messages: [{
+        role: "assistant",
+        content: [toolUseBlock("old-1"), toolUseBlock("pending-2")],
+      }],
     });
     await store.appendRound(runId, {
       round: 2,
