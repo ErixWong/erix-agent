@@ -2040,3 +2040,60 @@ test("#838 S1 C2 reviewer 场景：t1 执行过但结果不可用，resume 正�
   assert.doesNotThrow(() => validateMessages(request),
     "每条 assistant 的 tool_use id 必须在紧邻 user 结果页里完整配对");
 });
+
+test("#838 S1 C3：resume 载体行归档本轮全部 toolOutputs", async () => {
+  const inner = createMemoryTranscriptStore();
+  const ts = new Date().toISOString();
+  const archivedT2 = "out-t2".repeat(1000);
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:msg:1:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "user", content: [text("任务")] }],
+    ts,
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:engine:round:1`,
+    toolOutputs: [{ toolUseId: "old", name: "work", content: "other-round" }],
+    ts,
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:engine:round:2`,
+    toolOutputs: [{ toolUseId: "t1", name: "work", content: "out-t1" }],
+    ts,
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:msg:2:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "assistant", content: [text("开始"), toolUse("t1"), toolUse("t2")] }],
+    ts,
+  });
+  await inner.appendRecoveryRow(RUN_ID, buildToolExecutedRecoveryRow({
+    runId: RUN_ID,
+    round: 2,
+    toolUseId: "t1",
+  }));
+
+  const resumed = await runLoop({
+    store: inner,
+    provider: createFakeProvider([endTurn("续接完成")]),
+    executeTool: async ({ id }) => id === "t2" ? archivedT2 : `out-${String(id)}`,
+  });
+  assert.equal(resumed.ok, true, `resume 必须成功（实测：${String(resumed.error)}）`);
+
+  const resumeRow = (await inner.loadRawRows(RUN_ID))
+    .find((record) => record?.dedupKey === `${RUN_ID}:engine:round:2:resume`);
+  assert.deepEqual(resumeRow?.toolOutputs, [
+    { toolUseId: "t1", name: "work", content: "out-t1" },
+    { toolUseId: "t2", name: "work", content: archivedT2 },
+  ], "resume 行必须携带本轮归档的全部输出，而不是只保留本次补跑输出");
+});

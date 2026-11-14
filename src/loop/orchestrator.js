@@ -5336,6 +5336,13 @@ export async function runToolLoop(options) {
         // transcript 只剩宿主那条近空行（issue #32 #8）。`:resume` 幂等，重启重跑不重复写。
         dedupKey: `${String(runId)}:engine:round:${String(runLoopState.rounds)}:resume`,
         messages: cloneState(resumeEngineText),
+        ...(archivedOutputs.some((entry) => entry.round === runLoopState.rounds)
+          ? {
+            toolOutputs: archivedOutputs
+              .filter((entry) => entry.round === runLoopState.rounds)
+              .map(({ toolUseId, name, content }) => ({ toolUseId, name, content })),
+          }
+          : {}),
         ts: new Date().toISOString(),
       });
       runLoopState.resumeTranscriptStart = undefined;
