@@ -1045,8 +1045,8 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   // （定锚侧的轮号守卫、轮号计数器那格）各插了几行 ⇒ 同一条锚点的命中行又漂一次。逐条现报：
   //   6352→6365 / 6332→6345 / 887→891 / 888→892 / 831→835 / 835→839 / 797→801（`119` 仍未变）。
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6365 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6345 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6368 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6348 },
     { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 899 },
     { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 900 },
     { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 835 },

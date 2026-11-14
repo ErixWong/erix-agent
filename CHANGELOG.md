@@ -34,6 +34,22 @@
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
 ### Changed
+- **The interrupted stub now says which of the two situations it is, using the
+  `tool-executed` row as the evidence (issue #833 follow-up, task 261114-05).** A pending call whose
+  result never landed used to get one text ("was not replayed; the host must decide"). Two different
+  facts hide behind it: the tool never ran, or it ran and its result was never recorded. The second
+  one is the dangerous one -- re-issuing it can duplicate a side effect -- so it now says so
+  explicitly ("DID run ... inspect the current state first"), while the first keeps the plain
+  "re-issue it yourself" wording. The split reads `executedToolIds`, which is fed by the ledger
+  `tool-executed` recovery row, so the evidence travels with the archive instead of being guessed.
+- **中断桩现在按 `tool-executed` 行分成两种说法（issue #833 跟进，
+  工单 261114-05）。**「结果没落盘」
+  的调用原本只有一句文案（「没被重放，宿主决定」），
+  但底下藏着两件不同的事：工具没跑过，或者跑了但结果没记下来。
+  后者才危险 —— 重发可能把副作用做第二遍 —— 所以它现在明说「**DID r
+  un**……先勘验现状」，前者保留「需要就自己重发」。
+  判据读 `executedToolIds`，它由账本 `tool-executed` 恢复行喂，
+  于是证据跟着档案走，而不是靠猜。
 - **A resumed run no longer replays pending tools by default: the engine fills an interrupted
   result and the model decides (issue #833, task 261114-04; #767 direction).** `replayPolicy` now
   defaults to `"per-tool-declaration"` instead of `"always-replay"`. Nothing declares
