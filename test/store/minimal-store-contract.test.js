@@ -1,10 +1,6 @@
 // issue #739：契约套件的可选性必须在**套件内**做实（选项 A）。
-// 修前的事实：`test/contract/transcript-store.js` 的头注释说 run snapshot / run-state 是可选
-// capability，`src/assembly-validators.js` 也把 `OPTIONAL_TRANSCRIPT_STORE_METHODS` 全列为可选，
-// 而套件里那批用例**无条件**调用 `store.saveRunSnapshot` / `store.saveRunState` ⇒ 一个只实现
-// 必需面（`appendRound` + `load`）的宿主 store **能过装配校验、过不了随包套件**，报的是
-// `TypeError: store.saveRunSnapshot is not a function`（不是「缺能力」的口径，是崩溃口径）。
-// 本文件就是那条「最小 store 必须整套通过」的用例：把三处口径钉成同一个答案。
+// run-state 仍是可选 capability；快照 store 方法已随 #838 S2 退役。本文件钉住只实现
+// `appendRound` + `load` 的宿主 store 可以通过装配校验与随包契约套件。
 //
 // 最小 store 的口径（不是「空实现」）：必需面的语义一条都不许少——去重幂等/冲突与折叠义务
 // 都是 `appendRound` / `load` 的契约内容（issue #326 / #401），所以本夹具照宿主的做法复用包内

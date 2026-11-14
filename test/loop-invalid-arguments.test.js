@@ -15,6 +15,7 @@ import { createOpenAIProvider } from "../src/providers/openai.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { createMockFetch } from "./helpers/mock-fetch.js";
+import { appendLedgerMessages } from "./helpers/journal-crash-body.js";
 
 const READ_FILE_SCHEMA = {
   name: "readFile",
@@ -204,18 +205,12 @@ test("默认（reject）：判词真的喂回了模型（下一个请求里就�
 // "per-tool-declaration"` 时会被改写成 interrupted 的通用文案「上次执行被打断」）。
 // 被拒的调用必须**既不补跑、也不被改写成 interrupted**：模型看到的仍是同一份判词。
 //
-// 现场不是手搓的：先真跑一次拿到**引擎自己写下**的 `status: "rejected"` 快照（含判词原文），
-// 再把账本截到快照的 `persistedTranscriptLength`（= 结果已产出、还没落账的崩溃时刻），最后 resume。
+// 现场不是手搓的：先真跑一次拿到引擎写下的 assistant/tool_result 正文，再把已结清的拒绝结果
+// 与其调用一同铺进账本，最后 resume。
 
-/** 真跑一次「坏引数 ⇒ 被拒」，交回引擎自己写的 rejected 快照。 */
-async function rejectedCrashSnapshot(rawArguments) {
+/** 真跑一次「坏引数 ⇒ 被拒」，交回账本里的 assistant 与 rejected tool_result。 */
+async function rejectedCrashLedger(rawArguments) {
   const store = createMemoryTranscriptStore();
-  const snapshots = [];
-  const saveRunSnapshot = store.saveRunSnapshot.bind(store);
-  store.saveRunSnapshot = async (runId, snapshot) => {
-    snapshots.push(structuredClone(snapshot));
-    return saveRunSnapshot(runId, snapshot);
-  };
   const { provider } = providerFor(malformedArgumentsScript(rawArguments));
   let executed = 0;
   await runDirect({
@@ -232,49 +227,36 @@ async function rejectedCrashSnapshot(rawArguments) {
     runId: "resume-rejected",
   });
   assert.equal(executed, 0, "第一段跑：被拒的调用一次都不许执行（这一格的前提）");
-  // issue #770：`status` 那一格已从快照里停写 ⇒ 认「被拒那次写」改看引擎自己入账的**事实**：
-  // 被拒的调用会留下一条 `erix.executionStatus: "rejected"` 的 `tool_result`
-  // （`src/loop/run-snapshot-executor.js` 的 `rejectInvalidArguments`），而那正是本用例下面
-  // 要校验的东西——证据没丢，只是从「冗余副本」换到了「事实本体」。
-  const snapshot = snapshots.find((entry) => (
-    (entry.toolResults ?? []).some((item) => item.toolResult?.erix?.executionStatus === "rejected")
-  ));
-  assert.ok(snapshot, `引擎必须写下带被拒 tool_result 的 run snapshot，实测各条的执行状态：${JSON.stringify(snapshots.map((entry) => (entry.toolResults ?? []).map((item) => item.toolResult?.erix?.executionStatus ?? null)))}`);
-  assert.equal(snapshot.pendingToolUses[0].erix.argumentsParseError.reason, "unparsable",
-    "快照里的 pending 调用必须带着判词（否则这一格测的不是崩溃现场）");
-  assert.equal(snapshot.toolResults[0].toolResult.erix.executionStatus, "rejected");
-  // issue #735 切片 2：快照的 `messages` 从此只带**轮残余**（锚点之前的前缀是 `null`），
-  // 所以「崩溃时刻已落盘的那段正文」必须从**账本**取，不能再从快照里翻出来 —— 这正是本片的新契约。
-  // 不是「为了让用例好看而改断言」：用例要的还是同一段真正文，只是换了它真正的来源。
   const transcript = foldLedgerMessages(await store.load("resume-rejected")).map((entry) => entry.message);
-  assert.ok(transcript.length >= 2, `账本里必须已有 seed 与 assistant 正文（实测 ${transcript.length}）`);
-  return { snapshot, transcript };
+  const assistant = transcript.find((message) => message.role === "assistant"
+    && message.content?.some((block) => block.type === "tool_use" && block.id === "call_bad"));
+  const result = transcript.find((message) => message.content?.some((block) => (
+    block.type === "tool_result" && block.tool_use_id === "call_bad"
+  ))); // status 快照格已随载体退役（#838 S2）。
+  assert.ok(assistant, "账本里必须已有带 rejected 调用的 assistant 正文");
+  assert.ok(result, "账本里必须已有已结清的 rejected tool_result");
+  const rejectedUse = assistant.content.find((block) => block.type === "tool_use" && block.id === "call_bad");
+  const rejectedResult = result.content.find((block) => block.type === "tool_result" && block.tool_use_id === "call_bad");
+  assert.equal(rejectedUse.erix.argumentsParseError.reason, "unparsable");
+  assert.equal(rejectedResult.erix.executionStatus, "rejected");
+  return { transcript, assistant, result, rejectedResult };
 }
 
-/** 账本停在快照锚点（结果已产出、还没落账），快照领先一步 —— 崩溃时刻的真实形状。 */
-async function seedCrashSite({ snapshot, transcript }) {
-  const anchor = snapshot.persistedTranscriptLength;
-  assert.ok(Number.isSafeInteger(anchor) && anchor >= 2,
-    `快照锚点必须已含 seed 与 assistant 正文（实测 ${anchor}）`);
+/** 将崩溃轮 assistant 与已结清结果作为账本消息行重建。 */
+async function seedCrashSite({ transcript, assistant, result }) {
   const store = createMemoryTranscriptStore();
-  // 完整性前置（独立评审 nit）：下一行就按 `anchor` 切，所以上面那条 `>= 2` 不够——账本比锚点短
-  // 会无声造出一个「缺正文」的短账本现场（另一处同类夹具已有同样一条）。
-  assert.ok(transcript.length >= anchor,
-    `账本正文必须至少多到锚点（否则造不出「已落盘到锚点」的现场）：实测 ${transcript.length} vs 锚点 ${anchor}`);
   await store.appendRound("resume-rejected", { round: 0, messages: structuredClone(transcript.slice(0, 1)) });
-  await store.appendRound("resume-rejected", {
+  await appendLedgerMessages(store, "resume-rejected", {
     round: 1,
-    messages: structuredClone(transcript.slice(1, anchor)),
+    messages: [structuredClone(assistant), structuredClone(result)],
   });
-  await store.saveRunSnapshot("resume-rejected", { ...snapshot, persistedTranscriptLength: anchor });
   return store;
 }
 
 test("resume：崩溃现场是一条被拒的调用 ⇒ 不补跑，模型看到同一份判词而不是 interrupted 文案", async () => {
-  const scene = await rejectedCrashSnapshot('{"path": "a.txt"');
-  const { snapshot } = scene;
-  const verdict = snapshot.toolResults[0].toolResult.content;
-  assert.match(verdict, /正确形状/u, "判词原文取自快照（下面逐字比对的就是它）");
+  const scene = await rejectedCrashLedger('{"path": "a.txt"');
+  const verdict = scene.rejectedResult.content;
+  assert.match(verdict, /正确形状/u, "判词原文取自账本（下面逐字比对的就是它）");
 
   // 两种 replayPolicy 都跑：默认档是「照旧重放」，per-tool-declaration 档才是会把 pending 调用
   // 改写成 interrupted 的那一条 —— 后者是这一格真正的判别面。

@@ -20,6 +20,7 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { appendLedgerMessages } from "./helpers/journal-crash-body.js";
 
 const DONE = { content: [{ type: "text", text: "all done" }], stopReason: "end_turn" };
 
@@ -242,15 +243,21 @@ test("erix.success 迁移等价：复放已完成结果 ⇒ 沿用原记录的�
     erix: { toolCallKey: "tc_1234567890ab", round: 3, durationMs: 777, success: false },
   };
   await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "task" }] });
-  await store.saveCheckpoint(runId, {
+  await appendLedgerMessages(store, runId, {
     round: 3,
-    pendingToolUses: [{ type: "tool_use", id: "done-1", name: "work", input: {} }],
     messages: [
-      { role: "user", content: "task" },
-      { role: "assistant", content: [{ type: "tool_use", id: "done-1", name: "work", input: {}, erix: { toolCallKey: "tc_1234567890ab" } }] },
+      {
+        role: "assistant",
+        content: [{
+          type: "tool_use",
+          id: "done-1",
+          name: "work",
+          input: {},
+          erix: { toolCallKey: "tc_1234567890ab" },
+        }],
+      },
+      { role: "user", content: [recorded] },
     ],
-    executedToolIds: ["done-1"],
-    toolResults: [{ toolUseId: "done-1", toolResult: recorded }],
   });
 
   let calls = 0;

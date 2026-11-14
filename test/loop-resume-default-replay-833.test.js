@@ -16,7 +16,7 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const textMessage = (text) => ({ role: "user", content: [{ type: "text", text }] });
 
-/** 崩溃现场：账本里有 seed，快照里有一条没结清的 `tool_use`（不声明 `replay`）。 */
+/** 崩溃现场：账本里有 seed 和一条没结清的 `tool_use`（不声明 `replay`）。 */
 async function seedCrashSite(runId) {
   const store = createMemoryTranscriptStore();
   const toolUse = {
@@ -26,34 +26,15 @@ async function seedCrashSite(runId) {
     input: { action: "publish" },
   };
   await store.appendRound(runId, { round: 0, messages: [textMessage("跑一下工具")] });
-  await store.saveRunSnapshot(runId, {
+  await store.appendRound(runId, {
     round: 1,
-    status: "pending",
-    pendingToolUses: [toolUse],
-    messages: [
-      textMessage("跑一下工具"),
-      { role: "assistant", content: [toolUse] },
-    ],
-    executedToolIds: [],
-    toolResults: [],
-    toolOutputs: [],
-    compactionStats: [],
+    roundKey: `${runId}:round:1`,
+    dedupKey: `${runId}:msg:1:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "assistant", content: [toolUse] }],
     ts: new Date().toISOString(),
   });
-  // 崩溃轮的 assistant（带 `tool_use`）必须**入账**：续跑是从账本消息折出上下文的，
-  // 只在快照里的那条不算现场（与 `test/loop-resume.test.js` 的夹具同源口径）。
-  const snapshot = await store.loadLatestRunSnapshot(runId);
-  for (const [seq, message] of (snapshot?.messages ?? []).slice(1).entries()) {
-    await store.appendRound(runId, {
-      round: Number(snapshot?.round),
-      roundKey: `${runId}:round:${String(snapshot?.round)}`,
-      dedupKey: `${runId}:msg:${String(snapshot?.round)}:${String(seq)}`,
-      kind: "message",
-      seq,
-      messages: [message],
-      ts: new Date().toISOString(),
-    });
-  }
   return store;
 }
 

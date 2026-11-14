@@ -150,15 +150,11 @@ test("#425 stream + partialPersistence：恢复后终稿正文只出现一次（
     executeTool: async () => "unused",
   });
 
-  // 前提（这一格测的是不是「陈旧锚点」现场）：快照里锚点只到 seed，账本已落终稿 assistant。
-  // #827 第 4 刀之后引擎**不再在流式期间写快照**（半截正文的权威是账本恢复行），所以这个现场改成
-  // 按新形状造：恢复行带着完整终稿正文，快照那两格整格缺席 —— 后者本身就是这一刀的行为判据。
-  const snapshot = await inner.loadLatestRunSnapshot(RUN_ID);
+  // 前提：恢复行带着完整终稿正文，账本已落 seed + 终稿 assistant。
   const ledger = foldLedgerMessages(await inner.load(RUN_ID));
   const partialRows = (await inner.listRecoveryRows(RUN_ID))
     .filter((row) => row.recoveryEvent === "partial-text");
   assert.equal(partialRows.at(-1)?.text, BODY, "前提：最后一条恢复行带着完整终稿正文");
-  assert.equal(snapshot?.partialText, undefined, "账本通道在场时快照不该再写 partialText（#827 第 4 刀）");
   assert.equal(ledger.length, 2, "前提：账本里已有 seed + 终稿 assistant");
 
   const resumedProvider = streamingProvider({ bodies: ["追问的答复"], store: inner, runId: RUN_ID });
@@ -214,18 +210,6 @@ test("#425 反向证：现算锚点人为少 1 ⇒ 配对断裂，invalid_messag
   const buildStore = async (rows) => {
     const store = createMemoryTranscriptStore();
     for (const row of rows) await store.appendRound(RUN_ID, row);
-    // 快照写「新鲜」锚点：这样失败只可能来自**现算**值，快照不能背锅。
-    await store.saveRunSnapshot(RUN_ID, {
-      round: 1,
-      messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-      persistedTranscriptLength: freshAnchor,
-      executedToolIds: [],
-      pendingToolUses: [toolUse("t2")],
-      toolResults: [],
-      toolOutputs: [],
-      compactionStats: [],
-      ts: new Date().toISOString(),
-    });
     return store;
   };
 
@@ -273,69 +257,7 @@ test("#425 反向证：现算锚点人为少 1 ⇒ 配对断裂，invalid_messag
   assert.equal(brokenProvider.requests.length, 0, "锚点偏移一格 = 零请求（本地校验器先拒）");
 });
 
-// ── ④ 恢复**不消费**快照里的锚点：把它写成 0 / 超大，上下文必须一模一样 ─────────────────
-test("#425 恢复不读快照锚点：写成 0（旧口径下必然 invalid_messages）或超大都不改变上下文", async () => {
-  const RUN_ID = "anchor-ignored";
-  const engineRows = [
-    { round: 0, dedupKey: `${RUN_ID}:engine:round:0:seed`, messages: [userText("任务")] },
-    { round: 1, dedupKey: `${RUN_ID}:engine:round:1` },
-    {
-      round: 1,
-      dedupKey: `${RUN_ID}:msg:1:0`,
-      kind: "message",
-      seq: 0,
-      messages: [{ role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-    },
-    { round: 1, dedupKey: `${RUN_ID}:msg:1:1`, kind: "message", seq: 1, messages: [toolResult("t1")] },
-  ];
-  const runOnce = async (snapshotAnchor) => {
-    const store = createMemoryTranscriptStore();
-    for (const row of engineRows) await store.appendRound(RUN_ID, row);
-    await store.saveRunSnapshot(RUN_ID, {
-      round: 1,
-      messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-      persistedTranscriptLength: snapshotAnchor,
-      executedToolIds: [],
-      pendingToolUses: [toolUse("t2")],
-      toolResults: [],
-      toolOutputs: [],
-      compactionStats: [],
-      ts: new Date().toISOString(),
-    });
-    const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
-    await runDirect({
-      provider,
-      resume: true,
-      store,
-      runId: RUN_ID,
-      tools: TOOLS,
-      maxRounds: 8,
-      completion: false,
-      wrapup: false,
-      stallDetection: false,
-      executeTool: async ({ id }) => `replayed-${id}`,
-    });
-    return provider.requests[0].messages;
-  };
-
-  // `toolCallKey` 是每次执行现场分配的身份（不参与语义），比较前投影掉。
-  const shapeOf = (messages) => messages.map((message) => ({
-    role: message.role,
-    blocks: (Array.isArray(message.content) ? message.content : []).map((block) => (
-      block?.type === "tool_result"
-        ? `result:${block.tool_use_id}`
-        : block?.type === "tool_use"
-          ? `use:${block.id}`
-          : `text:${String(block?.text ?? "")}`
-    )),
-  }));
-
-  const fresh = await runOnce(3); // 3 = 现算值（= 账本条数）
-  const zero = await runOnce(0);  // 旧口径：slice(0, 0) ⇒ 全部正文进尾队列 ⇒ 配对断裂
-  const oversized = await runOnce(99); // 写侧多算的形态：旧口径靠 Math.min 夹到账本条数
-  assert.deepEqual(shapeOf(zero), shapeOf(fresh), "快照锚点 0 不得改变恢复上下文（恢复只认现算值）");
-  assert.deepEqual(shapeOf(oversized), shapeOf(fresh), "快照锚点超大不得改变恢复上下文（恢复只认现算值）");
-});
+// 载体已退役（#838 S2），本格随之退役。
 
 // ── ⑤ 宿主预写行的**键形态**不得决定边界归属（issue #425 评审阻塞） ─────────────────────
 //
@@ -393,18 +315,6 @@ async function resumeWithHostRow(keyShape, { landedT1 = false } = {}) {
   const rows = crashScene(RUN_ID, { tail: hostPreWriteRow(RUN_ID, keyShape), landedT1 });
   const store = createMemoryTranscriptStore();
   for (const row of rows) await store.appendRound(RUN_ID, row);
-  await store.saveRunSnapshot(RUN_ID, {
-    round: 1,
-    messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-    // 快照锚点写「新鲜」值：失败只可能来自**现算**，快照不能背锅（同 ③ 的做法）。
-    persistedTranscriptLength: landedT1 ? 3 : 2,
-    executedToolIds: [],
-    pendingToolUses: landedT1 ? [toolUse("t2")] : [toolUse("t1"), toolUse("t2")],
-    toolResults: [],
-    toolOutputs: [],
-    compactionStats: [],
-    ts: new Date().toISOString(),
-  });
   const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
   const result = await runDirect({
     provider,
@@ -522,17 +432,6 @@ test("#425 方向敏感复证：默认键现场下锚点人为少 1 ⇒ 仍 inva
   const runOnce = async (rows) => {
     const store = createMemoryTranscriptStore();
     for (const row of rows) await store.appendRound(RUN_ID, row);
-    await store.saveRunSnapshot(RUN_ID, {
-      round: 1,
-      messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-      persistedTranscriptLength: freshAnchor,
-      executedToolIds: [],
-      pendingToolUses: [toolUse("t2")],
-      toolResults: [],
-      toolOutputs: [],
-      compactionStats: [],
-      ts: new Date().toISOString(),
-    });
     const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
     const error = await runDirect({
       provider,
@@ -588,17 +487,6 @@ test("#425 边界：`:round:` 键 + `kind:\"message\"` 的尾行判引擎（anch
 
   const store = createMemoryTranscriptStore();
   for (const row of rows) await store.appendRound(RUN_ID, row);
-  await store.saveRunSnapshot(RUN_ID, {
-    round: 1,
-    messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-    persistedTranscriptLength: 3,
-    executedToolIds: [],
-    pendingToolUses: [toolUse("t1"), toolUse("t2")],
-    toolResults: [],
-    toolOutputs: [],
-    compactionStats: [],
-    ts: new Date().toISOString(),
-  });
   const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
   const error = await runDirect({
     provider,

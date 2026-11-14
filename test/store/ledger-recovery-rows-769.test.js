@@ -591,11 +591,10 @@ const r3ToolUse = (/** @type {string} */ id) => ({ type: "tool_use", id, name: "
 /**
  * 崩溃现场（形状取自 `test/loop-resume-unpersisted-tool-results.test.js` 的既有夹具）：
  * 账本里只有 round 1 的载体行（assistant 带着 `tool_use: t1`，**没有** `tool_result` 行），
- * run snapshot 说「t1 还挂着」，恢复行说「t1 执行过了」——两格谁也没说漏，但**来源不同**。
+ * 恢复行说「t1 执行过了」。
  * @param {any} inner
- * @param {{ snapshotExecutedToolIds: string[] }} opts
  */
-async function r3CrashScene(inner, { snapshotExecutedToolIds }) {
+async function r3CrashScene(inner) {
   const messages = [
     { role: "user", content: [r3Text("任务")] },
     { role: "assistant", content: [r3Text("答复"), r3ToolUse("t1")] },
@@ -608,19 +607,6 @@ async function r3CrashScene(inner, { snapshotExecutedToolIds }) {
     summary: "missing",
     ts: "2020-01-01T00:00:00.000Z",
   });
-  await inner.saveRunSnapshot(R3_CRASH_ID, {
-    round: 1,
-    messages,
-    persistedTranscriptLength: messages.length,
-    executedToolIds: snapshotExecutedToolIds,
-    pendingToolUses: [r3ToolUse("t1")],
-    toolResults: [],
-    toolOutputs: [],
-    compactionStats: [],
-    partialRound: 1,
-    partialText: "答复",
-    ts: "2020-01-01T00:00:00.000Z",
-  });
   await inner.appendRecoveryRow(R3_CRASH_ID, buildToolExecutedRecoveryRow({
     runId: R3_CRASH_ID, round: 1, toolUseId: "t1",
   }));
@@ -628,7 +614,7 @@ async function r3CrashScene(inner, { snapshotExecutedToolIds }) {
 }
 
 test("#769 R3（B）listRecoveryRows 拒绝 ⇒ 终局点名 recovery_rows_unreadable（**不许**吞成空集后回落绿）", async () => {
-  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: [] });
+  const inner = await r3CrashScene(createMemoryTranscriptStore());
   const store = {
     ...inner,
     listRecoveryRows: async () => {
@@ -664,7 +650,7 @@ test("#769 R3（B）listRecoveryRows 拒绝 ⇒ 终局点名 recovery_rows_unrea
 });
 
 test("#769 R5（M1）listRecoveryRows **resolve 出非数组**（undefined）⇒ 终局点名**同一个** recovery_rows_unreadable（不许吞成空集）", async () => {
-  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: [] });
+  const inner = await r3CrashScene(createMemoryTranscriptStore());
   const store = {
     ...inner,
     // 不是抛错，而是「调用成功但返回坏形状」——上一段只封了 reject，非数组仍被 `: []` 吞成空集。
@@ -698,42 +684,7 @@ test("#769 R5（M1）listRecoveryRows **resolve 出非数组**（undefined）⇒
   assert.equal(provider.requests.length, 0, "终止在第一次模型请求之前：吞成空集会先回落快照再发请求");
 });
 
-test("#769 R3（B）负控制：store **没有** listRecoveryRows ⇒ 仍是合法降级，走快照回落且不发新错误码（三格各自值点名）", async () => {
-  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: ["t1"] });
-  const store = { ...inner };
-  delete store.listRecoveryRows;
-  assert.equal(typeof store.listRecoveryRows, "undefined", "前置：方法必须真的缺席（不是抛错的替身）");
-  // 快照那三格的**各自值**（读侧在能力缺席时唯一的来源）——写现场时就先点名，别事后靠内存猜。
-  const snapshot = await inner.loadLatestRunSnapshot(R3_CRASH_ID);
-  assert.deepEqual(snapshot?.executedToolIds, ["t1"], "快照格 1：executedToolIds = [\"t1\"]（这是降级后唯一的「执行过了」来源）");
-  assert.equal(snapshot?.partialRound, 1, "快照格 2：partialRound = 1");
-  assert.equal(snapshot?.partialText, "答复", "快照格 3：partialText = \"答复\"");
-
-  /** @type {any[]} */
-  const events = [];
-  /** @type {string[]} */
-  const executedCalls = [];
-  const provider = createFakeProvider([finalRound("resumed")]);
-  const resumed = await runDirect({
-    provider,
-    initialUserMessage: "start",
-    executeTool: async ({ input }) => { executedCalls.push(input.step); return "out"; },
-    config: { run: { completion: false } },
-    store,
-    runId: R3_CRASH_ID,
-    resume: true,
-    onEvent: (/** @type {any} */ event) => events.push(event),
-  });
-  assert.equal(resumed.termination?.reason, "end_turn",
-    `能力缺席必须是**降级**而不是失败（对照上面那格的 persistence_failed），实际 ${JSON.stringify(resumed.termination)}`);
-  assert.equal(resumed.finalText, "resumed", "降级路径仍跑完了脚本：回落没有把 run 卡在恢复段");
-  assert.deepEqual(executedCalls, [],
-    "快照那格把 t1 记成已执行 ⇒ 降级路径也没重放它（回落是真的落到了快照，不是恰好没工具）");
-  assert.equal(provider.requests.length, 1, "回落路径要真发第一次模型请求（与硬终止那格的 0 请求对照）");
-  const unreadable = events.filter((event) => event?.type === "recovery_rows_unreadable"
-    || String(event?.code ?? "") === RECOVERY_ROWS_UNREADABLE);
-  assert.deepEqual(unreadable, [], "降级路径不许冒出新的宿主可见错误：那是「读失败」专用的");
-});
+// 载体已退役（#838 S2），依赖快照回落的负控制格随之退役。
 
 // ── 7) issue #769 R3（A/C1）：`clearRecoveryRows` 的实现 + fresh start 的代际边界 ───
 
@@ -1005,7 +956,7 @@ test("#769 R5（M5）读侧形状判据：坏 `tool-executed` 行抛错并点名
 });
 
 test("#769 R5（M5）续跑现场：坏 `tool-executed` 行 ⇒ 终局点名同一个 recovery_rows_unreadable（不重放工具）", async () => {
-  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: [] });
+  const inner = await r3CrashScene(createMemoryTranscriptStore());
   // 现场：t1 的那条执行证据**在**，但它是坏的（缺 dedupKey）——写侧不可能产出这种行，宿主手写可以。
   const brokenRow = {
     kind: "recovery", recoveryEvent: "tool-executed", toolUseId: "t1", round: 1,

@@ -3,7 +3,7 @@
 // Run snapshots are retired. This file keeps the remaining four historical cells honest:
 //   1) the EN/CN tables contain exactly those four cells and mark every write axis stopped;
 //   2) the resume path has no snapshot-property reads for them;
-//   3) every cited file/line is in range, mentions its cell, and matches a unique registered anchor.
+//   3) live citations match a unique registered anchor; retired test evidence has an explicit marker.
 // The shared anchor registry is also consumed by `docs-drift-check`, so contract drift fails both
 // the test suite and the documentation gate.
 
@@ -68,6 +68,9 @@ function parseKey(cell) {
 
 /** 表内出现的 `file:line` 引用（只认仓库内路径，避免把 `40a518d` / `0.31.0` 当成引用）。 */
 const CITATION = /(?:src|bin|test|docs|examples|scripts)\/[A-Za-z0-9_./-]+\.(?:js|mjs|md):[0-9]+/gu;
+const RETIRED_CELL_EVIDENCE = new Map([
+  ["test/loop-snapshot-write-side-735.test.js", "// 载体已退役（#838 S2），本格随之退役。"],
+]);
 
 function splitRow(line) {
   const trimmed = line.trim().replace(/^\|/u, "").replace(/\|$/u, "");
@@ -523,8 +526,18 @@ test("G4 表里每条 file:line 都复核：文件在场 + 行号在范围内 + 
       const rowText = [row.authority, row.handoff, row.writeSite, row.readers].join(" ");
       for (const citation of rowText.match(CITATION) ?? []) {
         const [rel, lineText] = citation.split(":");
-        const lineNumber = Number(lineText);
         const fileLines = G4_LINES_OF(rel);
+        const retiredMarker = RETIRED_CELL_EVIDENCE.get(rel);
+        if (retiredMarker !== undefined) {
+          assert.ok(["toolUse", "ts"].includes(row.key),
+            `${side}：${rel} 是退役测试证据，只能被它原来覆盖的格引用`);
+          assert.equal(fileLines[0], retiredMarker, `${side}：${rel} 必须保留一行退役标记`);
+          assert.ok(fileLines.slice(1).every((line) => line === ""),
+            `${side}：${rel} 除退役标记外不得残留测试内容`);
+          checked += 1;
+          continue;
+        }
+        const lineNumber = Number(lineText);
         assert.ok(
           Number.isSafeInteger(lineNumber) && lineNumber >= 1 && lineNumber <= fileLines.length,
           `${side}：\`${row.key}\` 引用 ${citation} 的行号越界（${rel} 只有 ${fileLines.length} 行）`,

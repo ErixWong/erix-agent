@@ -10,10 +10,8 @@ const REQUIRED_STORE_METHODS = [
   "load",
 ];
 
-// issue #78：快照/run-state 为可选 capability，缺失不得在启动时报错。
+// issue #78：run-state 为可选 capability，缺失不得在启动时报错。
 const OPTIONAL_STORE_METHODS = [
-  "saveRunSnapshot",
-  "loadLatestRunSnapshot",
   "saveRunState",
   "loadRunState",
   "markRunState",
@@ -64,7 +62,7 @@ test("required persistence validates required store methods before provider or t
   }
 });
 
-test("missing optional snapshot/run-state methods do not fail startup (issue #78)", async () => {
+test("missing optional run-state methods do not fail startup (issue #78)", async () => {
   for (const missing of OPTIONAL_STORE_METHODS) {
     const store = fullStore();
     delete store[missing];
@@ -134,180 +132,7 @@ test("required persistence retries appendRound and terminates with a transcript 
   );
 });
 
-test("snapshot failure before a tool reports not_started and skips execution", async () => {
-  const store = fullStore();
-  store.saveRunSnapshot = async () => {
-    throw new Error("snapshot unavailable");
-  };
-  const events = [];
-  let executions = 0;
-
-  await assert.rejects(
-    runDirect({
-      provider: toolProvider("before"),
-      store,
-      runId: "checkpoint-before",
-      initialUserMessage: "work",
-      executeTool: async () => {
-        executions += 1;
-        return "must not run";
-      },
-      completion: false,
-      diagnostics: { error: (event) => events.push(event) },
-    }),
-    (error) => error.code === "checkpoint_failed"
-      && error.termination?.reason === "persistence_failed"
-      && error.operation === "saveRunSnapshot"
-      && error.phase === "checkpoint_before_tool"
-      && error.sideEffect === "not_started",
-  );
-  assert.equal(executions, 0);
-  assert.equal(events[0].sideEffect, "not_started");
-});
-
-test("snapshot failure after a tool reports executed_uncommitted and terminates", async () => {
-  const store = fullStore();
-  store.saveRunSnapshot = async (_runId, snapshot) => {
-    // issue #770：注入点认「工具已执行」这个事实（载荷里的 `executedToolIds`），不再读已停写的 `status` 格。
-    if ((snapshot.executedToolIds?.length ?? 0) > 0) throw new Error("snapshot unavailable");
-  };
-  const events = [];
-  let executions = 0;
-
-  await assert.rejects(
-    runDirect({
-      provider: toolProvider("after"),
-      store,
-      runId: "checkpoint-after",
-      initialUserMessage: "work",
-      executeTool: async () => {
-        executions += 1;
-        return "executed";
-      },
-      completion: false,
-      diagnostics: { error: (event) => events.push(event) },
-    }),
-    (error) => error.code === "checkpoint_failed"
-      && error.termination?.reason === "persistence_failed"
-      && error.operation === "saveRunSnapshot"
-      && error.phase === "checkpoint_after_tool"
-      && error.sideEffect === "executed_uncommitted",
-  );
-  assert.equal(executions, 1);
-  assert.equal(events[0].sideEffect, "executed_uncommitted");
-});
-
-test("intercept pre-tool snapshot failure fails closed before judging or executing", async () => {
-  const store = fullStore();
-  const originalSaveRunSnapshot = store.saveRunSnapshot.bind(store);
-  let snapshotCalls = 0;
-  store.saveRunSnapshot = async (runId, snapshot) => {
-    snapshotCalls += 1;
-    if (snapshotCalls === 3) throw new Error("intercept snapshot unavailable");
-    return originalSaveRunSnapshot(runId, snapshot);
-  };
-  const judge = textProvider(JSON.stringify({
-    done: true,
-    confidence: 0.9,
-    reason: "allow",
-    evidence: "safe",
-  }));
-  const provider = createFakeProvider([
-    {
-      content: [{ type: "tool_use", id: "first", name: "work", input: {} }],
-      stopReason: "tool_use",
-    },
-    {
-      content: [{ type: "tool_use", id: "intercepted", name: "work", input: {} }],
-      stopReason: "tool_use",
-    },
-    { content: [{ type: "text", text: "must not be returned" }], stopReason: "end_turn" },
-  ]);
-  let executions = 0;
-
-  await assert.rejects(
-    runDirect({
-      provider,
-      store,
-      runId: "intercept-before-failure",
-      initialUserMessage: "work",
-      executeTool: async () => {
-        executions += 1;
-        return "executed";
-      },
-      completion: false,
-      reflection: {
-        enabled: true,
-        roundJudge: false,
-        judgeIntervalRound: 1,
-        judge: { provider: judge },
-      },
-    }),
-    (error) => error.code === "checkpoint_failed"
-      && error.termination?.reason === "persistence_failed"
-      && error.sideEffect === "not_started",
-  );
-  assert.equal(snapshotCalls, 3);
-  assert.equal(executions, 1);
-  assert.equal(provider.requests.length, 2);
-  assert.equal(judge.requests.length, 0);
-});
-
-test("intercept result snapshot failure terminates without running the blocked tool", async () => {
-  const store = fullStore();
-  const originalSaveRunSnapshot = store.saveRunSnapshot.bind(store);
-  let snapshotCalls = 0;
-  store.saveRunSnapshot = async (runId, snapshot) => {
-    snapshotCalls += 1;
-    if (snapshotCalls === 4) throw new Error("intercept result unavailable");
-    return originalSaveRunSnapshot(runId, snapshot);
-  };
-  const judge = textProvider(JSON.stringify({
-    done: false,
-    confidence: 0.9,
-    reason: "方向偏离",
-    evidence: "需要重新评估",
-  }));
-  const provider = createFakeProvider([
-    {
-      content: [{ type: "tool_use", id: "first", name: "work", input: {} }],
-      stopReason: "tool_use",
-    },
-    {
-      content: [{ type: "tool_use", id: "blocked", name: "work", input: {} }],
-      stopReason: "tool_use",
-    },
-    { content: [{ type: "text", text: "must not be returned" }], stopReason: "end_turn" },
-  ]);
-  let executions = 0;
-
-  await assert.rejects(
-    runDirect({
-      provider,
-      store,
-      runId: "intercept-result-failure",
-      initialUserMessage: "work",
-      executeTool: async () => {
-        executions += 1;
-        return "executed";
-      },
-      completion: false,
-      reflection: {
-        enabled: true,
-        roundJudge: false,
-        judgeIntervalRound: 1,
-        judge: { provider: judge },
-      },
-    }),
-    (error) => error.code === "checkpoint_failed"
-      && error.termination?.reason === "persistence_failed"
-      && error.sideEffect === "not_started",
-  );
-  assert.equal(snapshotCalls, 4);
-  assert.equal(executions, 1);
-  assert.equal(provider.requests.length, 2);
-  assert.equal(judge.requests.length, 1);
-});
+// 载体已退役（#838 S2），上述四格随之退役。
 
 test("appendRound failure after a tool reports executed_uncommitted", async () => {
   const store = fullStore();
@@ -343,7 +168,7 @@ test("appendRound failure after a tool reports executed_uncommitted", async () =
     }),
     (error) => error.termination?.reason === "persistence_failed"
       && error.operation === "appendRound"
-      && error.phase === "transcript"
+      && error.phase === "transcript" // status 快照格已随载体退役（#838 S2）。
       && error.sideEffect === "executed_uncommitted",
   );
   assert.equal(executions, 1);
@@ -531,23 +356,22 @@ test("minimal store (required methods only) runs to completion with one-shot cap
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
-  // run 正常执行（含工具调用），仅不支持中途 crash resume
+  // run 正常执行（含工具调用），仅不支持 run-state resume
   assert.equal(result.finalText, "minimal store done");
   assert.equal(executions, 1);
   assert.equal(provider.requests.length, 2);
   assert.equal(result.unpersisted.length, 0);
 
-  // 缺失的可选方法各只诊断一次（不每轮刷屏）：saveRunSnapshot 每轮工具前后都会被跳过，
-  // 事件流里只能出现一条；saveRunState/markRunState 同理。断言事件总数与 detail 字段。
+  // 缺失的可选 run-state 与恢复行方法各只诊断一次（不每轮刷屏）。
   const degraded = events.filter((event) => event.type === "persistence_capability_degraded");
   // issue #769 起，恢复行通道同样是**可选能力**：最小 store 没有 `appendRecoveryRow` ⇒ 一条降级诊断。
-  // 缺席是合法的（引擎回落到快照那三格），但必须**说出来**，不许静默丢掉这一格的写入。
+  // 缺席是合法的，但必须**说出来**，不许静默丢掉这一格的写入。
   // issue #769 R3（A/C1）又加一条：fresh start（`resume !== true`）要清上一代的恢复行，而最小 store
   // 也没有 `clearRecoveryRows` ⇒ 第五格降级诊断。它是**载重的**（不是“写了没人调”）：没实现就等于
   // 本宿主放弃了同 runId 的代际隔离，必须能在事件流里看到这句话。
-  assert.equal(degraded.length, 5, `降级诊断总数必须为 5，实际：${degraded.map((e) => e.method).join(",")}`);
+  assert.equal(degraded.length, 4, `降级诊断总数必须为 4，实际：${degraded.map((e) => e.method).join(",")}`);
   const byMethod = new Map(degraded.map((event) => [event.method, event]));
-  for (const method of ["saveRunSnapshot", "saveRunState", "markRunState", "appendRecoveryRow", "clearRecoveryRows"]) {
+  for (const method of ["saveRunState", "markRunState", "appendRecoveryRow", "clearRecoveryRows"]) {
     assert.ok(byMethod.has(method), `必须诊断缺失的 ${method}`);
     const event = byMethod.get(method);
     assert.equal(event.runId, "minimal-store-run");

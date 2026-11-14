@@ -10,8 +10,7 @@
 //   而用户每重发一次，宿主就多预写一行 ⇒ 洞再往后埋一层。
 //
 // 本文件的夹具就是那一份账本：**崩溃轮 assistant 行已入账（带 `tool_use`）+ 其后一条宿主
-// `:input:` 纯文本预写行 + 一份陈旧但存在的快照（不含那次在飞调用）**。
-// 关键前提：快照**陈旧但不是缺失**（缺失那格早就走 `notifyCapabilitySkipped` 那条路了）。
+// `:input:` 纯文本预写行**。不写快照；恢复边界必须由账本推出。
 //
 // 判据落点：
 //   · 判据 1（本文件第一条）：修复前 `invalid_messages` + 0 请求（RED，变异见报告）；修复后恢复成功、
@@ -20,7 +19,7 @@
 //     于是告示对模型说了一句不实的话（账本里明明有未结清的 `tool_use`，只是不在尾部）。
 //   · 判据 2（本文件第三条）：正常收口（末轮纯文本 `end_turn` + 宿主追问）⇒ 边界不成立 ⇒
 //     不结清、不裁切、告示仍走 `RESUME_NOTICE_NO_PENDING` 那一支。
-//   · 判据 3（本文件第四条）：崩溃现场同时被快照认出时，补跑（B 集合）的 id 与桩的 id 照旧互斥
+//   · 判据 3（本文件第四条）：账本识别出的崩溃现场中，补跑（B 集合）的 id 与桩的 id 互斥
 //     （`resume-manager.js` 的 `midSequenceInFlightIds` 那格，issue #730 之前叫 `midSequenceSettledIds`）
 //     ⇒ 同一条聚合消息里只有一个同 id 结果。
 //
@@ -34,6 +33,7 @@ import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { appendUserTurn } from "../src/store/append-user-turn.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import {
   NO_EVIDENCE_TOOL_RESULT_TEXT,
   PENDING_TOOL_RESULT_TEXT,
@@ -55,8 +55,8 @@ const blocksOf = (messages) => messages
 const resultsFor = (messages, id) => blocksOf(messages)
   .filter((block) => block?.type === "tool_result" && block.tool_use_id === id);
 
-/** 崩溃现场的账本：seed + 崩溃轮载体 + 崩溃轮 assistant 行（带未结清的 `t1`）。 */
-async function seedCrashLedger(store, runId) {
+/** 崩溃现场的账本：seed + 崩溃轮载体 + 崩溃轮 assistant 行。 */
+async function seedCrashLedger(store, runId, toolUseIds = ["t1"]) {
   await store.appendRound(runId, {
     round: 0,
     roundKey: `${runId}:round:0`,
@@ -76,32 +76,9 @@ async function seedCrashLedger(store, runId) {
     kind: "message",
     seq: 0,
     dedupKey: `${runId}:msg:1:0`,
-    messages: [{ role: "assistant", content: [text("开工"), toolUse("t1")] }],
+    messages: [{ role: "assistant", content: [text("开工"), ...toolUseIds.map(toolUse)] }],
     ts: new Date().toISOString(),
   });
-}
-
-/**
- * #734 的那一份快照：**存在，但不含那次在飞调用**（`checkpoint_before_tool` 被拒 ⇒ latest-only
- * 覆盖写停在更早的那一刻）。`round` 就写崩溃那一轮（同轮更早的一次成功 checkpoint），
- * 但 `pendingToolUses` / `toolResults` / `partialText` 三件**都空** ⇒ 快照侧的 `crashSiteRound` 为假。
- */
-function staleSnapshot(runId, round = 1) {
-  return {
-    round,
-    status: "running",
-    pendingToolUse: undefined,
-    pendingToolUses: [],
-    toolResults: [],
-    toolOutputs: [],
-    executedToolIds: [],
-    partialText: undefined,
-    partialRound: undefined,
-    messages: [{ role: "user", content: [text("任务")] }],
-    compactionStats: [],
-    persistedTranscriptLength: 1,
-    ts: new Date().toISOString(),
-  };
 }
 
 async function resumeOnce({ store, runId, script = [endTurn("恢复了")], executeTool }) {
@@ -147,11 +124,10 @@ async function controlRows(store, runId) {
 
 const noticeRows = (rows) => rows.filter((row) => row.key.includes(":control:resume-notice:"));
 
-test("#736 夹具：陈旧快照 + 宿主预写行盖住崩溃现场 ⇒ 修前 invalid_messages，修后走尾部结清", async () => {
+test("#736 夹具：宿主预写行盖住崩溃现场 ⇒ 修前 invalid_messages，修后走尾部结清", async () => {
   const RUN_ID = "b736-stale-snapshot";
   const store = createMemoryTranscriptStore();
   await seedCrashLedger(store, RUN_ID);
-  await store.saveRunSnapshot(RUN_ID, staleSnapshot(RUN_ID));
   await appendUserTurn(store, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
 
   const { provider, outcome } = await resumeOnce({ store, runId: RUN_ID });
@@ -187,7 +163,6 @@ test("#736 假断言反向钉：本形状的告示**不得**写「崩溃时尾�
   const RUN_ID = "b736-notice-truth";
   const store = createMemoryTranscriptStore();
   await seedCrashLedger(store, RUN_ID);
-  await store.saveRunSnapshot(RUN_ID, staleSnapshot(RUN_ID));
   await appendUserTurn(store, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
 
   const { outcome } = await resumeOnce({ store, runId: RUN_ID });
@@ -202,17 +177,11 @@ test("#736 假断言反向钉：本形状的告示**不得**写「崩溃时尾�
     `告示必须列出那个未结清的 id，实际：${notices[0].text}`);
 });
 
-test("#736 边界在「**根本没有可用快照**」时同样成立（#734 的另一形态：latest 就是读不到）", async () => {
+test("#736 边界在内存 store 不提供快照 loader 时同样成立", async () => {
   const RUN_ID = "b736-no-snapshot";
-  const base = createMemoryTranscriptStore();
-  await seedCrashLedger(base, RUN_ID);
-  await appendUserTurn(base, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
-
-  // 比「陈旧」更极端：读点存在但**什么都读不到**（首 run 就崩、或 latest 被拒后没有任何可用快照）。
-  // 这一格与上面那格合起来才是「与快照的新鲜度/存在性无关」两面；只钉一面时另一面可以随便退回去。
-  const store = Object.create(Object.getPrototypeOf(base));
-  Object.assign(store, base);
-  store.loadLatestRunSnapshot = async () => undefined;
+  const store = createMemoryTranscriptStore();
+  await seedCrashLedger(store, RUN_ID);
+  await appendUserTurn(store, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
 
   const provider = createFakeProvider([endTurn("恢复了")]);
   const outcome = await runDirect({
@@ -271,7 +240,6 @@ test("#736 判据 2：正常收口（末轮纯文本 end_turn + 宿主追问）�
     messages: [{ role: "assistant", content: [text("做完了")] }],
     ts: new Date().toISOString(),
   });
-  await store.saveRunSnapshot(RUN_ID, staleSnapshot(RUN_ID));
   await appendUserTurn(store, { key: RUN_ID, text: "再帮我看看", messageId: "m1" });
 
   const { provider, outcome } = await resumeOnce({ store, runId: RUN_ID });
@@ -300,7 +268,6 @@ test("#736 钉住现状：恢复成功后**再**恢复一次，同一份账本�
   const RUN_ID = "b736-second-resume";
   const store = createMemoryTranscriptStore();
   await seedCrashLedger(store, RUN_ID);
-  await store.saveRunSnapshot(RUN_ID, staleSnapshot(RUN_ID));
   await appendUserTurn(store, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
 
   const first = await resumeOnce({ store, runId: RUN_ID });
@@ -324,22 +291,11 @@ test("#736 钉住现状：恢复成功后**再**恢复一次，同一份账本�
     + `全序：${JSON.stringify(rawRows.map((row) => row.dedupKey))}`);
 });
 
-test("#736 边界与快照的**存在性**也无关：store 根本没有快照读点时仍从账本推出边界", async () => {
+test("#736 内存 store 没有快照读点时仍从账本推出边界", async () => {
   const RUN_ID = "b736-no-loader";
-  const base = createMemoryTranscriptStore();
-  await seedCrashLedger(base, RUN_ID);
-  await base.saveRunSnapshot(RUN_ID, staleSnapshot(RUN_ID));
-  await appendUserTurn(base, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
-
-  // 比「陈旧快照」更极端的一格：store **一个快照读点都没有**（`loadLatestRunSnapshot` 与旧名
-  // `loadLatestCheckpoint` 都缺 ⇒ `restoreResume` 走 #78 那条 `notifyCapabilitySkipped`）。
-  // 这一格证的是：边界不只在「快照陈旧」时顶得住，而是与快照的存在性彻底无关。
-  const store = Object.create(Object.getPrototypeOf(base));
-  Object.assign(store, base);
-  delete store.loadLatestRunSnapshot;
-  delete store.loadLatestCheckpoint;
-  assert.equal(typeof store.loadLatestRunSnapshot, "undefined");
-  assert.equal(typeof store.loadLatestCheckpoint, "undefined");
+  const store = createMemoryTranscriptStore();
+  await seedCrashLedger(store, RUN_ID);
+  await appendUserTurn(store, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
 
   const provider = createFakeProvider([endTurn("恢复了")]);
   const outcome = await runDirect({
@@ -369,16 +325,14 @@ test("#736 边界与快照的**存在性**也无关：store 根本没有快照�
     `告示仍必须列出那个未结清的 id，实际：${notices[0]?.text}`);
 });
 
-test("#736 判据 3：崩溃现场同时被快照认出 ⇒ 补跑（B 集合）与桩的 id 互斥，一条聚合消息里不出现两个同 id 结果", async () => {
+test("#736 判据 3：账本识别出的崩溃现场 ⇒ 补跑（B 集合）与桩的 id 互斥，一条聚合消息里不出现两个同 id 结果", async () => {
   const RUN_ID = "b736-both-recognize";
   const store = createMemoryTranscriptStore();
-  await seedCrashLedger(store, RUN_ID);
-  // 快照**认得出**这次在飞调用（`crashSiteRound` 为真，B 集合 = [t1]）。
-  await store.saveRunSnapshot(RUN_ID, {
-    ...staleSnapshot(RUN_ID),
-    pendingToolUse: toolUse("t1"),
-    pendingToolUses: [toolUse("t1")],
-  });
+  await seedCrashLedger(store, RUN_ID, ["t0", "t1"]);
+  // t0 的执行证据在恢复行里，结果没有入账；同批的 t1 尚未执行，是可补跑的 B 集合。
+  await store.appendRecoveryRow(RUN_ID, buildToolExecutedRecoveryRow({
+    runId: RUN_ID, round: 1, toolUseId: "t0",
+  }));
   await appendUserTurn(store, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
 
   const executed = [];
@@ -404,7 +358,7 @@ test("#736 判据 3：崩溃现场同时被快照认出 ⇒ 补跑（B 集合）
     && String(block.text).includes("怎么样了？")));
 });
 
-// 评审（#736 独立评审）留下的唯一缺口：既有「同时被快照认出」那格只有**单个** `tool_use`，
+// 评审（#736 独立评审）留下的唯一缺口：既有「账本识别」那格只有**单个** `tool_use`，
 // 而 `resume-manager.js` 里 `midSequenceInFlightIds` 那格过滤（把「本进程马上要产出真结果」的
 // A/B 两批并进已结清集合）在单调用形状下**删掉也不会红**——实测删掉后 id 数照样是 2、
 // `validateMessages` 照样过，只是 `t2` 的**真**结果被一张中段桩顶掉（模型被告知「结果没落盘、
@@ -432,13 +386,6 @@ test("#736 评审补格：崩溃行带**两个** tool_use（`t1` 已入账、`t2
     messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "out-t1" }] }],
     ts: new Date().toISOString(),
   });
-  // 快照认得出在飞的 `t2` ⇒ `crashSiteRound` 为真 ⇒ B 集合 = [t2]
-  await store.saveRunSnapshot(RUN_ID, {
-    ...staleSnapshot(RUN_ID),
-    pendingToolUse: toolUse("t2"),
-    pendingToolUses: [toolUse("t2")],
-  });
-
   const executed = [];
   const { provider, outcome } = await resumeOnce({
     store,

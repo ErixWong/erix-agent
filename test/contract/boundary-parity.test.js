@@ -165,8 +165,7 @@ test("boundary parity: incomplete transcript store reports the same missing meth
       && error.message.startsWith(ASSEMBLY_PREFIX)
       && error.message.includes("store.appendRound")
       && error.message.includes("store.load")
-      // issue #78：可选 capability（快照/run-state）缺失不得出现在必需缺失清单里。
-      && !error.message.includes("saveRunSnapshot")
+      // issue #78：可选 run-state capability 缺失不得出现在必需缺失清单里。
       && !error.message.includes("markRunState"),
   );
 

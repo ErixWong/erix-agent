@@ -665,7 +665,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const { runToolLoop, createMemoryTranscriptStore } = await entry();
     const store = createMemoryTranscriptStore();
     const runId = "contract-replay-recorded";
-    // 崩溃前已执行完的调用：run snapshot 里同时带着 tool_use 块与结果块，两者共用一个身份键。
+    // 崩溃前已执行完的调用：账本里同时带着 tool_use 块与已结清结果，两者共用一个身份键。
     const recorded = {
       type: "tool_result",
       tool_use_id: "done-1",
@@ -674,24 +674,28 @@ export function toolResultEnvelopeContract(label, getEntry) {
       erix: { toolCallKey: "tc_1234567890ab", round: 3, durationMs: 777 },
     };
     await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "task" }] });
-    await store.saveCheckpoint(runId, {
+    await store.appendRound(runId, {
       round: 3,
-      pendingToolUses: [{ type: "tool_use", id: "done-1", name: "work", input: {} }],
-      messages: [
-        { role: "user", content: "task" },
-        {
-          role: "assistant",
-          content: [{
-            type: "tool_use",
-            id: "done-1",
-            name: "work",
-            input: {},
-            erix: { toolCallKey: "tc_1234567890ab" },
-          }],
-        },
-      ],
-      executedToolIds: ["done-1"],
-      toolResults: [{ toolUseId: "done-1", toolResult: recorded }],
+      dedupKey: `${runId}:msg:3:0`,
+      kind: "message",
+      seq: 0,
+      messages: [{
+        role: "assistant",
+        content: [{
+          type: "tool_use",
+          id: "done-1",
+          name: "work",
+          input: {},
+          erix: { toolCallKey: "tc_1234567890ab" },
+        }],
+      }],
+    });
+    await store.appendRound(runId, {
+      round: 3,
+      dedupKey: `${runId}:msg:3:1`,
+      kind: "message",
+      seq: 1,
+      messages: [{ role: "user", content: [recorded] }],
     });
 
     let calls = 0;
@@ -732,7 +736,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const { runToolLoop, createMemoryTranscriptStore } = await entry();
     const store = createMemoryTranscriptStore();
     const runId = "contract-replay-pre-contract-record";
-    // 升级前（0.19 及更早）写下的 run snapshot：结果与块里都**没有 `erix`** —— 那时还没有这套字段。
+    // 升级前（0.19 及更早）写下的结果与块里都**没有 `erix`** —— 那时还没有这套字段。
     const recorded = {
       type: "tool_result",
       tool_use_id: "old-1",
@@ -740,15 +744,19 @@ export function toolResultEnvelopeContract(label, getEntry) {
       erixRound: 2,
     };
     await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "task" }] });
-    await store.saveCheckpoint(runId, {
+    await store.appendRound(runId, {
       round: 2,
-      pendingToolUses: [{ type: "tool_use", id: "old-1", name: "work", input: {} }],
-      messages: [
-        { role: "user", content: "task" },
-        { role: "assistant", content: [{ type: "tool_use", id: "old-1", name: "work", input: {} }] },
-      ],
-      executedToolIds: ["old-1"],
-      toolResults: [{ toolUseId: "old-1", toolResult: recorded }],
+      dedupKey: `${runId}:msg:2:0`,
+      kind: "message",
+      seq: 0,
+      messages: [{ role: "assistant", content: [{ type: "tool_use", id: "old-1", name: "work", input: {} }] }],
+    });
+    await store.appendRound(runId, {
+      round: 2,
+      dedupKey: `${runId}:msg:2:1`,
+      kind: "message",
+      seq: 1,
+      messages: [{ role: "user", content: [recorded] }],
     });
 
     let calls = 0;
@@ -896,27 +904,6 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await store.appendRound(runId, {
       round: 0,
       messages: [{ role: "user", content: "task" }],
-    });
-    await store.saveCheckpoint(runId, {
-      round: 3,
-      pendingToolUses: [{ type: "tool_use", id: "pending-1", name: "exec", input: { cmd: "rm -rf" } }],
-      messages: [
-        { role: "user", content: "task" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "tool_use",
-              id: "pending-1",
-              name: "exec",
-              input: { cmd: "rm -rf" },
-              erix: { toolCallKey: "tc_deadbeefcafe" },
-            },
-          ],
-        },
-      ],
-      executedToolIds: [],
-      toolResults: [],
     });
     // issue #754 裁决 2（2026-11-08）：夹具原本把崩溃轮那条 assistant **只**写在快照的 `messages` 里
     // ——那是 pre-261021 的形状。恢复路径上那条「从快照补正文」的升级闸门已被关掉，现在上下文只从账本

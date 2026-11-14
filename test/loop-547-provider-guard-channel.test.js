@@ -186,29 +186,7 @@ test("T1 #547 折叠 / run-state 复用 / 快照续跑四条形状都走不到 p
   assert.equal(shapeC.termination.reason, "end_turn");
   assert.deepEqual(providerSiteChannels(shapeC), [], "(c) run-state 复用不许在请求视图那一处消费通道名");
 
-  // (d) 快照续跑：loadLatestRunSnapshot 被真的调用、且真的拿到了快照。
-  const snapshotStore = createMemoryTranscriptStore();
-  let snapshotLoads = 0;
-  let snapshotsPresent = 0;
-  const realLoadSnapshot = snapshotStore.loadLatestRunSnapshot.bind(snapshotStore);
-  snapshotStore.loadLatestRunSnapshot = async (runId) => {
-    snapshotLoads += 1;
-    const value = await realLoadSnapshot(runId);
-    if (value !== undefined) snapshotsPresent += 1;
-    return value;
-  };
-  const d1 = scriptedProvider(TOOL_SCRIPT);
-  await runToolLoop(baseOptions({
-    provider: d1, budgetTokens: 8, run: { runId: "issue-547-d" }, messages: seededHistory(), store: snapshotStore,
-  }));
-  const d2 = scriptedProvider(TOOL_SCRIPT);
-  const shapeD = await runToolLoop(baseOptions({
-    provider: d2, budgetTokens: 8, run: { runId: "issue-547-d", resume: true }, store: snapshotStore,
-  }));
-  assert.ok(snapshotLoads > 0, "(d) 前提：续跑必须真的调用 loadLatestRunSnapshot");
-  assert.ok(snapshotsPresent > 0, "(d) 前提：续跑必须真的拿到快照（否则这一格测的是空快照路径）");
-  assert.equal(shapeD.termination.reason, "end_turn");
-  assert.deepEqual(providerSiteChannels(shapeD), [], "(d) 快照续跑不许在请求视图那一处消费通道名");
+  // 载体已退役（#838 S2），原快照续跑子格随之退役。
 });
 
 // ─────────────────────────────────────────────── T2/T3 第五条形状：#548 之后不再消费通道名
