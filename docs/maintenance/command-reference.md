@@ -105,7 +105,7 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   files — everything **between** the `<!-- erix:snapshot-cell-axes:begin -->` / `<!-- erix:snapshot-cell-axes:end
   -->` markers that is a `|`-prefixed table row — is exempt from this ratchet, and the exemption is **conditional
   on a machine check that the gate performs itself**. The anchor registry lives in `scripts/cell-axes-anchors.mjs`
-  — one entry per cell **and per axis** (`{ key, axis, codePath, anchor, note }`, 39 entries / 27 groups over 14
+  — one entry per cell **and per axis** (`{ key, axis, codePath, anchor, note }`, 8 entries / 7 groups over 4
   cell names, between the `CELL-AXES-ANCHORS:BEGIN/END` sentinels) — and **both** this gate and
   `test/contract-snapshot-cell-axes-767.test.js` import that one module, so there is no second copy to drift.
   An anchor is a **code shape** — the payload-assignment line, the guard's `if`, the return site — never the key
@@ -120,7 +120,7 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   kept the registry inside the test file, re-extracted it with a regex, and matched the test file's *shape*
   (`G4_KEY_NAME_CHECK`'s definition, an `assert.ok(...)` around it, `G4_ANCHOR_EQ_CHECK`'s call). What that shape
   matching bought was nothing measurable: pointing a cell at a **comment** that merely mentions `compactionStats`
-  (`orchestrator.js:3015`, which explains a checkpoint test, while the real write site is `:3038`) turned
+  (  a comment that mentions `compactionStats`, while the live ledger write site is elsewhere) turned
   `node --test test/contract-snapshot-cell-axes-767.test.js` red while `npm run check:docs` stayed at exit 0 —
   the exemption is issued by the gate, and the gate could not recompute. What the gate still asserts about the
   test is only what it can verify: the file is present and non-empty, and it imports the anchor module (one
@@ -138,9 +138,8 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   bare line numbers the notes *under* the table had acquired were turned into symbol anchors (`residueStart` /
   `restoreResume`) rather than asking to raise the floor.
   *Anchor kind* (issue #772 R4 M-A): every registry entry also carries `kind: "code" | "comment"` — `code` for a
-  write site or a reader, `comment` for the three entries whose whole point is a sentence inside a comment (`toolUse`
-  and `ts`, the stop-writing evidence, plus the resume side's "do not trust the snapshot's
-  `persistedTranscriptLength`"). The judgement is one shared function — `anchorKindError()` in
+  write site or a reader, `comment` for the four entries whose whole point is a sentence inside a comment (`status`,
+  `toolUse`, `ts`, and `compactionStats`). The judgement is one shared function — `anchorKindError()` in
   `scripts/cell-axes-anchors.mjs`, imported by the gate **and** by the contract test, so neither side owns a second
   copy of the rule: a `code` anchor whose single hit is a comment line (`^\s*(\/\/|\/\*|\*)`) is red, a `comment`
   anchor that lands on code is red, and the message names the cell, the axis, the hit line number and that line's
@@ -150,20 +149,17 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   on both gates. `parseCellAxesAnchorTable()` also refuses the exemption when an entry's `kind` is missing or outside
   `code / comment`.
   *Coverage has a second, independent truth* (issue #772 R4 M-B): `CELL_AXES_REQUIRED_CELLS` is the human-reviewed
-  list of `(key, axis, codePath, row)` slots those two tables must cover — 39 slots over 14 cell names, written by
+  list of `(key, axis, codePath, row)` slots those two tables must cover — 8 slots over 4 cell names, written by
   hand and never derived from the anchor registry (deriving it would stop being a second opinion). Every slot has to
   be present in the registry **and** in each contract file, counted per slot rather than "mentioned once"; the shared
   `checkCellAxesCoverage()` names the missing slot **and which file it is missing from**. The ratchet floors are now
   derived from that list — `CELL_AXES_ANCHOR_FLOORS = { entries: CELL_AXES_REQUIRED_CELLS.length, groups: distinct
-  key|axis in the list }`, currently 39 / 27 — and must not be hand-tuned. That closes the silent thinning: deleting
-  one entry from each of the eight two-anchor groups **together with** the matching rows in both tables leaves 31
-  entries / 27 groups / 14 cells with every remaining citation still matching its anchor — which the old
-  hand-written floor (30 / 25) waved through.
+  key|axis in the list }`, currently 8 / 7 — and must not be hand-tuned. That closes the silent thinning: deleting
+  the duplicate `compactionStats|write` slot together with its matching rows in both tables leaves 7 entries /
+  7 groups / 4 cells and is rejected by the derived coverage floor.
   *Known limit: semantics are not machine-checkable* (issue #772 R4, **registered, not patched**). Pointing
-  `compactionStats`' snapshot write anchor at a **different real line that mentions the same key name** —
-  `src/loop/orchestrator.js:3529` is `compactionStats,` too — but that one is the run-state persist payload,
-  a *different artifact* from the snapshot cell this row is about (whose stop-writing note sits at `:3038`) —
-  and rewriting both tables' citation to it in the same change stays green today. Everything a machine can ask is
+  `compactionStats`' write anchor at a **different real line that mentions the same key name** in the run-state
+  payload, then rewriting both tables' citations to it in the same change, stays green today. Everything a machine can ask is
   answered: the file exists, the anchor hits exactly once, `kind: "code"` matches a code line, both tables equal the
   recomputed numbers, and the coverage list is still satisfied. What no anchor can express is "*this* line is the
   event *this* cell is about" — that is a reading judgement and stays with review. The leniency is pinned as a

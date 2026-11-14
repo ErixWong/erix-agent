@@ -1,5 +1,5 @@
 // @ts-check
-// issue #769：run snapshot「只有快照载着」那几格的 **append-only 恢复行载体**（#767 退役快照通道的硬前置）。
+// issue #769：run-snapshot 退役后承载恢复事实的 **append-only ledger rows**。
 //
 // 为什么是「新增一种账本行」而不是「往既有行上加字段」：
 //   · `:control:<slot>` 行（`src/loop/orchestrator.js#appendEngineMessagesToTranscript`）**载着
@@ -20,9 +20,9 @@
 // 写入时机，以及**宿主遇到不认识的 `kind` 该怎么办**——在此之前契约里**没有**「未知 kind 忽略」
 // 这句承诺（现查：两份契约里 `unrecognized/未知 kind` 只出现在 provider 槽位 / notes 计数 / JSON 字段三处）。
 
-// 快照侧对应的三格（`executedToolIds` / `partialText` / `partialRound`）在恢复路径上退成兜底（#769）。
-// 恢复侧第一顺位读的是本模块这些行（`src/loop/resume-manager.js#restoreResume`）：两轴载荷表把这三格的
-// 账本来源钉在上面那一行，改本模块的形状记得同步改 `scripts/cell-axes-anchors.mjs` 的登记。
+// run snapshot 退役后，这三类恢复事实只通过本模块的恢复行读写
+// （`src/loop/resume-manager.js#restoreResume`）；没有快照兜底。载荷表将其账本来源钉在上面那一行，
+// 改本模块的形状记得同步改 `scripts/cell-axes-anchors.mjs` 的登记。
 import { createHash } from "node:crypto";
 
 /** 行类型判别键（宿主过滤账本行时看的就是它）。与 `kind: "message"`（`src/store/message-rows.js`）并列。 */
@@ -162,7 +162,7 @@ export function toolExecutedRecoveryRowShapeProblem(row) {
 
 /**
  * 账本侧的「执行过没有」真相：全部 `tool-executed` 恢复行携带的 `toolUseId` 集合。
- * 这是快照 `executedToolIds` 格的**继任来源**；读侧把它当首选、快照格退成兜底。
+ * 这是旧快照 `executedToolIds` 格的**继任来源**；恢复只读恢复行，不再回落到快照。
  *
  * 形状守卫与 `src/store/message-rows.js` 同一口径：不是本事件类型的行**跳过**（那是「以后新增的事件」）。
  * 但 `tool-executed` 行本身形状不合时**不跳过、不猜**（issue #769 R5 M5）：这一行是「工具真的执行过了」
@@ -245,11 +245,11 @@ export function readPartialTextRecoveryRounds(records) {
 
 /**
  * 账本侧的半截正文：`round` 那一轮**最后**落盘的那条 `partial-text` 行的正文。
- * append-only ⇒ 「最新」= 文件里最后一条，读侧按落盘顺序覆盖，绝不取第一条。
+ * 每轮当前只保留一个槽；遇到旧格式的多条数据时按落盘顺序取最后一条。
  *
  * @param {any[]} records
  * @param {number} round 崩溃轮（与 `restoreResume` 的 `crashRound` 同值）
- * @returns {{ text: string, round: number } | undefined} 该轮没有任何可用恢复行 ⇒ `undefined`（读侧才允许回落快照）
+ * @returns {{ text: string, round: number } | undefined} 该轮没有任何可用恢复行 ⇒ `undefined`（无快照兜底）
  */
 export function readPartialTextRecoveryRow(records, round) {
   /** @type {{ text: string, round: number } | undefined} */

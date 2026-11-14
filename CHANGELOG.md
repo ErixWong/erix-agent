@@ -4,6 +4,16 @@
 ## [Unreleased]
 
 ### Breaking
+- **Run-snapshot checkpoint reporting and capability claims are retired (#838 S2).** The contract no longer lists the
+  run-snapshot payload cells removed from the ledger-first recovery path. `checkpoint_failed` and the
+  `persistence_error.phase` values `checkpoint_before_tool` / `checkpoint_after_tool` are deprecated and are never
+  emitted since run-snapshot retirement; `errors.checkpoint` remains present at `0` and never increases. The optional
+  store capability constant and Assembly JSDoc claim are removed. Hosts should follow
+  `docs/host-upgrade-guide-0.33.0.md`.
+- **run snapshot 的 checkpoint 错误与能力声明退役（#838 S2）。** 契约不再列出 ledger-first 恢复路径中已经移除的
+  run snapshot 载荷格。`checkpoint_failed` 与 `persistence_error.phase` 的 `checkpoint_before_tool` /
+  `checkpoint_after_tool` 自 run snapshot 退役后废弃且不再发出；`errors.checkpoint` 字段保留为 `0` 且永不增长。
+  可选 store 能力常量与 Assembly JSDoc 声明一并删除。宿主升级见 `docs/host-upgrade-guide-0.33.0_cn.md`。
 - **The gate family formerly called "real upstream" is renamed to say which side is real: it is
   the model service endpoint, not the scenario (issue #817, PR #822; task 261113-02).**
   `npm run check:release:real` -> `check:release:model-e2e`, `npm run check:cli-real` ->

@@ -609,7 +609,7 @@ test("#754 裁决 2 · 第三刀验收格（非普适不变式）· 旧档案崩
     "不许静默：丢了正文必须在递给模型的告示里出声并带条数");
   // ⑤ 代价（认下来）：那一轮的副作用**彻底不再补** —— `t1` 没结果可接、`t2` 不再重跑。
   assert.deepEqual(executed, [],
-    "旧档案里那一轮的在飞调用**不再补跑**（裁决 2 认下来的代价；`legacySnapshotBodyDropped === 0` 的新格式档案照旧补跑）");
+    "旧快照里的在飞调用不再补跑，避免把没有 assistant 配对的结果注入恢复上下文");
   // ⑥ 事件面一字不动：A 集合仍**整段**交给 #424 守卫 ⇒ 仍恰一条 `resume_journal_skipped`、`count` 仍是 A 集合大小。
   const skipped = events.filter((event) => event?.type === "resume_journal_skipped");
   assert.deepEqual(skipped.map((event) => ({

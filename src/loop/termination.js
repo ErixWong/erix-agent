@@ -56,7 +56,7 @@ export function terminationDetailForError(error) {
 }
 
 // issue #176：`failed` 终局的根因分类。引擎不解释语义、不维护枚举，只把错误上已有的分类字段
-// （`KitError.code`：timeout / rate_limited / auth / server / checkpoint_failed / …）
+// （`KitError.code`：timeout / rate_limited / auth / server / …；`checkpoint_failed` 已退役）
 // 原样透出；没有分类字段时回落到 `unknown`，宿主因此总能在终局里读到该字段。
 export function terminationErrorCodeForError(error) {
   const code = error?.code;

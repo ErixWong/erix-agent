@@ -6,7 +6,7 @@ import { buildTimeline } from "../reflection/judge.js";
 import { findUnpairedToolUseGroups, pendingTailToolUses, answerPendingMidSequenceToolUses, RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT, RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY, RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER } from "./pending-tool-result.js";
 import { planResumeNotice } from "./resume-notice.js";
 // issue #769 R3（B）：恢复行读失败要抛**宿主可见错误码**，因此需要 `KitError` 与根因分类函数
-// （字段面照 `checkpoint_failed` / `persistence_failed` 那一族，见 `recoveryRowsUnreadableError`）。
+// （字段面沿用 `persistence_failed` / `persistence_error` 的当前口径，见 `recoveryRowsUnreadableError`）。
 import { KitError } from "../providers/errors.js";
 import { terminationErrorCodeForError } from "./termination.js";
 import { injectFoldSummaryIntoHead, planFoldedHistoryTrim } from "../compact/resume-fold-trim.js";
@@ -15,14 +15,14 @@ import { validateRunState } from "../run-state.js";
 /**
  * issue #769 R3（B）：恢复行**读失败**的宿主可见错误码。
  *
- * 为什么必须有它（而不是继续 `.catch(() => [])`）：`tool-executed` 恢复行已落、后置快照未落的那个窗口里，
- * 恢复行是**唯一**的「这个 `tool_use` 真的执行过了」证据。把读失败吞成空集，等于把「执行过了」判成
+ * 为什么必须有它（而不是继续 `.catch(() => [])`）：恢复行是「这个 `tool_use` 真的执行过了」的唯一证据。
+ * 把读失败吞成空集，等于把「执行过了」判成
  * 「没执行」⇒ 续跑重放该工具、**重放它的外部副作用**。而吞错的几种常见成因（权限错、I/O 错、坏行——
  * `src/store/file.js#readRecords` 对非 `ENOENT` 一律抛）全都是「读不到」，不是「没有」。
  *
  * 与**合法降级**的分界（两件事不能混）：
- *   · `typeof store.listRecoveryRows !== "function"` ⇒ 可选能力缺席，**维持**读空 + 回落快照（与写侧能力位
- *     跳过对称，登记在契约的能力分级表里）；
+ *   · `typeof store.listRecoveryRows !== "function"` ⇒ 可选能力缺席，**维持**读空；没有快照兜底，
+ *     只保留 transcript / run-state 中已有的事实（与写侧能力位跳过对称，登记在契约的能力分级表里）；
  *   · 方法在而调用 reject ⇒ 本码，**硬终止**：伪装成「没有恢复行」比失败更贵；
  *   · 方法在、调用也 resolve，但 resolve 出的**不是数组** ⇒ **同一个码**硬终止（issue #769 R5 M1）：契约里
  *     能安静回落的只有**空数组**，`undefined` / `{}` / 字符串同样是坏形状的读通道而不是「没有」。
@@ -30,10 +30,10 @@ import { validateRunState } from "../run-state.js";
  *     同样的话；此时 `errorCode` 是 `"unknown"`（这类返回没有底层错误码可透出，仍走 `terminationErrorCodeForError`
  *     的既有口径），根因细节留在 `cause.message` 里点名收到的形状）。
  *
- * 字段面（照 `checkpoint_failed` 那一族，取值不新造）：`operation` / `phase` / `sideEffect` 三件套齐全
+ * 字段面（沿用当前持久化错误口径，取值不新造）：`operation` / `phase` / `sideEffect` 三件套齐全
  * ⇒ `fail`（`src/loop/orchestrator.js#persistenceInfoFor`）据此把终局定为 `persistence_failed` 并透出同名
  * 字段。`phase` 取 `"resume_recovery_rows"`（issue #769 R4：**按失败点分格**，取值风格沿用
- * `checkpoint_after_tool` 那种「说清楚是哪一步坏了」）：写侧 `appendRecoveryRow` 失败仍在 `transcript`
+ * `transcript` 那种「说清楚是哪一步坏了」）：写侧 `appendRecoveryRow` 失败仍在 `transcript`
  * 那一格（同属账本侧只追加通道），而**读**失败与 fresh-start **清盘**失败（`recovery_rows_clear`，见
  * `orchestrator.js#persistClassified`）各自一格 —— 三者排障现场不同，宿主只看 `phase` 就能分流。
  * `sideEffect` 取 `"not_started"`：失败发生在**续跑期**，本次 run 还没执行过任何工具 ⇒ 没有「已发生的
@@ -480,7 +480,6 @@ export async function restoreResume(ctx) {
     ctx.foldedRoundCount = deterministic.fold?.foldedRounds ?? 0;
     ctx.navigationRecordCount = deterministic.fold?.navigationRecords ?? 0;
     ctx.toolErrorCount = deterministic.errors?.tool ?? 0;
-    ctx.runSnapshotFailureCount = deterministic.errors?.checkpoint ?? 0;
     ctx.compactionStats = deterministic.compactionStats;
     // issue #386 切片 3：guard 补跑的**一次性配额**跨 resume 不重置——它就在上面那句
     // 「预算类状态一律复位」的旁边，语义**相反**：`lowBudgetPrompted` 复位是因为它只描述
@@ -578,13 +577,13 @@ export async function restoreResume(ctx) {
       // 为什么不能靠结果行反推（语义红线，同 `src/store/recovery-rows.js` 文件头）：
       // 执行发生在结果行落盘**之前** ⇒「没执行」与「执行了但结果行还没落 / 被宿主拒」在账本里形状相同。
       // 所以这里读的是**显式携带 `toolUseId` 的 `tool-executed` 恢复行**，不是「结果行在不在」；
-      // 快照的 `executedToolIds` 格退成下面 `ctx.resumeExecutedToolIds` 里**并进来的兜底**，不再是唯一来源。
+      // 它为后续恢复决策提供账本里的正向执行证据。
       // issue #769：恢复行**不进** `records`（那是轮记录通道）——从它自己的读口取。store 没实现
-      // `listRecoveryRows` 时是空集，读侧就回落到快照兜底（与写侧的能力位跳过同一对口径）。
+      // `listRecoveryRows` 时是空集，表示没有可读的恢复行；不再回落到 run snapshot。
       // issue #769 R3（B）：**能力缺席**与**读失败**是两件事。修前这里是 `.catch(() => [])`，把
-      // 「方法在、但读不动」（权限错 / I/O 错 / 坏行）也吞成「没有恢复行」，随后回落快照——而上面那段
-      // 语义红线正好说明为什么这样做最贵：`tool-executed` 已落、快照未落时恢复行是唯一执行证据。
-      // 现在：方法缺席 ⇒ `[]`（合法降级，回落快照）；调用 reject ⇒ 抛 `recovery_rows_unreadable`，
+      // 「方法在、但读不动」（权限错 / I/O 错 / 坏行）也吞成「没有恢复行」——而上面那段
+      // 语义红线正好说明为什么这样做最贵：恢复行是唯一执行证据。
+      // 现在：方法缺席 ⇒ `[]`（合法降级，无快照兜底）；调用 reject ⇒ 抛 `recovery_rows_unreadable`，
       // 由本块的 `catch` → `ctx.fail` 收成终局（`reason: "persistence_failed"` + 同名字段）。
       // issue #769 R5（M5）：行**解析得动但形状不合**（缺 `dedupKey` / `round: NaN`）也不许静默丢。
       // 丢掉 = 又一次「唯一证据被当没有」：那一行说的其实是「这个 `tool_use` 执行过了」，只是它坏了；
@@ -595,7 +594,7 @@ export async function restoreResume(ctx) {
       // （`if (crashSiteRound || ledgerBoundary !== null)`），而 #790 要补的那一类砖化档案**没有**崩溃现场
       // （悬空在中段、后面还有引擎正文）⇒ 不提到这里，请求视图那一层拿到的永远是空集，「执行过」会被
       // 说成「无证据」（措辞错了是事实错，不是噪声）。本层仍**不**动 `ctx.resumeExecutedToolIds`：那一格
-      // 参与复放/去重判据与快照字节，抬它的口径超出本单（见 `orchestrator.js` 里那两个集合并列的注释）。
+      // 参与复放/去重判据；本层不改变它，只维护独立的出网证据集。
       for (const id of ledgerExecutedToolIds) {
         ctx.executedEvidenceToolIds?.add(id);
       }
@@ -696,16 +695,10 @@ export async function restoreResume(ctx) {
       // 与写入是否成功无关。
       const unfinishedToolUses = findUnpairedToolUseGroups(ledgerMessages)
         .flatMap((group) => group.missing);
-      // 「崩溃现场」的判据：快照里还有账本没结清的在飞工具/半截正文。没有（正常收口后追问）
-      // ⇒ 上下文就是完整账本，一条快照正文都不需要。
-      // issue #769：半截正文这一判据不再只看快照——账本里有「那一轮 assistant 正文未落账」的
-      // `partial-text` 恢复行同样算崩溃现场（`ledgerPartialCrashRound` 已经把正文已落账的历史行筛掉了）。
-      // 为什么需要它：写侧现在是「先落账本恢复行、再写快照」⇒「行落了、快照没落」是可达的，
-      // 只看快照会把那一轮当成正常收口（#767 停写快照后，快照那一侧的判据整块会空）。
-      // #827 B1：三个判据全部改成账本口径（快照那三项——`pendingToolUses` / `toolResults` /
-      // `partialText`——不再参与）。理由同上：写侧已经把这三类事实都落在账本里，而快照是
-      // latest-only 覆盖写 ⇒ 拿它当判据等于让「有没有崩溃现场」取决于缓存写没写成功（#734 的
-      // 放大器）。工具缺口由统一的逐对配对函数计算，不再用全 run 的结果 id 集合。
+      // 崩溃现场完全从账本推导：未结清的 tool_use、未入账的恢复结果，或未落入 transcript 的 partial-text
+      // 恢复行。没有这些事实（例如正常收口后的宿主追问）⇒ 上下文就是完整账本。
+      // `ledgerPartialCrashRound` 已过滤正文已落账的历史行；写入是否成功不再依赖 latest-only 快照。
+      // 工具缺口由统一的逐对配对函数计算，不使用全 run 的结果 id 集合。
       const crashSiteRound = unfinishedToolUses.length > 0
         || pendingRecoveryResults.length > 0
         || ledgerPartialCrashRound !== undefined;

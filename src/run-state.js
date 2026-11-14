@@ -455,8 +455,8 @@ function renderLines(lines, budget = MAX_RENDERED_CHARS) {
 const RUN_STATE_MAX_UNPERSISTED_ITEMS = 10;
 
 // 未落盘清单在 `state.json` 这条路径上的归一化口径（`deterministic.errors.unpersisted`，形状
-// `{ count, items }`）。它**不是**错误对象上的形状：`persistence_failed` 与 `checkpoint_failed` 的
-// `unpersisted` 都是 #109 冻结的原始数组（issue #230 起两个出口取值也对称），别把这份投影塞进去。
+// `{ count, items }`）。它**不是**错误对象上的形状：`persistence_failed` 的 `unpersisted` 是 #109
+// 冻结的原始数组；已弃用的 `checkpoint_failed` 从 run snapshot 退役后不再发出。
 function normalizeUnpersisted(value) {
   if (!Array.isArray(value) || value.length === 0) return { count: 0, items: [] };
   const items = value.slice(-RUN_STATE_MAX_UNPERSISTED_ITEMS).map((entry) => ({
@@ -491,7 +491,6 @@ function normalizeUnpersisted(value) {
  *   lastToolCall?: { summary?: string, streak?: number }|string,
  *   terminationReason?: string,
  *   toolErrorCount?: number,
- *   checkpointFailureCount?: number,
  *   unpersisted?: any,
  *   compactionStats?: any,
  *   guardExtensionUsed?: boolean,
@@ -514,10 +513,6 @@ export function createDeterministicRunState({
   lastToolCall,
   terminationReason = "running",
   toolErrorCount = 0,
-  // 保留旧名（issue #83）：该参数名即导出 API 的选项键，其值又以 `errors.checkpoint` 落盘
-  // 并渲染进模型可见的 run-state 文本行；改名属破坏性变更，故引擎内部机制名统一为
-  // run snapshot 时此处键名不动。
-  checkpointFailureCount = 0,
   unpersisted,
   compactionStats,
   // issue #386 切片 3：guard 补跑的一次性配额。它**不是**「本次预算」类状态（那一类在 resume 时
@@ -579,8 +574,8 @@ export function createDeterministicRunState({
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),
-        // 持久化 JSON 键 `errors.checkpoint` 保留旧名（issue #83）：已落盘数据形状，改名属破坏性变更。
-        checkpoint: safeInteger(checkpointFailureCount),
+        // 保留旧持久化键以兼容已落盘形状；run snapshot 退役后它永远不增长。
+        checkpoint: 0,
         // issue #109 修正 4：账单不只放内存——run 中途崩溃时 run-state 里也有账
         unpersisted: normalizeUnpersisted(unpersisted),
       },
