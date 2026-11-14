@@ -326,6 +326,8 @@ test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰�
   const { tools, ...withoutTools } = hintOptions({ marker });
   await runDirect({
     ...withoutTools, tools: hintTools,
+    // #833：本格测的是 resume 路径的方向提示 flush（不是默认重放语义）⇒ 钉住旧档。
+    config: { run: { replayPolicy: "always-replay" } },
     maxRounds: 6, store, runId, provider, resume: true, executeTool: async ({ id }) => `done-${id}`,
   });
 

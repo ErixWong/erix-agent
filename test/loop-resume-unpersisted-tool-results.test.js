@@ -88,6 +88,8 @@ async function runLoop({ store, provider, executeTool, resume = true, initialUse
   try {
     const result = await runToolLoop(withSeed({
       provider,
+      // #833：本格测的是补跑机制本身 ⇒ 钉住仍受支持的 always-replay 档。
+      config: { run: { replayPolicy: "always-replay" } },
       resume,
       store,
       runId: RUN_ID,

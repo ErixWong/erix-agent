@@ -73,6 +73,7 @@ async function runRound({
   budgetTokens = BUDGET_BASE,
   outputHygiene = BIG_LIMIT,
   store = createMemoryTranscriptStore(),
+  runConfig = {},
   extra = {},
   responses,
   abortOnId,
@@ -98,9 +99,15 @@ async function runRound({
     },
     store,
     runId,
-    ...(budgetTokens === undefined || budgetTokens === null
-      ? {}
-      : { config: { folding: { context: { budgetTokens } } } }),
+    ...(() => {
+      const config = {
+        ...(budgetTokens === undefined || budgetTokens === null
+          ? {}
+          : { folding: { context: { budgetTokens } } }),
+        ...runConfig,
+      };
+      return Object.keys(config).length === 0 ? {} : { config };
+    })(),
     ...(outputHygiene === undefined ? {} : { outputHygiene }),
     ...(controller === undefined ? {} : { signal: controller.signal }),
     completion: false,
@@ -323,7 +330,10 @@ test("resume consistency: visible stubs after recovery match the normal path", a
     outputs,
     store,
     responses: [DONE],
+    // #833：这一格比的是「续跑后的可见视图 == 正常路径的可见视图」，需要工具**真的重放**才有
+    // 可比的输出 ⇒ 钉住仍受支持的 always-replay 档（默认已改成 per-tool-declaration）。
     extra: { resume: true },
+    runConfig: { run: { replayPolicy: "always-replay" } },
   });
   const resumedContents = toolResultContents(resumed.result.messages);
   for (const id of ["c1", "c2", "c3"]) {
