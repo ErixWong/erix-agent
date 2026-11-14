@@ -5528,8 +5528,11 @@ export async function runToolLoop(options) {
           // **不写 `erix.round` 也不写 `erix.durationMs`**——本次重放没跑过，耗时是未知而不是 0。
           const toolResult = buildToolResultFact({
             toolUseId: resumePendingTool.id,
-            content: "The previous execution was interrupted before its outcome could be recorded. "
-              + "It was not replayed; re-issue it yourself if you still need it (inspect before writing)."
+            content: executedToolIds.has(resumePendingTool.id)
+              ? "The previous execution DID run, but its result was never recorded. "
+                + "Do not blindly re-issue it: inspect the current state first."
+              : "The previous execution was interrupted before it could run. "
+                + "It was not replayed; re-issue it yourself if you still need it."
               + (typeof partialOutput === "string" && partialOutput.length > 0
                 ? `\n\nPreviously captured partial output:\n${partialOutput}`
                 : ""),
