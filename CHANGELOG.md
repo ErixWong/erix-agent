@@ -44,6 +44,8 @@
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
 ### Changed
+- #838: Run snapshots retired; no `checkpoint_failed`; crash-gap tool text: unavailable/unknown.
+- #838：退役快照；不发 `checkpoint_failed`；缺口丢正文报 ran/unavailable/unknown。
 - **`round_end`'s payload is now contract, not implementation detail (issue #835).** The engine has
   always emitted `{ round, finalText, stopReason, usage }` on `round_end`, but the contract only
   called it "round boundary", so the keys were never promised. The downstream host reads `finalText`

@@ -15,6 +15,7 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
+import { safeRunId } from "../src/store/file.js";
 // issue #433 T0：idle 看门狗只有 bin/idle.js 一份实现（此前本文件与 bin/repl.js 各有一份逐字同构的
 // createIdleTimeout）。`DEFAULT_IDLE_TIMEOUT_SECONDS` 这个名字保留，真值来自共享模块。
 import {
@@ -1186,6 +1187,12 @@ async function runChatWithNotes({
     );
   }
   const resume = explicitSession && existingRecords.length > 0;
+  if (resume && existsSync(join(dir, `${safeRunId(runId)}.snapshot.json`))) {
+    process.stderr.write(
+      "[erix] 忽略旧版本写下的 run snapshot（本版本不再读写快照）；"
+      + "从账本恢复，被中断那一轮的尾部正文可能丢失。该文件可以删掉。\n",
+    );
+  }
   if (resume) {
     // issue #97：预写入 user 轮收敛为引擎能力 appendUserTurn（round 推导、
     // dedupKey 唯一性与幂等判据由引擎负责，宿主不再手搓记录）。
