@@ -479,8 +479,8 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 一次 `runId` 落在扫描器的扁平拼写命中面上（形如 `config.run.runId` 的同名异义）。这是正文
   // **有意新增**的一处（文件名是字面量，改写成模糊说法会让宿主对不上真文件名），所以抬钉子而
   // 不是躲它——口径同上面 #714 / #729 / #730 那几条：数取自扫描器当时在这棵树上报的 `uses=589`。
-  // #838 S2 closeout: current strict-scan measurement.
-  "docs/host-consumer-contract_cn.md": 590,
+  // #843: remeasured after the CN runState carrier wording change (prior pin 590; current uses 591).
+  "docs/host-consumer-contract_cn.md": 591,
   // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
   // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
   // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名

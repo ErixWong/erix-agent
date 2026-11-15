@@ -75,3 +75,11 @@ pi-durable 的对照要点（证据见 #91 评论）：单一原子 `commit(writ
 - **宿主**：未实现 run-state 的宿主（touwaka）**零影响**；已实现的按迁移指引切换终态读取。
 - **#82 的验收①**（决策落 ADR）由本文件补足。
 - **回头条件**：touwaka 上 run snapshot（必然要动 store 层），或宿主数量增长到维护双写的成本超过迁移成本时，重新评估 D5；届时以 pi-durable 的设计（原子提交 / 语义端口 / conformance suite）为参照。
+
+## 后续决议：按能力写入轮记录副本（issue #843，2026-11-15）
+
+D1 记录的是当时的无条件双写。#843 只调整写侧：store 有可调用的 `saveRunState` 时，轮记录省略
+`RoundRecord.runState` 副本，使用独立 run-state 通道；没有该能力时仍写轮记录副本，保住
+`loadRunState` 缺席时的恢复回退。resume 仍优先读有效的 `loadRunState`，独立 state 缺席才读最新轮记录，
+独立 state 存在但无效时仍不回退。独立状态缓存的语义不变；只实现 `loadRunState` 的 store 应补上
+`saveRunState`，以免每轮继续写回退副本。

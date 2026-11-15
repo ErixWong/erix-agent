@@ -55,4 +55,5 @@ run snapshot 不再参与持久化或恢复。因此引擎不再发出 `checkpoi
 
 - 想清理磁盘时可删掉陈旧 `<runId>.snapshot.json`；引擎会忽略它。
 - 其他代码若还会用快照 store 方法，可以保留；引擎不再调用它们。
+- store 能通过 `saveRunState` 写独立 state.json 时，轮记录不再携带 `runState` 副本，resume 行为不变。若自研 store 只实现 `loadRunState`，请补上 `saveRunState`，否则引擎仍会逐轮写回退副本。
 - 在中断工具后续跑，区分「跑过，结果不可用」与「未知」；两者都表示引擎无法恢复丢失的正文。

@@ -206,11 +206,11 @@ function serializedBytes(value) {
 }
 
 /**
- * 量一份**将写进轮记录的 run-state 副本**的体积账（issue #742 第一刀：只做可观测，不改内容）。
+ * 量本轮 run-state 快照的体积账（issue #742；issue #843 起不再等同于轮记录副本）。
  *
- * 为什么要有这一格：轮记录每轮存一份 run-state 副本，而它超出单状态上限时账本上**读得出来**
- * （`bounds.truncated`）与**读不出来**（恰好卡在上限之内、但已经没有余量）是两件事；宿主只有拿到
- * 精确字节数才能对「每轮一份全量副本」的体积斜率报警（#742 现网 41 MB 就是这么涨上去的）。
+ * `runStateMeta` 观测每轮刷新的状态快照；是否把它作为轮记录副本写入，取决于 store 是否有
+ * `saveRunState` 能力。无论通道如何，超出单状态上限（`bounds.truncated`）与快照的实际字节数
+ * 都是不同事实，宿主可据此观测状态体积。
  * 参照先例：折叠归档侧的 `foldedPayloadMeta = { bytes, capBytes, droppedMessages, droppedBytes }`
  * （`src/compact/fold-archive.js`），本站正是靠 `capBytes` / `droppedBytes` 才发现归档夹掉了消息。
  *
@@ -232,10 +232,10 @@ function serializedBytes(value) {
  *      `BigInt` ⇒ `JSON.stringify` 抛）⇒ 返回 `undefined`，**不返回** `{ bytes: 0, truncated: false }`。
  *      调用方据此**不写这一格**；读侧拿到缺格必须当「不知道」，不得伪报成「没截断」。
  *
- * ⚠ 这一格**不减少任何字节**：它只描述将要落盘的那份副本有多大，不改副本、不改 `bounds` 语义、
- * 也不声称解决了轮记录随轮数线性增长这件事（那是 #742 后面的切片）。
+ * 这一格描述将要持久化的状态快照有多大，不改快照、不改 `bounds` 语义；有独立保存能力时，
+ * 它仍会出现在轮记录上，但不代表 `runState` 副本也写进了该记录。
  *
- * @param {unknown} state 将要写进轮记录的 run-state 副本（引擎侧是 `cloneState(roundRunState)`）
+ * @param {unknown} state 本轮刷新后的 run-state 快照（引擎侧是 `cloneState(roundRunState)`）
  * @returns {{bytes: number, capBytes: number, truncated: boolean} | undefined}
  *   `bytes` = 该副本的 UTF-8 序列化字节数；`capBytes` = 单状态上限常量；
  *   `truncated` = 该副本是否被截断（超出上限，或带着引擎的夹断章；恰好等于上限算没超出）；

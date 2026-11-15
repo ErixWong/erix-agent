@@ -557,7 +557,11 @@ test("semantic state with an old version is explicitly stale", () => {
 });
 
 test("single-session runs keep both counters equal and drain remainingRounds monotonically", async () => {
-  const store = createMemoryTranscriptStore();
+  const {
+    saveRunState: _saveRunState,
+    loadRunState: _loadRunState,
+    ...store
+  } = createMemoryTranscriptStore();
   const budgets = [];
   const result = await runDirect({
     provider: createFakeProvider([

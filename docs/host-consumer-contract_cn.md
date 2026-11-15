@@ -2011,15 +2011,12 @@ status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunStat
 持久化与这些别名自 0.33.0 起退役；引擎不再调用这些方法。详见
 [0.33.0 升级指南](host-upgrade-guide-0.33.0_cn.md)。
 
-**已知重复（已决策，未移除）。** 最新 run-state 被双写：既内嵌在每轮
-round record（`RoundRecord.runState`）里，又经独立 run-state 方法
-（`saveRunState`/`markRunState`）落盘。两份拷贝都是承重的，所以 issue #82 选择保留而非删除
-其中一份——权威规则、以及被拒绝/推迟的备选见
+**按能力写入轮记录的 run-state 副本（issue #843）。** 只有 store 没有可调用的
+`saveRunState` 时，轮记录才携带 `runState`；有该能力时省掉每轮重复副本，使用独立
+run-state 通道。恢复优先级不变：先采用有效的 `loadRunState`，仅在独立 state 缺席时才
+回落到最新 record；若独立 state 存在但无效，则报告 `state_unavailable`，不回落。权威规则
+与被拒绝/推迟的备选见
 [ADR-019](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/019-run-state-store-authority.md)。
-独立 run-state（`saveRunState`/`loadRunState`）是 latest-only 权威状态；随 transcript
-保存的 `RoundRecord.runState` 属于 history 侧的每轮快照。引擎恢复时优先采用有效的独立 state；
-仅当独立 state 不存在时才回落到最新 record；若独立 state 存在但无效，则报告
-`state_unavailable`，且不回落。
 
 `modelConfig` 始终是 resolver 形态的 `ModelConfigProvider`——即便它是随 `assemblyPort`
 一起显式提供的覆盖项。plain 配置对象会被拒绝并给出迁移提示，请用
@@ -5416,7 +5413,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
 | `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。**它的 `usage` 只含本轮最后一发响应**——本轮的完整逐轮账是同级键 `record.usage`（见「用量分账：逐轮账 vs 引擎开销（issue #438）」）。 |
 | `sentRequestParams` | 模型 / 取证 | **纯加法（issue #785 P1）。**本轮 reasoning 相关参数**实际写进请求体**的值：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`——`hostValue` 是宿主给的值（**取在 payload 翻译之前**），`sentValue` 是真正发出进程的值（GLM `none → low`，ADR-017；两者可以不同，谁也不顶替谁），`source` 是供值通道（`request` / `slotDefault` / `providerOptions` / `extraBody`）。可以当诊断小标题渲染，绝不当模型正文渲染。**没事实就没键**：没有 reasoning 相关键的轮不带这格，而且**只有本包自带的 OpenAI provider 会交**：Anthropic provider 与宿主自建 provider 都交不出（前者本片没接观测点，后者引擎看不见它的 wire body）——缺席要读成*未观测*，不是*没发*。见「`reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）」。 |
-| `l0facts`、`runState`、`runStateMeta`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。**`runStateMeta` 是新增键（issue #742 第一刀）**：`{ bytes, capBytes, truncated }`——本轮写下的那份 `runState` 副本的体积账，形状照上面的 `foldedPayloadMeta`（先例就是靠 `capBytes` / `droppedBytes` 才把「归档被夹断」变成可见事实）。`bytes` 用的是与引擎自己的体积夹断**同一把尺**（`Buffer.byteLength(JSON.stringify(copy), "utf8")`），所以它与盘上那一行逐字节相等，不是估算；`capBytes` 取导出常量 `RUN_STATE_MAX_SERIALIZED_BYTES`，不复制字面量。`truncated` 是**两个事实取或**：副本超出 `capBytes`，或引擎已在 `runState.bounds.truncated` 上盖了章（`reason: "serialized_size"` / `omittedTools`）。后一半不是装饰：夹断发生在轮记录写点的**上游**，所以真被挤过的那一轮，落盘副本反而**在 `capBytes` 之内**（实测：夹断后的副本 64 893 B、上限 65 536 B，只差 643 B，同时 `bounds.truncated: true`）——只看前一半就会把真被夹断的轮报成「没截断」。两个事实仍可分开读（`bytes` 与 `bounds`），没有被揉成一个数。**没事实就没这一格**：没有可量的 run-state 副本（宿主自己构造的形状、序列化不了的副本）时整个键缺席——宿主必须把缺格读成「不知道」，不许读成 `truncated: false`；引擎永不写 `{bytes:0,truncated:false}` 充当替身。纯咨询：引擎内没有读者，不参与恢复与停门判据，而且**一个字节也不少**——每轮仍是一份全量副本，账本总量仍随轮数线性增长（那是 #742 后面的切片，不是这一片）。 |
+| `l0facts`、`runState`、`runStateMeta`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。**`runState` 是按能力保留的恢复载体（#843）：** store 没有可调用的 `saveRunState` 时才写入轮记录；有该能力时改走独立 run-state 通道，省掉每轮副本。恢复优先采用有效 `loadRunState`，仅在独立 state 缺席时回落到最新 record；已存在但无效时不回落。**`runStateMeta`** `{ bytes, capBytes, truncated }` 是本轮刷新的 run-state 快照体积观测，与存储通道无关；它不表示外层轮记录或独立状态文件的字节数。`bytes` 使用夹断同一把尺 `Buffer.byteLength(JSON.stringify(copy), "utf8")`，`capBytes` 来自 `RUN_STATE_MAX_SERIALIZED_BYTES`，`truncated` 是超上限或快照带 `bounds.truncated`（夹断后的快照也可能低于上限；实测 64,893 B / 65,536 B）。无可测状态就不写键；缺席表示未知，不是 `truncated: false`。引擎不读取该元数据，也不影响 resume 或停门；账本节省来自省掉重复的 `runState` 副本。 |
 
 ### 稳定性承诺
 
