@@ -532,6 +532,40 @@ test("#673 纯函数层：即时提示行只认真折叠，兜底行原样带 de
   );
 });
 
+test("#609 e: budget-unreachable compaction facts are formatted and sent to stderr", () => {
+  const event = {
+    type: "compaction",
+    round: 2,
+    compaction: {
+      compacted: false,
+      budgetUnreachable: "protected_message_exceeds_budget",
+      tokensAfter: 240,
+    },
+  };
+  const expected = "[erix] 压缩没能把请求压进预算"
+    + "（原因=protected_message_exceeds_budget，实测 240 tokens）："
+    + "本次按超预算继续；若超出模型窗口，会由 provider 报错。";
+  assert.equal(formatCompactionEventLine(event), expected);
+  assert.equal(
+    formatCompactionEventLine({
+      type: "compaction",
+      compaction: { compacted: false, tokensAfter: 240 },
+    }),
+    null,
+    "without budgetUnreachable and without a real fold, the formatter stays silent",
+  );
+
+  const written = [];
+  const { onEvent } = createRunEventHandlers({ writeStderr: (line) => written.push(line) });
+  onEvent(event);
+  assert.deepEqual(written, [expected], "onEvent must actually send the fact to stderr");
+  onEvent({
+    type: "compaction",
+    compaction: { compacted: false, tokensAfter: 240 },
+  });
+  assert.deepEqual(written, [expected], "a compaction event without the fact stays silent");
+});
+
 // issue #838 收尾：恢复补的工具结果桩要**告诉人**（此前只进模型上下文）。
 // 这一组钉三件事：① 桩事件 ⇒ 出一句话且带条数/ids；② 同事件类型的其它 reason ⇒ 不说话
 // （#730 的其它跳过原因与「结果不可用」无关，混进来就是噪音）；③ 非该事件类型 ⇒ 不说话。

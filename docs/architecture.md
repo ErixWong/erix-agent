@@ -573,7 +573,9 @@ falls back to a zero-keep sliding window and then uses deterministic safe
 truncation. That final fallback can trim unprotected fields, remove images,
 clear tool inputs, and downgrade protected messages as needed;
 `compactionStats[].protectedDowngraded` records such downgrades. A single
-protected message that cannot fit produces `KitError("invalid_budget", ...)`.
+protected message that cannot fit no longer throws: the safety layer returns
+the best-effort messages with `budgetUnreachable`, surfaced through the existing
+`compaction` event and CLI stderr.
 
 #### Tool-result TTL folding
 

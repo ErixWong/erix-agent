@@ -3704,18 +3704,24 @@ groupable per model, and one additive event makes them joinable to a terminal
 outcome. No existing field changes name, shape, or meaning, and a host that
 ignores all three behaves exactly as before.
 
-**What the CLI host writes (issue #673).** `erix chat` is a host like any other, so this is a
-display/audit choice, not a new engine fact: it appends the `compaction` event of every **real**
-fold (`compacted === true`, carrying the executing `strategyName`) and the one-shot
-`compaction_strategy_fallback` event to the same `judge.log` as `run_outcome`, and prints one
-immediate line per such event to **stderr** (`[compaction] round=… strategy=… foldedRounds=…
-tokensBefore=… tokensAfter=…`, or `[compaction] fallback round=… detail=…`). Nothing goes to
-stdout there — a `--stream` run's final bytes stay untouched — and a run that folded nothing
-writes no extra line and no `type: "compaction"` record (fold-adjacent stats that folded no round
-— the user-turn guard and the TTL layer — are deliberately not copied, so "no fold" stays
-readable as "no record"). The engine's own surfaces (event payloads, `compactionStats`,
-`judge.log` field shapes) are unchanged; a host that does not use the CLI sees byte-for-byte what
-it saw before.
+**What the CLI host writes (issue #673 / #609).** `erix chat` is a host like any other, so this is a
+display/audit choice, not a new event type: it appends the `compaction` event of every **real**
+fold (`compacted === true`, carrying the executing `strategyName`), every compaction fact with
+`budgetUnreachable`, and the one-shot `compaction_strategy_fallback` event to the same `judge.log`
+as `run_outcome`. It prints one immediate **stderr** line per such event; the budget-unreachable
+line names the reason and `tokensAfter`, then says the request continues over the soft budget.
+Nothing goes to stdout there — a `--stream` run's final bytes stay untouched. A run that neither
+folded nor reported `budgetUnreachable` writes no extra line and no `type: "compaction"` record
+(fold-adjacent stats that folded no round — the user-turn guard and the TTL layer — are
+deliberately not copied). `budgetUnreachable` is an additive optional compaction-stat field; a host
+that ignores it keeps its prior behavior.
+
+**Budget-unreachable safe truncation (issue #609).** A `compaction` stat may carry
+`budgetUnreachable: "protected_message_exceeds_budget" | "cannot_fit"` when the safety layer cannot
+meet the soft `budgetTokens` target. The run continues with the best-effort messages and
+`tokensAfter` reports their estimated size; this fact does not claim that the hard model
+`contextWindowTokens` limit was exceeded. The provider remains responsible for enforcing that hard
+limit, and `compacted` keeps its existing meaning (it may be `false`).
 
 | Field | Present on | Contract |
 |---|---|---|
