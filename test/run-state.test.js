@@ -52,6 +52,46 @@ test("run state carries the persistence bill so a mid-run crash does not lose it
   assert.equal(many.deterministic.errors.unpersisted.items.length, 10);
 });
 
+test("#711 fileWritesBlind enters persistent run state and survives resume", async () => {
+  const store = createMemoryTranscriptStore();
+  const first = await runDirect({
+    provider: createFakeProvider([
+      {
+        content: [{ type: "tool_use", id: "exec-1", name: "exec", input: { command: "write" } }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "use exec",
+    executeTool: async () => "ok",
+    maxRounds: 4,
+    config: { run: { completion: false } },
+    store,
+    runId: "filewrites-blind",
+  });
+
+  assert.equal(first.runState.deterministic.fileWritesBlind, true);
+  assert.equal((await store.loadRunState("filewrites-blind")).deterministic.fileWritesBlind, true);
+  assert.equal(
+    createDeterministicRunState({ runId: "not-blind" }).deterministic.fileWritesBlind,
+    undefined,
+  );
+
+  const resumed = await runDirect({
+    provider: createFakeProvider([
+      { content: [{ type: "text", text: "resumed" }], stopReason: "end_turn" },
+    ]),
+    initialUserMessage: "resume",
+    executeTool: async () => "unused",
+    maxRounds: 4,
+    config: { run: { completion: false, resume: true } },
+    store,
+    runId: "filewrites-blind",
+  });
+
+  assert.equal(resumed.runState.deterministic.fileWritesBlind, true);
+});
+
 test("run state is bounded and marked when truncated (no agent-side credential redaction)", () => {
   const state = createDeterministicRunState({
     runId: "bounded",

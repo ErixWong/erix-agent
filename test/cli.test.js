@@ -1716,6 +1716,11 @@ test("createDeliverableChecks 判的是原始写路径的磁盘事实（fileWrit
   // 没写过任何文件 ⇒ 通过（「这个 run 没声明写文件」不是「交付物缺失」）。
   assert.equal(criterion.check({}), true);
   assert.equal(criterion.check({ fileWrites: [] }), true);
+  const blind = criterion.check({ fileWrites: [], fileWritesBlind: true });
+  assert.notEqual(blind, true);
+  if (blind === true) assert.fail("fileWritesBlind 必须返回可见降级，不能静默通过");
+  assert.equal(blind.ok, true, "fileWritesBlind 是事实，不是判据失败");
+  assert.match(blind.detail, /fileWritesBlind/u);
 });
 
 // issue #391 R1：**命名**交付物判据（`--require-deliverable <path>` / `deliverablePaths`）。

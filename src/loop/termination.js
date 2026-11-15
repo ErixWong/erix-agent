@@ -290,6 +290,7 @@ export function buildFinalGuardPayload(ctx, reason, detail, attempt) {
     payload.fileWrites = writes.files;
     if (writes.truncated) payload.fileWritesTruncated = true;
   }
+  if (isFileWritesBlind(ctx.toolStats, ctx.fileWrites)) payload.fileWritesBlind = true;
   const stats = plainToolStats(ctx.toolStats, FINAL_GUARD_PAYLOAD_LIMITS.toolStats);
   if (stats !== null) {
     payload.toolStats = stats.stats;
@@ -834,3 +835,12 @@ export const FORCED_FINAL_FALLBACK_TEXT =
   "No final text was produced: the forced wrap-up request returned no body, so this run has no"
   + " conclusion to report. This text is an engine-generated placeholder, not model output, and must"
   + " not be treated as a result.";
+
+/** @param {unknown} toolStats @param {unknown} fileWrites */
+export function isFileWritesBlind(toolStats, fileWrites) {
+  const execCalls = toolStats instanceof Map ? toolStats.get("exec")?.calls : undefined;
+  return Array.isArray(fileWrites)
+    && fileWrites.length === 0
+    && Number.isFinite(execCalls)
+    && execCalls > 0;
+}

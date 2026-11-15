@@ -2305,10 +2305,10 @@ vocabulary, or a CN/EN axis mismatch all go red.
 <!-- erix:snapshot-cell-axes:begin -->
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3345` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:204`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
-| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3348` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:722`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
-| `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3348` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6064` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3349`、`src/loop/orchestrator.js:6064` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3346` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:204`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
+| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3349` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:722`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
+| `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3349` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:651` |
+| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6066` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3350`、`src/loop/orchestrator.js:6066` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = that cell is not double-written, so there is no authority or handoff condition to state.
@@ -4606,11 +4606,11 @@ whether the deliverable meets its requirements, and whether it may proceed
 automatically downstream remain decisions for the host, test system, or human
 review.
 
-### The `finalGuard` payload: 7 contract keys plus 10 additive facts (issue #386)
+### The `finalGuard` payload: 7 contract keys plus 12 additive facts (issue #386)
 
 `callFinalGuard` (`src/loop/termination.js`) assembles the payload. The seven keys listed
 above (`finalText`, `findings`, `messages`, `round`, `rounds`, `signal`, `termination`) are
-the original contract: their names, types, **order**, and values are unchanged. Ten
+the original contract: their names, types, **order**, and values are unchanged. Twelve
 **additive** keys follow them. Each one is written only when the engine can actually read
 that fact — absence is the "not probed / not provided" signal, and it is never faked with
 `null`, `0`, `""`, or `{}`:
@@ -4621,6 +4621,7 @@ that fact — absence is the "not probed / not provided" signal, and it is never
 | `runId` | string | the `runId` the host passed, verbatim | none |
 | `filesWritten` | `[{ path, round }]` | write-tool calls recorded in the run's timeline ledger | **last 50** entries; older ones are dropped and `filesWrittenTruncated: true` is set |
 | `fileWrites` | `[{ path, round, tool }]` | write-tool calls with the **raw** `tool_use.input[pathKey]` value (issue #388): not summarized, not truncated, safe to `stat()` | **last 50** entries (`FILE_LEDGER_LIMIT`, the same constant the engine's ledger uses); older ones are dropped and `fileWritesTruncated: true` is set |
+| `fileWritesBlind` | `true` | the engine's `toolStats` Map recorded at least one `exec` call and the `fileWrites` ledger is empty; an empty ledger does **not** mean no files were written | absent otherwise; persisted as `deterministic.fileWritesBlind` |
 | `toolStats` | `{ [toolName]: { calls, failures } }` | the run's tool counters, as a **plain object** (`JSON.stringify(new Map())` is `{}`, so a raw `Map` would reach you empty) | **top 40** tool names by `calls`; `toolStatsTruncated: true` |
 | `taskBrief` | string | the brief `resolveTaskBrief` (`src/loop/task-brief.js`) produced for this run — the same text the judge and wrap-up see | 2000 code points; `taskBriefTruncated: true` |
 | `selfReport` | `{ done, summary, output, findings }` | the model's **last normalized** wrap-up envelope (the LLM-normalized copy when normalization ran; never re-parsed from prose) | `summary` and `output` 2000 code points each; `selfReportSummaryTruncated` / `selfReportOutputTruncated` |
@@ -4647,6 +4648,9 @@ host is most likely to get wrong:
 - **`filesWritten` and `toolStats` are always present in a `runToolLoop` run** (an empty
   array / empty object means "the run recorded nothing", which is itself a fact). `cwd`,
   `runId`, `taskBrief`, and `selfReport` are present only when there was something to report.
+- **`fileWritesBlind` is only present when an `exec` call occurred and `fileWrites` is empty.**
+  Its absence does not prove that no files were written; it means this specific blind-ledger
+  condition was not observed.
 - **The overhead is bounded and measured.** `node scripts/final-guard-probe.mjs` runs a
   30-round × 4 KB-tool-output scenario offline: `messages` is 257,618 bytes, the additive
   keys are 4,789 bytes — **1.86%** (2,242 B before `fileWrites` was added in issue #388),
@@ -4935,7 +4939,7 @@ refinement of the other:
 
 | Declared as | Question it answers | Criterion | Model declares nothing |
 |---|---|---|---|
-| `requireDeliverable: true` (bare `--require-deliverable`) | "is everything **you said you wrote** still on disk?" | `createDeliverableChecks()` reads `fileWrites` | **passes** (empty set ⇒ `every()` is vacuously true) |
+| `requireDeliverable: true` (bare `--require-deliverable`) | "is everything **you said you wrote** still on disk?" | `createDeliverableChecks()` reads `fileWrites` | **passes** for an empty set; when `fileWritesBlind` is true it still passes but includes a visible `detail` degradation, because an empty ledger is not proof that no files were written |
 | `deliverablePaths: [...]` (`--require-deliverable <path>`) | "are **the files this task demanded** on disk?" | `createNamedDeliverableChecks(paths)` reads the host's list | **fails** (the criterion never looks at what the model said) |
 
 The boolean one is a "did not lie" criterion, not a "did the work" criterion: a run that

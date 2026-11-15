@@ -349,6 +349,7 @@ export function boundRunState(state) {
       budget: deterministic.budget ?? {},
       tools: [],
       filesWritten: [],
+      ...(deterministic.fileWritesBlind === true ? { fileWritesBlind: true } : {}),
       // issue #608：体积兜底也不许把游标丢掉——它是模型「做到哪了」的唯一读面，只有一个短串。
       ...(deterministic.lastToolCall === undefined
         ? {}
@@ -399,6 +400,8 @@ export function validateRunState(state) {
     || !state.deterministic.budget
     || !Array.isArray(state.deterministic.tools)
     || !Array.isArray(state.deterministic.filesWritten)
+    || (state.deterministic.fileWritesBlind !== undefined
+      && state.deterministic.fileWritesBlind !== true)
     || !state.deterministic.fold
     || !state.deterministic.termination
     || !state.deterministic.errors) {
@@ -485,6 +488,7 @@ function normalizeUnpersisted(value) {
  *   lowBudgetPrompted?: boolean,
  *   toolStats?: any,
  *   filesWritten?: any,
+ *   fileWritesBlind?: boolean,
  *   todo?: any,
  *   foldedRounds?: number,
  *   navigationRecords?: number,
@@ -505,6 +509,7 @@ export function createDeterministicRunState({
   lowBudgetPrompted = false,
   toolStats,
   filesWritten,
+  fileWritesBlind = false,
   todo,
   foldedRounds = 0,
   navigationRecords = 0,
@@ -550,6 +555,7 @@ export function createDeterministicRunState({
       },
       tools: tools.items,
       filesWritten: files.items,
+      ...(fileWritesBlind === true ? { fileWritesBlind: true } : {}),
       ...(normalizedLastToolCall === undefined ? {} : { lastToolCall: normalizedLastToolCall }),
       ...(normalizedTodo === undefined ? {} : { todo: normalizedTodo }),
       fold: {
