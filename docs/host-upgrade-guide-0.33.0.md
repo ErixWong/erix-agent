@@ -41,6 +41,18 @@ tool's result body is lost. When the ledger proves the tool ran, the engine uses
 `UNPERSISTED_TOOL_RESULT_TEXT` (“ran, result unavailable”); with no execution evidence it uses
 `NO_EVIDENCE_TOOL_RESULT_TEXT` (“unknown”). It does not claim “never executed” without evidence.
 
+### 2.5 Pending tools are not replayed by default
+
+The default for `run.replayPolicy` changes from `"always-replay"` to
+`"per-tool-declaration"`. On resume, an unanswered call gets an interrupted result and the model
+decides whether to issue it again. Set `run.replayPolicy: "always-replay"` only to opt into the old
+behavior.
+
+### 2.6 `partialPersistence` no longer needs a snapshot store
+
+When enabled, half-written text is persisted through the ledger recovery row; the engine no longer
+requires a run-snapshot store or writes the `partialText` and `partialRound` snapshot cells.
+
 ## Retired run-snapshot / checkpoint errors
 
 Run snapshots no longer participate in persistence or recovery. The engine therefore no longer emits
@@ -57,7 +69,23 @@ The `saveRunSnapshot` / `loadLatestRunSnapshot` capability declaration has been 
 retain private storage for their own purposes, but erix no longer discovers or invokes those methods.
 Recovery facts come from the ledger, including its recovery rows.
 
-## 3. Verify on your side
+## 3. What does not change
+
+- **Options — changed in this release, not key names.** Startup validates the types of
+  `folding.toolResultTtl`, `folding.toolResultFoldMinTokens`, and
+  `folding.context.keepRounds`; strings, fractions, and negatives throw. Zero remains valid.
+  `run.replayPolicy`'s default changed (§2.5), and `partialPersistence` no longer needs a
+  snapshot store (§2.6).
+- **Defaults — changed in this release:** `run.replayPolicy` is addressed in §2.5;
+  all other defaults are unchanged.
+- **Event names —** none changed. The only additions are `budgetUnreachable` on `compaction` and
+  `resumed` on `resume_journal_skipped`; both add facts without renaming events.
+- **Disk shapes —** `<runId>.jsonl`, `.recovery.jsonl`, `.partial.jsonl`, `.state.json`, and
+  `.status.json` are unchanged. Only `<runId>.snapshot.json` disappeared (§2).
+- **Final payload — changed in this release:** `finalText` is now contract; the payload shape
+  is unchanged. Exit-code meanings 0, 1, 2, and 4 are also unchanged.
+
+## 4. Verify on your side
 
 - Delete stale `<runId>.snapshot.json` files if you want to reclaim disk space; the engine ignores them.
 - Keep snapshot-store methods only if other code uses them; the engine no longer calls them.
