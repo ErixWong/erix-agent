@@ -124,6 +124,7 @@ import {
   FINAL_GUARD_TERMINATION_REASONS,
   annotateTermination,
   createTerminationManager,
+  isFileWritesBlind,
   makeTermination,
   terminationDetailForError,
   terminationErrorCodeForError,
@@ -3379,6 +3380,7 @@ export async function runToolLoop(options) {
       // issue #608：`last=` 一格（最近一次不同入参的调用；同入参重调长成 `×N`）。
       lastToolCall: runLoopState.lastToolCall,
       filesWritten: governorState.filesWritten,
+      fileWritesBlind: isFileWritesBlind(toolStats, governorState.fileWrites),
       todo: runLoopState.todoState,
       foldedRounds: runLoopState.foldedRoundCount,
       navigationRecords: runLoopState.navigationRecordCount,

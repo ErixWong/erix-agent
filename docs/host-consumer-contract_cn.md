@@ -1867,10 +1867,10 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 <!-- erix:snapshot-cell-axes:begin -->
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3345` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
-| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3348` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
-| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3348` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6064` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3349`、`src/loop/orchestrator.js:6064` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3346` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
+| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3349` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
+| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3349` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
+| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6066` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3350`、`src/loop/orchestrator.js:6066` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = 该格不双写，没有权威源/交接条件可谈。
@@ -3643,11 +3643,11 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 等事实。任务是否完成、交付物是否满足要求、能否自动进入下游，仍由宿主、测试系统或人工
 审核决定。
 
-### `finalGuard` 载荷：既有 7 键 + 10 个加法事实（issue #386）
+### `finalGuard` 载荷：既有 7 键 + 12 个加法事实（issue #386）
 
 payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的 7 个键
 （`finalText`、`findings`、`messages`、`round`、`rounds`、`signal`、`termination`）是原有契约：
-名字、类型、**顺序**与取值一律不变。其后是 10 个**加法**键，每个都只在引擎真读得到那份事实时才写
+名字、类型、**顺序**与取值一律不变。其后是 12 个**加法**键，每个都只在引擎真读得到那份事实时才写
 ——**缺席就是「没探到 / 没提供」的信号**，绝不用 `null`、`0`、`""` 或 `{}` 冒充：
 
 | 键 | 类型 | 含义 | 上限 |
@@ -3656,6 +3656,7 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
 | `runId` | string | 宿主传的 `runId`，原样 | 无 |
 | `filesWritten` | `[{ path, round }]` | run 的时间线台账里记录的写工具调用 | **最后 50 条**；更早的被丢掉并置 `filesWrittenTruncated: true` |
 | `fileWrites` | `[{ path, round, tool }]` | 写工具调用声明的**原始** `tool_use.input[pathKey]` 值（issue #388）：不摘要、不截断，可直接 `stat()` | **最后 50 条**（`FILE_LEDGER_LIMIT`，与引擎台账同一个常量）；更早的被丢掉并置 `fileWritesTruncated: true` |
+| `fileWritesBlind` | `true` | 引擎的 `toolStats` Map 记录过至少一次 `exec` 调用，且 `fileWrites` 台账为空；空台账**不等于没有写入文件** | 其它情形缺席；持久化为 `deterministic.fileWritesBlind` |
 | `toolStats` | `{ [工具名]: { calls, failures } }` | run 的工具计数，**plain object**（`JSON.stringify(new Map())` 是 `{}`，直接交 `Map` 你只会读到空对象） | 按 `calls` 取**前 40** 个工具名；`toolStatsTruncated: true` |
 | `taskBrief` | string | 本次 run 由 `resolveTaskBrief`（`src/loop/task-brief.js`）产出、judge 与收尾看到的那份任务简报 | 2000 码点；`taskBriefTruncated: true` |
 | `selfReport` | `{ done, summary, output, findings }` | 模型**最后一次归一化后**的 wrap-up 信封（跑过归一化就用归一化那份；绝不重新解析散文） | `summary` 与 `output` 各 2000 码点；`selfReportSummaryTruncated` / `selfReportOutputTruncated` |
@@ -3677,6 +3678,8 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
 - **`filesWritten` 与 `toolStats` 在任何一次 `runToolLoop` 里都在场**（空数组 / 空对象的意思是
   「这个 run 什么都没记」——这本身就是事实）。`cwd`、`runId`、`taskBrief`、`selfReport` 只在真有
   东西可报时在场。
+- **`fileWritesBlind` 只在出现过 `exec` 调用且 `fileWrites` 为空时出现。** 没有这个键不证明没有写文件；
+  它只表示没有观察到这一个「写入台账盲区」条件。
 - **开销有上限且已实测。** `node scripts/final-guard-probe.mjs` 离线跑「30 轮 × 4KB 工具输出」：
   `messages` 257,618 字节、加法键 4,789 字节 = **1.86%**（`fileWrites` 落地前是 2,242 字节），
   预算上限是 < 2%。所以宿主可以整包落盘/入队
@@ -3829,7 +3832,7 @@ payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟�
 
 | 声明方式 | 它问的问题 | 判据 | 模型什么都不声明时 |
 |---|---|---|---|
-| `requireDeliverable: true`（裸 `--require-deliverable`） | 「**你说过要写的东西**还在盘上吗」 | `createDeliverableChecks()` 读 `fileWrites` | **通过**（空集合 ⇒ `every()` 恒真） |
+| `requireDeliverable: true`（裸 `--require-deliverable`） | 「**你说过要写的东西**还在盘上吗」 | `createDeliverableChecks()` 读 `fileWrites` | 空集合时**通过**；`fileWritesBlind` 为真时仍通过，但附带可见的 `detail` 降级，因为空台账不证明没有写入文件 |
 | `deliverablePaths: [...]`（`--require-deliverable <path>`） | 「**这次任务要求的这些文件**在盘上吗」 | `createNamedDeliverableChecks(paths)` 读宿主清单 | **不通过**（判据与模型的嘴无关） |
 
 #### `judge_done` 的交付物补齐轮（issue #435）

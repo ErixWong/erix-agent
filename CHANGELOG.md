@@ -3,6 +3,10 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Added
+- Record `fileWritesBlind` when `exec` was called and the `fileWrites` ledger is empty (#711).
+- 增加 `fileWritesBlind`：exec 已运行但写入台账为空时标记盲区（#711）。
+
 ### Breaking
 - **Run-snapshot checkpoint reporting and capability claims are retired (#838 S2).** The contract no longer lists the
   run-snapshot payload cells removed from the ledger-first recovery path. `checkpoint_failed` and the
