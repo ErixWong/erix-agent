@@ -6023,7 +6023,7 @@ export async function runToolLoop(options) {
     );
     const roundRunState = await refreshRunState();
     // issue #843：无论走哪条持久化通道，都观测本轮的 run-state 快照体积。
-    // 先 clone，保证元数据量的是回退轮记录会写下的同一份 JSON 值；有 saveRunState 时则由独立通道保存。
+    // 先 clone，保证元数据量的是回退轮记录会写下的同一份 JSON 值；独立通道只有读写方法齐备才闭环。
     // 该观测不依赖轮记录是否携带 runState，也不改变状态本身。
     const roundRunStateCopy = cloneState(roundRunState);
     const runStateMeta = measureRunStateMeta(roundRunStateCopy);
@@ -6055,7 +6055,7 @@ export async function runToolLoop(options) {
       toolUses: content.filter((block) => block?.type === "tool_use").length,
       summary: roundSummary,
       l0facts: currentL0,
-      ...(typeof store?.saveRunState === "function" ? {} : { runState: roundRunStateCopy }),
+      ...(typeof store?.saveRunState === "function" && typeof store?.loadRunState === "function" ? {} : { runState: roundRunStateCopy }),
       // issue #843：本轮 run-state 快照的体积观测 `{ bytes, capBytes, truncated }`，与存储通道无关。
       // 形状照 `foldedPayloadMeta`。**无值不写键**：快照不是普通对象或序列化不了 ⇒ 整个键缺席
       // （引擎自己永不写 `{bytes:0,truncated:false}` 充当「没截断」）。有 saveRunState 时也保留观测，

@@ -61,6 +61,6 @@ Recovery facts come from the ledger, including its recovery rows.
 
 - Delete stale `<runId>.snapshot.json` files if you want to reclaim disk space; the engine ignores them.
 - Keep snapshot-store methods only if other code uses them; the engine no longer calls them.
-- A store that writes its independent state.json through `saveRunState` no longer puts a per-round `runState` copy in the ledger; resume is unchanged. If your store implements only `loadRunState`, add `saveRunState` too, or the engine keeps writing the fallback copy each round.
+- A store omits per-round `runState` only when both `saveRunState` and `loadRunState` are callable. If your store implements only `loadRunState`, add `saveRunState` to close the pair; if it implements only `saveRunState`, it keeps the per-round fallback copy, so resume falls back to that copy instead of reading the independent state path; add `loadRunState` to close the pair.
 - After an interrupted tool, distinguish “ran, result unavailable” from “unknown”; neither means the
   missing body can be recovered.

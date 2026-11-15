@@ -50,8 +50,8 @@
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
 ### Changed
-- #843: Omit round-record `runState` when `saveRunState` is available.
-- #843：store 可写 state.json 时，轮记录不再重复写 runState。
+- #843: Omit round-record `runState` only when both `saveRunState` and `loadRunState` are callable.
+- #843：仅当 `saveRunState` 与 `loadRunState` 都可调用时，轮记录才省略 `runState`。
 - #838: Run snapshots retired; no `checkpoint_failed`; crash-gap tool text: unavailable/unknown.
 - #838：退役快照；不发 `checkpoint_failed`；缺口丢正文报 ran/unavailable/unknown。
 - **`round_end`'s payload is now contract, not implementation detail (issue #835).** The engine has
