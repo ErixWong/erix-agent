@@ -48,6 +48,7 @@
 | `npm run check:pack-links` | 随包 Markdown 链接 + `.d.ts` 与发布面声称 | `#check-pack-links` |
 | `npm run check:release` | 离线发布前检查清单合成一条命令 | `#check-release` |
 | `npm run check:release:model-e2e` | 真模型端点 e2e 清单（门控 `ERIX_E2E_MODEL=1`） | `#check-release-real` |
+| `npm run check:long-task-e2e` | 独立真代码长任务测试（受门控；不进发版闸门） | `#check-long-task-e2e` |
 | `npm run release:day` | 发版日的四个 `--stage` | `#release-day` |
 | `npm run check:cli:model-e2e` | 装好的 CLI 打真模型端点（受门控） | `#check-cli-real` |
 | `npm run check:docs-spelling` | 活文档里退役的扁平选项拼写 | `#check-docs-spelling` |
