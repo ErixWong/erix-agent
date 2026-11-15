@@ -4071,7 +4071,7 @@ export async function runToolLoop(options) {
     let strategyFoldSummary = undefined;
     /** @type {ReturnType<typeof buildFoldedFacts>} 投影到本轮轮记录的 `foldedFacts`（#470-B 已夹字节） */
     let pendingFoldedFacts = undefined;
-    let protectedDowngraded = 0;
+    let /** @type {number} */ protectedDowngraded = 0, /** @type {"protected_message_exceeds_budget"|"cannot_fit"|undefined} */ budgetUnreachable;
     // issue #608：**预算不足显式劣化**的现场（三个数 + `repeatStreak` + `foldLayersOverBudget`）。
     // 只在循环判据（工作集 > 预算 ∧ 模型在重读同一入参，连续 `WORKING_SET_LOOP_ATTEMPTS` 次）成立时
     // 赋值——那一格再折就是把模型马上要用的东西拿走，引擎停手并交主循环明确收尾
@@ -4530,7 +4530,7 @@ export async function runToolLoop(options) {
         foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
         compacted = compacted || fallback.protectedDowngraded > 0;
         tokensAfter = fallback.tokensAfter;
-        protectedDowngraded = fallback.protectedDowngraded;
+        ({ protectedDowngraded, budgetUnreachable } = fallback);
         observeCompactionLayer(layers, safetyFallbackLayer?.id, {
           tokensBefore: safetyTokensBefore,
           tokensAfter,
@@ -4779,7 +4779,7 @@ export async function runToolLoop(options) {
         foldedRounds,
         tokensBefore,
         tokensAfter,
-        layers,
+        layers, ...(budgetUnreachable === undefined ? {} : { budgetUnreachable }),
       };
       recordCompactionStat({
         ...compactionStat,

@@ -289,26 +289,26 @@ test("downgrades the oldest protected message when the protected set exceeds the
   );
 });
 
-test("rejects a single protected message that cannot fit the budget", async () => {
+test("#609 a: oversized protected messages return a visible budget fact", async () => {
   const protectedMessage = {
     role: "user",
     content: [{ type: "text", text: "x".repeat(200) }],
   };
 
-  await assert.rejects(
-    runToolLoop({ capabilities: { hooks: { protectedMessage: () => true } },
-      provider: createFakeProvider([]),
-      executeTool: async () => "unused",
-      config: { input: { messages: [protectedMessage] }, folding: { context: {
-        budgetTokens: 20,
-              } },
-              run: { completion: false },
-      },
-    }),
-    (error) => error instanceof KitError
-      && error.code === "invalid_budget"
-      && /increase budgetTokens|reduce the protectedMessage set/.test(error.message),
+  const { safeTruncateMessages } = await import("../src/loop/budget.js");
+  const result = await safeTruncateMessages(
+    [protectedMessage],
+    20,
+    () => true,
   );
+
+  assert.equal(result.budgetUnreachable, "protected_message_exceeds_budget");
+  assert.deepEqual(result.messages, [protectedMessage]);
+  assert.equal(result.tokensAfter, estimateMessageTokens(result.messages));
+  assert.equal(result.protectedDowngraded, 0);
+  assert.deepEqual(result.foldedPayload, []);
+  assert.deepEqual(result.foldedStubs, []);
+  assert.ok(result.enforced);
 });
 
 test("does not compact from cumulative API usage when local context fits", async () => {
@@ -615,3 +615,47 @@ test("keeps fold round numbers global across loop compactions", async () => {
  * This block records retirement; it is not a test assertion.
 // status 快照格已随载体退役（#838 S2）。
  */
+
+test("#609 b: the cannot-fit safety fallback returns a fact instead of throwing", async () => {
+  // This defensive low-level branch is unreachable for validated positive budgets (#682).
+  const { safeTruncateMessages } = await import("../src/loop/budget.js");
+  const result = await safeTruncateMessages([], -1, () => true);
+
+  assert.equal(result.budgetUnreachable, "cannot_fit");
+  assert.deepEqual(result.messages, []);
+});
+
+test("#609 c: a large protected tool result continues to end_turn with a compaction fact", async () => {
+  const events = [];
+  const provider = createFakeProvider([
+    toolResponse("budget-unreachable"),
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const result = await runToolLoop({
+    capabilities: {
+      hooks: {
+        protectedMessage: (message) => message?.content?.some((block) => (
+          block?.type === "tool_result"
+        )) === true,
+        onEvent: (event) => events.push(event),
+      },
+    },
+    provider,
+    executeTool: async () => "large tool result ".repeat(100),
+    config: {
+      input: { initialUserMessage: "continue the task" },
+      folding: { context: { budgetTokens: 20 } },
+      run: { completion: false },
+    },
+  });
+
+  assert.equal(result.finalText, "done");
+  assert.equal(provider.requests.length, 2, "the request after the large tool result must run");
+  const [fact] = events.filter((event) => (
+    event?.type === "compaction"
+    && event.compaction?.budgetUnreachable !== undefined
+  ));
+  assert.equal(fact?.compaction?.budgetUnreachable, "protected_message_exceeds_budget");
+  assert.ok(Number.isFinite(fact?.compaction?.tokensAfter));
+  assert.equal(fact?.compaction?.compacted, false, "compacted keeps its existing meaning");
+});

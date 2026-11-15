@@ -941,6 +941,15 @@ export function formatCompactionFoldSummary(compactionStats) {
 export function formatCompactionEventLine(event) {
   if (event?.type !== "compaction") return null;
   const stat = event.compaction ?? {};
+  const budgetUnreachable = stat.budgetUnreachable === "protected_message_exceeds_budget"
+    || stat.budgetUnreachable === "cannot_fit"
+    ? stat.budgetUnreachable
+    : undefined;
+  if (budgetUnreachable !== undefined) {
+    const tokensAfter = Number.isFinite(stat.tokensAfter) ? stat.tokensAfter : "unknown";
+    return `[erix] 压缩没能把请求压进预算（原因=${budgetUnreachable}，实测 ${tokensAfter} tokens）：`
+      + "本次按超预算继续；若超出模型窗口，会由 provider 报错。";
+  }
   if (stat.compacted !== true) return null;
   const strategyName = typeof stat.strategyName === "string" ? stat.strategyName.trim() : "";
   const parts = ["[compaction]"];
@@ -1056,7 +1065,10 @@ export function createRunEventHandlers({
   const onEvent = (event) => {
     if (event?.type === "attempt" || event?.type === "recovering") touchIdle();
     if (event?.type === "run_outcome") appendJudgeLogRecord?.(event);
-    if (event?.type === "compaction" && event.compaction?.compacted === true) {
+    if (event?.type === "compaction" && (
+      event.compaction?.compacted === true
+      || event.compaction?.budgetUnreachable !== undefined
+    )) {
       appendJudgeLogRecord?.(event);
       emitStderr(formatCompactionEventLine(event));
     }

@@ -2939,16 +2939,19 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 两个 additive 字段让这些记录能按模型分组，一个 additive 事件让它们能与终局 join。
 既有字段名称、形状、语义一律不动，完全不读这三个新字段的宿主行为与之前一致。
 
-**CLI 这个宿主往里写什么（issue #673）。** `erix chat` 与其它宿主同格，所以这是**展示/留痕**的
-选择，不是引擎新事实：它把每一次**真折叠**的 `compaction` 事件（`compacted === true`，带真正
-执行折叠的 `strategyName`）与一次性 `compaction_strategy_fallback` 事件，和 `run_outcome` 一起
-追加进同一份 `judge.log`；并在 **stderr** 上每个这种事件打一行即时提示
-（`[compaction] round=… strategy=… foldedRounds=… tokensBefore=… tokensAfter=…`，或
-`[compaction] fallback round=… detail=…`）。这一路**不写 stdout**——`--stream` 的终稿字节流
-一字不动；一次没折的 run 不多打一行、也不写 `type: "compaction"` 记录（折叠旁边的那些「一轮
-没折」的统计——user-turn 守卫与 TTL 层——故意不抄，这样「没折叠」在账上就是「没记录」）。引擎
-自己的面（事件 payload、`compactionStats`、`judge.log` 的字段形状）一个字未改；不用 CLI 的宿主
-看到的与从前逐字相同。
+**CLI 这个宿主往里写什么（issue #673 / #609）。** `erix chat` 与其它宿主同格，所以这是
+**展示/留痕**的选择，不是新造事件类型：它把每一次**真折叠**的 `compaction` 事件
+（`compacted === true`，带真正执行折叠的 `strategyName`）、带 `budgetUnreachable` 的压缩事实与
+一次性 `compaction_strategy_fallback` 事件，和 `run_outcome` 一起追加进同一份 `judge.log`；
+并在 **stderr** 上每个这种事件打一行即时提示。预算不可达提示会点明原因与 `tokensAfter`，
+并说明请求按软预算超限继续。**不写 stdout**——`--stream` 的终稿字节流一字不动。既没有折叠也没有
+`budgetUnreachable` 的 run 不多打一行、也不写 `type: "compaction"` 记录（user-turn 守卫与 TTL 层
+这类相邻统计仍故意不抄）。`budgetUnreachable` 是压缩统计上的可选加法字段；忽略它的宿主行为不变。
+
+**安全截断无法满足预算（issue #609）。** 安全层无法达到软目标 `budgetTokens` 时，`compaction` 统计可带
+`budgetUnreachable: "protected_message_exceeds_budget" | "cannot_fit"`。run 会用尽力而为的消息继续，
+`tokensAfter` 报告其估算大小；该事实不表示已经超出硬限制 `contextWindowTokens`。硬窗口仍由 provider
+负责执行，`compacted` 的既有含义不变（该值可以是 `false`）。
 
 | 字段 | 出现在 | 契约 |
 |---|---|---|

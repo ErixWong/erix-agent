@@ -300,13 +300,41 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
     });
   });
 
+  /**
+   * @param {"protected_message_exceeds_budget"|"cannot_fit"|undefined} budgetUnreachable
+   */
+  const finish = (budgetUnreachable) => {
+    const uniqueStubs = [...new Set(foldedStubs)];
+    if (uniqueStubs.length > 0) {
+      const firstUser = result.findIndex((message) => message?.role === "user");
+      if (firstUser >= 0) {
+        const user = result[firstUser];
+        const content = typeof user.content === "string"
+          ? [{ type: "text", text: user.content }]
+          : Array.isArray(user.content) ? user.content : [];
+        result[firstUser] = {
+          ...user,
+          content: [
+            ...content,
+            { type: "text", text: uniqueStubs.slice(0, 10).join("\n") },
+          ],
+        };
+      }
+    }
+    return {
+      messages: result,
+      tokensAfter: estimateMessageTokens(result),
+      enforced,
+      foldedPayload,
+      foldedStubs: uniqueStubs,
+      protectedDowngraded,
+      budgetUnreachable,
+    };
+  };
+
   for (const message of result) {
     if (isCurrentlyProtected(message) && estimateMessageTokens([message]) > budgetTokens) {
-      throw new KitError(
-        "invalid_budget",
-        "A single protected message exceeds budgetTokens; increase budgetTokens or reduce the protectedMessage set.",
-        { retryable: false },
-      );
+      return finish("protected_message_exceeds_budget");
     }
   }
 
@@ -317,11 +345,7 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
     if (removableIndex < 0) {
       const oldestProtected = result.find((message) => isCurrentlyProtected(message));
       if (oldestProtected === undefined) {
-        throw new KitError(
-          "invalid_budget",
-          "Messages cannot fit within budgetTokens; increase budgetTokens or reduce the protectedMessage set.",
-          { retryable: false },
-        );
+        return finish("cannot_fit");
       }
       downgradeProtected(oldestProtected);
       continue;
@@ -346,29 +370,5 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
       await removeMessages(removableIndex, 1);
     }
   }
-  const uniqueStubs = [...new Set(foldedStubs)];
-  if (uniqueStubs.length > 0) {
-    const firstUser = result.findIndex((message) => message?.role === "user");
-    if (firstUser >= 0) {
-      const user = result[firstUser];
-      const content = typeof user.content === "string"
-        ? [{ type: "text", text: user.content }]
-        : Array.isArray(user.content) ? user.content : [];
-      result[firstUser] = {
-        ...user,
-        content: [
-          ...content,
-          { type: "text", text: uniqueStubs.slice(0, 10).join("\n") },
-        ],
-      };
-    }
-  }
-  return {
-    messages: result,
-    tokensAfter: estimateMessageTokens(result),
-    enforced,
-    foldedPayload,
-    foldedStubs: uniqueStubs,
-    protectedDowngraded,
-  };
+  return finish(undefined);
 }

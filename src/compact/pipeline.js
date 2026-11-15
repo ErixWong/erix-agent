@@ -139,6 +139,7 @@ export function observeCompactionLayer(
  *   foldedRounds?: number,
  *   tokensBefore?: number,
  *   tokensAfter?: number,
+ *   budgetUnreachable?: "protected_message_exceeds_budget"|"cannot_fit",
  *   protectedDowngraded?: number,
  *   userTurnGuard?: string,
  *   userTurnGuardChannel?: string,
@@ -151,6 +152,7 @@ export function observeCompactionLayer(
  *   tokensBefore: number,
  *   tokensAfter: number,
  *   layers: Record<string, { triggered: number, tokensSaved: number }>,
+ *   budgetUnreachable?: "protected_message_exceeds_budget"|"cannot_fit",
  *   protectedDowngraded?: number,
  *   userTurnGuard?: string,
  *   userTurnGuardChannel?: string,
@@ -184,6 +186,7 @@ export function createCompactionStat({
   foldedRounds = 0,
   tokensBefore = 0,
   tokensAfter = tokensBefore,
+  budgetUnreachable,
   protectedDowngraded = 0,
   // issue #292（additive）：请求视图 / 持久列表定稿处的 user 轮守卫生效时的动作
   // （"preserved_latest_user_turn" | "abandoned_fold"）与所在侧（chat/chatStream/persisted）。
@@ -217,6 +220,12 @@ export function createCompactionStat({
       ...(layers ?? {}),
     },
   };
+  if (
+    budgetUnreachable === "protected_message_exceeds_budget"
+    || budgetUnreachable === "cannot_fit"
+  ) {
+    Object.assign(stat, { budgetUnreachable });
+  }
   if (Number.isSafeInteger(protectedDowngraded) && protectedDowngraded > 0) {
     stat.protectedDowngraded = protectedDowngraded;
   }
@@ -327,6 +336,7 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
     foldedRounds: entry?.foldedRounds,
     tokensBefore: entry?.tokensBefore,
     tokensAfter: entry?.tokensAfter,
+    budgetUnreachable: entry?.budgetUnreachable,
     protectedDowngraded: entry?.protectedDowngraded,
     userTurnGuard: entry?.userTurnGuard,
     userTurnGuardChannel: entry?.userTurnGuardChannel,

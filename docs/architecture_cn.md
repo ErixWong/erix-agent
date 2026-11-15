@@ -385,7 +385,7 @@ createFoldLlmStrategy({
 
 三者都会分组并移除完整轮次。`fold-statistical` 会记录确定性的工具足迹、折叠存根和有界的产物导航记录。`fold-llm` 使用折叠载荷调用注入的 `summarizer`，并通过 `enforceSize` 确定性地强制摘要大小。两种折叠策略都会保留 `foldedPayload` 以便归档恢复。
 
-当配置的策略仍使请求超出预算时，循环首先回退到保留数为零的滑动窗口，然后使用确定性的安全截断。最终回退会按需裁剪未受保护的字段、移除图像、清空工具输入并降级受保护消息；`compactionStats[].protectedDowngraded` 会记录这类降级。无法容纳的单个受保护消息会产生 `KitError("invalid_budget", ...)`。
+当配置的策略仍使请求超出预算时，循环首先回退到保留数为零的滑动窗口，然后使用确定性的安全截断。最终回退会按需裁剪未受保护的字段、移除图像、清空工具输入并降级受保护消息；`compactionStats[].protectedDowngraded` 会记录这类降级。无法容纳的单个受保护消息不再抛错：安全层会交出尽力而为的消息，并通过既有 `compaction` 事件与 CLI stderr 明示 `budgetUnreachable`。
 
 #### Tool-result TTL 折叠
 
