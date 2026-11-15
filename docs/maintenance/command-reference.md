@@ -257,7 +257,9 @@ Standalone real-model long-task E2E for the natural small-window path; it is del
 the repository's `src/` through local `listFiles` / `readFile` tools and uses a 65,536-token window with an
 8,192-token output cap, leaving `budgetTokens` to the engine's normal `computeBudget` derivation. The L1 arm
 requests the full `src/loop/orchestrator.js` and asserts the protected-message budget fact plus a non-failed run;
-the L2 arm analyzes `src/loop/`, requires at least five `readFile` calls and six rounds before judging the
+the default runs only L1 (~33 s). Pass `--with-l2` to `node scripts/long-task-real-e2e.mjs` to run both arms; the
+full run takes about 13 minutes and uses about 380k tokens. `--l1-only` remains accepted as an alias for the default.
+The L2 arm analyzes `src/loop/`, requires at least five `readFile` calls and six rounds before judging the
 compaction / ledger / resume invariants, and reports a classified skip if that workload does not materialize.
 `ERIX_E2E_MODEL=1` opens the shared real-model gate; with it closed the command prints the categorized reason and
 exits 0. It uses the configured default model and a temporary transcript directory, never a hard-coded model name.

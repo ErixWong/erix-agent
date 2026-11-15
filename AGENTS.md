@@ -52,7 +52,7 @@ One row per gate: what it judges, and the anchor to read before editing what it 
 | `npm run check:pack-links` | packaged Markdown links + `.d.ts` / publish-surface claims | `#check-pack-links` |
 | `npm run check:release` | offline pre-release checklist as one command | `#check-release` |
 | `npm run check:release:model-e2e` | real model endpoint checklist (gated by `ERIX_E2E_MODEL=1`) | `#check-release-real` |
-| `npm run check:long-task-e2e` | standalone real-code long-task test (gated; not in release gate) | `#check-long-task-e2e` |
+| `npm run check:long-task-e2e` | standalone real-code long-task test (gated; not in release gate; defaults to L1 only, `--with-l2` takes ~13 min) | `#check-long-task-e2e` |
 | `npm run release:day` | the release day in four `--stage`s | `#release-day` |
 | `npm run check:cli:model-e2e` | the installed CLI against the real model endpoint (gated) | `#check-cli-real` |
 | `npm run check:docs-spelling` | retired flat option spellings in living docs | `#check-docs-spelling` |

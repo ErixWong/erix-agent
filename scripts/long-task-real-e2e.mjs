@@ -437,9 +437,10 @@ async function runL2(gate) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const l1Only = args.length === 1 && args[0] === "--l1-only";
-  if (args.length > 0 && !l1Only) {
-    throw new Error("usage: node scripts/long-task-real-e2e.mjs [--l1-only]");
+  const withL2 = args.length === 1 && args[0] === "--with-l2";
+  const l1Only = args.length === 0 || (args.length === 1 && args[0] === "--l1-only");
+  if (args.length > 0 && !l1Only && !withL2) {
+    throw new Error("usage: node scripts/long-task-real-e2e.mjs [--with-l2 | --l1-only] (default: L1 only)");
   }
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
@@ -468,7 +469,7 @@ async function main() {
     failures.push("L1");
     console.error(`[long-task] FAIL L1 error=${errorSummary(error, gate)}`);
   }
-  if (!l1Only) {
+  if (withL2) {
     try {
       await runL2(gate);
     } catch (error) {
