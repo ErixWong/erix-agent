@@ -133,7 +133,7 @@ test("#742 写点源码格：量的是落盘那一份，且无值走的是「不
   assert.match(source, /const roundRunStateCopy = cloneState\(roundRunState\);/u);
   assert.match(source, /const runStateMeta = measureRunStateMeta\(roundRunStateCopy\);/u);
   assert.match(source,
-    /\.\.\.\(typeof store\?\.saveRunState === "function" \? \{\} : \{ runState: roundRunStateCopy \}\),/u);
+    /\.\.\.\(typeof store\?\.saveRunState === "function" && typeof store\?\.loadRunState === "function" \? \{\} : \{ runState: roundRunStateCopy \}\),/u);
   // ② 无值 ⇒ 整个键缺席；不许出现「零值兜底」的写法。
   assert.match(source, /\.\.\.\(runStateMeta === undefined \? \{\} : \{ runStateMeta \}\),/u);
   assert.doesNotMatch(source, /runStateMeta\s*\?\?/u, "零值兜底会把「不知道」写成「没截断」");

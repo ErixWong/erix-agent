@@ -132,6 +132,23 @@ test("#843 a: saveRunState store omits each round copy and materially shrinks th
   assert.ok(beforeRun.rounds.every((record) => Object.hasOwn(record, "runState")));
   assert.ok(afterRun.rounds.every((record) => !Object.hasOwn(record, "runState")));
   assert.ok(afterRun.rounds.every((record) => Object.hasOwn(record, "runStateMeta")));
+  const expectedCapabilityRecordKeys = [
+    "dedupKey",
+    "l0facts",
+    "response",
+    "round",
+    "roundKey",
+    "runStateMeta",
+    "summary",
+    "textPreview",
+    "toolUses",
+    "ts",
+    "usage",
+  ];
+  for (const record of afterRun.rounds) {
+    assert.deepEqual(Object.keys(record).sort(), expectedCapabilityRecordKeys,
+      `a: unexpected round-record keys for round ${String(record.round)}`);
+  }
   const stateFile = await readFile(join(afterDir, `${RUN_ID}.state.json`), "utf8");
   assert.equal(typeof JSON.parse(stateFile).stateVersion, "number");
 });
@@ -241,4 +258,70 @@ test("#843 d: runStateMeta measures the refreshed snapshot even when the record 
     assert.equal(meta.capBytes, RUN_STATE_MAX_SERIALIZED_BYTES);
     assert.equal(meta.truncated, snapshot.bounds?.truncated === true || bytes > meta.capBytes);
   }
+});
+
+test("#843 e: save-only store keeps a round copy and resumes all four run-state cells", async () => {
+  const { loadRunState: _loadRunState, ...store } = createMemoryTranscriptStore();
+  const state = createLegacyResumeState();
+  await seedResumeRecord(store, state);
+  const fallbackStore = withoutRunStateMethods(createMemoryTranscriptStore());
+  await seedResumeRecord(fallbackStore, state);
+  assert.equal(typeof store.saveRunState, "function");
+  assert.equal(typeof store.loadRunState, "undefined");
+
+  const fallbackResult = await resumeRun(fallbackStore);
+  const result = await resumeRun(store);
+  const resumedRows = await store.loadRawRows(RESUME_RUN_ID);
+  const latestRound = resumedRows
+    .filter((record) => Number.isInteger(record?.round))
+    .at(-1);
+  assert.ok(Object.hasOwn(latestRound ?? {}, "runState"),
+    "e: save-only store retains a recovery copy in the round record");
+  const resumedCells = {
+    guardExtensionUsed: result.runState.deterministic.guardExtension?.used,
+    compactionStats: result.runState.deterministic.compactionStats,
+    termination: result.runState.deterministic.termination,
+    semantic: result.runState.semantic,
+  };
+  const fallbackCells = {
+    guardExtensionUsed: fallbackResult.runState.deterministic.guardExtension?.used,
+    compactionStats: fallbackResult.runState.deterministic.compactionStats,
+    termination: fallbackResult.runState.deterministic.termination,
+    semantic: fallbackResult.runState.semantic,
+  };
+  assert.equal(JSON.stringify(resumedCells), JSON.stringify(fallbackCells),
+    "e: all four cells must be byte-for-byte unchanged from the record-fallback resume");
+});
+
+test("#843 f: load-only store keeps a round copy and resumes all four run-state cells", async () => {
+  const { saveRunState: _saveRunState, ...store } = createMemoryTranscriptStore();
+  const state = createLegacyResumeState();
+  await seedResumeRecord(store, state);
+  const fallbackStore = withoutRunStateMethods(createMemoryTranscriptStore());
+  await seedResumeRecord(fallbackStore, state);
+  assert.equal(typeof store.saveRunState, "undefined");
+  assert.equal(typeof store.loadRunState, "function");
+
+  const fallbackResult = await resumeRun(fallbackStore);
+  const result = await resumeRun(store);
+  const resumedRows = await store.loadRawRows(RESUME_RUN_ID);
+  const latestRound = resumedRows
+    .filter((record) => Number.isInteger(record?.round))
+    .at(-1);
+  assert.ok(Object.hasOwn(latestRound ?? {}, "runState"),
+    "f: load-only store retains a recovery copy in the round record");
+  const resumedCells = {
+    guardExtensionUsed: result.runState.deterministic.guardExtension?.used,
+    compactionStats: result.runState.deterministic.compactionStats,
+    termination: result.runState.deterministic.termination,
+    semantic: result.runState.semantic,
+  };
+  const fallbackCells = {
+    guardExtensionUsed: fallbackResult.runState.deterministic.guardExtension?.used,
+    compactionStats: fallbackResult.runState.deterministic.compactionStats,
+    termination: fallbackResult.runState.deterministic.termination,
+    semantic: fallbackResult.runState.semantic,
+  };
+  assert.equal(JSON.stringify(resumedCells), JSON.stringify(fallbackCells),
+    "f: all four cells must be byte-for-byte unchanged from the record-fallback resume");
 });

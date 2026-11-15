@@ -78,8 +78,8 @@ pi-durable 的对照要点（证据见 #91 评论）：单一原子 `commit(writ
 
 ## 后续决议：按能力写入轮记录副本（issue #843，2026-11-15）
 
-D1 记录的是当时的无条件双写。#843 只调整写侧：store 有可调用的 `saveRunState` 时，轮记录省略
-`RoundRecord.runState` 副本，使用独立 run-state 通道；没有该能力时仍写轮记录副本，保住
-`loadRunState` 缺席时的恢复回退。resume 仍优先读有效的 `loadRunState`，独立 state 缺席才读最新轮记录，
-独立 state 存在但无效时仍不回退。独立状态缓存的语义不变；只实现 `loadRunState` 的 store 应补上
-`saveRunState`，以免每轮继续写回退副本。
+D1 记录的是当时的无条件双写。#843 只调整写侧：只有 `saveRunState` 与 `loadRunState` 都可调用、
+独立通道能闭环时才省掉 `RoundRecord.runState` 副本；任一方法缺席都继续写轮记录副本，保住恢复回退。
+resume 仍优先读有效的 `loadRunState`；state 缺席时照旧检查最新轮记录，但只有缺少任一方法的 store
+保证该记录保留副本；独立 state 存在但无效时仍不回退。独立状态缓存的语义不变；只实现 `loadRunState` 的 store 应补上
+`saveRunState`，只实现 `saveRunState` 的 store 应补上 `loadRunState`，以便闭合独立通道。
