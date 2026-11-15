@@ -528,6 +528,77 @@ test("runRepl injects archive status at fold time instead of into loop context",
   }
 });
 
+test("runRepl sends compaction and resumed-stub events through the shared run event handler", async () => {
+  const dir = await makeTmp("erix-repl-event-handlers-");
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  const errorOutput = new PassThrough();
+  let stderr = "";
+  errorOutput.on("data", (chunk) => { stderr += String(chunk); });
+  try {
+    const run = runRepl(
+      [
+        "--session", "repl-event-handlers",
+        "--dir", dir,
+        "--compact-budget", "100",
+        "--config", await writeEmptyMcpConfig(dir),
+      ],
+      {
+        input,
+        output,
+        errorOutput,
+        sessionDir: dir,
+        home: dir,
+        notesDir: join(dir, "notes"),
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        providerFactory: () => ({}),
+        loop: async (options) => {
+          const onEvent = options.capabilities.hooks.onEvent;
+          onEvent({
+            type: "compaction",
+            round: 2,
+            compaction: {
+              compacted: true,
+              foldedRounds: 2,
+              budgetUnreachable: "cannot_fit",
+              tokensAfter: 240,
+            },
+          });
+          onEvent({
+            type: "resume_journal_skipped",
+            reason: "mid_sequence_request_view_stub",
+            resumed: true,
+            round: 2,
+            count: 1,
+            toolUseIds: ["t1"],
+          });
+          onEvent({ type: "run_outcome", runId: "repl-event-handlers" });
+          return {
+            finalText: "done",
+            messages: [],
+            rounds: 1,
+            usage: { input_tokens: 0, output_tokens: 0 },
+            compactionStats: [],
+          };
+        },
+      },
+    );
+    input.end("hello\n/exit\n");
+    await run;
+
+    assert.match(stderr, /cannot_fit/u, "the REPL must display the budget degradation reason");
+    assert.match(stderr, /同时已折叠 2 轮/u, "the REPL must preserve the fold fact beside the degradation");
+    assert.match(stderr, /本次恢复补了 1 条工具结果桩/u, "the REPL must display the resumed stub notice");
+    assert.match(stderr, /t1/u);
+  } finally {
+    input.destroy();
+    output.destroy();
+    errorOutput.destroy();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("CLI assembly root provides transcript and notes stores", async () => {
   const dir = await makeTmp("erix-assembly-root-test-");
   try {

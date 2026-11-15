@@ -2752,7 +2752,7 @@ export async function runToolLoop(options) {
           round: group.round,
           reason: group.reason,
           count: group.count,
-          detail: group.detail,
+          detail: group.detail, resumed: resume === true,
           // 「给哪些 id」只在新增的这一格里带（既有四条事件逐字不变，#730 钉过旧形状不许动）。
           toolUseIds: fresh
             .filter((stub) => String(stub?.detail) === String(group.detail))
@@ -3067,8 +3067,8 @@ export async function runToolLoop(options) {
   //      写被返回 `false`）——修前这里一声不响，账本里没那一行而宿主以为已闭合。
   /** 同一条 `resume_journal_skipped` 的形状只在这里拼一次（`detail` 缺席时**不带**那个键）。
    * issue #790：`toolUseIds` 同样「缺席就不带」⇒ 既有四条事件的字节逐字不变（纯加法）。
-   * @param {{round: any, reason: string, count?: number, detail?: string, toolUseIds?: any[]}} skip */
-  const emitResumeJournalSkip = ({ round, reason, count, detail, toolUseIds }) => emitEvent({
+   * @param {{round: any, reason: string, count?: number, detail?: string, toolUseIds?: any[], resumed?: boolean}} skip */
+  const emitResumeJournalSkip = ({ round, reason, count, detail, toolUseIds, resumed }) => emitEvent({
     type: "resume_journal_skipped",
     runId,
     ...(parentRunId === undefined ? {} : { parentRunId }),
@@ -3076,7 +3076,7 @@ export async function runToolLoop(options) {
     reason,
     count,
     ...(detail === undefined || detail === null ? {} : { detail }),
-    ...(Array.isArray(toolUseIds) && toolUseIds.length > 0 ? { toolUseIds } : {}),
+    ...(Array.isArray(toolUseIds) && toolUseIds.length > 0 ? { toolUseIds, ...(resumed === true ? { resumed: true } : {}) } : resumed === true ? { resumed: true } : {}),
   });
 
   /** 同一批成因按 `(reason, detail)` 归并成**一条**事件（数量在 `count`，轮号取第一条）。 */

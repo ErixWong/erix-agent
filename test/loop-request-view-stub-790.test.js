@@ -35,6 +35,7 @@ import { join } from "node:path";
 import { makeTmp } from "./helpers/tmp.js";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { createRunEventHandlers } from "../bin/run-event-handlers.js";
 import { callProvider } from "../src/loop/provider-runner.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
@@ -147,6 +148,7 @@ const skipEvents = (events, reason) => events
     round: event?.round,
     count: event?.count,
     ...(event?.toolUseIds === undefined ? {} : { toolUseIds: event.toolUseIds }),
+    ...(event?.resumed === true ? { resumed: true } : {}),
   }));
 
 /** 前置判据（每一格都要）：**这个账本形状本身**就过不了严格配对，且过不了的那一句就是本格那一句。 */
@@ -211,6 +213,7 @@ test("T1 砖化归档续跑：出网前视图合法（桩夹在 assistant[TU] �
     round: 3,
     count: 1,
     toolUseIds: ["t1"],
+    resumed: true,
   }], "必须恰好一条，点名「请求视图补了桩」、哪一轮、几个、哪些 id");
   // 既有那条「账本这一格放弃了」必须**照旧**发（本单没把它吞掉，也没改它的形状）。
   assert.deepEqual(skipEvents(events, MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED), [{
@@ -219,6 +222,49 @@ test("T1 砖化归档续跑：出网前视图合法（桩夹在 assistant[TU] �
     round: 2,
     count: 1,
   }], "账本侧那条 census 事件的形状一字不变（它说的是账本，本单说的是视图 —— 两件事）");
+});
+
+test("正常 run 的请求视图桩事件不带恢复标记，宿主提示也不称为恢复", async () => {
+  const events = [];
+  const written = [];
+  const { onEvent: handleRunEvent } = createRunEventHandlers({
+    writeStderr: (line) => written.push(line),
+  });
+  const provider = createFakeProvider([endTurn("正常完成")]);
+  const history = [
+    { role: "user", content: [text("任务")] },
+    { role: "assistant", content: [toolUse("fresh-t1")] },
+    { role: "user", content: [text("宿主纯文本")] },
+    { role: "assistant", content: [text("继续")] },
+  ];
+
+  const result = await runToolLoop({
+    provider,
+    tools: TOOLS,
+    executeTool: async () => { throw new Error("不应执行历史工具调用"); },
+    config: {
+      input: { messages: history, cacheStablePrefix: false },
+      run: { runId: "request-view-stub-fresh", resume: false, maxRounds: 1, completion: false, reflection: false },
+    },
+    capabilities: {
+      hooks: {
+        onEvent: (event) => {
+          events.push(event);
+          handleRunEvent(event);
+        },
+      },
+    },
+  });
+
+  assert.equal(result.termination?.reason, "end_turn");
+  assert.equal(provider.requests.length, 1, "正常 run 必须真实发出请求并收口");
+  const [stubEvent] = events.filter((event) => event?.type === "resume_journal_skipped"
+    && event?.reason === MID_SEQUENCE_REQUEST_VIEW_STUB);
+  assert.ok(stubEvent, "正常 run 也会真实触发请求视图桩事件");
+  assert.equal(stubEvent.resumed, undefined, "没有 resume 时不得伪造恢复标记");
+  assert.equal(written.length, 1, "宿主必须报告这个真实发生的桩");
+  assert.match(written[0], /本次 run 为 1 条没有结果的工具调用补了桩/u);
+  assert.doesNotMatch(written[0], /恢复/u, "新 run 的提示不得声称发生过恢复");
 });
 
 // ────────── T2（措辞）：账本 `tool-executed` 恢复行 ⇒「执行过」；没有 ⇒「未知」，绝不写「没执行」 ──────────
