@@ -3,11 +3,17 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.33.0]（未发布 / unpublished）
+
 ### Added
-- Record `fileWritesBlind` when `exec` was called and the `fileWrites` ledger is empty (#711).
-- 增加 `fileWritesBlind`：exec 已运行但写入台账为空时标记盲区（#711）。
-- `mid_sequence_request_view_stub` events mark resumed runs with `resumed: true`, letting hosts distinguish them from fresh runs (#790 follow-up).
-- `mid_sequence_request_view_stub` 事件在续跑时带 `resumed: true`，宿主可据此与正常 run 区分（#790 跟进）。
+- Record `fileWritesBlind` when `exec` was called and the `fileWrites` ledger is empty (#711)
+  (PR #844).
+- 增加 `fileWritesBlind`：exec 已运行但写入台账为空
+  时标记盲区（#711）（PR #844）。
+- `mid_sequence_request_view_stub` events mark resumed runs with `resumed: true`, letting
+  hosts distinguish them from fresh runs (#790 follow-up) (PR #847).
+- `mid_sequence_request_view_stub` 事件在续跑时带 `resumed: true`，宿主可据此
+  与正常 run 区分（#790 跟进）（PR #847）。
 
 ### Breaking
 - **Run-snapshot checkpoint reporting and capability claims are retired (#838 S2).** The contract no longer lists the
@@ -15,11 +21,12 @@
   `persistence_error.phase` values `checkpoint_before_tool` / `checkpoint_after_tool` are deprecated and are never
   emitted since run-snapshot retirement; `errors.checkpoint` remains present at `0` and never increases. The optional
   store capability constant and Assembly JSDoc claim are removed. Hosts should follow
-  `docs/host-upgrade-guide-0.33.0.md`.
+  `docs/host-upgrade-guide-0.33.0.md` (PR #839).
 - **run snapshot 的 checkpoint 错误与能力声明退役（#838 S2）。** 契约不再列出 ledger-first 恢复路径中已经移除的
   run snapshot 载荷格。`checkpoint_failed` 与 `persistence_error.phase` 的 `checkpoint_before_tool` /
   `checkpoint_after_tool` 自 run snapshot 退役后废弃且不再发出；`errors.checkpoint` 字段保留为 `0` 且永不增长。
   可选 store 能力常量与 Assembly JSDoc 声明一并删除。宿主升级见 `docs/host-upgrade-guide-0.33.0_cn.md`。
+  退役与补偿见 PR #839。
 - **The gate family formerly called "real upstream" is renamed to say which side is real: it is
   the model service endpoint, not the scenario (issue #817, PR #822; task 261113-02).**
   `npm run check:release:real` -> `check:release:model-e2e`, `npm run check:cli-real` ->
@@ -37,6 +44,7 @@
   wording, as do the three older upgrade guides, which name the command that existed at *their*
   version; `docs/requirements*` said "preserve the real upstream message" about a provider error
   body -- a generic reference, reworded to remove the shape without touching the requirement.
+  Cut gate self-tests and rejection of the retired name are covered by (PR #818 / #825).
 - **「真上游」这一族闸门改名，把「哪一面是真的」说出口：真的是模型服务端点，不是场景（issue #817；
   PR #822；工单 261113-02）。** `check:release:real` → `check:release:model-e2e`、`check:cli-real` →
   `check:cli:model-e2e`、`ERIX_E2E_REAL=1` → `ERIX_E2E_MODEL=1`。旧名**退役而不是留别名**：设了它不再开闸，
@@ -48,12 +56,27 @@
   `src/` 里 8 处与 `examples/pi-extension` 两处是**事故叙述**（「真上游实测：7 轮…」），三份老版本升级指南
   写的是**它那个版本**的命令名，都按历史面保留；`docs/requirements*` 里的 "real upstream message" 指
   provider 的错误正文，属泛指，已改词去形状、不动语义。
+  切版闸自测修复与旧名判红分别见 PR #818 / #825。
+- Folding intake validates the types of its three config leaves at startup. Strings,
+  fractions, and negatives throw; zero remains valid (PR #842).
+- folding 三个配置叶子的类型在启动期校验。字符串、小数和负数会抛错；
+  `0` 仍合法（PR #842）。
 
 ### Changed
+- The compaction safety layer no longer treats an unreachable budget as a dead run;
+  `budgetUnreachable` carries that fact (PR #846).
+- 压缩安全层不再因不可达预算判死 run；`budgetUnreachable` 字段记录该事实
+  （PR #846）。
+- The standalone long-task gate now runs L1 by default; L2 remains opt-in (PR #850).
+- 独立长任务闸默认只跑 L1；L2 仍需显式开启（PR #850）。
 - #843: Omit round-record `runState` only when both `saveRunState` and `loadRunState` are callable.
+  The independent-channel rule is covered by (PR #848 / #849).
 - #843：仅当 `saveRunState` 与 `loadRunState` 都可调用时，轮记录才省略 `runState`。
+  独立通道判定规则见 PR #848 / #849。
 - #838: Run snapshots retired; no `checkpoint_failed`; crash-gap tool text: unavailable/unknown.
+  The cleanup of remaining snapshot references is PR #840.
 - #838：退役快照；不发 `checkpoint_failed`；缺口丢正文报 ran/unavailable/unknown。
+  清理快照退役残留引用见 PR #840。
 - **`round_end`'s payload is now contract, not implementation detail (issue #835).** The engine has
   always emitted `{ round, finalText, stopReason, usage }` on `round_end`, but the contract only
   called it "round boundary", so the keys were never promised. The downstream host reads `finalText`
@@ -66,6 +89,7 @@
   breaking change with an upgrade guide, not slimming. A new contract test pins the keys and their
   types, and asserts at least one emitted `finalText` is non-empty so "key present but always empty"
   cannot pass.
+  Payload contract and test coverage are in (PR #837).
 - **`round_end` 的 payload 现在是契约，不是实现细节（issue #835）。**
   引擎一直在发 `{ round, finalText, stopReason, usage }`，但契约只写了「轮边界」，
   四个键从没被承诺过。
@@ -78,6 +102,7 @@
   删它属于破坏性变更，必须配升级指南，不能算「瘦身」。
   同时新增一条契约测试钉住键与类型，并断言至少一条 `finalText` 非空 ——
   让「键在但永远空」过不去。
+  payload 契约与测试见 PR #837。
 - **The interrupted stub now says which of the two situations it is, using the
   `tool-executed` row as the evidence (issue #833 follow-up, task 261114-05).** A pending call whose
   result never landed used to get one text ("was not replayed; the host must decide"). Two different
@@ -86,6 +111,7 @@
   explicitly ("DID run ... inspect the current state first"), while the first keeps the plain
   "re-issue it yourself" wording. The split reads `executedToolIds`, which is fed by the ledger
   `tool-executed` recovery row, so the evidence travels with the archive instead of being guessed.
+  Prompt and CLI guidance follow-up: (PR #836 / #845).
 - **中断桩现在按 `tool-executed` 行分成两种说法（issue #833 跟进，
   工单 261114-05）。**「结果没落盘」
   的调用原本只有一句文案（「没被重放，宿主决定」），
@@ -94,6 +120,7 @@
   un**……先勘验现状」，前者保留「需要就自己重发」。
   判据读 `executedToolIds`，它由账本 `tool-executed` 恢复行喂，
   于是证据跟着档案走，而不是靠猜。
+  恢复提示与 CLI 文案跟进见 PR #836 / #845。
 - **A resumed run no longer replays pending tools by default: the engine fills an interrupted
   result and the model decides (issue #833, task 261114-04; #767 direction).** `replayPolicy` now
   defaults to `"per-tool-declaration"` instead of `"always-replay"`. Nothing declares
@@ -110,6 +137,7 @@
   has to re-issue the call. Side benefit: `pendingToolUses` no longer needs to be written by the
   snapshot at all -- the unanswered set is derivable from the ledger -- which removes the hardest
   cell from the snapshot-retirement inventory (#767).
+  The new replay default is PR #834.
 - **续跑默认不再替宿主补跑工具：引擎补一条「已中断」结果，让模型
   自己决定
   （issue #833，工单 261114-04；#767 方向）。** `replayPolicy` 的默认值从
@@ -131,6 +159,7 @@
   顺带收益：`pendingToolUses` 不再需要快照写侧 —— 「没结清的集合」可以从
   账本
   推出来 ⇒ 退役清单里最难的一格消失了（#767）。
+  不再默认重放见 PR #834。
 - **Resume reads `toolOutputs` from the ledger round record, not from the snapshot
   (issue #827 slice 6, task 261114-03; #767 direction).** The write side already put
   `{toolUseId, name, content}` into every round record (`appendRound`), so the snapshot copy was a
@@ -139,6 +168,7 @@
   tool output stays byte-faithful after a crash without any snapshot read. That removes one of the
   three `read: source` cells the snapshot still owned; two remain (`pendingToolUses`,
   `toolResults`) before the channel can be deleted.
+  Reading ledger `toolOutputs` is PR #832.
 - **续跑侧改读账本轮记录里的 `toolOutputs`，不再读快照
   （issue #827 第 6 刀，工单 261114-03；#767 方向）。** 写侧本来就把
   `{toolUseId, name, content}` 写进每轮的轮记录（`appendRound`），所以快照那份
@@ -149,6 +179,7 @@
   的字节保真不再依赖任何快照读。快照还占着的三个 `read: source` 格
   因此少了
   一个，剩 `pendingToolUses` 与 `toolResults` 两格，搬完才能删通道。
+  续跑读取账本 `toolOutputs` 见 PR #832。
 - **`partialPersistence` no longer needs a run-snapshot store, and the snapshot stops carrying the
   half-written text at all (issue #827 slice 5, task 261114-02).** Two cells leave the snapshot
   write side: `partialText` and `partialRound` move from `written(conditional)` to `stopped`. The
@@ -163,6 +194,7 @@
   agree" invariant loses its *guessed-channel* sample (the timer write was the only snapshot write
   without an explicit classification), so that judgement is skipped here and re-judged together with
   the rest of the snapshot write side in #767.
+  The snapshot decoupling is PR #831.
 - **`partialPersistence` 不再需要快照 store，快照也不再携带半截正文
   （issue #827 第 5 刀，工单 261114-02）。** 两格离开快照写侧：
   `partialText` 与 `partialRound` 从 `written(conditional)` 变成
@@ -180,6 +212,7 @@
   （定时器写
   是唯一没有显式分类的快照写），所以本片把它显式 skip，留到与快照写侧
   其余部分一起在 #767 里重判。
+  `partialPersistence` 脱钩快照见 PR #831。
 - **A half-written-text commit no longer also rewrites the whole run snapshot (issue #827 slice 4,
   task 261114-01).** With `partialPersistence` on, every commit wrote the text twice: once as the
   ledger `partial-text` recovery row (the authority -- the resume side reads it first) and once into
@@ -192,6 +225,7 @@
   unchanged**: the recovery row is still preferred, the snapshot cells still work as the fallback.
   Combined with slices 1-3 the per-commit cost of enabling this switch drops from O(every tool row
   + one snapshot) to O(one slot row).
+  The two snapshot cells stop being written in PR #830.
 - **一次「半截正文」提交不再连整份 run snapshot 一起重写
   （issue #827 第 4 刀，工单 261114-01）。** 开着 `partialPersistence` 时每次提交
   都把正文写两遍：一遍是账本的 `partial-text` 恢复行（权威，续跑侧首选
@@ -207,6 +241,7 @@
   前三刀，
   打开这个开关的每提交成本从「全部工具行 + 一整份快照」降到
   「一条槽行」。
+  两格不再写入快照见 PR #830。
 - **The crash-recovery sidecar splits into two files, so a half-written-text commit no longer
   rewrites every tool event (issue #827 slice 3, task 261113-08).** `partial-text` (one slot per
   round, rewritten whole-file) and `tool-executed` (append-only events) used to share
@@ -221,6 +256,7 @@
   `src/store/file.js` (`recoveryRowsPath` / `partialSlotPath`), so derive them instead of hard-coding
   the suffixes. Rows written before this split stay readable where they are: a `partial-text` row
   still sitting in the event file is returned from there and is never rewritten into the new shape.
+  The slot guards and two-file split are (PR #828 / #829).
 - **崩溃现场侧车拆成两个文件：一次「半截正文」提交不再重写全部工具事件（issue #827 第 3 刀，
   工单 261113-08）。** `partial-text`（一轮一个槽，整文件重写）与 `tool-executed`（只追加的事件）
   原本同住 `<runId>.recovery.jsonl`，于是每次槽重写都要把全部工具行重写一遍：实测 200 条工具行
@@ -231,6 +267,7 @@
   的宿主必须知道哪个名字装哪种事件** —— 两个名字都由 `src/store/file.js` 现推
   （`recoveryRowsPath` / `partialSlotPath`），请照样推导而不是写死后缀。拆分**之前**写的行仍留在
   原处可读：还躺在事件文件里的 `partial-text` 行就从那里返回，不会被改写成新形状。
+  单槽守卫与双文件拆分见 PR #828 / #829。
 
 ## [0.32.0] - 2026-11-12
 

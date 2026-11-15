@@ -37,6 +37,17 @@ store 实现留着这些方法没有坏处；删除它们也不会导致引擎�
 引擎使用 `UNPERSISTED_TOOL_RESULT_TEXT`（「跑过，结果不可用」）；没有执行证据时使用
 `NO_EVIDENCE_TOOL_RESULT_TEXT`（「未知」）。没有证据时不会谎称「从未执行」。
 
+### 2.5 续跑默认不重放待处理工具
+
+`run.replayPolicy` 的默认值从 `"always-replay"` 改为 `"per-tool-declaration"`。
+续跑时，未结清调用会收到「已中断」结果，由模型决定是否重发。
+只有明确要恢复旧行为时，才设置 `run.replayPolicy: "always-replay"`。
+
+### 2.6 `partialPersistence` 不再需要快照 store
+
+启用后，半截正文通过账本恢复行持久化；引擎不再要求 run snapshot store，
+也不再写入快照的 `partialText` 与 `partialRound` 两格。
+
 ## Retired run-snapshot / checkpoint errors
 
 run snapshot 不再参与持久化或恢复。因此引擎不再发出 `checkpoint_failed`，
@@ -51,7 +62,21 @@ run snapshot 不再参与持久化或恢复。因此引擎不再发出 `checkpoi
 `saveRunSnapshot` / `loadLatestRunSnapshot` 能力声明已删除。宿主可以为自身目的保留私有存储，
 但 erix 不再发现或调用这些方法。恢复事实来自账本行，包括恢复行。
 
-## 3. 在你自己那边验一遍
+## 3. 没有变的东西
+
+- **选项——本版改了，键名未变。** 启动期校验三项 folding 叶子类型：
+  `folding.toolResultTtl`、`folding.toolResultFoldMinTokens` 与
+  `folding.context.keepRounds`；字符串、小数和负数会抛错，`0` 仍合法。
+  `run.replayPolicy` 变化见 §2.5；`partialPersistence` 不再需要快照 store（§2.6）。
+- **默认值——本版变了：** `run.replayPolicy` 见 §2.5；其余默认值不变。
+- **事件名——** 没有改名。新增的只有 `compaction` 的 `budgetUnreachable` 事实，
+  以及 `resume_journal_skipped` 上的 `resumed` 字段；都是加法。
+- **磁盘形状——** `<runId>.jsonl`、`.recovery.jsonl`、`.partial.jsonl`、
+  `.state.json` 与 `.status.json` 均未变；只有 `<runId>.snapshot.json` 消失（§2）。
+- **终局载荷——本版改了。** `finalText` 从实现细节变为契约；
+  载荷形状未变，退出码 0、1、2、4 的含义不变。
+
+## 4. 在你自己那边验一遍
 
 - 想清理磁盘时可删掉陈旧 `<runId>.snapshot.json`；引擎会忽略它。
 - 其他代码若还会用快照 store 方法，可以保留；引擎不再调用它们。
