@@ -28,6 +28,7 @@
 // 这是行为断言，不是「源码里出现过某个字符串」。
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { MID_SEQUENCE_REQUEST_VIEW_STUB } from "../src/loop/pending-tool-result.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
@@ -46,6 +47,7 @@ import {
   createRunEventHandlers,
   formatCompactionEventLine,
   formatCompactionFallbackEventLine,
+  formatResumeStubNotice,
   formatCompactionFoldSummary,
 } from "../bin/cli.js";
 
@@ -528,4 +530,67 @@ test("#673 纯函数层：即时提示行只认真折叠，兜底行原样带 de
     + " the library default \"sliding-window\" strategy folds only the oldest rounds needed to fit the budget",
     "detail 原样带上（多行压成单行），不截断",
   );
+});
+
+// issue #838 收尾：恢复补的工具结果桩要**告诉人**（此前只进模型上下文）。
+// 这一组钉三件事：① 桩事件 ⇒ 出一句话且带条数/ids；② 同事件类型的其它 reason ⇒ 不说话
+// （#730 的其它跳过原因与「结果不可用」无关，混进来就是噪音）；③ 非该事件类型 ⇒ 不说话。
+test("formatResumeStubNotice: 只对工具结果桩事件说话，且把条数与 ids 说清", () => {
+  const notice = formatResumeStubNotice({
+    type: "resume_journal_skipped",
+    reason: MID_SEQUENCE_REQUEST_VIEW_STUB,
+    count: 2,
+    toolUseIds: ["t1", "t2"],
+  });
+  assert.ok(notice !== null);
+  assert.match(notice, /2 条工具结果桩/u);
+  assert.match(notice, /t1, t2/u);
+  assert.match(notice, /不可用/u);
+  assert.match(notice, /不要盲目重发/u);
+
+  // 没有 ids 也要能说话（只报条数）
+  const bare = formatResumeStubNotice({
+    type: "resume_journal_skipped",
+    reason: MID_SEQUENCE_REQUEST_VIEW_STUB,
+    count: 1,
+  });
+  assert.ok(bare !== null);
+  assert.match(bare, /1 条工具结果桩/u);
+
+  // 同事件类型、别的 reason ⇒ 不说话
+  assert.equal(formatResumeStubNotice({
+    type: "resume_journal_skipped",
+    reason: "resume_journal_skipped_something_else",
+    count: 3,
+  }), null);
+  // count 为 0 / 非整数 ⇒ 不说话
+  assert.equal(formatResumeStubNotice({
+    type: "resume_journal_skipped", reason: MID_SEQUENCE_REQUEST_VIEW_STUB, count: 0,
+  }), null);
+  // 别的类型 ⇒ 不说话
+  assert.equal(formatResumeStubNotice({ type: "compaction", count: 1 }), null);
+  assert.equal(formatResumeStubNotice(null), null);
+});
+
+// issue #838 收尾（接线判据）：formatter 存在但**没人调**等于没做。这一格钉 `onEvent` 真的把
+// 桩事件送到 stderr 出口，并且同事件类型的其它 reason 不许出声。
+test("createRunEventHandlers: 工具结果桩事件真的送到 stderr，其它 reason 不出声", () => {
+  const written = [];
+  const { onEvent } = createRunEventHandlers({
+    writeStderr: (line) => { written.push(line); },
+  });
+  onEvent({
+    type: "resume_journal_skipped",
+    reason: MID_SEQUENCE_REQUEST_VIEW_STUB,
+    round: 2,
+    count: 1,
+    toolUseIds: ["t9"],
+  });
+  assert.equal(written.length, 1, `应恰好说一句，实测：${JSON.stringify(written)}`);
+  assert.match(written[0], /1 条工具结果桩/u);
+  assert.match(written[0], /t9/u);
+
+  // #730 的其它跳过原因：同一事件类型，但不是「结果不可用」⇒ 不说话
+  onEvent({ type: "resume_journal_skipped", reason: "some_other_reason", count: 2 });
+  assert.equal(written.length, 1, `其它 reason 不该出声，实测：${JSON.stringify(written)}`);
 });

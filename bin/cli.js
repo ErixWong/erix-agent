@@ -34,6 +34,8 @@ import {
   resolveCompactionBudget,
   splitCompactionContext,
 } from "./config.js";
+// issue #838 收尾：恢复时补的「工具结果桩」要**告诉人**（此前只报给模型）。
+import { MID_SEQUENCE_REQUEST_VIEW_STUB } from "../src/loop/pending-tool-result.js";
 // issue #441：把引擎自带的可重试静默相位截止接到 provider（取值关系见 bin/provider-timeouts.js 头注释）。
 import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
 import {
@@ -984,6 +986,30 @@ export function formatCompactionFallbackEventLine(event) {
  * @param {(line: string) => void} [options.writeStderr] stderr 写出口（测试可注入；缺省真写 stderr）
  * @returns {{appendJudgeLogRecord: ((record: any) => void)|undefined, onEvent: (event: any) => void}}
  */
+/**
+ * `resume_journal_skipped` 里**工具结果桩**那一条的即时提示（issue #838 收尾）。
+ *
+ * 为什么需要它：`#839` 之后「崩在工具返回与结果落账之间」的调用会被补一条桩，正文**丢失**。
+ * 那条桩只进模型上下文（模型看得见），**人看不见** —— CLI 是宿主面，必须把这件事说出来，
+ * 否则用户只知道 run 恢复了，不知道有一条工具结果已经没了。
+ *
+ * 只认 `reason === MID_SEQUENCE_REQUEST_VIEW_STUB`：同一个事件类型还承载 #730 的其它跳过原因，
+ * 那些与「结果不可用」无关，混进来会让这条提示变成噪音。
+ *
+ * @param {*} event `onEvent` 收到的 `resume_journal_skipped` 事件
+ * @returns {string|null} 该说的话；不是桩事件时 `null`
+ */
+export function formatResumeStubNotice(event) {
+  if (event?.type !== "resume_journal_skipped") return null;
+  if (event?.reason !== MID_SEQUENCE_REQUEST_VIEW_STUB) return null;
+  const count = Number.isSafeInteger(event?.count) && event.count > 0 ? event.count : 0;
+  if (count === 0) return null;
+  const ids = Array.isArray(event?.toolUseIds) ? event.toolUseIds.filter((id) => typeof id === "string") : [];
+  const idText = ids.length > 0 ? `（${ids.join(", ")}）` : "";
+  return `[erix] 本次恢复补了 ${count} 条工具结果桩${idText}：这些调用的结果不可用`
+    + "（其中已执行过的不要盲目重发，先勘验现场）。";
+}
+
 export function createRunEventHandlers({
   judgeLogPath,
   touchIdle = () => {},
@@ -1038,6 +1064,8 @@ export function createRunEventHandlers({
       appendJudgeLogRecord?.(event);
       emitStderr(formatCompactionFallbackEventLine(event));
     }
+    const stubNotice = formatResumeStubNotice(event);
+    if (stubNotice !== null) emitStderr(stubNotice);
   };
   return { appendJudgeLogRecord, onEvent };
 }
