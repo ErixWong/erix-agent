@@ -520,6 +520,22 @@ test("#673 纯函数层：即时提示行只认真折叠，兜底行原样带 de
     "[compaction] round=8 strategy=unknown foldedRounds=2 tokensBefore=11143 tokensAfter=8332",
     "策略名缺省时写 unknown（与引擎兜底名字的占位同口径），不编一个策略名",
   );
+  assert.equal(
+    formatCompactionEventLine({
+      type: "compaction",
+      round: 8,
+      compaction: {
+        compacted: true,
+        foldedRounds: 2,
+        tokensBefore: 11143,
+        tokensAfter: 8332,
+        budgetUnreachable: "cannot_fit",
+      },
+    }),
+    "[erix] 压缩没能把请求压进预算（原因=cannot_fit，实测 8332 tokens）："
+      + "同时已折叠 2 轮；本次按超预算继续；若超出模型窗口，会由 provider 报错。",
+    "同一事件里的预算降级不能吞掉真实折叠轮数",
+  );
 
   assert.equal(formatCompactionFallbackEventLine({ type: "compaction" }), null, "不是兜底事件 ⇒ null");
   const detail = "engine compaction fallback in effect: context.strategy is not configured,\n"
@@ -558,12 +574,46 @@ test("#609 e: budget-unreachable compaction facts are formatted and sent to stde
   const written = [];
   const { onEvent } = createRunEventHandlers({ writeStderr: (line) => written.push(line) });
   onEvent(event);
-  assert.deepEqual(written, [expected], "onEvent must actually send the fact to stderr");
+  assert.deepEqual(written, [], "the per-run notice waits for the latest budget measurement");
+  onEvent({ type: "run_outcome" });
+  assert.deepEqual(written, [expected], "run outcome flushes the latest budget fact once");
   onEvent({
     type: "compaction",
     compaction: { compacted: false, tokensAfter: 240 },
   });
   assert.deepEqual(written, [expected], "a compaction event without the fact stays silent");
+});
+
+test("#609 e2: repeated budget-unreachable events keep every judge record and print one latest notice", async () => {
+  const root = await makeTmp("erix-609-dedup-");
+  const judgeLogPath = join(root, "judge.log");
+  const written = [];
+  const { onEvent } = createRunEventHandlers({
+    judgeLogPath,
+    writeStderr: (line) => written.push(line),
+  });
+
+  for (const [round, tokensAfter] of [[1, 1793], [2, 3581], [3, 5369]]) {
+    onEvent({
+      type: "compaction",
+      round,
+      compaction: {
+        compacted: false,
+        foldedRounds: 0,
+        budgetUnreachable: "protected_message_exceeds_budget",
+        tokensAfter,
+      },
+    });
+  }
+  assert.deepEqual(written, [], "the warning is deferred until the run's final token measurement is known");
+  onEvent({ type: "run_outcome", runId: "budget-unreachable-run" });
+
+  assert.equal(written.length, 1, "one run must produce one budget warning");
+  assert.match(written[0], /5369 tokens/u, "the notice must use the latest tokensAfter");
+  assert.doesNotMatch(written[0], /1793|3581/u, "stale per-round token measurements must not be printed");
+  const compactionRecords = readJudgeLog(readFileSync(judgeLogPath, "utf8"), judgeLogPath)
+    .filter((record) => record.type === "compaction");
+  assert.equal(compactionRecords.length, 3, "dedupe is host presentation only; all three events stay in judge.log");
 });
 
 // issue #838 收尾：恢复补的工具结果桩要**告诉人**（此前只进模型上下文）。
@@ -577,10 +627,19 @@ test("formatResumeStubNotice: 只对工具结果桩事件说话，且把条数�
     toolUseIds: ["t1", "t2"],
   });
   assert.ok(notice !== null);
-  assert.match(notice, /2 条工具结果桩/u);
+  assert.match(notice, /本次 run 为 2 条没有结果的工具调用补了桩/u);
   assert.match(notice, /t1, t2/u);
   assert.match(notice, /不可用/u);
   assert.match(notice, /不要盲目重发/u);
+  assert.doesNotMatch(notice, /本次恢复/u, "missing resume evidence must not claim restoration");
+
+  const resumedNotice = formatResumeStubNotice({
+    type: "resume_journal_skipped",
+    reason: MID_SEQUENCE_REQUEST_VIEW_STUB,
+    resumed: true,
+    count: 1,
+  });
+  assert.match(resumedNotice, /本次恢复补了 1 条工具结果桩/u);
 
   // 没有 ids 也要能说话（只报条数）
   const bare = formatResumeStubNotice({
@@ -589,7 +648,7 @@ test("formatResumeStubNotice: 只对工具结果桩事件说话，且把条数�
     count: 1,
   });
   assert.ok(bare !== null);
-  assert.match(bare, /1 条工具结果桩/u);
+  assert.match(bare, /1 条没有结果的工具调用补了桩/u);
 
   // 同事件类型、别的 reason ⇒ 不说话
   assert.equal(formatResumeStubNotice({
@@ -616,12 +675,13 @@ test("createRunEventHandlers: 工具结果桩事件真的送到 stderr，其它 
   onEvent({
     type: "resume_journal_skipped",
     reason: MID_SEQUENCE_REQUEST_VIEW_STUB,
+    resumed: true,
     round: 2,
     count: 1,
     toolUseIds: ["t9"],
   });
   assert.equal(written.length, 1, `应恰好说一句，实测：${JSON.stringify(written)}`);
-  assert.match(written[0], /1 条工具结果桩/u);
+  assert.match(written[0], /本次恢复补了 1 条工具结果桩/u);
   assert.match(written[0], /t9/u);
 
   // #730 的其它跳过原因：同一事件类型，但不是「结果不可用」⇒ 不说话

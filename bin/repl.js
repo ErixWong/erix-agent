@@ -37,6 +37,7 @@ import {
 } from "./config.js";
 // issue #441：与 `bin/cli.js` **同一份**取值口径（静默相位截止按 `--idle-timeout` 派生）。
 import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
+import { createRunEventHandlers } from "./run-event-handlers.js";
 // issue #798：`reasoning_effort` 的 CLI 面（与 `bin/cli.js` 共用同一套裁决与统计器）。
 import {
   cliReasoningOverride,
@@ -944,6 +945,10 @@ export async function runRepl(argv, io = {}) {
         idle?.touch();
         return result;
       }, { label: execution?.name, log: (line) => console.error(line) });
+      const { onEvent } = createRunEventHandlers({
+        touchIdle: () => idle?.touch(),
+        writeStderr: (line) => writeLine(errorOutput, line),
+      });
       // issue #498 S5：与 `bin/cli.js` 同构——选项按**规位**书写（数据 ⇒ `config.*`、宿主回调 ⇒
       // `capabilities.hooks.*`、交付物判据 ⇒ `capabilities.checks.deliverables`），端口对象留顶层位。
       // 同一个旋钮只写一侧：下面没有任何一个键同时出现在扁平位与容器里。
@@ -1049,11 +1054,7 @@ export async function runRepl(argv, io = {}) {
                 `\n[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
               );
             },
-            // issue #441：与 `bin/cli.js` 同构——重试本身是进展（`attempt` / `recovering` 各喂一次 idle 表），
-            // 否则退避期会被 idle 看门狗打断，又回到不可重试的 abort 路径。
-            onEvent: (event) => {
-              if (event?.type === "attempt" || event?.type === "recovering") idle?.touch();
-            },
+            onEvent,
           },
           ...(deliverableCriteria.length === 0
             ? {}

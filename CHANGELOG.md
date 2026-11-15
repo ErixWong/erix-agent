@@ -6,6 +6,8 @@
 ### Added
 - Record `fileWritesBlind` when `exec` was called and the `fileWrites` ledger is empty (#711).
 - 增加 `fileWritesBlind`：exec 已运行但写入台账为空时标记盲区（#711）。
+- `mid_sequence_request_view_stub` events mark resumed runs with `resumed: true`, letting hosts distinguish them from fresh runs (#790 follow-up).
+- `mid_sequence_request_view_stub` 事件在续跑时带 `resumed: true`，宿主可据此与正常 run 区分（#790 跟进）。
 
 ### Breaking
 - **Run-snapshot checkpoint reporting and capability claims are retired (#838 S2).** The contract no longer lists the
@@ -1038,8 +1040,8 @@
 
 ### Fixed
 
-- #718: Validate folding.toolResultTtl/folding.toolResultFoldMinTokens/folding.context.keepRounds.
-- #718：不再静默失效：folding.toolResultTtl/toolResultFoldMinTokens/context.keepRounds
+- #718: Validate `folding.toolResultTtl`, `folding.toolResultFoldMinTokens`, and `folding.context.keepRounds` at startup: strings, fractional numbers, and negatives throw immediately; `0` remains valid.
+- #718：启动期校验 `folding.toolResultTtl`、`folding.toolResultFoldMinTokens` 与 `folding.context.keepRounds`：字符串、小数和负数立即抛错；`0` 仍合法。
 - #609: Over-budget protected messages now degrade visibly instead of killing long runs.
 - #609：受保护消息超预算时改为可见降级，长任务不再判死。
 

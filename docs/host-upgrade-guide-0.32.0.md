@@ -66,6 +66,12 @@ truncated the injected block ends with a truncation marker line, and
 `discoverProjectInstructions()` returns `droppedSections` so you can see what did not fit instead of
 guessing. If you injected near the old ceiling, your prompt got bigger — check your token budget.
 
+### 2.4 Invalid folding values now fail at startup (#718)
+
+`folding.toolResultTtl`, `folding.toolResultFoldMinTokens`, and `folding.context.keepRounds` are
+validated during startup. String values, fractions, and negative numbers throw immediately instead
+of being silently ignored; `0` remains valid.
+
 ## 3. New optional store capabilities
 
 Nothing here is required. The table is the whole contract: the right column is what happens when you

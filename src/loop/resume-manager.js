@@ -852,6 +852,18 @@ export async function restoreResume(ctx) {
         // were not reached by the sequential executor and can be replayed.
         ctx.resumePendingTools = pendingTools.filter((toolUse) => replayableToolUses.has(toolUse));
       }
+      let ledgerExecCalls = 0;
+      for (const entry of ledgerEntries) {
+        for (const block of blocksFor(entry.message?.content)) {
+          if (block?.type === "tool_use" && block.name === "exec") ledgerExecCalls += 1;
+        }
+      }
+      if (ledgerExecCalls > 0) {
+        const execStats = ctx.toolStats.get("exec");
+        const calls = Number.isSafeInteger(execStats?.calls) ? execStats.calls : 0;
+        const failures = Number.isSafeInteger(execStats?.failures) ? execStats.failures : 0;
+        ctx.toolStats.set("exec", { calls: Math.max(calls, ledgerExecCalls), failures });
+      }
       // ── issue #421：**中段**悬空 `tool_use` 的读侧兜底 ────────────────────────────────────
       // 位置：上下文重建完之后、**任何模型请求之前**、任何裁剪之前（裁剪只动
       // 上下文，不动账本；桩要跟着它所属的那条聚合消息走）。

@@ -1949,7 +1949,7 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 | `mid_sequence_merge_refused` | reason | （事件自身）| 普查判它缺结果，而同页合并自己拒了 ⇒ 这一格**补不出**合法桩，run 仍旧 `invalid_messages`；行为没变，只是不再无声 |
 | `mid_sequence_shape_not_supported` | reason | （事件自身）| 悬空是真的悬空，但形状不是同页合并那一种（需要插页）⇒ 引擎不发明形状（issue #421 纪律 ④），具体哪一种看 `detail` |
 | `mid_sequence_stub_row_write_refused` | reason | （事件自身）| 锚点找到了、该落账，而写侧返回「没落盘」⇒ 那张桩只活在本次上下文里，下一次恢复还得再补 |
-| `mid_sequence_request_view_stub` | reason | （事件自身）| **issue #790——视图修了，账本没修。**中段缺失结果只在**请求视图**里补齐（不进 `ctx.messages`、也不进账本：不调任何 `store.append*`）⇒ run 能起来，而归档账本仍旧逐字节开着。部分结清时把缺失结果合进同一 user 页；否则插一张纯 `tool_result` 页。`detail` 说哪一种形状，`toolUseIds` 交出是哪些 id。**它不是放弃**，所以没复用 `mid_sequence_shape_not_supported`：同一次续跑现在会对同一个形状发**两个**码——那个说「账本仍未修」，这个说「请求照样发得出去」——只留 `count` 宿主就分不开这两件事 |
+| `mid_sequence_request_view_stub` | reason | （事件自身）| **issue #790——视图修了，账本没修。**中段缺失结果只在**请求视图**里补齐（不进 `ctx.messages`、也不进账本：不调任何 `store.append*`）⇒ run 能起来，而归档账本仍旧逐字节开着。部分结清时把缺失结果合进同一 user 页；否则插一张纯 `tool_result` 页。`detail` 说哪一种形状，`toolUseIds` 交出是哪些 id。**它不是放弃**，所以没复用 `mid_sequence_shape_not_supported`：同一次续跑现在会对同一个形状发**两个**码——那个说「账本仍未修」，这个说「请求照样发得出去」——只留 `count` 宿主就分不开这两件事。只有续跑时该事件才带 `resumed: true`；正常 run 不带，宿主便能按事实措辞 |
 | `anchor_probe_absent` | detail | `mid_sequence_aggregate_row_not_in_ledger` | store 没提供 `loadRawRows` ⇒ **补上这个探针，下一次恢复账本就闭合**（这是四种里唯一宿主能自己修好的一种）|
 | `round_carrier_has_body` | detail | `mid_sequence_aggregate_row_not_in_ledger` | 该轮载体已带正文（issue #729 的「两份都留」）⇒ 有行也不给用；补探针也闭合不了，因为写进去会把整轮正文拼第二遍 |
 | `aggregate_row_not_in_ledger` | detail | `mid_sequence_aggregate_row_not_in_ledger` | 探针给了、轮也干净，而账本里确实没有那条首片行（例如它的 `round` 不是安全整数，issue #729）⇒ 这一轮的正文本来就不以消息行存在 |
@@ -1959,10 +1959,11 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 | `aggregate_has_unpaired_tool_use_result` | detail | `mid_sequence_request_view_stub` | 紧接的 `user` 已有结果，但该 assistant 仍有未配对的 `tool_use`；只把缺失结果桩合进同一页 |
 | `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | `appendRound` 那一写本身没落地 ⇒ 那张桩只活在本次上下文（issue #811 之后这是该成因**唯一**的来路：轮号不可用的桩在写**之前**就被跳过且不发射——store 根本没被问过，说「没落盘」是假话，而不许新增取值） |
 
-事件载荷：`{type, runId, parentRunId?, round, reason, count, detail?, toolUseIds?}`——`count` 是这次放弃涉及几张
+事件载荷：`{type, runId, parentRunId?, round, reason, count, detail?, toolUseIds?, resumed?}`——`count` 是这次放弃涉及几张
 `tool_use`（或几张桩），同一 `(reason, detail)` 的成因归并成**一条**事件。`toolUseIds` 是 issue #790
 加的那一格，**只**出现在 `mid_sequence_request_view_stub` 上（「模型被告知了哪几个 id」就从这一格读）；
-其余成因都不带那个键，字节逐字不变——与上面 `detail` 同一条规矩。这张表是宿主可读面：
+其余成因都不带那个键，字节逐字不变——与上面 `detail` 同一条规矩。`resumed: true` 也只出现在这条 reason 上；
+正常 run 与其他 reason 都不带它。这张表是宿主可读面：
 `test/loop-resume-abandon-signals-730.test.js` 拿源码里的成因闭集与中英两份契约**双向**对账（源码
 有而表里没有 ⇒ 红；表里有而源码不发 ⇒ 也红），四条放弃路径各有一条端到端用例钉住（反向证：把
 新增的发射代码拿掉，对应用例必须红）。格 1 那一格（判据粒度）是另一件事：**别的轮**结清过同一个
