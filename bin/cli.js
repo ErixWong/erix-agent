@@ -34,6 +34,8 @@ import {
   resolveCompactionBudget,
   splitCompactionContext,
 } from "./config.js";
+// issue #838 收尾：恢复时补的「工具结果桩」要**告诉人**（此前只报给模型）。
+import { MID_SEQUENCE_REQUEST_VIEW_STUB } from "../src/loop/pending-tool-result.js";
 // issue #441：把引擎自带的可重试静默相位截止接到 provider（取值关系见 bin/provider-timeouts.js 头注释）。
 import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
 import {
@@ -117,6 +119,9 @@ const HELP_TEXT = `用法：
                       · 裸用（不带值）：本 run 用写工具**声明过的**每个路径收尾时都必须真的在盘上
                         （读 fileWrites 原始路径，不是 40 码点摘要）。⚠ 模型什么都不声明时集合为空
                         ⇒ 判据恒真，所以它判的是「没撒谎」，不是「做了事」。
+                        ⚠ 但不是所有空台账都静默恒真：本 run 出现过 exec 调用而台账为空时，
+                        引擎会给出 fileWritesBlind，这里显示「无法判定」降级（issue #711 甲案）——
+                        模型改用 shell 写文件时看得见，不再假装判过。
                       · 带值（可重复）：**这次任务必须交付这些文件**，每条一个判据（相对路径按
                         --cwd 解析）。模型一次工具都没调也照样判不过——要「必须交付 report.md」
                         只能用这一种。两种写法都收：--require-deliverable report.md 与
@@ -981,6 +986,30 @@ export function formatCompactionFallbackEventLine(event) {
  * @param {(line: string) => void} [options.writeStderr] stderr 写出口（测试可注入；缺省真写 stderr）
  * @returns {{appendJudgeLogRecord: ((record: any) => void)|undefined, onEvent: (event: any) => void}}
  */
+/**
+ * `resume_journal_skipped` 里**工具结果桩**那一条的即时提示（issue #838 收尾）。
+ *
+ * 为什么需要它：`#839` 之后「崩在工具返回与结果落账之间」的调用会被补一条桩，正文**丢失**。
+ * 那条桩只进模型上下文（模型看得见），**人看不见** —— CLI 是宿主面，必须把这件事说出来，
+ * 否则用户只知道 run 恢复了，不知道有一条工具结果已经没了。
+ *
+ * 只认 `reason === MID_SEQUENCE_REQUEST_VIEW_STUB`：同一个事件类型还承载 #730 的其它跳过原因，
+ * 那些与「结果不可用」无关，混进来会让这条提示变成噪音。
+ *
+ * @param {*} event `onEvent` 收到的 `resume_journal_skipped` 事件
+ * @returns {string|null} 该说的话；不是桩事件时 `null`
+ */
+export function formatResumeStubNotice(event) {
+  if (event?.type !== "resume_journal_skipped") return null;
+  if (event?.reason !== MID_SEQUENCE_REQUEST_VIEW_STUB) return null;
+  const count = Number.isSafeInteger(event?.count) && event.count > 0 ? event.count : 0;
+  if (count === 0) return null;
+  const ids = Array.isArray(event?.toolUseIds) ? event.toolUseIds.filter((id) => typeof id === "string") : [];
+  const idText = ids.length > 0 ? `（${ids.join(", ")}）` : "";
+  return `[erix] 本次恢复补了 ${count} 条工具结果桩${idText}：这些调用的结果不可用`
+    + "（其中已执行过的不要盲目重发，先勘验现场）。";
+}
+
 export function createRunEventHandlers({
   judgeLogPath,
   touchIdle = () => {},
@@ -1035,6 +1064,8 @@ export function createRunEventHandlers({
       appendJudgeLogRecord?.(event);
       emitStderr(formatCompactionFallbackEventLine(event));
     }
+    const stubNotice = formatResumeStubNotice(event);
+    if (stubNotice !== null) emitStderr(stubNotice);
   };
   return { appendJudgeLogRecord, onEvent };
 }

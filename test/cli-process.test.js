@@ -308,6 +308,12 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
     assert.match(help.stdout, /erix chat "<prompt>"/u);
     assert.equal(help.stderr, "", "--help 不该往 stderr 写东西");
 
+    // issue #711 甲案：`--require-deliverable` 的帮助文案不许再承诺「空台账一律恒真」——
+    // `fileWritesBlind` 之后，`exec` 写文件的那种空台账会显示「无法判定」降级。
+    // 这条钉住的是**文案与行为同步**：行为在 `bin/final-guard.js`，文案在这里。
+    assert.match(help.stdout, /fileWritesBlind/u,
+      "--help 必须提到 fileWritesBlind（否则读者会以为空台账一律恒真）");
+
     const helpCodes = parseExitCodeSection(help.stdout, "退出码：");
     // README 承诺的两个码必须存在：0（成功/verified）与 1（用法错误 / 会话不存在）。
     assert.ok(helpCodes.has(EXIT_OK), "帮助里缺少退出码 0 那一行");
