@@ -6022,9 +6022,9 @@ export async function runToolLoop(options) {
       judgeDecision,
     );
     const roundRunState = await refreshRunState();
-    // issue #742 切片 A（纯加法，只做可观测）：先把要落盘的那一份副本算出来，再拿它的体积账。
-    // 顺序很要紧：元数据必须量**真正写进轮记录的那一份**（`cloneState` 之后），量原件会在两者
-    // 不等价时报出一个盘上根本不存在的字节数。
+    // issue #843：无论走哪条持久化通道，都观测本轮的 run-state 快照体积。
+    // 先 clone，保证元数据量的是回退轮记录会写下的同一份 JSON 值；有 saveRunState 时则由独立通道保存。
+    // 该观测不依赖轮记录是否携带 runState，也不改变状态本身。
     const roundRunStateCopy = cloneState(roundRunState);
     const runStateMeta = measureRunStateMeta(roundRunStateCopy);
 
@@ -6055,12 +6055,12 @@ export async function runToolLoop(options) {
       toolUses: content.filter((block) => block?.type === "tool_use").length,
       summary: roundSummary,
       l0facts: currentL0,
-      runState: roundRunStateCopy,
-      // issue #742 切片 A（新键，纯加法）：上面那份 run-state 副本的体积账 `{ bytes, capBytes, truncated }`，
-      // 形状照 `foldedPayloadMeta`。**无值不写键**：副本不是普通对象或序列化不了 ⇒ 整个键缺席
-      // （引擎自己永不写 `{bytes:0,truncated:false}` 充当「没截断」）。宿主可读它给「每轮一份全量副本」
-      // 报警；引擎内**没有**读者，也不参与任何恢复/停门判据。⚠ 它不减少任何字节：每轮仍是一份全量，
-      // 账本总量仍随轮数线性增长（#742 的体积那两刀在后面的切片）。
+      ...(typeof store?.saveRunState === "function" ? {} : { runState: roundRunStateCopy }),
+      // issue #843：本轮 run-state 快照的体积观测 `{ bytes, capBytes, truncated }`，与存储通道无关。
+      // 形状照 `foldedPayloadMeta`。**无值不写键**：快照不是普通对象或序列化不了 ⇒ 整个键缺席
+      // （引擎自己永不写 `{bytes:0,truncated:false}` 充当「没截断」）。有 saveRunState 时也保留观测，
+      // 但它不表示轮记录里存在副本；无能力时它与回退 `runState` 副本逐字节对应。
+      // 引擎内**没有**读者，也不参与任何恢复/停门判据；节省的账本字节来自省掉每轮全量 `runState`。
       ...(runStateMeta === undefined ? {} : { runStateMeta }),
       ...(compactionStats.length > compactionStatsStart
         ? { compactionStats: cloneState(compactionStats.slice(compactionStatsStart)) }

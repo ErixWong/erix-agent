@@ -1,11 +1,11 @@
-// issue #742 切片 A 的端到端面：`runStateMeta` 必须出现在**真轮记录**上，且三格的值与盘上事实一致。
+// issue #742 / #843 的端到端面：回退 store 的真轮记录仍带 `runState`，其 `runStateMeta` 三格须与副本一致。
 //
 // 为什么端到端还要单独一格：`measureRunStateMeta` 的单测只证明纯函数算得对；写点接错（量错对象、
 // 无值时写了零值、把键写进 `runState` 里面）都只有从 store 读回真轮记录才看得见。
 //
 // 实测口径（写进报告，也写在这里，因为它是判据里最容易误解的一条）：
-//   * `bytes` 逐字节等于 `Buffer.byteLength(JSON.stringify(record.runState), "utf8")` —— 量的是
-//     **真正落盘的那一份副本**，不是夹断前的候选。
+//   * 本文件显式使用不具备 `saveRunState` 的回退 store；此时 `bytes` 逐字节等于
+//     `Buffer.byteLength(JSON.stringify(record.runState), "utf8")`。
 //   * 夹断发生在写点**上游**的 `boundRunState`，所以「被夹断那一轮」落盘的副本反而**在上限之内**
 //     （现测极端轮：128 工具 / 128 文件 / 64 条 todo / 1200 字 semantic ⇒ 副本 64 893 B，只比上限低 643 B）。
 //     判据里 `bytes > capBytes` 那一半是**夹断前的候选**才成立的事实，它由
@@ -23,7 +23,11 @@ import { runDirect } from "./helpers/run-direct.js";
 const serializedBytes = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
 
 async function runRoundRecords(options) {
-  const store = createMemoryTranscriptStore();
+  const {
+    saveRunState: _saveRunState,
+    loadRunState: _loadRunState,
+    ...store
+  } = createMemoryTranscriptStore();
   await runDirect({
     initialUserMessage: "work",
     executeTool: async () => ({ success: true, data: "ok" }),
@@ -125,10 +129,11 @@ test("#742 写点源码格：量的是落盘那一份，且无值走的是「不
   const here = dirname(fileURLToPath(import.meta.url));
   const source = await readFile(join(here, "..", "src", "loop", "orchestrator.js"), "utf8");
 
-  // ① 必须量 `cloneState` 之后那一份（量原件会报出盘上不存在的字节数）。
+  // ① 必须量 `cloneState` 之后的快照；有能力 store 也保留这个状态观测。
   assert.match(source, /const roundRunStateCopy = cloneState\(roundRunState\);/u);
   assert.match(source, /const runStateMeta = measureRunStateMeta\(roundRunStateCopy\);/u);
-  assert.match(source, /runState: roundRunStateCopy,/u);
+  assert.match(source,
+    /\.\.\.\(typeof store\?\.saveRunState === "function" \? \{\} : \{ runState: roundRunStateCopy \}\),/u);
   // ② 无值 ⇒ 整个键缺席；不许出现「零值兜底」的写法。
   assert.match(source, /\.\.\.\(runStateMeta === undefined \? \{\} : \{ runStateMeta \}\),/u);
   assert.doesNotMatch(source, /runStateMeta\s*\?\?/u, "零值兜底会把「不知道」写成「没截断」");

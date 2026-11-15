@@ -84,9 +84,19 @@ const BASE = {
   executeTool: async ({ id }) => `done-${id}`,
 };
 
+// The committed golden pins the legacy fallback-row shape; #843's capability-bearing path has its own tests.
+function createRecordFallbackStore() {
+  const {
+    saveRunState: _saveRunState,
+    loadRunState: _loadRunState,
+    ...store
+  } = createMemoryTranscriptStore();
+  return store;
+}
+
 /** 场景 1：单段跑完——并行工具结果、judge nudge、finalGuard revise、终稿。 */
 export async function scenarioSingleRun() {
-  const store = createMemoryTranscriptStore();
+  const store = createRecordFallbackStore();
   const provider = createFakeProvider([
     toolTurn("a1", "a2"),
     endTurn("第二段正文"),
@@ -130,7 +140,7 @@ export async function scenarioSingleRun() {
 
 /** 场景 2：崩溃 → 宿主追问 → resume（覆盖 :resume 载体、种子行、快照恢复）。 */
 export async function scenarioCrashResume() {
-  const store = createMemoryTranscriptStore();
+  const store = createRecordFallbackStore();
   const runId = "golden-resume";
   const first = createFakeProvider([
     toolTurn("a1"),
