@@ -251,6 +251,19 @@ keeps only the value-reconciliation family (`check:changelog`, the `[Unreleased]
 
 **When preflight answers "not judged", the closing line of `--all` forks on the step id (issue #731).** A gated step that did not run has an **openable gate** (`ERIX_E2E_MODEL=1`, or a `--hosts <dir>` argument); step 2, the `[Unreleased]` carry, has **no gate at all** — it reads facts from `package.json` and `CHANGELOG.md`, so what is missing is an action only a human can take: **cut the version**. One hard-coded "open the gate and ship" sentence told the reader to go look for a gate that does not exist, so `unjudgedConclusion()` now derives the closing line from the unjudged ids (`UNJUDGED_ACTIONS`, two kinds: `open-gate` / `cut-version`) and every step that can answer not-judged must be registered there — `--self-test` reds on a new step that forgot the entry.
 
+## check-long-task-e2e
+Standalone real-model long-task E2E for the natural small-window path; it is deliberately not part of
+`check:release:model-e2e` while runtime and stability are being observed. `npm run check:long-task-e2e` reads only
+the repository's `src/` through local `listFiles` / `readFile` tools and uses a 65,536-token window with an
+8,192-token output cap, leaving `budgetTokens` to the engine's normal `computeBudget` derivation. The L1 arm
+requests the full `src/loop/orchestrator.js` and asserts the protected-message budget fact plus a non-failed run;
+the default runs only L1 (~33 s). Pass `--with-l2` to `node scripts/long-task-real-e2e.mjs` to run both arms; the
+full run takes about 13 minutes and uses about 380k tokens. `--l1-only` remains accepted as an alias for the default.
+The L2 arm analyzes `src/loop/`, requires at least five `readFile` calls and six rounds before judging the
+compaction / ledger / resume invariants, and reports a classified skip if that workload does not materialize.
+`ERIX_E2E_MODEL=1` opens the shared real-model gate; with it closed the command prints the categorized reason and
+exits 0. It uses the configured default model and a temporary transcript directory, never a hard-coded model name.
+
 ## check-cli-real
 Gated real model endpoint CLI smoke (ticket 261015 T5, #284/#285 wrap-up): `npm pack` → install the tarball into a
 throwaway project → drive the **installed `erix`** (not `node bin/cli.js`) against the real relay with a
