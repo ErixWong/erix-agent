@@ -545,6 +545,18 @@ function describeConfigValueType(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @param {string} path
+ * @returns {string|undefined}
+ */
+function nonNegativeIntegerConfigValueProblem(value, path) {
+  const numeric = typeof value === "number" ? value : Number.NaN;
+  return Number.isSafeInteger(numeric) && numeric >= 0
+    ? undefined
+    : `${path} must be a non-negative integer (received: ${describeConfigValueType(value)})`;
+}
+
+/**
  * **Leaf value rules** (issue #538): `"<group>.<leaf>"` → a check returning a verdict string
  * (`undefined` = pass).
  *
@@ -565,9 +577,9 @@ function describeConfigValueType(value) {
  * port's `policy: { stream: 1 }` (#545 translates policy leaves into `config.run.stream`, so the
  * assembly route is refused at construction time).
  *
- * Only leaves that **need** a value rule are registered (one, today); an absent entry means "no extra
- * value rule for this leaf", not "forgotten" — and every registered key must really be a schema leaf,
- * which `configSchemaSelfCheck` pins as a dead-entry check.
+ * Only leaves with a demonstrated wrong-value failure or silent misconfiguration need a value rule;
+ * an absent entry means "no extra value rule for this leaf", not "forgotten". Every registered key
+ * must really be a schema leaf, which `configSchemaSelfCheck` pins as a dead-entry check.
  *
  * @type {Readonly<Record<string, (value: unknown, path: string) => string | undefined>>}
  */
@@ -587,6 +599,28 @@ const CONFIG_LEAF_VALUE_RULES = Object.freeze({
     ? undefined
     : `${path} must be one of "off" / "prompt" / "prompt-and-fallback"`
       + ` (received: ${describeConfigValueType(value)})`),
+  // issue #718: `config.folding.toolResultTtl` is a non-negative integer (`0` disables TTL folding).
+  // Without intake validation, strings / null / negative / fractional values reach the TTL reader as
+  // an unsupported policy and can make the configured lifetime ineffective. Refuse them before a
+  // provider call; existing non-negative integer values, including `0`, keep their behavior, and no
+  // other folding or host-data field is narrowed.
+  "folding.toolResultTtl": (value, path) => nonNegativeIntegerConfigValueProblem(value, path),
+  // issue #718: `config.folding.toolResultFoldMinTokens` is a non-negative integer threshold (`0` is
+  // valid). A string such as `"8000"` is otherwise accepted without a typed intake verdict, so
+  // coercion downstream can silently diverge from the host's configured threshold. Check this scalar
+  // before a request; valid numeric thresholds are unchanged.
+  "folding.toolResultFoldMinTokens": (value, path) => nonNegativeIntegerConfigValueProblem(value, path),
+  // issue #718: `config.folding.context.keepRounds` is a non-negative integer (`0` means fold all
+  // eligible rounds). Built-in strategies silently clamp negatives or replace non-numbers with a
+  // default, so the host's invalid setting is not applied as written. Check only this known numeric
+  // subfield at intake; valid values are unchanged and opaque context payloads remain untouched.
+  "folding.context": (value, path) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const raw = /** @type {Record<string, unknown>} */ (value).keepRounds;
+    return raw === undefined
+      ? undefined
+      : nonNegativeIntegerConfigValueProblem(raw, `${path}.keepRounds`);
+  },
   // issue #682: `config.metadata.modelMetadata.budgetTokens` — the engine-side **explicit compaction
   // budget** (the third known number on the same carrier, next to `contextWindowTokens` /
   // `maxOutputTokens`). It must be a positive integer: the value is used as `budgetTokens` verbatim

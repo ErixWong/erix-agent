@@ -447,9 +447,13 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     // 用它自己的合法值（`true`），其余叶子照旧用字符串样本。漏了这一步，本格会红在值规则上，
     // 而不是红在它真正要证明的「展开等价」上。
     // issue #598：`config.continuity.handoff` 同一条纪律（三字面量枚举），样本用它的默认值 `"off"`。
+    // issue #718：折叠 TTL / 最小 token 数与 context.keepRounds 均用合法边界 `0`。
     const value = path === "run.stream"
       ? true
-      : path === "continuity.handoff" ? "off" : `sweep:${key}`;
+      : path === "continuity.handoff" ? "off"
+        : path === "folding.context" ? { keepRounds: 0 }
+          : path === "folding.toolResultTtl" || path === "folding.toolResultFoldMinTokens" ? 0
+            : `sweep:${key}`;
     const flat = { [key]: value };
     const nested = { config: { [group]: { [leaf]: value } } };
     const flatExpanded = expandConfigNamespace(flat);
