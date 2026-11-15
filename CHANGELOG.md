@@ -63,6 +63,9 @@
   `0` 仍合法（PR #842）。
 
 ### Changed
+- 0.33.0 version cut: this section registers every public-surface merge it covers, and both
+  upgrade guides gain a `What does not change` section (PR #851).
+- 0.33.0 切版：本节逐条登记它覆盖的公开面合并号；两份升级指南补「不变」一节（PR #851）。
 - The compaction safety layer no longer treats an unreachable budget as a dead run;
   `budgetUnreachable` carries that fact (PR #846).
 - 压缩安全层不再因不可达预算判死 run；`budgetUnreachable` 字段记录该事实
