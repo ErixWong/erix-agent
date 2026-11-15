@@ -30,7 +30,7 @@
 
 ## 2. Leaf account (measured, no number copied)
 
-**Measured: 43 leaves = 30 init / 13 call**, in 8 groups; **3 of 43** leaves carry a value rule today: `config.run.stream`, `config.continuity.handoff`, `config.metadata.modelMetadata`.
+**Measured: 43 leaves = 30 init / 13 call**, in 8 groups; **6 of 43** leaves carry a value rule today: `config.run.stream`, `config.continuity.handoff`, `config.folding.toolResultTtl`, `config.folding.toolResultFoldMinTokens`, `config.folding.context`, `config.metadata.modelMetadata`.
 
 | group | leaves | names |
 | --- | --- | --- |
@@ -44,9 +44,9 @@
 | `continuity` | 1 | `continuity.handoff` |
 | **total** | **43** | **30 init / 13 call** |
 
-⚠ Two things must not be mixed in here: ① the `init` / `call` column is **#571 slice 1**'s product (`CONFIG_LEAF_BINDING`); this slice only reads it as a column and adds or changes no binding; ② the **"this key does not exist" gate** (shipped in #571 slice 1) **is not this slice's product** — the `G` cells in the table are **value rules** (`CONFIG_LEAF_VALUE_RULES`: today only `config.run.stream` (#538) and `config.continuity.handoff` (#598)), while the name gate answers "does this key exist" and this table answers "is this value legal".
+⚠ Two things must not be mixed in here: ① the `init` / `call` column is **#571 slice 1**'s product (`CONFIG_LEAF_BINDING`); this slice only reads it as a column and adds or changes no binding; ② the **"this key does not exist" gate** (shipped in #571 slice 1) **is not this slice's product** — `G` also includes refusals from `CONFIG_LEAF_VALUE_RULES`; the name gate answers "does this key exist", this table answers "is this value legal", and the account above derives the registered value-rule leaves from that table.
 
-**Zero behaviour change** in this slice: not one byte of `src/` moved, and the accepted surface is neither narrowed nor widened (the ruling belongs to the maintainer, see §6).
+This slice narrows only the three #718 folding values (`config.folding.toolResultTtl`, `config.folding.toolResultFoldMinTokens`, `config.folding.context.keepRounds`); all other leaves remain unchanged.
 
 ## 3. Status matrix (leaf × wrong value)
 
@@ -84,8 +84,8 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 | `config.timing.deadlineMs` | init | · | · | · | A | · | · | · | · |
 | `config.timing.retry` | init | · | · | · | · | · | · | A | A |
 | `config.folding.context` | init | V | V | V | V | V | · | V | · |
-| `config.folding.toolResultTtl` | init | · | · | · | · | · | · | · | · |
-| `config.folding.toolResultFoldMinTokens` | init | · | · | · | A | · | · | · | · |
+| `config.folding.toolResultTtl` | init | G | G | G | G | G | G | G | G |
+| `config.folding.toolResultFoldMinTokens` | init | G | G | G | G | G | G | G | G |
 | `config.guard.finalGuardMaxRetries` | init | · | · | · | · | · | · | · | · |
 | `config.guard.finalGuardTimeoutMs` | init | · | · | · | · | · | · | · | · |
 | `config.guard.finalGuardExtend` | init | S | S | S | S | · | S | S | S |
@@ -102,19 +102,19 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 
 | code | cells | criterion |
 | --- | --- | --- |
-| `G` | 15 | gate: refused on the spot by the `config` name/shape gate (the value rules `CONFIG_LEAF_VALUE_RULES` live here too) |
+| `G` | 31 | gate: refused on the spot by the `config` name/shape gate (the value rules `CONFIG_LEAF_VALUE_RULES` live here too) |
 | `V` | 6 | semantic: refused by the semantic phase (`assertSemanticOptionValues`) |
 | `S` | 59 | startup: the run started, it threw before the first request, and **the verdict names this leaf** (an engine value check) |
 | `C` | 7 | crash: the run started, it blew up before the first request, but **the verdict does not name this leaf** (an engine-internal error the host cannot act on) |
 | `U` | 0 | use: threw only after the first request (genuinely carried to a use point) |
-| `A` | 118 | accepted+live: nothing threw, and this run's fingerprint differs from the baseline (the wrong value really took effect) |
-| `·` | 139 | accepted+inert: nothing threw, and the fingerprint is byte-identical to the baseline (configured but inert in this scenario) |
+| `A` | 117 | accepted+live: nothing threw, and this run's fingerprint differs from the baseline (the wrong value really took effect) |
+| `·` | 124 | accepted+inert: nothing threw, and the fingerprint is byte-identical to the baseline (configured but inert in this scenario) |
 | `H` | 0 | hung: did not finish within the per-cell limit |
 | **total** | **344** | 43 × 8 |
 
 ## 5. Per-cell detail (every non-inert cell: layer / verbatim verdict / where it took effect)
 
-205 cells (the other 139 are `·`: no observable difference in this scenario, not listed). Verdicts are the engine's own words, verbatim.
+220 cells (the other 124 are `·`: no observable difference in this scenario, not listed). Verdicts are the engine's own words, verbatim.
 
 | leaf | value | code | layer / effect path | verbatim verdict / observable diff |
 | --- | --- | --- | --- | --- |
@@ -271,7 +271,22 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 | `config.folding.context` | `0.5` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
 | `config.folding.context` | `true` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
 | `config.folding.context` | `[]` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
-| `config.folding.toolResultFoldMinTokens` | `0.5` | A | requests[1].messages[2].content[0].content | requests[1].messages[2].content[0].content: "tool-output" → "tool-output\n【TTL 预警】此结果下一轮将折叠为句柄；若后续仍需原文，请现在重读源文件" |
+| `config.folding.toolResultTtl` | `"8"` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: string) |
+| `config.folding.toolResultTtl` | `"bogus"` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: string) |
+| `config.folding.toolResultTtl` | `-1` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: number) |
+| `config.folding.toolResultTtl` | `0.5` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: number) |
+| `config.folding.toolResultTtl` | `true` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: boolean) |
+| `config.folding.toolResultTtl` | `null` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: null) |
+| `config.folding.toolResultTtl` | `[]` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: array) |
+| `config.folding.toolResultTtl` | `{}` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: object) |
+| `config.folding.toolResultFoldMinTokens` | `"8"` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: string) |
+| `config.folding.toolResultFoldMinTokens` | `"bogus"` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: string) |
+| `config.folding.toolResultFoldMinTokens` | `-1` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: number) |
+| `config.folding.toolResultFoldMinTokens` | `0.5` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: number) |
+| `config.folding.toolResultFoldMinTokens` | `true` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: boolean) |
+| `config.folding.toolResultFoldMinTokens` | `null` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: null) |
+| `config.folding.toolResultFoldMinTokens` | `[]` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: array) |
+| `config.folding.toolResultFoldMinTokens` | `{}` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: object) |
 | `config.guard.finalGuardExtend` | `"8"` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
 | `config.guard.finalGuardExtend` | `"bogus"` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
 | `config.guard.finalGuardExtend` | `-1` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
@@ -328,9 +343,9 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 
 **This slice changes no behaviour at all.** What follows is only a ranking of candidates derived from this table, for the maintainer to rule on which one earns a breaking budget — every narrowing **shrinks the accepted surface**, so it must be booked as Breaking.
 
-- ① Leaves where a wrong value **really takes effect** (`A`): 22 — `config.input.system`, `config.input.initialUserMessage`, `config.input.messages`, `config.input.wrapup`, `config.run.completion`, `config.run.stream`, `config.run.reflection`, `config.run.runId`, `config.run.parentRunId`, `config.tuning.maxTokens`, `config.tuning.temperature`, `config.tuning.topP`, `config.timing.timeoutMs`, `config.timing.deadlineMs`, `config.timing.retry`, `config.folding.toolResultFoldMinTokens`, `config.metadata.expert`, `config.metadata.user`, `config.metadata.task`, `config.metadata.requestId`, `config.metadata.model`, `config.metadata.modelMetadata`. Narrowing them changes "the host wrote nonsense and it ran anyway", the widest blast radius and the most likely to break a host that used to work;
+- ① Leaves where a wrong value **really takes effect** (`A`): 21 — `config.input.system`, `config.input.initialUserMessage`, `config.input.messages`, `config.input.wrapup`, `config.run.completion`, `config.run.stream`, `config.run.reflection`, `config.run.runId`, `config.run.parentRunId`, `config.tuning.maxTokens`, `config.tuning.temperature`, `config.tuning.topP`, `config.timing.timeoutMs`, `config.timing.deadlineMs`, `config.timing.retry`, `config.metadata.expert`, `config.metadata.user`, `config.metadata.task`, `config.metadata.requestId`, `config.metadata.model`, `config.metadata.modelMetadata`. Narrowing them changes "the host wrote nonsense and it ran anyway", the widest blast radius and the most likely to break a host that used to work;
 - ② Leaves where a wrong value blows up as an **engine error that does not name the leaf** (`C` / `U`): 1 — `config.input.messages`. These already fail hard today, but the verdict does not tell the host what to fix; adding a type check only **moves the failure earlier and names it**, it does not change the fact that it fails;
-- ③ Leaves where all 8 wrong values are **silently accepted** (all `·`): 11 — `config.input.cacheStablePrefix`, `config.run.maxTokenContinuations`, `config.run.stallDetection`, `config.run.writeToolNames`, `config.run.writeToolPathKeys`, `config.run.resume`, `config.tuning.cacheCapable`, `config.folding.toolResultTtl`, `config.guard.finalGuardMaxRetries`, `config.guard.finalGuardTimeoutMs`, `config.metadata.toolContext`. They look most like "configured but inert", but `·` only says this scenario never reached them (see §7); each needs its own deep-branch scenario before a ruling.
+- ③ Leaves where all 8 wrong values are **silently accepted** (all `·`): 10 — `config.input.cacheStablePrefix`, `config.run.maxTokenContinuations`, `config.run.stallDetection`, `config.run.writeToolNames`, `config.run.writeToolPathKeys`, `config.run.resume`, `config.tuning.cacheCapable`, `config.guard.finalGuardMaxRetries`, `config.guard.finalGuardTimeoutMs`, `config.metadata.toolContext`. They look most like "configured but inert", but `·` only says this scenario never reached them (see §7); each needs its own deep-branch scenario before a ruling.
 
 ## 7. Residual risks / what this table does not cover
 

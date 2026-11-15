@@ -534,11 +534,11 @@ export function renderDoc(lang, table) {
   push(
     `| **${t("合计", "total")}** | **${table.counts.total}** | **${table.counts.init} init / ${table.counts.call} call** |`,
     "",
-    t("⚠ 两件事别混进来：① `init` / `call` 这一列是 **#571 片1** 的产物（`CONFIG_LEAF_BINDING`），本单只把它当一列读出来，一个绑定都没新增或改动；② **「键名不存在」那道闸口**（#571 片1 已落地）**不是本单的产物**——表里 `G` 那几格是**值规则**（`CONFIG_LEAF_VALUE_RULES`，今天只有 `config.run.stream`（#538）与 `config.continuity.handoff`（#598）两条），键名闸口管的是「这个键存不存在」，本表测的是「这个值合不合法」。",
-      "⚠ Two things must not be mixed in here: ① the `init` / `call` column is **#571 slice 1**'s product (`CONFIG_LEAF_BINDING`); this slice only reads it as a column and adds or changes no binding; ② the **\"this key does not exist\" gate** (shipped in #571 slice 1) **is not this slice's product** — the `G` cells in the table are **value rules** (`CONFIG_LEAF_VALUE_RULES`: today only `config.run.stream` (#538) and `config.continuity.handoff` (#598)), while the name gate answers \"does this key exist\" and this table answers \"is this value legal\"."),
+    t("⚠ 两件事别混进来：① `init` / `call` 这一列是 **#571 片1** 的产物（`CONFIG_LEAF_BINDING`），本单只把它当一列读出来，一个绑定都没新增或改动；② **「键名不存在」那道闸口**（#571 片1 已落地）**不是本单的产物**——表里 `G` 那几格也包括 `CONFIG_LEAF_VALUE_RULES` 的拒绝；名称闸口管的是「这个键存不存在」，本表测的是「这个值合不合法」，值规则叶子由上面的叶账从规则表派生。",
+      "⚠ Two things must not be mixed in here: ① the `init` / `call` column is **#571 slice 1**'s product (`CONFIG_LEAF_BINDING`); this slice only reads it as a column and adds or changes no binding; ② the **\"this key does not exist\" gate** (shipped in #571 slice 1) **is not this slice's product** — `G` also includes refusals from `CONFIG_LEAF_VALUE_RULES`; the name gate answers \"does this key exist\", this table answers \"is this value legal\", and the account above derives the registered value-rule leaves from that table."),
     "",
-    t("本单**零行为变更**：`src/` 一个字节都没动，接受面没有收窄也没有放宽（裁定归维护者，见 §6）。",
-      "**Zero behaviour change** in this slice: not one byte of `src/` moved, and the accepted surface is neither narrowed nor widened (the ruling belongs to the maintainer, see §6)."),
+    t("本单只收窄 #718 的三个 folding 数值项（`config.folding.toolResultTtl`、`config.folding.toolResultFoldMinTokens`、`config.folding.context.keepRounds`）；其余叶子的接受面不变。",
+      "This slice narrows only the three #718 folding values (`config.folding.toolResultTtl`, `config.folding.toolResultFoldMinTokens`, `config.folding.context.keepRounds`); all other leaves remain unchanged."),
     "",
   );
 

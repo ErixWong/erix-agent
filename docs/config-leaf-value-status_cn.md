@@ -30,7 +30,7 @@
 
 ## 2. 叶子账（实测，不抄任何数字）
 
-**实测 43 叶 = 30 init / 13 call**，分 8 组；今天**已有值规则**的叶子 3 / 43：`config.run.stream`、`config.continuity.handoff`、`config.metadata.modelMetadata`。
+**实测 43 叶 = 30 init / 13 call**，分 8 组；今天**已有值规则**的叶子 6 / 43：`config.run.stream`、`config.continuity.handoff`、`config.folding.toolResultTtl`、`config.folding.toolResultFoldMinTokens`、`config.folding.context`、`config.metadata.modelMetadata`。
 
 | 分组 | 叶数 | 叶子 |
 | --- | --- | --- |
@@ -44,9 +44,9 @@
 | `continuity` | 1 | `continuity.handoff` |
 | **合计** | **43** | **30 init / 13 call** |
 
-⚠ 两件事别混进来：① `init` / `call` 这一列是 **#571 片1** 的产物（`CONFIG_LEAF_BINDING`），本单只把它当一列读出来，一个绑定都没新增或改动；② **「键名不存在」那道闸口**（#571 片1 已落地）**不是本单的产物**——表里 `G` 那几格是**值规则**（`CONFIG_LEAF_VALUE_RULES`，今天只有 `config.run.stream`（#538）与 `config.continuity.handoff`（#598）两条），键名闸口管的是「这个键存不存在」，本表测的是「这个值合不合法」。
+⚠ 两件事别混进来：① `init` / `call` 这一列是 **#571 片1** 的产物（`CONFIG_LEAF_BINDING`），本单只把它当一列读出来，一个绑定都没新增或改动；② **「键名不存在」那道闸口**（#571 片1 已落地）**不是本单的产物**——表里 `G` 那几格也包括 `CONFIG_LEAF_VALUE_RULES` 的拒绝；名称闸口管的是「这个键存不存在」，本表测的是「这个值合不合法」，值规则叶子由上面的叶账从规则表派生。
 
-本单**零行为变更**：`src/` 一个字节都没动，接受面没有收窄也没有放宽（裁定归维护者，见 §6）。
+本单只收窄 #718 的三个 folding 数值项（`config.folding.toolResultTtl`、`config.folding.toolResultFoldMinTokens`、`config.folding.context.keepRounds`）；其余叶子的接受面不变。
 
 ## 3. 现状矩阵（叶 × 错值）
 
@@ -84,8 +84,8 @@
 | `config.timing.deadlineMs` | init | · | · | · | A | · | · | · | · |
 | `config.timing.retry` | init | · | · | · | · | · | · | A | A |
 | `config.folding.context` | init | V | V | V | V | V | · | V | · |
-| `config.folding.toolResultTtl` | init | · | · | · | · | · | · | · | · |
-| `config.folding.toolResultFoldMinTokens` | init | · | · | · | A | · | · | · | · |
+| `config.folding.toolResultTtl` | init | G | G | G | G | G | G | G | G |
+| `config.folding.toolResultFoldMinTokens` | init | G | G | G | G | G | G | G | G |
 | `config.guard.finalGuardMaxRetries` | init | · | · | · | · | · | · | · | · |
 | `config.guard.finalGuardTimeoutMs` | init | · | · | · | · | · | · | · | · |
 | `config.guard.finalGuardExtend` | init | S | S | S | S | · | S | S | S |
@@ -102,19 +102,19 @@
 
 | 代码 | 格数 | 判据 |
 | --- | --- | --- |
-| `G` | 15 | gate：`config` 名称/形状闸口当场拒（值规则 `CONFIG_LEAF_VALUE_RULES` 也在这一层） |
+| `G` | 31 | gate：`config` 名称/形状闸口当场拒（值规则 `CONFIG_LEAF_VALUE_RULES` 也在这一层） |
 | `V` | 6 | semantic：语义相拒（`assertSemanticOptionValues`） |
 | `S` | 59 | startup：进了 run，第一发请求之前就抛，且**判词点名了这个叶子**（引擎的取值校验） |
 | `C` | 7 | crash：进了 run，第一发请求之前就炸，但**判词不点名这个叶子**（引擎内部错误，宿主读不出该怎么改） |
 | `U` | 0 | use：第一发请求之后才抛（真·带到使用点） |
-| `A` | 118 | accepted+live：没抛，且本次 run 的指纹与基线不同（错值真的生效了） |
-| `·` | 139 | accepted+inert：没抛，且指纹与基线逐字相同（本场景里配了等于没配） |
+| `A` | 117 | accepted+live：没抛，且本次 run 的指纹与基线不同（错值真的生效了） |
+| `·` | 124 | accepted+inert：没抛，且指纹与基线逐字相同（本场景里配了等于没配） |
 | `H` | 0 | hung：超过单格上限未结束 |
 | **合计** | **344** | 43 × 8 |
 
 ## 5. 逐格明细（非 inert 的每一格：拒在哪层 / 判词原文 / 生效在哪）
 
-共 205 格（其余 139 格是 `·`，即本场景无可观察差异，不列）。判词是引擎的原话，逐字未改。
+共 220 格（其余 124 格是 `·`，即本场景无可观察差异，不列）。判词是引擎的原话，逐字未改。
 
 | 叶子 | 错值 | 结局 | 层 / 生效路径 | 判词原文 / 可观察差异 |
 | --- | --- | --- | --- | --- |
@@ -271,7 +271,22 @@
 | `config.folding.context` | `0.5` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
 | `config.folding.context` | `true` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
 | `config.folding.context` | `[]` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
-| `config.folding.toolResultFoldMinTokens` | `0.5` | A | requests[1].messages[2].content[0].content | requests[1].messages[2].content[0].content: "tool-output" → "tool-output\n【TTL 预警】此结果下一轮将折叠为句柄；若后续仍需原文，请现在重读源文件" |
+| `config.folding.toolResultTtl` | `"8"` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: string) |
+| `config.folding.toolResultTtl` | `"bogus"` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: string) |
+| `config.folding.toolResultTtl` | `-1` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: number) |
+| `config.folding.toolResultTtl` | `0.5` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: number) |
+| `config.folding.toolResultTtl` | `true` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: boolean) |
+| `config.folding.toolResultTtl` | `null` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: null) |
+| `config.folding.toolResultTtl` | `[]` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: array) |
+| `config.folding.toolResultTtl` | `{}` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultTtl must be a non-negative integer (received: object) |
+| `config.folding.toolResultFoldMinTokens` | `"8"` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: string) |
+| `config.folding.toolResultFoldMinTokens` | `"bogus"` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: string) |
+| `config.folding.toolResultFoldMinTokens` | `-1` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: number) |
+| `config.folding.toolResultFoldMinTokens` | `0.5` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: number) |
+| `config.folding.toolResultFoldMinTokens` | `true` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: boolean) |
+| `config.folding.toolResultFoldMinTokens` | `null` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: null) |
+| `config.folding.toolResultFoldMinTokens` | `[]` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: array) |
+| `config.folding.toolResultFoldMinTokens` | `{}` | G | config-namespace.js assertConfigNamespace | TypeError: config.folding.toolResultFoldMinTokens must be a non-negative integer (received: object) |
 | `config.guard.finalGuardExtend` | `"8"` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
 | `config.guard.finalGuardExtend` | `"bogus"` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
 | `config.guard.finalGuardExtend` | `-1` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
@@ -328,9 +343,9 @@
 
 **本单一个字都没改行为。** 下面只是按这张表排出的候选，供维护者裁定「哪一条值得进下一个 breaking 版本」——每条收窄都是**收窄接受面** ⇒ 要记 Breaking，得有破坏预算才能做。
 
-- ① 错值**真的生效**（`A`）的叶子 22 个：`config.input.system`、`config.input.initialUserMessage`、`config.input.messages`、`config.input.wrapup`、`config.run.completion`、`config.run.stream`、`config.run.reflection`、`config.run.runId`、`config.run.parentRunId`、`config.tuning.maxTokens`、`config.tuning.temperature`、`config.tuning.topP`、`config.timing.timeoutMs`、`config.timing.deadlineMs`、`config.timing.retry`、`config.folding.toolResultFoldMinTokens`、`config.metadata.expert`、`config.metadata.user`、`config.metadata.task`、`config.metadata.requestId`、`config.metadata.model`、`config.metadata.modelMetadata`——收窄它们改的是「宿主写错却照跑」的行为，影响面最大，也最容易在宿主侧炸出「以前能跑」；
+- ① 错值**真的生效**（`A`）的叶子 21 个：`config.input.system`、`config.input.initialUserMessage`、`config.input.messages`、`config.input.wrapup`、`config.run.completion`、`config.run.stream`、`config.run.reflection`、`config.run.runId`、`config.run.parentRunId`、`config.tuning.maxTokens`、`config.tuning.temperature`、`config.tuning.topP`、`config.timing.timeoutMs`、`config.timing.deadlineMs`、`config.timing.retry`、`config.metadata.expert`、`config.metadata.user`、`config.metadata.task`、`config.metadata.requestId`、`config.metadata.model`、`config.metadata.modelMetadata`——收窄它们改的是「宿主写错却照跑」的行为，影响面最大，也最容易在宿主侧炸出「以前能跑」；
 - ② 错值炸成**不点名该叶子**的引擎错误（`C` / `U`）的叶子 1 个：`config.input.messages`——这些今天已经是硬失败，但判词不教宿主怎么改，补类型校验是**把错误提前并点名**，不改变「失败」这个事实；
-- ③ 8 个错值**全部静默接受**（`·` 满格）的叶子 11 个：`config.input.cacheStablePrefix`、`config.run.maxTokenContinuations`、`config.run.stallDetection`、`config.run.writeToolNames`、`config.run.writeToolPathKeys`、`config.run.resume`、`config.tuning.cacheCapable`、`config.folding.toolResultTtl`、`config.guard.finalGuardMaxRetries`、`config.guard.finalGuardTimeoutMs`、`config.metadata.toolContext`——它们最像「配了等于没配」，但 `·` 只说明本场景没走到（见 §7），裁定前需要各自的深分支场景。
+- ③ 8 个错值**全部静默接受**（`·` 满格）的叶子 10 个：`config.input.cacheStablePrefix`、`config.run.maxTokenContinuations`、`config.run.stallDetection`、`config.run.writeToolNames`、`config.run.writeToolPathKeys`、`config.run.resume`、`config.tuning.cacheCapable`、`config.guard.finalGuardMaxRetries`、`config.guard.finalGuardTimeoutMs`、`config.metadata.toolContext`——它们最像「配了等于没配」，但 `·` 只说明本场景没走到（见 §7），裁定前需要各自的深分支场景。
 
 ## 7. 残留风险 / 这张表不覆盖的东西
 
