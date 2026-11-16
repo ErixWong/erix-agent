@@ -796,7 +796,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-persistence-phase.test.js` | 5 | `completion`×2, `wrapup`×2, `tools`×1 |
 | `test/notes-final-guard.test.js` | 6 | `prompt`×3, `session`×3, `finalGuard`×2 |
 | `test/tool-fact-success-parity.test.js` | 2 | `onToolResult`×1, `outputHygiene`×1, `reflection`×1 |
-| `test/display/projection.test.js` | 4 | `wrapup`×2, `completion`×1, `reflection`×1 |
+| `test/display/projection.test.js` | 5 | `wrapup`×3, `completion`×1, `reflection`×1 |
 | `test/loop-fold-count-cells.test.js` | 1 | `stallDetection`×1 |
 | `test/loop-usage-accounting.test.js` | 4 | `reflection`×2, `completion`×1, `stallDetection`×1 |
 | `test/loop-v020.test.js` | 3 | `completion`×3 |
