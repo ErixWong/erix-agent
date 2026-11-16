@@ -809,9 +809,12 @@ export function createTerminationManager(ctx) {
       // ⇒ 分级表里是 `fact`（`src/loop/event-tiers.js`）。
       if (result.finalTextShape !== undefined && ctx.finalTextShapeEmitted !== true) {
         ctx.finalTextShapeEmitted = true;
-        ctx.emitEvent({
+        // 与本文件其余发射点同一口径：先接住 `ctx.emitEvent` 再调（直调 `ctx.emitEvent(...)`
+        // 会多造一族被调名，`test/event-tier-coverage-743.test.js` 的 T11 正是拦这个）。
+        const emitEvent = ctx.emitEvent;
+        emitEvent({
           type: "final_text_textualized_tool_call",
-          ...(ctx.runId === undefined ? {} : { runId: ctx.runId }),
+          ...(ctx.runId ? { runId: ctx.runId } : {}),
           round: ctx.rounds,
           marker: result.finalTextShape.marker,
         });
