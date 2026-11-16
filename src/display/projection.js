@@ -27,6 +27,8 @@ import { FOLD_SUMMARY_MARKER } from "../compact/fold-statistical.js";
 
 /** Bounded one-line summary of the key tool arguments. */
 const MAX_ARGS_PREVIEW = 120;
+/** Bounded single argument value rendered inside that summary. */
+const MAX_ARG_VALUE_PREVIEW = 60;
 /** Bounded tool-result preview attached to a tool call. */
 const MAX_RESULT_PREVIEW = 400;
 /** Bounded fold-summary text rendered for a folded round. */
@@ -95,10 +97,34 @@ function reasoningOf(blocks) {
   return joined === "" ? undefined : joined;
 }
 
+// issue #854：预览的唯一收口。预算 maxChars 按码点算，不按
+// UTF-16 代码单元算：旧写法 `${text.slice(0, maxChars)}…` 的切点
+// 可以落在代理对中间，末尾于是剩一个孤立代理（实测 `'a'.repeat(399)`
+// 接 emoji 再接 `tail`，切到 400 个代码单元后末位是 0xD83D）。那不是
+// 合法字符，而预览经宿主（erix-station 的 folded 接口）原样透传，
+// 脏字符就直接进了用户界面。收口只在这一处：八个调用点一起受益，
+// 不逐个调用点打补丁。只改安全性、不改可观测行为——纯 BMP 输入的
+// 码点数 == 代码单元数，输出与旧实现逐字相同（同一条早退、同样的
+// `…` 后缀、同样的 length）；非 BMP 输入只是不再被劈成两半。
 function truncated(value, maxChars) {
   const text = String(value ?? "");
+  // 快路径：代码单元数已在预算内，码点数必然也在预算内 ⇒ 原样返回
+  // （与旧实现同一条早退）。
   if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}…`;
+  // 慢路径最多走 maxChars + 1 个码点：units 累加每个码点自己的代码
+  // 单元数（BMP 算 1、辅助平面算 2），所以切点恒落在码点边界上，而
+  // 大工具结果也不会被整体展开成码点数组。
+  let units = 0;
+  let points = 0;
+  for (const char of text) {
+    if (points === maxChars) return `${text.slice(0, units)}…`;
+    points += 1;
+    units += char.length;
+  }
+  // 走到这里 = 代码单元超预算而码点没超（预算 400、输入 250 个 emoji
+  // 即 500 代码单元 / 250 码点）：预算的口径是码点，它无需截断 ⇒ 原样
+  // 返回，也不产生孤立代理。
+  return text;
 }
 
 function summarizeArgs(input) {
@@ -118,7 +144,7 @@ function summarizeArgs(input) {
       ? value
       : value === undefined || value === null ? "" : safeStringify(value);
     if (rendered === "") continue;
-    parts.push(`${key}=${truncated(rendered, 60)}`);
+    parts.push(`${key}=${truncated(rendered, MAX_ARG_VALUE_PREVIEW)}`);
   }
   if (parts.length === 0) return undefined;
   return truncated(parts.join(", "), MAX_ARGS_PREVIEW);
