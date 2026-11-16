@@ -55,6 +55,31 @@
 
 ### Fixed
 
+- **The Chinese cold layer was missing the concurrent-judgment ban the English side got
+  for issue #799.** `## gate-reproducibility` in `docs/maintenance/command-reference.md`
+  has carried that bullet since `f405264a`, while the same section of
+  `docs/maintenance/command-reference_cn.md` still had only the reproducibility one:
+  `check:docs` compares the EN/CN **heading skeleton**, so a bullet-level omission on one
+  side reddens neither gate and the Chinese reader never got the rule. The Chinese bullet
+  is now a point-by-point counterpart — the ban, that run's readings kept as history
+  rather than presented as current values, "the red was real and the green was the lie",
+  the silent-success shape, the local-only trigger surface (CI steps are serial), the
+  procedural ruling (let the suite exit, rerun, and treat only the clean run as the
+  judgment), and the attribution still open in the issue with its `.d.ts` mechanism lead
+  kept a lead. Documentation only: no script, gate or behaviour changed, and the English
+  side is untouched. (PR #860)
+- **中文冷层缺了英文侧早为 issue #799 写下的那条「并发判读禁令」。**
+  `docs/maintenance/command-reference.md` 的 `## gate-reproducibility`
+  从 `f405264a` 起就带着这一条，而同一段的
+  `docs/maintenance/command-reference_cn.md` 只剩「门禁可复现口径」那一条：
+  `check:docs` 校的是中英**标题骨架**，单侧 bullet 级的漏译
+  两道闸都看不见，中文读者因此一直拿不到这条禁令。
+  现在中文那条与英文逐要点对齐：禁令本身、那两个 rc 与那个漂移数
+  按**当次实测的历史口径**写（不当现值用）、「红是真的、绿是假的」、
+  沉默成功那个形状、触发面只在本地（CI 步骤是串行的）、
+  程序性裁决（让套件退净、重跑，只把干净那一趟当判读），
+  以及归因仍开在 issue 里、那条 `.d.ts` 机制线索仍只是线索。
+  **只改文档**：脚本、门禁、行为一个字都没动，英文侧一字未改。（PR #860）
 - **Display previews no longer cut a surrogate pair in half (issue #854).** The one
   truncation choke point behind all eight preview call sites (`truncated()` in
   `src/display/projection.js`) counted UTF-16 code units, so a budget landing inside a
