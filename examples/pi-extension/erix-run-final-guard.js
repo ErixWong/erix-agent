@@ -94,8 +94,24 @@ export const LEDGER_LITERAL_LIMIT = 20;
  *
  * 提示词与 revise 文案**共用**这一行（见 `BASE_EXAMPLE_HINT`）：两处各写
  * 一份，下一次就有人只改一边。
+ *
+ * ⚠ 这一行给的是**形状**，不是值：`2e68d52` 是随手举的示例，它**不会**出现在
+ * 任何一次 run 的工具返回里（本仓 `git cat-file -t 2e68d52` ⇒ `Not a valid object
+ * name`）。模型照抄它 ⇒ 那一行逐字找不到 ⇒ 白拿一次 `revise`——正是本单要消掉
+ * 的那种浪费。所以「只是形状 / 不要照抄」那句必须写在 `BASE_EXAMPLE_HINT` 里
+ * （那里是唯一出口），并由用例钉住；**删掉它就红**。
  */
 export const BASE_EXAMPLE_PASS_LINE = "- 2e68d52";
+
+/** 通过样例里那个**示例值**本身：从 `BASE_EXAMPLE_PASS_LINE` 里取，不在文案里抄第二份。 */
+const BASE_EXAMPLE_PASS_VALUE = BASE_EXAMPLE_PASS_LINE.replace(/^-\s+/u, "");
+
+/**
+ * 通过样例里必须出现的两个**标记**（#787 复修）：「只是形状」说清那是形状
+ * 不是值，「不要照抄」给出动作。用例逐字验它们都在提示词与 revise 文案里
+ * （两者都只引用 `BASE_EXAMPLE_HINT`，所以验常量本身就是验两处）。
+ */
+export const BASE_EXAMPLE_NO_COPY_MARKERS = ["只是形状", "不要照抄"];
 
 /**
  * 「## 基点」的**反例**（issue #787）：把**命令名**写进基点段。
@@ -114,9 +130,17 @@ export const BASE_EXAMPLE_FAIL_LINE = "- `git log --format=%H -5`";
  *
  * 只补文案：判据、谓词、取证面（`tool_result` ∪ 账本）一个字都没改
  * （#787 明确排除把 `tool_use` 输入加进取证面）。
+ *
+ * **通过样例那一半带「只是形状 ⇒ 不要照抄 + 换成你自己的值」这两句话**
+ * （#787 复修，主 agent 实测：模型把 `2e68d52` 当模板抄进「## 基点」，而它
+ * 不在本次 `tool_result` 里 ⇒ 直接吃一次 `revise`）。措辞可以改，但两句
+ * 都在的这件事由 `BASE_EXAMPLE_NO_COPY_MARKERS` + 用例钉着：样例若回到
+ * 「可以照抄」的形状，它就从防呆变成了新的坑。
  */
-export const BASE_EXAMPLE_HINT = `通过样例：${BASE_EXAMPLE_PASS_LINE}`
-  + `（那个值在本次工具返回里逐字出现过 ⇒ 能溯源）。`
+export const BASE_EXAMPLE_HINT = `通过样例（${BASE_EXAMPLE_NO_COPY_MARKERS.map((m) => `**${m}**`).join("，")}）：${BASE_EXAMPLE_PASS_LINE}`
+  + `（能过闸靠的是那一行的值在本次工具返回里逐字出现过；而 ${BASE_EXAMPLE_PASS_VALUE} `
+  + `只是随手举的示例，它不在你的工具返回里 ⇒ 照抄它就照样逐字找不到。`
+  + `动作：形状照抄，把值换成**本次工具返回里真出现过**的那个）。`
   + `\n反例：${BASE_EXAMPLE_FAIL_LINE}（那是**命令名**：反引号里的`
   + `任何东西都会被当成声明值，而工具返回里只有命令的**输出**、`
   + `没有命令字符串 ⇒ 它必然逐字找不到）。`

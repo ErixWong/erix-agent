@@ -12,6 +12,7 @@ import * as coreModule from "./erix-run-core.js";
 import {
   BASE_EXAMPLE_FAIL_LINE,
   BASE_EXAMPLE_HINT,
+  BASE_EXAMPLE_NO_COPY_MARKERS,
   BASE_EXAMPLE_PASS_LINE,
   createFinalGuardTally,
   createFinalGuardVerify,
@@ -272,6 +273,65 @@ test("#787 提示词与 revise 文案引用**同一组**正反例（只改一边
   // 反例的后半句（命令名的去处）也要两处都在，否则模型只会删掉它。
   assert.ok(FINAL_DRAFT_PROMPT.includes("## 取证边界"), "提示词要说清命令名归哪段");
   assert.ok(decision.message.includes("## 取证边界"), "revise 文案也要说清归哪段");
+});
+
+// 主 agent 复跑成品时直接打的那一枪：终稿把提示词里的**示例值**当模板抄了。
+// 取证面里只有一条不相干的 commit，于是「## 基点」里那个值逐字找不到。
+const EXAMPLE_VALUE = BASE_EXAMPLE_PASS_LINE.replace(/^-\s+/u, "");
+const COPIED_EXAMPLE_DECISION = inspectFinalDraft({
+  finalText: completeDraft({ base: EXAMPLE_VALUE }),
+  messages: messagesWith("commit 1111111aaa\n"),
+});
+
+test("#787 抄示例值⇒仍然 revise（机制）；但文案现在**明确禁止**抄（两者不矛盾）", () => {
+  assert.equal(EXAMPLE_VALUE, "2e68d52", "示例值就是从样例里取的，不在格子里再抄一份");
+  assert.equal(COPIED_EXAMPLE_DECISION.action, "revise",
+    `抄示例值不 revise ⇒ 机制变了：${JSON.stringify(COPIED_EXAMPLE_DECISION)}`);
+  assert.deepEqual(COPIED_EXAMPLE_DECISION.untraceableBases, [EXAMPLE_VALUE]);
+  assert.deepEqual(COPIED_EXAMPLE_DECISION.declaredBases, [EXAMPLE_VALUE]);
+  // 反证：把示例值自己放进 tool_result ⇒ accept（钉住「revise 是因为取证面里没它，
+  // 不是因为这个值形制不对」）。上面那格「样例形状自身能过闸」是同一回事的正面，
+  // 这里钉的是「取证面里到底有没有」这一轴。
+  assert.equal(inspectFinalDraft({
+    finalText: completeDraft({ base: EXAMPLE_VALUE }),
+    messages: messagesWith(`commit ${EXAMPLE_VALUE} (HEAD -> main)\n`),
+  }).action, "accept");
+});
+
+test("#787 通过样例带着「只是形状 / 不要照抄 + 换成自己的值」：删了这句就红", () => {
+  // 钉子本身带**字面**标记：不去遍历常量里的清单（清单被清空就恒真，#391 同形的坑）。
+  for (const marker of ["只是形状", "不要照抄"]) {
+    assert.ok(BASE_EXAMPLE_HINT.includes(marker), `BASE_EXAMPLE_HINT 丢了「${marker}」：${BASE_EXAMPLE_HINT}`);
+  }
+  // 还要钉「清单非空且每条真的在文案里」：它防的是往清单里加一条却忘了写进文案。
+  assert.ok(BASE_EXAMPLE_NO_COPY_MARKERS.length > 0, "标记清单不许清空（清空下面逐条就恒真）");
+  for (const marker of BASE_EXAMPLE_NO_COPY_MARKERS) {
+    assert.ok(BASE_EXAMPLE_HINT.includes(marker), `清单里的「${marker}」没出现在文案里`);
+  }
+  // 标记必须在**通过样例那一半**、且落在样例之前（写在反例那半等于没写）。
+  const passClause = BASE_EXAMPLE_HINT.slice(0, BASE_EXAMPLE_HINT.indexOf("\n反例"));
+  assert.ok(passClause.includes(BASE_EXAMPLE_PASS_LINE), "切片切错了：通过样例不在那一半里");
+  for (const marker of ["只是形状", "不要照抄"]) {
+    assert.ok(passClause.includes(marker), `「${marker}」不在通过样例那一半里：${passClause}`);
+    assert.ok(passClause.indexOf(marker) < passClause.indexOf(BASE_EXAMPLE_PASS_LINE),
+      `「${marker}」要在样例**之前**：否则读者先抄了值才看到提醒`);
+  }
+  // ② 只说「别抄」不够，要给替换动作（模型空着手还是会猜）。
+  assert.ok(passClause.includes("换成"), `通过样例要给替换动作（把值换成…）：${passClause}`);
+  assert.ok(passClause.includes("本次工具返回里真出现过"),
+    `替换动作要说清换成哪里的值：${passClause}`);
+  // ③ 两处出口同源 ⇒ 两边都带着这两个标记（提示词与 revise 文案）。
+  for (const marker of ["只是形状", "不要照抄"]) {
+    assert.ok(FINAL_DRAFT_PROMPT.includes(marker), `提示词丢了「${marker}」`);
+    assert.ok(COPIED_EXAMPLE_DECISION.message.includes(marker),
+      `revise 文案丢了「${marker}」（与提示词不同源？）：${COPIED_EXAMPLE_DECISION.message}`);
+  }
+  // ④ 提醒不许挤掉原有的正反例语义（反例仍是命令名、仍指回取证边界）。
+  assert.ok(BASE_EXAMPLE_HINT.includes(BASE_EXAMPLE_PASS_LINE) && BASE_EXAMPLE_HINT.includes(BASE_EXAMPLE_FAIL_LINE),
+    "正反例两行都还在 BASE_EXAMPLE_HINT 里");
+  assert.ok(passClause.includes("逐字"), "「逐字出现过」这个过闸条件还在通过样例里");
+  assert.ok(BASE_EXAMPLE_HINT.slice(BASE_EXAMPLE_HINT.indexOf("\n反例")).includes("## 取证边界"),
+    "反例那一半仍要把命令名指回「## 取证边界」");
 });
 
 test("extractDeclaredBases 认反引号 / 裸 SHA / 版本号，去重且顺序稳定", () => {
