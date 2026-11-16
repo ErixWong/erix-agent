@@ -105,7 +105,7 @@ function reasoningOf(blocks) {
 // 脏字符就直接进了用户界面。收口只在这一处：八个调用点一起受益，
 // 不逐个调用点打补丁。只改安全性、不改可观测行为——纯 BMP 输入的
 // 码点数 == 代码单元数，输出与旧实现逐字相同（同一条早退、同样的
-// `…` 后缀、同样的 length）；非 BMP 输入只是不再被劈成两半。
+// `…` 后缀、同样的 length）；非 BMP 输入只是不再被切成两半。
 function truncated(value, maxChars) {
   const text = String(value ?? "");
   // 快路径：代码单元数已在预算内，码点数必然也在预算内 ⇒ 原样返回
