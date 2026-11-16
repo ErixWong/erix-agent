@@ -261,6 +261,27 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 
 ## gate-reproducibility
 - 门禁可复现口径（issue #280）：`npm run check:docs` 与 `npm run check:docs:strict` 在开发工作树里和在全新 clone 里（`git archive HEAD | tar -x -C <空目录>` 解出来的那棵树）必须同样 exit 0。「本机档案」这一类——`docs/tasks/` 下的文件，该目录被 `.gitignore` 整目录忽略、故意不入库，因此任何 clone 里都不存在——按**声明**裁决（`LOCAL_ARCHIVE_REFS` 逐条登记，或引用就地写明「本机 / 不入库 / 归档」），实物只在那个目录恰好在场时顺便核实，核不到不得把门禁判红。真正有本机前置的，是那一批需要 `node_modules`（两个 dev 包 `typescript` + `@types/node`，issue #213）的门禁：`npm run check:inventory`（它拿 TypeScript AST 去解每一个被扫的测试文件）、`npm run check:types`、`npm run check:types:strict` 与 `npm run check:types-build`（三张都直接驱动 `tsc`），以及 `npm run check:pack-links` / `npm run check:release`（它们 shell out 去跑 `npm pack`，而 `npm pack` 的 `prepack` 钩子会重生声明文件，再加 `tsc`）。没有 `node_modules` 的检出里这些闸会非 0 退出并报 `Cannot find module 'typescript'`——那是「**这道闸没跑起来**」，从来不是回归；先 `npm install --include=dev`。**除此之外没有任何闸读工具链**。
+- **并发判读禁令（issue #799）**：同一棵树里还有 `npm test` 在跑的时候，
+  不得判读 `npm run check:docs`、`npm run check:docs:strict` 或
+  `node scripts/docs-drift-check.mjs`。下面那组形状是**当次实测的读数**
+  （同一棵**已提交**的树、跑了两次），不是现值：
+  套件在飞时这条命令 exit **0**、零红项；
+  同一棵树等套件退出后干净重跑，exit **1**、点名 20 处漂移
+  （`bare-lines` 超过它的棘轮基线，外加两种契约语言里
+  `cell-axes-anchors` 的读列不等值）。那批漂移真被修掉之后，
+  两种形状都回来是绿的 ⇒ **红是真的、绿是假的**。
+  这是**沉默成功**形状的失败：退 0、一条红项都不报，
+  读起来正是好消息，而退出码恰恰是下一个读者直接拿去用的东西
+  （据此下结论、关单、合并），所以「小心点」不是一道控制。
+  **CI 不受影响**（它的步骤是串行的，见 `ci`）；
+  只有与一趟套件跑重叠的本地 shell 会触发它。
+  归因落地之前，裁决是程序性的：
+  **让套件退净，然后重跑，只把那一趟干净的运行当判读**——
+  与另一个写入者重叠的扫描是*未判定*，不是通过
+  （issue #511 对一道关掉的闸用的是同一条规则：没跑不算通过）。
+  归因仍在 #799；「扫描面可能吃到某条套件成员中途生成、又中途删掉的
+  `src/**/*.d.ts`」是**一条线索，不是结论**——核实它的人把它写进本文，
+  谁都不许把它当事实往下抄。
 
 ## type-surface
 - 类型面规则（issue #213）：`src/**/*.d.ts` 是**生成物、永不入库**（`.gitignore` 已覆盖）；`files` 里本来就有 `src`，
