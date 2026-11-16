@@ -2629,8 +2629,18 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  规则 4 拿脚本真值校这两处，中英必须同值）、`docs/maintenance/command-reference.md` / `_cn.md` 各一处（同是现值句）。
  *  为什么不能只做这一半：下限停在 242 时，下面那例「把中英契约的 `defaultSleep` 退化成裸行号」退化完恰好是
  *  242 组 = 下限 ⇒ 不红 ⇒ 那例等的那条红根本不出现（CI 上报的就是这个，不是断言太严）。
+ *  抬底记录（工单 261116-05「棘轮收尾」，量在本分支工作树，
+ *  基点 main `2e3eb7ae`：243 → **244**）。下限停在 243 时，`--verbose`
+ *  在这棵树上现报「实测 244 组 > 下限 243 组 … 请把
+ *  SYMBOL_ANCHOR_MIN_UNIQUE 升到 244」。那 1 组不是本单带的：
+ *  PR #859（issue #787）在 `examples/pi-extension/README.md` 里新引了一个
+ *  (符号, 文件) 组，而那次合并没回去读提示（改前对照：
+ *  `git archive` 摊出的 `4d726806` = 243 组、`feafcac7` = 244 组）。
+ *  抬到它现报的数，**不在旧值上做加法**；
+ *  同批把四处现值声称一起抬（名单见上面 #769 R8 那条），
+ *  流水记在 `docs/maintenance/symbol-anchor-ledger.md`。
  *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 243;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 244;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
