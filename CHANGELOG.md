@@ -16,7 +16,7 @@
   `actions/checkout`, the npm script points at this script), and a new reverse proof ⑧d moves
   the CHANGELOG step above the anchor and must be named — which is what keeps the position
   check from quietly decaying into "the step just exists". Documentation is still machine-checked
-  where it blocks: the `release:day` preflight and writeback. No CI behaviour changed.
+  where it blocks: the `release:day` preflight and writeback. No CI behaviour changed. (PR #858)
 - **CHANGELOG 覆盖闸自己的接线判据不再借文档步当位置地标（issue #855）。** 例⑧
   原来把阻塞步定位在 `run: npm run check:test-summary -- --self-test` 与
   `run: npm run check:docs` 之间，而文档族已整族移出流水线（issue #802）—— 第二个地标
@@ -25,7 +25,7 @@
   `fetch-depth: 0` 与每处 `actions/checkout` 按份数对账、npm script 指向本脚本），并新增
   反向证 ⑧d：把 CHANGELOG 那一步挑到锚点之前必须被点名——这正是防止位置判据悄悄
   退化成「存在就好」的那一格。文档的机器约束仍在它该阻塞的位置：`release:day` 的
-  preflight 与 writeback。CI 行为没变。
+  preflight 与 writeback。CI 行为没变。（PR #858）
 
 ### Fixed
 
