@@ -149,6 +149,7 @@ src/
     note-prompt-hint.js            归档/超限提示里那条取回指引的证据门（issue #746）
     request-user-view.js           视图定稿处不变量：发给上游/写回的视图不得没有 user 轮（issue #292）
     termination.js                 终态归类
+    final-text-shape.js            终稿形态判据：终稿正文是一段被文本化的工具调用（共享特征集，出口给宿主复用）（issue #862）
     deliverables.js                宿主声明的交付物判据（finalGuard 之前的机器闸门）
     pending-tool-result.js         注入控制文本前结清尾部悬空 tool_use 的共享实现（issue #394）
     resume-manager.js              断点恢复与 run-state 应用
