@@ -5162,6 +5162,7 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 | `config_override_conflict` | `fact` | 不可删 | 同上。 |
 | `context_unknown_option` | `fact` | 不可删 | 同上。 |
 | `user_turn_guard_unrecoverable` | `fact` | 不可删 | 同上。 |
+| `final_text_textualized_tool_call` | `fact` | 不可删 | issue #862：引擎把**终稿正文**判成了「被文本化的工具调用」（上游把这次调用编进了 `content`）。判定本身就是那条事实 —— `result.finalTextShape` 只住在内存里（随 `result` 一起消失，不落账本行），而轮记录里那条 assistant 只有原始字节，既没记「引擎当时做过这个判定」也没带命中的 `marker`。删了它，一个「静默未交付却判 `completed`」的 run 就又无法事后审计了。 |
 | `host_steer_injected` | `fact` | 不可删 | issue #753（C1）：轮边界注入成功一条，带 `round` 与 `chars`。注入那条的正文在账本里是 durable 的，但「这一条是宿主转向、注入在第 N 轮」只在这里——宿主没看到注入时，本事件也是「钩子回了 null」与「根本没人装钩子」的分开凭据。 |
 | `tool_output_aggregate` | `fact` | 不可删 | 聚合**判定**（`action`、`reason`、`budgetTokens`、`inlineTokens`、`costTokens`、`projectedTokens`、`contentLength`）。transcript 与归档只留字节，不留这些数 —— 见上面那段降级说明。 |
 | `recovering` | `fact` | 不可删 | 在退避等待**之前**发出；等待中被中止就没有下一次 `attempt` 可供重算。 |

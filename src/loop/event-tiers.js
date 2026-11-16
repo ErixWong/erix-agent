@@ -121,6 +121,15 @@ export const EVENT_TIERS = Object.freeze({
   final_guard_extend: EVENT_TIER_FACT,
   resume_journal_skipped: EVENT_TIER_FACT,
   user_turn_guard_unrecoverable: EVENT_TIER_FACT,
+  // issue #862（新格）：终稿正文是一段**被文本化的工具调用**（上游把 tool call 编进了
+  // `content`）——引擎认出它并发一条告警。
+  // 为什么是 `fact` 而不是 `derived`：这条事件是**唯一**的 durable 副本。终局结果对象
+  // 上的 `finalTextShape` 只在内存里（随 `result` 一起消失，不落账本行），而轮记录里
+  // 那条 assistant 正文只是原始字节——它不记「引擎当时把这份正文判成了文本化工具调用」
+  // 这个事实本身，也不带命中的那条 `marker`。删了它，下一个复现者就再也回答不了
+  // 「这个 completed 的 run 当时有没有被认出未交付」（`round_end.finalText` 是**每轮**
+  // 的正文，不是终局判定）。
+  final_text_textualized_tool_call: EVENT_TIER_FACT,
   run_outcome: EVENT_TIER_FACT,
   // 宿主把 `onJudge` 通道的决策记录按 `judge` 这个名字入库（引擎侧那条记录没有 `type` 字段，
   // 见 `HOST_SIDE_EVENT_TYPE_NAMES`）：裁决本身只在这里有一份。

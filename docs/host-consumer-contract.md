@@ -6572,6 +6572,7 @@ at the emission site, and two of them were wrong in the first draft of this sect
 | `config_override_conflict` | `fact` | no | Same. |
 | `context_unknown_option` | `fact` | no | Same. |
 | `user_turn_guard_unrecoverable` | `fact` | no | Same. |
+| `final_text_textualized_tool_call` | `fact` | no | issue #862: the engine judged the **final text** to be a textualized tool call (the upstream encoded the call into `content`). The verdict itself is the fact — `result.finalTextShape` lives only in memory, and the round record keeps the raw bytes without recording that judgment or which `marker` hit. Deleting this event makes a silently-undelivered `completed` run unaudit able again. |
 | `host_steer_injected` | `fact` | no | issue #753（C1）: one per successful turn-boundary steer injection, carrying `round` and `chars`. The injected turn's prose is durable in the transcript, but "this user turn was host-steered, in round N" exists only here — and a host that never sees an injection cannot tell "declined" from "hook missing". |
 | `tool_output_aggregate` | `fact` | no | The aggregation **decision** (`action`, `reason`, `budgetTokens`, `inlineTokens`, `costTokens`, `projectedTokens`, `contentLength`). The transcript/archive keep the bytes, not these numbers — see the demotion note above. |
 | `recovering` | `fact` | no | Emitted before the retry backoff waits; aborted during the wait and no later `attempt` exists to reconstruct it from. |

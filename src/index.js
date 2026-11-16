@@ -115,6 +115,17 @@ export {
   canonicalEventTypeName,
   streamCleanupEligible,
 } from "./loop/event-tiers.js";
+// issue #862：终稿正文的「文本化工具调用」形态识别（宿主与引擎共用**一份**特征集）。
+// 成因是「上游把 tool call 编进 `content`」，不同上游编码不同，而引擎此前零判据
+// （`end_turn` + 正文非空 ⇒ 直接当交付物收下）。宿主 `fde-station` 自己有一份同款，
+// 但它只覆盖顶层 run 的终局信封 ⇒ `delegate` 子 run 的 `resultText` 一个标记都不带。
+// 两个真相源是那张票写死的禁止项 ⇒ 特征集从本包出口给，宿主删自己那份拷贝。
+// 逐条取证（前三条真样本、后两条**预防性覆盖零实证**）住在模块头里，这里不抄。
+export {
+  DEFAULT_TOOLCALL_MARKERS,
+  detectTextualizedToolCall,
+  textualizedToolCallField,
+} from "./loop/final-text-shape.js";
 export { parseModelJson } from "./text/parse-model-json.js";
 // 模型输出归一化底座（issue #406 B2-a）：**异步**、L1 保字节修复 + 闸门 + L2 兜底。
 // 与上面那条同步 L0 入口是**两个函数**（设计稿 §10 的分工），不许合并、不许改名：

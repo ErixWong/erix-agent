@@ -469,7 +469,7 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -477,6 +477,10 @@ function mergeFoldedRoundRanges(first, second) {
  * @property {object} [toolUse] Completed canonical tool_use block.
  * @property {object} [toolResult] Canonical tool_result block.
  * @property {string} [runId] Run identity on host-facing diagnostics.
+ * @property {string} [marker] issue #862（additive）：`final_text_textualized_tool_call`
+ *   专用——命中的那一条特征**原文**（逐字取自 `DEFAULT_TOOLCALL_MARKERS`，不做任何
+ *   改写/截断）。它只是界面上的一段引用文本：下游渲染一律按**中性提示**，
+ *   不是「run 失败了」。只在命中那条事件上出现；其余事件**不写该键**。
  * @property {string} [parentRunId] issue #617（P0，additive）：子 run 的发起者关联，只镜像不解释；
  *   宿主没给 `parentRunId` 时该字段缺省（不写假值）。
  * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing, compaction_strategy_fallback).
@@ -757,6 +761,7 @@ function mergeFoldedRoundRanges(first, second) {
  *      `finalGuard`（核验状态）、`reflection.onReflection`（仍按未隔离处理，抛错杀 run）。
  * @returns {Promise<{
  *   finalText:string, finalTextFallback?:boolean, // issue #476：终稿是引擎兜底文案（收尾问过仍无正文）时出现且为 true，否则**缺席**
+ *   finalTextShape?:{textualizedToolCall:true, marker:string}, // issue #862：终稿正文是一段**被文本化的工具调用**（模型把 tool call 吐进了 content）时出现；**缺席 = 未命中**（绝不写 false，与 finalTextFallback 同口径）；marker = 命中的那条特征原文
  *   messages:object[],
  *   transcript:object[],
  *   rounds:number,
@@ -1134,6 +1139,13 @@ export async function runToolLoop(options) {
     ttlInjectArmed: false,
     ttlInjectConsumed: false,
     lowBudgetInjectFired: false,
+    // issue #862（新格）：本 run 是否已经发过那条 `final_text_textualized_tool_call`
+    //   告警。**one-shot 旗标**，与上面三格同族（本次进程的现场，不是跨 resume 的
+    //   持久判据）：它只被 `termination.js` 的终局面读写一次，而 resume 之后本来就会
+    //   重跑收尾、终局也重新做一次 ⇒ 不需要入账，也不需要进 resume 后的重置段
+    //   （重置段只服务注入旗标）。初值 `false` 逐字是「本 run 还没发过」；起点若是
+    //   `true` 就等于首条告警静默消失。
+    finalTextShapeEmitted: false,
     // 【E 轮内量（续）】`foldedRoundCount`（原 :1204）与 `navigationRecordCount`（原 :1205）——两个
     //   **有初值**的累计计数器，初值逐字原样搬（都是 `0`）：它们的值经 `createDeterministicRunState` 的
     //   `foldedRounds:` / `navigationRecords:` 两个键落盘并渲染进模型可见的 run-state 文本，起点不是装饰。
@@ -3775,6 +3787,14 @@ export async function runToolLoop(options) {
     // issue #386 切片 1：`finalGuard` payload 的加法键读取口（全部读引擎**既有**状态，零新采集）。
     cwd,
     runId,
+    // issue #862：`final_text_textualized_tool_call` 的 one-shot 旗标（读写都在
+    // `runLoopState`，与 `finalText` 那一族同一条访问器口径：本模块不持有状态）。
+    get finalTextShapeEmitted() {
+      return runLoopState.finalTextShapeEmitted;
+    },
+    set finalTextShapeEmitted(value) {
+      runLoopState.finalTextShapeEmitted = value;
+    },
     taskBrief,
     toolStats,
     elapsedMs,

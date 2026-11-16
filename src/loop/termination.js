@@ -5,6 +5,8 @@ import { tryParseWrapupJson } from "../reflection/wrapup.js";
 import { validateMessages } from "../messages/rounds.js";
 import { cloneState } from "./budget.js";
 import { blocksFor, hasToolUse, textFromBlocks } from "./messages.js";
+// issue #862：终稿正文的「文本化工具调用」形态判据（纯函数，零状态）。
+import { textualizedToolCallField } from "./final-text-shape.js";
 
 export const TRUNCATED_TERMINATION_REASONS = new Set([
   "max_rounds_cap",
@@ -703,6 +705,13 @@ export function createTerminationManager(ctx) {
       // issue #476（新键，纯加法，只在真的兜底时出现）：`finalText` 是**引擎兜底文案**，不是模型正文。
       // 宿主因此能分支处理（例如「没有可交付结论」⇒ 转人工 / 重跑），不必去比字符串。
       ...(forcedFinalFallbackApplies() ? { finalTextFallback: true } : {}),
+      // issue #862（新键，纯加法，**只在命中时出现**）：终稿正文本身是一段**被文本化
+      // 的工具调用**（上游把 tool call 编进了 `content`，引擎那一轮只看到「无 `tool_use`
+      // + `end_turn`」）。缺席 = 未命中，**绝不写 `false`**（与 `finalTextFallback` 同一
+      // 条「没事实就没键」的口径）。判据住在 `src/loop/final-text-shape.js`；**本键不改
+      // 任何终态语义**——`termination.reason` 仍是 `end_turn`，`rounds` / `usage` /
+      // `verification` 一个字节都不动（停门是修法 B，单开一单）。
+      ...textualizedToolCallField(ctx.finalText),
     };
   };
 
@@ -791,6 +800,22 @@ export function createTerminationManager(ctx) {
       const markRunState = ctx.markRunState;
       await markRunState(state);
       const result = makeResult(reason, detail, error);
+      // ── issue #862（新事件，纯加法）：终稿是**被文本化的工具调用** ⇒ 一条告警 ──────
+      // 每 run **至多一条**（one-shot 旗标在 `runLoopState`，与 `lowBudgetInjectFired`
+      // 同族：它是本次进程的现场，不是跨 resume 的持久判据）。载荷 `marker` = 命中的
+      // 那一条特征原文。`runId` 只在宿主传了时才写键（与 #182 `model_metadata_missing`
+      // 同口径：引擎不自编标识）。**不改终态**：这条只是提示，`termination.reason` /
+      // `verification` / 退出码都不因它变。它是这条事实**唯一**的 durable 副本
+      // ⇒ 分级表里是 `fact`（`src/loop/event-tiers.js`）。
+      if (result.finalTextShape !== undefined && ctx.finalTextShapeEmitted !== true) {
+        ctx.finalTextShapeEmitted = true;
+        ctx.emitEvent({
+          type: "final_text_textualized_tool_call",
+          ...(ctx.runId === undefined ? {} : { runId: ctx.runId }),
+          round: ctx.rounds,
+          marker: result.finalTextShape.marker,
+        });
+      }
       // issue #165：终局追加一条 run 级 outcome 汇总记录（方案 ①：append-only，**不回写**
       // 已流出的 judge 决策记录，宿主按 `runId` join）。放在 markRunState **之后**：持久化
       // 失败时走 catch → ctx.fail()，由它发唯一一条终局记录（发射口有去重门，不会双发）。
