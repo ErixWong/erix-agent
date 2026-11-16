@@ -4,6 +4,8 @@ import { enforceSize } from "../compact/enforce-size.js";
 import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import { groupIntoRounds } from "../messages/rounds.js";
 import { blocksFor } from "./block-helpers.js";
+// issue #609：截断标记的「别重跑有副作用的命令」那一句从聚合桩那边取（单一措辞之家）。
+import { NO_RERUN_SIDE_EFFECT_CLAUSE } from "./aggregate-budget.js";
 
 export function numberOr(value) {
   return Number.isFinite(value) ? value : undefined;
@@ -149,10 +151,64 @@ export function toolContextFor({
   return result;
 }
 
-export function truncateTextToBudget(text, budgetTokens) {
-  const value = String(text ?? "");
-  if (estimateTokens(value) <= budgetTokens) return value;
-  const characters = Array.from(value);
+/**
+ * 单条截断标记的**额度**（估算 token，issue #609）。
+ *
+ * 二分必须在这条额度**之后**剩下的预算上做：先截后贴会让返回值超出 `budgetTokens`，
+ * 而 #846 刚把「单条受保护消息超预算 ⇒ 报 `budgetUnreachable`」那一族修成非致命，
+ * 超出预算再回来就是把它原样引回去。
+ * 标记本体实测 ~290 token；`test/loop-budget-truncation-marker-609.test.js`
+ * 钉住 `estimateTokens(truncationMarkerText(...)) <= TRUNCATION_MARKER_RESERVE_TOKENS`，
+ * 所以改文案把额度撑爆会当场变红，而不是让预算悄悄超。
+ */
+export const TRUNCATION_MARKER_RESERVE_TOKENS = 320;
+
+/**
+ * 截断标记里「怎么把剩余部分取回来」那一半（issue #609）。
+ *
+ * 口径抄 `aggregateStubText()`（被截 + 原始多少 + 怎么续 + 别重跑副作用命令），但
+ * **刻意不写 `note_list` / `note_read` 这两个工具名**：这一层既拿不到装配后的工具面，也拿不到
+ * 笔记账本，而 #746 的教训正是「不许指挥模型去调一个可能不在场上的工具」——票面里模型就是
+ * 自己去猜了一个不存在的 `note_list`。所以笔记那一支只给**条件式且不带工具名**，
+ * 主路径给**工具无关**的分段取回（readFile 与 exec 各点一次）。
+ */
+export const TRUNCATION_READ_BACK_CLAUSE =
+  "后续需要剩余部分：请用只读方式分段取回（readFile 传 offset/limit 续读，"
+  + "exec 之类改用 head/tail/sed 指定区间），"
+  + "如本 run 写过笔记也可先从笔记取回要点；没写过就按上面方式重读源头。";
+
+/**
+ * 单条截断的尾部标记（issue #609）：内容被砍了要让模型看见，并且**报数字**。
+ *
+ * 确定性：输出只由这四个数字决定（无时间戳、无随机）⇒ 同一输入两次调用逐字相同，
+ * run snapshot / resume 重放因此还能逐字比对。
+ *
+ * @param {{originalChars: number, originalTokens: number, keptChars: number,
+ *   keptTokens: number}} facts 原文与保留部分的字符数 / 估算 token
+ * @returns {string}
+ */
+export function truncationMarkerText({
+  originalChars, originalTokens, keptChars, keptTokens,
+}) {
+  const droppedTokens = Math.max(0, originalTokens - keptTokens);
+  return "[本条内容已超上下文预算，尾部已被引擎截断："
+    + `原文共 ${originalChars} 字符 ≈ ${originalTokens} token，`
+    + `此处仅保留前 ${keptChars} 字符 ≈ ${keptTokens} token，被砍掉约 ${droppedTokens} token；`
+    + TRUNCATION_READ_BACK_CLAUSE
+    + NO_RERUN_SIDE_EFFECT_CLAUSE + "]";
+}
+
+/**
+ * 在**码点数组**的前缀上二分出「估算 token 不超过 budgetTokens」的最长前缀长度（#609 陷阱 2）。
+ *
+ * 切点只能落在码点边界：调用方递进来的是 `Array.from(...)` 的结果，所以拼回去永远不会
+ * 勬开代理对（旧实现已经如此，本函数只把它从 `truncateTextToBudget` 里抽出来复用三次）。
+ *
+ * @param {string[]} characters 原文的码点数组
+ * @param {number} budgetTokens
+ * @returns {number}
+ */
+function fitCharacterCount(characters, budgetTokens) {
   let low = 0;
   let high = characters.length;
   while (low < high) {
@@ -160,7 +216,58 @@ export function truncateTextToBudget(text, budgetTokens) {
     if (estimateTokens(characters.slice(0, middle).join("")) <= budgetTokens) low = middle;
     else high = middle - 1;
   }
-  return characters.slice(0, low).join("");
+  return low;
+}
+
+/**
+ * 截断到预算，并在尾部**留下标记**（issue #609）。
+ *
+ * 三种「内容丢失」里这是最后一种静默的：字段被修剪会写 `[已修剪]`（`prunedFieldText`，#469），
+ * 整条消息被删会写桩（`stubFor`），只有它以前返回裸 slice ⇒ 模型拿着半截工具结果却不知道自己
+ * 被砍了（票面实测：119k 字符文档、5 条事实 0 命中，模型还诚实地报「文档约 171771 字符」）。
+ *
+ * 三条不变量（每条都有用例钉着）：
+ *   ① 没被截断的输入**一个字节都不变**（下面那行早退，不加任何前后缀）；
+ *   ② `estimateTokens(返回值) <= budgetTokens`：二分在 `budgetTokens - 标记额度` 上做，
+ *      预算小到连标记都装不下时整段（含标记）再走一次同一二分（宁可标记被截半也不静默）；
+ *   ③ 同一输入两次调用逐字相同。
+ *
+ * @param {unknown} text
+ * @param {number} budgetTokens
+ * @returns {string}
+ */
+export function truncateTextToBudget(text, budgetTokens) {
+  const value = String(text ?? "");
+  const originalTokens = estimateTokens(value);
+  // 未截断那一支：早退，一个字节都不动（既有用例钉着）。
+  if (originalTokens <= budgetTokens) return value;
+  const characters = Array.from(value);
+  const originalChars = characters.length;
+  const reserve = Math.min(
+    TRUNCATION_MARKER_RESERVE_TOKENS,
+    Math.max(0, budgetTokens - 1),
+  );
+  const compose = (contentBudget) => {
+    const keptChars = fitCharacterCount(characters, contentBudget);
+    const kept = characters.slice(0, keptChars).join("");
+    return kept + truncationMarkerText({
+      originalChars,
+      originalTokens,
+      keptChars,
+      keptTokens: estimateTokens(kept),
+    });
+  };
+  let contentBudget = budgetTokens - reserve;
+  let composed = compose(contentBudget);
+  // 标记比额度还大（预算只剩几百 token 的极端格）⇒ 从正文里继续让空间，直到整段装得下。
+  while (estimateTokens(composed) > budgetTokens && contentBudget > 0) {
+    contentBudget = Math.floor(contentBudget / 2);
+    composed = compose(contentBudget);
+  }
+  if (estimateTokens(composed) <= budgetTokens) return composed;
+  // 走到这一格，预算连标记本身都装不下：整段（含标记）再截一次，标记至少还剩半句。
+  const whole = Array.from(composed);
+  return whole.slice(0, fitCharacterCount(whole, budgetTokens)).join("");
 }
 
 export function dropOldestUnprotectedRound(messages, protectedMessage) {
@@ -272,6 +379,9 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
   const enforcedByIndex = new Map(
     enforced.fields.map((field) => [field.fieldIndex, field]),
   );
+  // 写回面只有 `truncateTextToBudget` 一个收口（issue #609）：三个出口（整条消息的字符串 content /
+  // block.text / block.content）都在下面这一组分支里，所以「被截了」这句话只需在那里补一次。
+  // 被 enforceSize 修剪成 `[已修剪]` 的字段很短，落不到截断那一格 ⇒ 不会叠上两个标记。
   for (const reference of references) {
     const enforcedField = enforcedByIndex.get(reference.fieldIndex);
     if (enforcedField === undefined) continue;
