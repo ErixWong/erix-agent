@@ -67,7 +67,7 @@
   procedural ruling (let the suite exit, rerun, and treat only the clean run as the
   judgment), and the attribution still open in the issue with its `.d.ts` mechanism lead
   kept a lead. Documentation only: no script, gate or behaviour changed, and the English
-  side is untouched.
+  side is untouched. (PR #860)
 - **中文冷层缺了英文侧早为 issue #799 写下的那条「并发判读禁令」。**
   `docs/maintenance/command-reference.md` 的 `## gate-reproducibility`
   从 `f405264a` 起就带着这一条，而同一段的
@@ -79,7 +79,7 @@
   沉默成功那个形状、触发面只在本地（CI 步骤是串行的）、
   程序性裁决（让套件退净、重跑，只把干净那一趟当判读），
   以及归因仍开在 issue 里、那条 `.d.ts` 机制线索仍只是线索。
-  **只改文档**：脚本、门禁、行为一个字都没动，英文侧一字未改。
+  **只改文档**：脚本、门禁、行为一个字都没动，英文侧一字未改。（PR #860）
 - **Display previews no longer cut a surrogate pair in half (issue #854).** The one
   truncation choke point behind all eight preview call sites (`truncated()` in
   `src/display/projection.js`) counted UTF-16 code units, so a budget landing inside a
