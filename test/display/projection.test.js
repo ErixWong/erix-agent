@@ -555,3 +555,239 @@ test("projects records produced by a real run (seed, tool rounds, real fold summ
   // the final answer is present
   assert.ok(entries.some((entry) => entry.role === "assistant" && entry.text === "all done"));
 });
+
+
+// ── issue #854：预览截断按码点收口，切点不许落在代理对中间 ──
+// `truncated()` 是八个调用点共用的唯一收口。旧写法按 UTF-16
+// 代码单元 `slice(0, maxChars)` 切，切点可以落在代理对中间，预览
+// 末尾于是剩一个孤立代理；这一份预览经宿主（erix-station 的
+// folded 接口）原样透传给浏览器，脏字符直接进了用户界面。
+// 下面的用例全部走公开入口 `projectTranscriptForDisplay`，只验两件事：
+// 切点安全（不再产生孤立代理），以及可观测行为没变（不截断的输入、
+// 纯 BMP 输入的输出，跟改动前逐字相同）。
+
+/** 一个 astral 字符：UTF-16 里是 D83D DE00 一对代理。 */
+const EMOJI = "\u{1F4A5}";
+/** 另一个 astral 字符（D83D DE00），给「800 emoji」那格用。 */
+const GRINNING = "\u{1F600}";
+
+/** 改动前 `truncated()` 的函数体，逐字照搬，当「不许变」的对照面。 */
+function legacyTruncated(text, maxChars) {
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
+}
+
+/**
+ * 第一个孤立代理的代码单元下标，没有孤立代理则 -1。手工区间检查：
+ * 高代理必须紧跟低代理。它只算下标，坏在哪个位置由下面那个断言写进
+ * 消息。
+ */
+function firstLoneSurrogateIndex(text) {
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const pair = text.charCodeAt(index + 1);
+      if (pair >= 0xdc00 && pair <= 0xdfff) {
+        index += 1; // 代理对完整，整对跳过
+        continue;
+      }
+      return index; // 孤立高代理：下半截被切掉了
+    }
+    if (unit >= 0xdc00 && unit <= 0xdfff) return index; // 孤立低代理
+  }
+  return -1;
+}
+
+/** 没有孤立代理：区间检查 + isWellFormed + 逐码点复核，三路互证。 */
+function assertNoLoneSurrogate(text, label) {
+  const bad = firstLoneSurrogateIndex(text);
+  const at = bad === -1 ? 0 : bad;
+  assert.equal(
+    bad,
+    -1,
+    `${label}: isolated surrogate 0x${text.charCodeAt(at).toString(16)}`
+      + ` at code-unit index ${bad} of ${text.length}`,
+  );
+  assert.ok(text.isWellFormed(), `${label}: isWellFormed() is false`);
+  // 逐码点复核（另一条算法）：`Array.from` 按码点迭代，只剩一个代码
+  // 单元的代理就是被切开的半对。
+  const lone = Array.from(text).filter((char) => char.length === 1
+    && char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdfff);
+  assert.deepEqual(lone, [], `${label}: ${lone.length} code point(s) are half a pair`);
+}
+
+/** 「assistant 调用 + 配对结果」的轮行（结果预览走 400 那一处）。 */
+function roundWithToolResult(content) {
+  return {
+    round: 1,
+    messages: [
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content }] },
+    ],
+  };
+}
+
+function resultPreviewOf(content) {
+  const turn = projectTranscriptForDisplay([roundWithToolResult(content)])
+    .find((entry) => entry.toolCalls !== undefined);
+  return turn.toolCalls[0].resultPreview;
+}
+
+/** 只带工具调用的轮行；input 给非对象也走得通（另一条分支）。 */
+function argsSummaryOf(input) {
+  const record = {
+    round: 1,
+    messages: [{
+      role: "assistant",
+      content: [{ type: "tool_use", id: "t1", name: "read", input }],
+    }],
+  };
+  const turn = projectTranscriptForDisplay([record])
+    .find((entry) => entry.toolCalls !== undefined);
+  return turn.toolCalls[0].argsSummary;
+}
+
+/** 折叠正文的两种来源与 wrapup：都过 1200 那一处。 */
+function projectedTexts(record) {
+  return projectTranscriptForDisplay([record]).map((entry) => entry.text);
+}
+
+test("issue #854: a cut landing inside a surrogate pair leaves no isolated surrogate", () => {
+  // 票面现场：405 个代码单元 / 404 个码点，预算 400 的旧切法正落在
+  // emoji 的代理对中间。下面三行是这一格的前置：先证明现场真的脏，
+  // 再证明新实现不脏。
+  const content = `${"a".repeat(399)}${EMOJI}tail`;
+  assert.equal(content.length, 405);
+  // 旧切法的末位 = 孤立高代理 0xD83D。
+  assert.equal(content.slice(0, 400).charCodeAt(399), 0xd83d);
+  // 旧输出确实是脏的。
+  assert.equal(content.slice(0, 400).isWellFormed(), false);
+
+  const preview = resultPreviewOf(content);
+  assertNoLoneSurrogate(preview, "resultPreview");
+  assert.ok(preview.endsWith("…"), "the … suffix keeps its existing meaning");
+  // 预算的口径是码点：留下 399 个 a 加整个 emoji（400 个完整码点），
+  // 不是 400 个代码单元。
+  assert.equal(preview, `${"a".repeat(399)}${EMOJI}…`);
+  assert.equal(Array.from(preview).length, 401); // 400 码点 + 后缀
+});
+
+test("issue #854: non-truncated input and BMP output are byte-for-byte unchanged", () => {
+  // ① 同一输入不被截断 ⇒ 输出既等于输入本身，也等于改动前的输出
+  //    （防误伤）。
+  const untouched = [
+    "x",
+    "中文。".repeat(80), // BMP：码点数 == 代码单元数
+    "a".repeat(400), // 正好在预算上
+    "a".repeat(200) + "中".repeat(199),
+    GRINNING.repeat(100), // astral 但在预算内（200 单元 / 100 码点）
+  ];
+  for (const content of untouched) {
+    const preview = resultPreviewOf(content);
+    assert.equal(preview, content);
+    assert.equal(preview, legacyTruncated(content, 400));
+  }
+  // 空结果不产生预览字段（既有语义：改动没造出空串预览）。
+  assert.equal(resultPreviewOf(""), undefined);
+  // ② 真被截断、但输入是纯 BMP ⇒ 内容与长度都按旧口径。ASCII 是
+  //    400 + 后缀 = 401，这一条长度是本文件开头就有的老契约，一个字节都
+  //    不许变。
+  for (const content of ["q".repeat(700), "中".repeat(700), "a".repeat(401)]) {
+    const preview = resultPreviewOf(content);
+    assert.equal(preview, legacyTruncated(content, 400));
+    assert.equal(preview.length, 401);
+  }
+  // ③ 参数摘要的 ASCII 输出同样逐字不变。裸字面量 60 已被具名成常量，
+  //    这一格把值钉住：改名不许改值，预算 120 那处也一样。
+  const value61 = "b".repeat(61);
+  const summary61 = argsSummaryOf({ path: value61 });
+  assert.equal(summary61, `path=${"b".repeat(60)}…`);
+  assert.equal(summary61, `path=${legacyTruncated(value61, 60)}`);
+  assert.equal(argsSummaryOf({ path: "b".repeat(60) }), `path=${"b".repeat(60)}`);
+  assert.equal(argsSummaryOf("q".repeat(121)), `"${"q".repeat(119)}…`);
+});
+
+test("issue #854: 800 emoji never yields an isolated surrogate", () => {
+  const pure = GRINNING.repeat(800); // 1600 代码单元 / 800 码点
+  const offset = `x${pure}`; // 错开一位：旧切法第 400 个单元正落在代理对中间
+  assert.equal(offset.slice(0, 400).charCodeAt(399), 0xd83d);
+  assert.equal(offset.slice(0, 400).isWellFormed(), false);
+  for (const [content, expected] of [
+    [pure, `${GRINNING.repeat(400)}…`], // 预算按码点 ⇒ 留 400 个完整 emoji
+    [offset, `x${GRINNING.repeat(399)}…`],
+  ]) {
+    const preview = resultPreviewOf(content);
+    assertNoLoneSurrogate(preview, "resultPreview(800 emoji)");
+    assert.equal(preview, expected);
+    assert.equal(Array.from(preview).length, 401);
+  }
+});
+
+test("issue #854: every preview budget cuts on a code-point boundary", () => {
+  // 八个调用点共用 truncated()：收口只有一处，但收益必须落到每条预算
+  // 上，所以逐处验。offset 扫一遍 ⇒ 切点相对代理对的位置逐次移动，
+  // 必然扫到「正好落在中间」那些。每格输入都真的超过预算，否则截断
+  // 不会发生，用例就咬不住退回。
+  const budgets = [
+    // 非对象工具入参 → MAX_ARGS_PREVIEW(120)：JSON 化后 132 码点 > 120
+    ["argsSummary(non-object)", 121, (offset) => [
+      argsSummaryOf(`${"x".repeat(offset)}${EMOJI.repeat(130)}`),
+    ]],
+    // 单个参数值 → MAX_ARG_VALUE_PREVIEW(60)：上限 66 = "path=" + 60 + 后缀
+    ["argsSummary(value)", 66, (offset) => [
+      argsSummaryOf({ path: `${"x".repeat(offset)}${EMOJI.repeat(70)}` }),
+    ]],
+    // 参数汇总串 → MAX_ARGS_PREVIEW(120)
+    ["argsSummary(joined)", 121, (offset) => [
+      argsSummaryOf({
+        a: "c".repeat(45),
+        b: "d".repeat(45),
+        c: `${"x".repeat(offset)}${EMOJI.repeat(40)}`,
+      }),
+    ]],
+    // 工具结果预览 → MAX_RESULT_PREVIEW(400)
+    ["resultPreview", 401, (offset) => [
+      resultPreviewOf(`${"x".repeat(offset)}${EMOJI.repeat(500)}`),
+    ]],
+    // 标记折叠正文 → MAX_FOLD_TEXT(1200)：splitFoldBlocks + pushFoldEntry
+    ["foldText(marked)", 1201, (offset) => projectedTexts({
+      round: 0,
+      messages: [{
+        role: "user",
+        content: [{
+          type: "text",
+          text: `【上下文折叠·v1·erix-9f6e2c】${"y".repeat(offset)}${EMOJI.repeat(1300)}`,
+        }, { type: "text", text: "real task" }],
+      }],
+    })],
+    // 组合式折叠正文 → MAX_FOLD_TEXT(1200)：composedFoldText + pushFoldEntry
+    ["foldText(composed)", 1201, (offset) => projectedTexts({
+      round: 2,
+      folded: true,
+      foldedRoundRange: { from: 1, to: 3 },
+      summary: { action: `${"y".repeat(1180 + offset)}${EMOJI}tail`, note: "n" },
+    })],
+    // wrapup 正文 → MAX_FOLD_TEXT(1200)
+    ["wrapupText", 1201, (offset) => projectedTexts({
+      round: 9,
+      messages: [],
+      wrapup: { summary: `"${"z".repeat(offset)}${EMOJI.repeat(1300)}` },
+    })],
+  ];
+  for (const [label, capInCodePoints, build] of budgets) {
+    let truncatedCases = 0;
+    for (let offset = 0; offset <= 6; offset += 1) {
+      for (const text of build(offset)) {
+        assert.equal(typeof text, "string", `${label} @${offset}: no text projected`);
+        assertNoLoneSurrogate(text, `${label} @offset ${offset}`);
+        // 预算仍然被守住（口径是码点，后缀最多再加一个码点）。
+        assert.ok(
+          Array.from(text).length <= capInCodePoints,
+          `${label} @${offset}: ${Array.from(text).length} code points > ${capInCodePoints}`,
+        );
+        if (text.endsWith("…")) truncatedCases += 1;
+      }
+    }
+    // 反空转：这条预算必须真被截过，否则用例咬不住任何退回。
+    assert.ok(truncatedCases > 0, `${label}: never truncated — the case is vacuous`);
+  }
+});
