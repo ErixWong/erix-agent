@@ -5,6 +5,40 @@
 
 ### Changed
 
+- **A single over-budget piece of content is no longer cut silently (issue #609).** The three ways
+  this library loses content differed in honesty: a pruned field keeps its heading and says
+  `[已修剪]` (`prunedFieldText`, issue #469), a removed message leaves a `stubFor` stub, and
+  `truncateTextToBudget()` returned a **bare slice** — the model worked on half a tool result
+  without knowing it had been cut. The tail marker now reports the numbers (original code-point
+  count and estimated tokens, kept characters and tokens, tokens dropped) plus a **tool-agnostic**
+  continuation instruction (`readFile` with `offset`/`limit`, `exec` with `head`/`tail`/`sed`;
+  notes only as a conditional clause — this layer has neither the assembled tool surface nor the
+  note ledger, so per the #746 discipline it must not name a `note_*` tool), and the “do not
+  re-run a side-effecting command just to complete the output” clause — the latter is now the
+  shared `NO_RERUN_SIDE_EFFECT_CLAUSE` that the aggregate stub quotes too (one wording, not two
+  that expire). **The marker itself costs budget:** the binary search runs on
+  `budgetTokens − TRUNCATION_MARKER_RESERVE_TOKENS`, and when a budget is too small to hold even
+  the marker, the whole string (marker included) goes through the same code-point-safe search
+  again, so `estimateTokens(returned) <= budgetTokens` always holds — the #846 “one protected
+  message over budget” family does not come back. Content that is **not** truncated comes back
+  byte-for-byte unchanged, and the marker is deterministic (same input ⇒ the same string, so run
+  snapshot / resume comparison survives). Thirteen cells in
+  `test/loop-budget-truncation-marker-609.test.js` pin it, including the reverse proof that
+  cutting on the full budget and pasting the marker afterwards really does overflow. (PR #—)
+- **单个超预算的内容不再被静默剪掉（issue #609）。** 本仓三种「内容丢失」在诚实度上本来不齐：
+  字段被修剪会留标题并写 `[已修剪]`（`prunedFieldText`，issue #469），整条消息被删会留
+  `stubFor` 桩，而 `truncateTextToBudget()` 以前返回**裸 slice** ⇒ 模型拿着半截工具结果在干活，
+  却不知道自己被砍了。现在尾部标记**报数字**（原文码点数与估算 token、保留的字符与 token、
+  被砍掉多少 token），并给一条**工具无关**的续读指引（`readFile` 传 `offset`/`limit`，`exec` 用
+  `head`/`tail`/`sed`；笔记只给条件式 —— 这一层既拿不到装配后的工具面也拿不到笔记账本，按
+  #746 的口径不许点名 `note_*`），以及「不要为补全输出重跑有副作用的命令」那一句 —— 后者已
+  抽成 `NO_RERUN_SIDE_EFFECT_CLAUSE`，聚合超限桩引用同一个常量（一份措辞，不是两套必然过期）。
+  **标记本身占预算：** 二分跑在 `budgetTokens − TRUNCATION_MARKER_RESERVE_TOKENS` 上；预算小到连
+  标记都装不下时，整段（含标记）再走一次同一条码点安全的二分，所以
+  `estimateTokens(返回值) <= budgetTokens` 恒成立 —— #846「单条受保护消息超预算」那一族不会被
+  引回来。**没被截断**的内容逐字原样返回，标记也是确定性的（同输入同输出，run snapshot /
+  resume 的逐字比对仍成立）。`test/loop-budget-truncation-marker-609.test.js` 十三格钉住，
+  含反向证：拿整条预算截完再贴标记确实会超预算。（PR #—）
 - **The CHANGELOG coverage gate's own wiring check no longer borrows a documentation step as
   its position landmark (issue #855).** Criterion ⑧ of
   `node scripts/changelog-coverage-check.mjs --self-test` located the blocking step between
