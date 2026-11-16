@@ -454,10 +454,10 @@ export function inspectFinalDraft({ finalText, messages, ledger } = {}) {
       message: `「## 基点」声明的 ${untraceable.join("、")} 在本次 run 的工具返回里**逐字找不到**`
         + `（基点必须来自本次取证，不许凭记忆写）。`
         + `请重跑取基点的命令（如 git rev-parse --short HEAD），并把返回里的字面值原样写进「## 基点」。`
-        // #787：同一条里补上**同一组**正反例（与提示词是同一个常量）。
-        // 只说「重跑命令」时模型在猜形状：真机那一单改了三次，
-        // 三个方向都不一样。
-        + BASE_EXAMPLE_HINT
+        // #787：同一条里补上**同一组**正反例（与提示词是同一个常量，
+        // 分隔符也和提示词同一形状）。只说「重跑命令」时模型在
+        // 猜形状：真机那一单改了三次，三个方向都不一样。
+        + `\n${BASE_EXAMPLE_HINT}`
         + ledgerRoute,
     };
   }

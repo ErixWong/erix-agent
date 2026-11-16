@@ -442,10 +442,10 @@ test("P6 账本不给 ⇒ inspectFinalDraft 的判定与今天逐字一致（回
     + `（基点必须来自本次取证，不许凭记忆写）。`
     + `请重跑取基点的命令（如 git rev-parse --short HEAD），`
     + `并把返回里的字面值原样写进「## 基点」。`
-    // #787：末尾拼的是那段与提示词**同源**的例子（拼常量，不再拄）。
-    // 本格钉的仍是「没给账本就不许多出 ledgerRoute，也不许多出 evidence」；
-    // 例子自身的形状由上面「#787 …引用同一组正反例」那一格钉。
-    + BASE_EXAMPLE_HINT);
+    // #787：末尾拼的是那段与提示词**同源**的例子（拼常量，不再拄；
+    // 连分隔符也是同一个形状：例子前换一行，与提示词那边一致）。
+    // 本格钉的仍是「没给账本就不许多出 ledgerRoute，也不许多出 evidence」。
+    + `\n${BASE_EXAMPLE_HINT}`);
   assert.equal(red.evidence, undefined);
 });
 
