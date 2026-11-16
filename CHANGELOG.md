@@ -3,6 +3,30 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Changed
+
+- **The CHANGELOG coverage gate's own wiring check no longer borrows a documentation step as
+  its position landmark (issue #855).** Criterion ⑧ of
+  `node scripts/changelog-coverage-check.mjs --self-test` located the blocking step between
+  `run: npm run check:test-summary -- --self-test` and `run: npm run check:docs`, and once the
+  documentation family left the pipeline (issue #802) the second landmark was gone — so the
+  criterion read as permanently red on `main` while `AGENTS.md` and `ci.yml` agreed. The
+  position check now anchors on the test-summary step alone; the three load-bearing assertions
+  are untouched (the blocking step exists, `fetch-depth: 0` is counted against every
+  `actions/checkout`, the npm script points at this script), and a new reverse proof ⑧d moves
+  the CHANGELOG step above the anchor and must be named — which is what keeps the position
+  check from quietly decaying into "the step just exists". Documentation is still machine-checked
+  where it blocks: the `release:day` preflight and writeback. No CI behaviour changed. (PR #858)
+- **CHANGELOG 覆盖闸自己的接线判据不再借文档步当位置地标（issue #855）。** 例⑧
+  原来把阻塞步定位在 `run: npm run check:test-summary -- --self-test` 与
+  `run: npm run check:docs` 之间，而文档族已整族移出流水线（issue #802）—— 第二个地标
+  没了，于是这条判据在 main 上恒红，而 `AGENTS.md` 与 `ci.yml` 本来就是一致的。位置
+  判据现在只锚 test-summary 那一步；三条承重断言一字未动（阻塞步存在、
+  `fetch-depth: 0` 与每处 `actions/checkout` 按份数对账、npm script 指向本脚本），并新增
+  反向证 ⑧d：把 CHANGELOG 那一步挑到锚点之前必须被点名——这正是防止位置判据悄悄
+  退化成「存在就好」的那一格。文档的机器约束仍在它该阻塞的位置：`release:day` 的
+  preflight 与 writeback。CI 行为没变。（PR #858）
+
 ### Fixed
 
 - **Display previews no longer cut a surrogate pair in half (issue #854).** The one
