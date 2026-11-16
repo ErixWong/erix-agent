@@ -11,12 +11,12 @@
   pair left an isolated high/low surrogate at the end of a host-visible preview, and
   hosts pass that preview through verbatim. The budget now counts code points.
   Pure-BMP / ASCII output is byte-for-byte unchanged — same early return, same `…`
-  suffix, same lengths — and no numeric cap moved.
+  suffix, same lengths — and no numeric cap moved. (PR #857)
 - **展示预览不再把代理对切成两半（issue #854）。** 八个预览调用点背后的
   唯一收口（`src/display/projection.js` 的 `truncated()`）按 UTF-16 代码单元
   计数，预算落在代理对中间时，预览末尾就剩一个孤立高/低代理，
   而宿主把这份预览原样透传。预算现在按码点计。纯 BMP / ASCII 的输出逐字
-  不变（同一条早退、同样的 `…` 后缀、同样的长度），数值上限也未动。
+  不变（同一条早退、同样的 `…` 后缀、同样的长度），数值上限也未动。（PR #857）
 
 ## [0.33.0] - 2026-11-15
 
