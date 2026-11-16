@@ -26,6 +26,32 @@
   反向证 ⑧d：把 CHANGELOG 那一步挑到锚点之前必须被点名——这正是防止位置判据悄悄
   退化成「存在就好」的那一格。文档的机器约束仍在它该阻塞的位置：`release:day` 的
   preflight 与 writeback。CI 行为没变。（PR #858）
+- **The `finalGuard` prompt and its revise text now carry a passing example and a
+  counter-example for the `## 基点` section (issue #787).** The first backtick pattern treats
+  *any* backticked text as a declared base, while the evidence face is only `tool_result` (plus
+  the run ledger) — so a command name written into the base section (`git log --format=%H -5`)
+  can never be traced: a guarded run burned its whole retry budget and still ended
+  `unverified / max_retries`. Only the wording changed. `BASE_LITERAL_PATTERNS`,
+  `extractDeclaredBases()`, the base-tracing predicate and the evidence face are untouched —
+  `tool_use` inputs are still not evidence. Both sites quote one shared `BASE_EXAMPLE_HINT`
+  constant so the prompt and the revise text cannot drift apart, and command names are pointed
+  at `## 取证边界`. Six offline cases pin that the shipped example really passes, that a
+  command name appearing only in `tool_use` is still rejected, that the two sites quote the
+  same block, that copying the example's own value still revises (it is a shape, not a value),
+  and that the "shape only / do not copy it" markers stay in the text (issue #787).
+  (PR #859)
+- **`finalGuard` 的提示词与 revise 文案各补一组基点段正反例（issue #787）。**
+  反引号那条模式把任何反引号内容当成声明值，而取证面只有 `tool_result`
+  （加本次 run 的账本）——于是把命令名写进基点段（`git log --format=%H -5`）
+  永远溯源不到：一个开了 guard 的 run 把重试预算烧光，终局仍是
+  `unverified / max_retries`。**只改文案**：`BASE_LITERAL_PATTERNS`、
+  `extractDeclaredBases()`、基点溯源谓词与取证面一字未改，`tool_use` 的
+  输入依旧不算取证面。两处引用同一个常量 `BASE_EXAMPLE_HINT`，提示词与
+  revise 文案分不开；命令名被指回「## 取证边界」。**通过样例标明「只是形状、
+  不要照抄」并给出替换动作**：示例值 `2e68d52` 只是随手举的，它不在任何一次
+  工具返回里，照抄它照样打回（复审实测）。六格离线用例钉住：发出去的例子自身
+  真能过闸、只在 `tool_use` 里出现的命令名仍被打回、两处引用的是同一段文本、
+  照抄示例值仍 revise、以及那两个标记不许被删掉（删了就红）。（PR #859）
 
 ### Fixed
 

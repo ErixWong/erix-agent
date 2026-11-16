@@ -10,6 +10,10 @@ import * as guardModule from "./erix-run-final-guard.js";
 // R2 P9/P10 要探宿主的读口（core 不 import pi，`node --test` 可测）；懒取命名空间，缺导出时在格子里红而不是链接期红。
 import * as coreModule from "./erix-run-core.js";
 import {
+  BASE_EXAMPLE_FAIL_LINE,
+  BASE_EXAMPLE_HINT,
+  BASE_EXAMPLE_NO_COPY_MARKERS,
+  BASE_EXAMPLE_PASS_LINE,
   createFinalGuardTally,
   createFinalGuardVerify,
   collectToolResultText,
@@ -162,6 +166,172 @@ test("C2 多个基点里只要有一条对不上就 revise（逐条核验，不�
   const decision = inspectFinalDraft({ finalText: draft, messages: messagesWith(SHA) });
   assert.equal(decision.action, "revise");
   assert.deepEqual(decision.untraceableBases, [OTHER_SHA]);
+});
+
+// ---------------------------------------------------------------------------
+// #787：提示词与 revise 文案里的**正反例**必须是真的（不误导模型），
+// 且两处同源；现场：开了 finalGuard 的 run 把**命令名**写进「## 基点」
+// （票面那一单是 `git log --format=%H -5`），而 `BASE_LITERAL_PATTERNS`
+// 的第一条把任何反引号内容当声明值 ⇒ 它在 `tool_result` 里 0 命中
+// ⇒ 必然打回。**判据未改**：本段钉「补出去的例子自身成立」
+// +「取证面没被顺手放宽」。
+// ---------------------------------------------------------------------------
+
+/**
+ * 反例里举的那条命令名：从常量里取，不在格子里再拄一份——
+ * 否则改了例子而钉子还在验旧值，那只是第四份会腐烂的副本。
+ */
+const BASE_FAIL_COMMAND = BASE_EXAMPLE_FAIL_LINE.replace(/^- `(.*)`$/u, "$1");
+
+test("#787 通过样例的形状自身能过闸：值在 tool_result 里 ⇒ accept", () => {
+  // 样例本身必须**真能过**（否则它只是新一层误导）：拿提示词那一行。
+  assert.equal(BASE_EXAMPLE_PASS_LINE, "- 2e68d52", "通过样例的形状就是「- <值>」");
+  assert.deepEqual(extractDeclaredBases(`\n${BASE_EXAMPLE_PASS_LINE}\n`).map((e) => e.literal),
+    ["2e68d52"], "样例行必须真能抠出一个声明值");
+  const decision = inspectFinalDraft({
+    finalText: completeDraft({ base: "2e68d52" }),
+    messages: messagesWith("commit 2e68d52 (HEAD -> main)\n"),
+  });
+  assert.equal(decision.action, "accept",
+    `样例自己就过不了闸：${JSON.stringify(decision)}`);
+  assert.deepEqual(decision.declaredBases, ["2e68d52"]);
+});
+
+test("#787 基点段写命令名 ⇒ 必然打回：它只在 tool_use 里", () => {
+  assert.equal(BASE_FAIL_COMMAND, "git log --format=%H -5", "反例必须是一条**命令名**");
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "把最近几个 commit 列出来" }] },
+    {
+      role: "assistant",
+      content: [{
+        type: "tool_use", id: "t1", name: "exec",
+        input: { command: `cd repo && ${BASE_FAIL_COMMAND} | cat` },
+      }],
+    },
+    // 真机形状：`tool_result` 里只有 SHA 列表，没有命令字符串。
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "t1", content: "2e68d52\n1c9f0aa\n" }],
+    },
+  ];
+  // 取证面只有 `tool_result`（+ 账本）：命令名在整份 messages 里存在，但在
+  // 取证面里 0 命中。这两行就是**反向证**：把 tool_use 输入加进去就红。
+  assert.ok(JSON.stringify(messages).includes(BASE_FAIL_COMMAND),
+    "命令名得真的在 tool_use 输入里（不在就钉不出取证面的形状）");
+  assert.equal(collectToolResultText(messages).includes(BASE_FAIL_COMMAND), false,
+    "取证面只能有 tool_result：把 tool_use 输入加进来，下面那格会假绿");
+  const decision = inspectFinalDraft({
+    finalText: completeDraft({ base: `\`${BASE_FAIL_COMMAND}\`` }),
+    messages,
+  });
+  assert.equal(decision.action, "revise", JSON.stringify(decision));
+  assert.deepEqual(decision.untraceableBases, [BASE_FAIL_COMMAND]);
+  assert.deepEqual(decision.declaredBases, [BASE_FAIL_COMMAND],
+    "反引号里的命令名会被当成声明值（这正是它必然打回的原因）");
+});
+
+test("#787 命令名在账本行里也只活在 tool_use ⇒ 仍然红", () => {
+  const rows = [{
+    round: 3,
+    messages: [
+      {
+        role: "assistant",
+        content: [{
+          type: "tool_use", id: "t1", name: "exec", input: { command: BASE_FAIL_COMMAND },
+        }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "2e68d52\n" }],
+      },
+    ],
+  }];
+  const decision = inspectFinalDraft({
+    finalText: completeDraft({ base: `\`${BASE_FAIL_COMMAND}\`` }),
+    messages: [],
+    ledger: guardModule.buildLedgerEvidence(rows, { source: "loadRawRows" }),
+  });
+  assert.equal(decision.action, "revise", "账本折的也是 tool_result，不是 tool_use");
+  assert.deepEqual(decision.evidence.notInLedger, [BASE_FAIL_COMMAND]);
+});
+
+test("#787 提示词与 revise 文案引用**同一组**正反例（只改一边就红）", () => {
+  const decision = inspectFinalDraft({
+    finalText: completeDraft({ base: OTHER_SHA }),
+    messages: messagesWith(SHA),
+  });
+  assert.equal(decision.action, "revise");
+  // 同源：两处引用的必须是**同一段**文本，不是写法相近的两份副本。
+  assert.ok(decision.message.includes(BASE_EXAMPLE_HINT),
+    `revise 文案必须整段引用那一组例子：${decision.message}`);
+  assert.ok(FINAL_DRAFT_PROMPT.includes(BASE_EXAMPLE_HINT),
+    "提示词的基点条目必须引用同一段例子");
+  for (const line of [BASE_EXAMPLE_PASS_LINE, BASE_EXAMPLE_FAIL_LINE]) {
+    assert.ok(FINAL_DRAFT_PROMPT.includes(line), `提示词的基点条目缺样例 ${line}`);
+    assert.ok(decision.message.includes(line), `revise 文案缺同一条样例 ${line}`);
+  }
+  // 反例的后半句（命令名的去处）也要两处都在，否则模型只会删掉它。
+  assert.ok(FINAL_DRAFT_PROMPT.includes("## 取证边界"), "提示词要说清命令名归哪段");
+  assert.ok(decision.message.includes("## 取证边界"), "revise 文案也要说清归哪段");
+});
+
+// 主 agent 复跑成品时直接打的那一枪：终稿把提示词里的**示例值**当模板抄了。
+// 取证面里只有一条不相干的 commit，于是「## 基点」里那个值逐字找不到。
+const EXAMPLE_VALUE = BASE_EXAMPLE_PASS_LINE.replace(/^-\s+/u, "");
+const COPIED_EXAMPLE_DECISION = inspectFinalDraft({
+  finalText: completeDraft({ base: EXAMPLE_VALUE }),
+  messages: messagesWith("commit 1111111aaa\n"),
+});
+
+test("#787 抄示例值⇒仍然 revise（机制）；但文案现在**明确禁止**抄（两者不矛盾）", () => {
+  assert.equal(EXAMPLE_VALUE, "2e68d52", "示例值就是从样例里取的，不在格子里再抄一份");
+  assert.equal(COPIED_EXAMPLE_DECISION.action, "revise",
+    `抄示例值不 revise ⇒ 机制变了：${JSON.stringify(COPIED_EXAMPLE_DECISION)}`);
+  assert.deepEqual(COPIED_EXAMPLE_DECISION.untraceableBases, [EXAMPLE_VALUE]);
+  assert.deepEqual(COPIED_EXAMPLE_DECISION.declaredBases, [EXAMPLE_VALUE]);
+  // 反证：把示例值自己放进 tool_result ⇒ accept（钉住「revise 是因为取证面里没它，
+  // 不是因为这个值形制不对」）。上面那格「样例形状自身能过闸」是同一回事的正面，
+  // 这里钉的是「取证面里到底有没有」这一轴。
+  assert.equal(inspectFinalDraft({
+    finalText: completeDraft({ base: EXAMPLE_VALUE }),
+    messages: messagesWith(`commit ${EXAMPLE_VALUE} (HEAD -> main)\n`),
+  }).action, "accept");
+});
+
+test("#787 通过样例带着「只是形状 / 不要照抄 + 换成自己的值」：删了这句就红", () => {
+  // 钉子本身带**字面**标记：不去遍历常量里的清单（清单被清空就恒真，#391 同形的坑）。
+  for (const marker of ["只是形状", "不要照抄"]) {
+    assert.ok(BASE_EXAMPLE_HINT.includes(marker), `BASE_EXAMPLE_HINT 丢了「${marker}」：${BASE_EXAMPLE_HINT}`);
+  }
+  // 还要钉「清单非空且每条真的在文案里」：它防的是往清单里加一条却忘了写进文案。
+  assert.ok(BASE_EXAMPLE_NO_COPY_MARKERS.length > 0, "标记清单不许清空（清空下面逐条就恒真）");
+  for (const marker of BASE_EXAMPLE_NO_COPY_MARKERS) {
+    assert.ok(BASE_EXAMPLE_HINT.includes(marker), `清单里的「${marker}」没出现在文案里`);
+  }
+  // 标记必须在**通过样例那一半**、且落在样例之前（写在反例那半等于没写）。
+  const passClause = BASE_EXAMPLE_HINT.slice(0, BASE_EXAMPLE_HINT.indexOf("\n反例"));
+  assert.ok(passClause.includes(BASE_EXAMPLE_PASS_LINE), "切片切错了：通过样例不在那一半里");
+  for (const marker of ["只是形状", "不要照抄"]) {
+    assert.ok(passClause.includes(marker), `「${marker}」不在通过样例那一半里：${passClause}`);
+    assert.ok(passClause.indexOf(marker) < passClause.indexOf(BASE_EXAMPLE_PASS_LINE),
+      `「${marker}」要在样例**之前**：否则读者先抄了值才看到提醒`);
+  }
+  // ② 只说「别抄」不够，要给替换动作（模型空着手还是会猜）。
+  assert.ok(passClause.includes("换成"), `通过样例要给替换动作（把值换成…）：${passClause}`);
+  assert.ok(passClause.includes("本次工具返回里真出现过"),
+    `替换动作要说清换成哪里的值：${passClause}`);
+  // ③ 两处出口同源 ⇒ 两边都带着这两个标记（提示词与 revise 文案）。
+  for (const marker of ["只是形状", "不要照抄"]) {
+    assert.ok(FINAL_DRAFT_PROMPT.includes(marker), `提示词丢了「${marker}」`);
+    assert.ok(COPIED_EXAMPLE_DECISION.message.includes(marker),
+      `revise 文案丢了「${marker}」（与提示词不同源？）：${COPIED_EXAMPLE_DECISION.message}`);
+  }
+  // ④ 提醒不许挤掉原有的正反例语义（反例仍是命令名、仍指回取证边界）。
+  assert.ok(BASE_EXAMPLE_HINT.includes(BASE_EXAMPLE_PASS_LINE) && BASE_EXAMPLE_HINT.includes(BASE_EXAMPLE_FAIL_LINE),
+    "正反例两行都还在 BASE_EXAMPLE_HINT 里");
+  assert.ok(passClause.includes("逐字"), "「逐字出现过」这个过闸条件还在通过样例里");
+  assert.ok(BASE_EXAMPLE_HINT.slice(BASE_EXAMPLE_HINT.indexOf("\n反例")).includes("## 取证边界"),
+    "反例那一半仍要把命令名指回「## 取证边界」");
 });
 
 test("extractDeclaredBases 认反引号 / 裸 SHA / 版本号，去重且顺序稳定", () => {
@@ -321,7 +491,8 @@ test("P6 账本不给 ⇒ inspectFinalDraft 的判定与今天逐字一致（回
   assert.deepEqual(Object.keys(implicit).sort(),
     ["action", "declaredBases", "missingSections", "ratioFlags", "untraceableBases"]);
 
-  // ② 找不到值的那一格：文案与 untraceableBases 逐字照今天的口径。
+  // ② 找不到值那一格：文案与 untraceableBases 逐字照今天的口径。（#787
+  // 只往末尾拼了那段与提示词同源的例子，前半句一个字没动。）
   const red = inspectFinalDraft({ finalText: draft, messages: messagesWith(`无关文本 ${SHA}`) });
   assert.equal(red.action, "revise");
   assert.deepEqual(red.untraceableBases, [OTHER_SHA]);
@@ -329,7 +500,12 @@ test("P6 账本不给 ⇒ inspectFinalDraft 的判定与今天逐字一致（回
   assert.equal(red.message,
     `「## 基点」声明的 ${OTHER_SHA} 在本次 run 的工具返回里**逐字找不到**`
     + `（基点必须来自本次取证，不许凭记忆写）。`
-    + `请重跑取基点的命令（如 git rev-parse --short HEAD），并把返回里的字面值原样写进「## 基点」。`);
+    + `请重跑取基点的命令（如 git rev-parse --short HEAD），`
+    + `并把返回里的字面值原样写进「## 基点」。`
+    // #787：末尾拼的是那段与提示词**同源**的例子（拼常量，不再拄；
+    // 连分隔符也是同一个形状：例子前换一行，与提示词那边一致）。
+    // 本格钉的仍是「没给账本就不许多出 ledgerRoute，也不许多出 evidence」。
+    + `\n${BASE_EXAMPLE_HINT}`);
   assert.equal(red.evidence, undefined);
 });
 

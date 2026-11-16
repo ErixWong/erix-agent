@@ -88,10 +88,70 @@ export const LEDGER_EVIDENCE_ROW_LIMIT = 4000;
  */
 export const LEDGER_LITERAL_LIMIT = 20;
 
+/**
+ * 「## 基点」的**通过样例**（issue #787）：一行一个「- <值>」，那个值必须
+ * 在本次取证面里逐字出现过。
+ *
+ * 提示词与 revise 文案**共用**这一行（见 `BASE_EXAMPLE_HINT`）：两处各写
+ * 一份，下一次就有人只改一边。
+ *
+ * ⚠ 这一行给的是**形状**，不是值：`2e68d52` 是随手举的示例，它**不会**出现在
+ * 任何一次 run 的工具返回里（本仓 `git cat-file -t 2e68d52` ⇒ `Not a valid object
+ * name`）。模型照抄它 ⇒ 那一行逐字找不到 ⇒ 白拿一次 `revise`——正是本单要消掉
+ * 的那种浪费。所以「只是形状 / 不要照抄」那句必须写在 `BASE_EXAMPLE_HINT` 里
+ * （那里是唯一出口），并由用例钉住；**删掉它就红**。
+ */
+export const BASE_EXAMPLE_PASS_LINE = "- 2e68d52";
+
+/** 通过样例里那个**示例值**本身：从 `BASE_EXAMPLE_PASS_LINE` 里取，不在文案里抄第二份。 */
+const BASE_EXAMPLE_PASS_VALUE = BASE_EXAMPLE_PASS_LINE.replace(/^-\s+/u, "");
+
+/**
+ * 通过样例里必须出现的两个**标记**（#787 复修）：「只是形状」说清那是形状
+ * 不是值，「不要照抄」给出动作。用例逐字验它们都在提示词与 revise 文案里
+ * （两者都只引用 `BASE_EXAMPLE_HINT`，所以验常量本身就是验两处）。
+ */
+export const BASE_EXAMPLE_NO_COPY_MARKERS = ["只是形状", "不要照抄"];
+
+/**
+ * 「## 基点」的**反例**（issue #787）：把**命令名**写进基点段。
+ *
+ * 为什么它必然打回（是机制，不是新判据）：`BASE_LITERAL_PATTERNS` 的第一条
+ * 把**任何**反引号内容当成声明值，而取证面只有 `tool_result`：那里只有
+ * 命令的**输出**、没有命令字符串，于是这一行逐字找不到 ⇒ 一直 revise。
+ * 模型把命令名当「我据以取证的东西」写进来是很自然的写法，
+ * 缺的只是「长什么样」这句话，所以正反例都要给。
+ */
+export const BASE_EXAMPLE_FAIL_LINE = "- `git log --format=%H -5`";
+
+/**
+ * 正反例合起来的那一句（issue #787）：`FINAL_DRAFT_PROMPT` 的基点条目与
+ * `inspectFinalDraft` 的 revise 文案**引用同一个常量**。
+ *
+ * 只补文案：判据、谓词、取证面（`tool_result` ∪ 账本）一个字都没改
+ * （#787 明确排除把 `tool_use` 输入加进取证面）。
+ *
+ * **通过样例那一半带「只是形状 ⇒ 不要照抄 + 换成你自己的值」这两句话**
+ * （#787 复修，主 agent 实测：模型把 `2e68d52` 当模板抄进「## 基点」，而它
+ * 不在本次 `tool_result` 里 ⇒ 直接吃一次 `revise`）。措辞可以改，但两句
+ * 都在的这件事由 `BASE_EXAMPLE_NO_COPY_MARKERS` + 用例钉着：样例若回到
+ * 「可以照抄」的形状，它就从防呆变成了新的坑。
+ */
+export const BASE_EXAMPLE_HINT = `通过样例（${BASE_EXAMPLE_NO_COPY_MARKERS.map((m) => `**${m}**`).join("，")}）：${BASE_EXAMPLE_PASS_LINE}`
+  + `（能过闸靠的是那一行的值在本次工具返回里逐字出现过；而 ${BASE_EXAMPLE_PASS_VALUE} `
+  + `只是随手举的示例，它不在你的工具返回里 ⇒ 照抄它就照样逐字找不到。`
+  + `动作：形状照抄，把值换成**本次工具返回里真出现过**的那个）。`
+  + `\n反例：${BASE_EXAMPLE_FAIL_LINE}（那是**命令名**：反引号里的`
+  + `任何东西都会被当成声明值，而工具返回里只有命令的**输出**、`
+  + `没有命令字符串 ⇒ 它必然逐字找不到）。`
+  + `命令名请写进「## 取证边界」，不要写进「## 基点」。`;
+
 /** 每段要模型写什么（提示词里的槽位说明；段名才是 guard 的判定对象）。 */
 const SECTION_HINTS = {
   "## 取证边界": "本次实际取证的来源与范围（跑了哪些命令/读了哪些文件），以及明确没看的东西",
-  "## 基点": "结论所依据的基点，逐字照抄工具返回里出现过的字面值（commit SHA / tag / 版本号），一行一个",
+  "## 基点": "结论所依据的基点，逐字照抄工具返回里出现过的字面值"
+    + "（commit SHA / tag / 版本号），一行一个。"
+    + `\n${BASE_EXAMPLE_HINT}`,
   "## 结论": "每条结论后面附「文件:行」定位；没有定位的结论不要写",
   "## 未验证": "看过但没能证实的点；确实没有就写「无」",
 };
@@ -418,6 +478,10 @@ export function inspectFinalDraft({ finalText, messages, ledger } = {}) {
       message: `「## 基点」声明的 ${untraceable.join("、")} 在本次 run 的工具返回里**逐字找不到**`
         + `（基点必须来自本次取证，不许凭记忆写）。`
         + `请重跑取基点的命令（如 git rev-parse --short HEAD），并把返回里的字面值原样写进「## 基点」。`
+        // #787：同一条里补上**同一组**正反例（与提示词是同一个常量，
+        // 分隔符也和提示词同一形状）。只说「重跑命令」时模型在
+        // 猜形状：真机那一单改了三次，三个方向都不一样。
+        + `\n${BASE_EXAMPLE_HINT}`
         + ledgerRoute,
     };
   }
