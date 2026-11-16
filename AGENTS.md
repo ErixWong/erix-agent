@@ -104,7 +104,7 @@ One row per gate: what it judges, and the anchor to read before editing what it 
   `EXTERNAL_REPO_PREFIXES` in `scripts/docs-drift-check.mjs` (unregistered names are red; registered names nobody
   references are red too). **An unprefixed path is a path in this repository and must resolve here.**
 - **Anchors**: four gate-owned numbers are the only truth on this page — `BASELINE_ROOT = 102`, the symbol-anchor
-  floor `SYMBOL_ANCHOR_MIN_UNIQUE = 243` (only-up: falling below it is red — anchor degeneration being caught), the
+  floor `SYMBOL_ANCHOR_MIN_UNIQUE = 244` (only-up: falling below it is red — anchor degeneration being caught), the
   bare-line ratchet `BARE_LINE_REF_BASELINE = 6` (only-down), and the anchor-face floor
   `REF_SCAN_DOCS_MINIMUM = 53`. Docs must not lean on bare line numbers: point at a symbol with its file
   (`` `symbol` (`path`) ``), never at `path:123`. The measurement log lives in
