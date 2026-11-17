@@ -84,10 +84,50 @@ const NEGATION_BEFORE_MEASURED = /\b(?:no|not|never|nothing|nor|rather than|inst
  * "a table"）。见到任何一个 ⇒ 该否定词作废，这句按正向声称处理。
  */
 const NEGATION_SCOPE_BREAK = /\b(?:but|yet|however|although|though|while)\b|[:;\u2014\u2013]/u;
-/** 否定词与 `measured` 的最大距离（去掉两端空白后计）：隔得太远就是两句不相关的话，不算统治。 */
+/**
+ * 否定词与 `measured` 的最大距离（去掉两端空白后计）：隔得太远就是两句不相关的话，不算统治。
+ *
+ * ⚠ 这条上限**不再**负责放过描述里的两句政策句（copilot 验收条件 1：那两句的距离**恰好** 40、零余量，
+ * 上限是照着一句话定的，而且任何「距离 ≤40 且没命中断点词」的否定前缀都会被它一起放过）。现在那两句
+ * 由下面的 `MEASURED_POLICY_SENTENCES` **逐字**放过。这条上限目前由两条合成样本钉着（调小就红）：
+ * `READ_DESC_NEGATED_MEASURE_SENTENCES` 里「…nothing in the lines below was measured…」那条（距离恰好 40），
+ * 以及 `READ_DESC_MEASURED_LINE_LEGACIES` 里「No line capacity is quoted here as a number, however, …」那条（41）。
+ */
 const NEGATION_MAX_DISTANCE = 40;
 /** 「实测 → 行容量」的形状：`measured` 之后（同一句内）提到 line / lines。 */
 const MEASURED_THEN_LINES = /measured[\s\S]{0,240}?\bline(?:s)?\b/iu;
+/**
+ * 描述里**仅有的**两句「提到 `measured` 却不是声称实测数」的政策句（#628 的裁决本身，逐字取自现文；
+ * 与 `READ_DESC_NEGATED_MEASURE_SENTENCES` 里标「现在就在描述里」的两条是同样的文字，两处必须同步）。
+ *
+ * 为什么要一张**显式逐字白名单**，而不是让 `NEGATION_MAX_DISTANCE` 继续承重：
+ *   - 政策句 1 的 `No … measured` 距离**恰好** 40 ⇒ 上限是照它校准的，一个词的余量都没有；
+ *   - 且「距离 ≤40 + 没命中断点词」这个条件会顺手放过其它毫不相干的否定前缀（松处，不是政策）。
+ *
+ * ⚠ 白名单**只认逐字**（见 `measuredSentenceKey`：空白归一 + 剥掉被 `split` 吃掉的句末标点之后整句相等）：
+ *   任何变体都不算命中，把一句 `measured … lines` 的正向声称塞进白名单也救不了它——那条句子既不在
+ *   白名单里（变体 ⇒ 不逐字相等），又被下面的断言直接判红（`MEASURED_POLICY_SENTENCES` 每条自己不许踩形状）。
+ */
+const MEASURED_POLICY_SENTENCES = [
+  "No line capacity is quoted here as a number measured from this repo: this codebase is not your tree, "
+    + "and any such figure goes stale the moment someone edits an unrelated file.",
+  "Token budget, derived from the engine's own estimator (~3.5 characters per token for non-CJK, ~1.5 for "
+    + "CJK, \u00d71.15 margin) rather than measured from any file here: tokens \u2248 bytes \u00f7 3.04 for ASCII source "
+    + "and \u2248 bytes \u00f7 1.74 for text that is nothing but Chinese characters \u2014 so a call that fills the whole "
+    + "256KB cap costs ~86,000 tokens of ASCII up to ~151,000 tokens of pure Chinese characters, and a call "
+    + "that fills a tenth of the cap costs a tenth of that.",
+];
+
+/**
+ * 逐字比较用的归一键：连续空白压成单个空格、去首尾空白，再剥掉句末标点——`String.split(SENTENCE_BOUNDARY)`
+ * 会把分隔符**本身**（那个 `.`）吃掉，不剥掉这个尾巴，政策句在切句结果里就永远比不上白名单里的原文。
+ * 除此之外不做任何模糊：不改大小写、不折叠标点、不截前缀。
+ */
+function measuredSentenceKey(text) {
+  return String(text ?? "").replace(/\s+/gu, " ").trim().replace(/[.!?]+$/u, "").trim();
+}
+/** 白名单的归一索引（`measuredSentenceKey` 之后整句相等才算命中）。 */
+const MEASURED_POLICY_KEYS = new Set(MEASURED_POLICY_SENTENCES.map(measuredSentenceKey));
 
 /** 否定词后面紧跟的这段文字（去掉两端空白）是否还在它的管辖范围内。 */
 function negationGoverned(prefix) {
@@ -108,11 +148,16 @@ function negationGoverned(prefix) {
  * 所以分两步：① 按句切；② 句内在 `measured` **之前**找一个**真的统治它**的否定词，找到 ⇒ 否定句放过；
  * 否则句内 `measured` 之后又提到 line/lines ⇒ 正向声称，抓出来。
  *
- * 「统治」的判据（不是「前面出现过否定词」就算）：
- *   - 否定词与 `measured` 之间出现转折/子句边界（`NEGATION_SCOPE_BREAK`）⇒ 否定管的是别的东西，作废；
- *   - 两者距离（去掉两端空白后计）> `NEGATION_MAX_DISTANCE` ⇒ 隔得太远，作废。
- *   政策句 "No line capacity is quoted here as a number measured from this repo: …" 的距离恰好是 40，
- *   中间也没有断点 ⇒ 仍然被放过（这条上限就是照它定的，别随手调小）。
+ * 判定顺序（三步，顺序本身就是判据）：
+ *   ① 整句**逐字**命中 `MEASURED_POLICY_SENTENCES` ⇒ 放过（政策句，先于任何启发式）；
+ *   ② 否则看 `measured` 之前有没有否定词**真的统治**它，统治 ⇒ 放过。「统治」的判据（不是「前面出现过
+ *      否定词」就算）：否定词与 `measured` 之间出现转折/子句边界（`NEGATION_SCOPE_BREAK`）⇒ 否定管的是
+ *      别的东西，作废；两者距离（去掉两端空白后计）> `NEGATION_MAX_DISTANCE` ⇒ 隔得太远，作废；
+ *   ③ 否则句内 `measured` 之后又提到 line/lines ⇒ 正向声称，抓出来。
+ *
+ * ⚠ 白名单是**逐字**的，不是逃生门：政策句加一个词、换个尾巴就不再命中（②③ 照旧判它），而把一句
+ *   带 `measured … lines` 形状的话塞进白名单会直接被断言判红。政策句从此**不靠** `NEGATION_MAX_DISTANCE`
+ *   通过（那条上限的余量问题见它自己的注释）。
  *
  * ⚠ 为什么不是 `/measured[^.]{0,80}lines/iu` 这种形状（派单里的建议写法）：`[^.]` 在 #628 删掉的那句
  *   原文上走不出 30 个字符——"Measured that way on this repo's own `.js` sources" 里的 `.js` 就是一道
@@ -132,6 +177,7 @@ function positiveMeasuredLineClaims(text) {
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence !== "")
     .filter((sentence) => {
+      if (MEASURED_POLICY_KEYS.has(measuredSentenceKey(sentence))) return false;
       const measured = sentence.match(/\bmeasured\b/iu);
       if (!measured) return false;
       if (negationGoverned(sentence.slice(0, measured.index))) return false;
@@ -142,9 +188,9 @@ function positiveMeasuredLineClaims(text) {
 /**
  * #628 从描述里删掉的**正向声称原文**（逐字取自改动前的描述，即 `f80d48ca~1:src/tools/file-tools.js`）。
  * ①面：接回描述必须被 `positiveMeasuredLineClaims` 抓到；抓不到就说明形状写坏了 / 永真。
- * 前两条是**逐字取自改动前描述**的历史正向声称；后三条是假设样本，专门铉住「否定词必须真的统治
- * `measured`」这一步（旧写法把它们全放过了——没有它们，`NEGATION_SCOPE_BREAK` 与 `NEGATION_MAX_DISTANCE`
- * 就是没人踩的代码）。
+ * 前两条是**逐字取自改动前描述**的历史正向声称；后四条是假设样本，专门铉住「否定词必须真的统治
+ * `measured`」与「白名单只认逐字」这两步（旧写法把它们全放过了——没有它们，`NEGATION_SCOPE_BREAK` 与
+ * `NEGATION_MAX_DISTANCE` 就是没人踩的代码）。
  */
 const READ_DESC_MEASURED_LINE_LEGACIES = [
   "Measured that way on this repo's own `.js` sources under `src/`, `bin/` and `examples/` at the default "
@@ -156,9 +202,17 @@ const READ_DESC_MEASURED_LINE_LEGACIES = [
     + "~190 tokens where lines are short and sparse, ~2,500 on typical source, and ~4,750 where lines are wide, "
     + "comments are dense or the text is CJK \u2014 budget the tail, not the typical case.",
   // ↓ 三条逐字的假设样本：`not`/`Nothing`/`however` 都管不到 `measured`，必须按正向声称被抓。
+  //   ⚠ 第三条原先写的是 "The cap **is** a table, however, measured on our tree: 86,000 lines."——那句
+  //   `measured` 前面**根本没否定词**，有无 `NEGATION_SCOPE_BREAK` 都会被抓 ⇒ 它是**假反向证**，
+  //   没覆盖断点分支。补上 `not` 才是真覆盖（实测：删掉断点检查后这条从红变绿）。
   "The cap is not a table but measured on our tree: 86,000 lines.",
   "Nothing here is a table; measured on our tree: 151,000 lines.",
-  "The cap is a table, however, measured on our tree: 86,000 lines.",
+  "The cap is not a table, however, measured on our tree: 86,000 lines.",
+  // ↓ 白名单不是逃生门（逐字命中才放行）：这句是政策句 1 的**近似变体**——前 43 字符与它逐字相同
+  //   （"No line capacity is quoted here as a number"），只在 `measured` **之前**插了一个断点词 `, however,`
+  //   （顺带把否定统治距离从恰好 40 推到 41），再把尾巴换成带 `lines` 的数 ⇒ 不再逐字命中白名单，
+  //   必须按正向声称被抓。把白名单放宽成「前缀/片段相同即放行」这类松匹配，这条立刻红。
+  "No line capacity is quoted here as a number, however, measured from this repo: 86,000 lines.",
 ];
 
 /**
@@ -182,6 +236,12 @@ const READ_DESC_NEGATED_MEASURE_SENTENCES = [
   // 它是政策允许的写法（先否定、同一个句子里后面又提到 lines），必须靠否定词表放过。
   ["No line capacity is quoted here as a number measured from this repo: nothing in the lines below was "
     + "measured on our tree.", "假设样本（政策允许的否定句，`measured` 同句后续就带 lines）"],
+  // ⚠ 已知**松处**（不是政策）：政策句 1 只加尾巴——`measured` 之前一字未动 ⇒ `No` 与它的距离仍是恰好 40、
+  //   也没断点 ⇒ 现判据仍按否定放过，尽管尾巴里就写着一个 `86,000 lines`。（派单原本期望这条被判成
+  //   声称：实测不成立——只有把字加在 `measured` **之前**才能断开否定统治，那条逐字变体在 LEGACIES 里。）
+  //   钉成「现判据放过」是为了收紧 40 这条上限时这里必须有人签字，而不是默默翻红。
+  ["No line capacity is quoted here as a number measured from this repo: 86,000 lines.",
+    "假设样本（政策句 1 + 尾巴 `86,000 lines.`：否定统治未断，现判据放过——已知松处）"],
 ];
 
 /**
@@ -589,6 +649,23 @@ export function fileToolsContract(label, { createFileTools }) {
         + "宿主那棵树，这种数随任何一次无关改动过期）。要给容量就给换算式 + 由估算器推出的 token 区间；"
         + "**否定句**（「这里没给实测数」/「不是从本仓量的」）不算声称，见 positiveMeasuredLineClaims 的注释："
         + measuredLineClaims.map((sentence) => sentence.slice(0, 80)).join(" // "));
+    // ①′ 白名单自己也不许是死条目、也不许被当逃生门（否则「逐字放过」就是新的永真松处）：
+    //    · 每一条必须**逐字**仍在描述里（走与判据同一条切句流水线 + 同一个归一键）——现文删了它，
+    //      那条放过就成了没人认领的松处（白名单悄悄过期）；
+    //    · 每一条自己都不许踩 `measured … lines` 形状：想塞一句正向声称进白名单消音 ⇒ 立刻红；
+    //    · 清单不许被清空（清空后下面那个循环就是空循环）。「变体不算命中」那一面由
+    //      `READ_DESC_MEASURED_LINE_LEGACIES` 里那条政策句 1 的近似变体钉着（① 面必须咬住它）。
+    const describedSentenceKeys = new Set(String(readFileTool.description)
+      .split(SENTENCE_BOUNDARY)
+      .map((sentence) => measuredSentenceKey(sentence)));
+    assert.ok(MEASURED_POLICY_SENTENCES.length >= 2,
+      "白名单被清空了（①′ 退化成空循环，「逐字放过」无人验）");
+    for (const policy of MEASURED_POLICY_SENTENCES) {
+      assert.ok(describedSentenceKeys.has(measuredSentenceKey(policy)),
+        `白名单里的政策句已不在描述里（它会悄悄过期，逐字放过退化成没人认领的松处）：${policy.slice(0, 70)}…`);
+      assert.ok(!MEASURED_THEN_LINES.test(policy),
+        `白名单里塞进了一句「measured … lines」的正向声称（白名单只收留逐字命中的政策句，不是消音的逃生门）：${policy.slice(0, 70)}…`);
+    }
     // 反向证（三条新判据都不许是死判据）：
     // ① 「正向声称」的形状必须咬得住 #628 删掉的那两句原文（逐字取自改动前的描述）——接回来必须被抓。
     for (const legacy of READ_DESC_MEASURED_LINE_LEGACIES) {
@@ -610,8 +687,9 @@ export function fileToolsContract(label, { createFileTools }) {
       .filter(([sentence]) => MEASURED_THEN_LINES.test(sentence)).length >= 1,
       "否定句样本里没有一条会踩到「measured … lines」形状：NEGATION_BEFORE_MEASURED 退化成没人踩的代码");
     // ③ 两面样本不许被清空：清空后上面两个循环就是空循环（看起来在验，其实什么都没验）。
-    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 5 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
-      "反向证的两面样本不够（正向 ≥5、否定 ≥4）：那两面退化成空循环（判据没人验）");
+    //   下限按现量钉：正向 6（两条逐字历史声称 + 三条「否定未真的统治」+ 一条「白名单只认逐字」）、否定 5。
+    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 6 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 5,
+      "反向证的两面样本不够（正向 ≥6、否定 ≥5）：那两面退化成空循环（判据没人验）");
     // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);
