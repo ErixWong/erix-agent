@@ -76,26 +76,52 @@ const metadataOf = (result) => (result && typeof result === "object" && !Array.i
 
 /** 句子边界：句末标点**且其后紧跟空白**。`.js`、`3.5`、`÷ 3.04` 这类点后不留空的写法不会被切开。 */
 const SENTENCE_BOUNDARY = /[.!?](?=[\s])/u;
-/** 否定词：只在 `measured` **之前**出现才算这句在否定它（放过「这里没给实测数」那两句）。 */
-const NEGATION_BEFORE_MEASURED = /\b(?:no|not|never|nothing|nor|rather than|instead of|without|unmeasured)\b/iu;
+/** 否定词：只有它**真的统治** `measured` 时才算这句在否定实测（放过「这里没给实测数」那两句，见下）。`g` 是给 `matchAll` 用的（此正则不再 `.test`，不受 lastIndex 影响）。 */
+const NEGATION_BEFORE_MEASURED = /\b(?:no|not|never|nothing|nor|rather than|instead of|without|unmeasured)\b/giu;
+/**
+ * 否定作用域的断点：否定词与 `measured` **之间**出现转折词或子句边界，就说明否定管的是别的东西，
+ * 不是 `measured`（"the cap is **not** a table **but** measured on our tree: 86,000 lines" 里 `not` 管的是
+ * "a table"）。见到任何一个 ⇒ 该否定词作废，这句按正向声称处理。
+ */
+const NEGATION_SCOPE_BREAK = /\b(?:but|yet|however|although|though|while)\b|[:;\u2014\u2013]/u;
+/** 否定词与 `measured` 的最大距离（去掉两端空白后计）：隔得太远就是两句不相关的话，不算统治。 */
+const NEGATION_MAX_DISTANCE = 40;
 /** 「实测 → 行容量」的形状：`measured` 之后（同一句内）提到 line / lines。 */
 const MEASURED_THEN_LINES = /measured[\s\S]{0,240}?\bline(?:s)?\b/iu;
+
+/** 否定词后面紧跟的这段文字（去掉两端空白）是否还在它的管辖范围内。 */
+function negationGoverned(prefix) {
+  for (const negation of prefix.matchAll(NEGATION_BEFORE_MEASURED)) {
+    const scope = prefix.slice(negation.index + negation[0].length).trim();
+    if (scope.length > NEGATION_MAX_DISTANCE) continue;
+    if (NEGATION_SCOPE_BREAK.test(scope)) continue;
+    return true;
+  }
+  return false;
+}
 
 /**
  * 把描述里「从本仓某些文件**实测**出来的行容量」这种**正向声称**抓出来（issue #628）。
  *
  * 为什么不能写 `assert.doesNotMatch(description, /measured/iu)`：#628 之后的描述里两处 `measured`
  * 都是**否定用法**（模型需要知道这里没给过实测数，这两句是政策的一部分），直接禁词会把政策本身判红。
- * 所以分两步：① 按句切；② 句内在 `measured` **之前**出现否定词 ⇒ 否定句，放过；否则句内 `measured`
- * 之后又提到 line/lines ⇒ 正向声称，抓出来。
+ * 所以分两步：① 按句切；② 句内在 `measured` **之前**找一个**真的统治它**的否定词，找到 ⇒ 否定句放过；
+ * 否则句内 `measured` 之后又提到 line/lines ⇒ 正向声称，抓出来。
+ *
+ * 「统治」的判据（不是「前面出现过否定词」就算）：
+ *   - 否定词与 `measured` 之间出现转折/子句边界（`NEGATION_SCOPE_BREAK`）⇒ 否定管的是别的东西，作废；
+ *   - 两者距离（去掉两端空白后计）> `NEGATION_MAX_DISTANCE` ⇒ 隔得太远，作废。
+ *   政策句 "No line capacity is quoted here as a number measured from this repo: …" 的距离恰好是 40，
+ *   中间也没有断点 ⇒ 仍然被放过（这条上限就是照它定的，别随手调小）。
  *
  * ⚠ 为什么不是 `/measured[^.]{0,80}lines/iu` 这种形状（派单里的建议写法）：`[^.]` 在 #628 删掉的那句
  *   原文上走不出 30 个字符——"Measured that way on this repo's own `.js` sources" 里的 `.js` 就是一道
  *   点号墙；窗口 80 也够不到 158 字符之后的 "3,850 lines"。实测两种旧文案（下面两条 legacy）在它上面
  *   都是 `false` ⇒ 那种写法是**死正则**，正是本判据要修的那个病。
  *
- * 已知松处（与本文件既有口径一致：宁可松，不可假红）：同一句里若在 `measured` **之前**出现一个与实测
- * 无关的否定词（"the cap is **not** a table but measured on our tree: 3,850 lines"）会被放过。
+ * 旧版的松处（已修）：只看「`measured` 之前有没有否定词」，于是 "the cap is **not** a table **but**
+ * measured on our tree: 86,000 lines" 被放过——`not` 管的是 "a table"，却把 `measured` 一起赦免了。
+ * 这正是 `NEGATION_SCOPE_BREAK` 存在的理由，三条这样的样本在 `READ_DESC_MEASURED_LINE_LEGACIES` 里钉住它。
  *
  * @param {string} text readFile 面向模型的描述
  * @returns {string[]} 命中的句子（正向声称），逐条给报错文案用
@@ -108,14 +134,17 @@ function positiveMeasuredLineClaims(text) {
     .filter((sentence) => {
       const measured = sentence.match(/\bmeasured\b/iu);
       if (!measured) return false;
-      if (NEGATION_BEFORE_MEASURED.test(sentence.slice(0, measured.index))) return false;
+      if (negationGoverned(sentence.slice(0, measured.index))) return false;
       return MEASURED_THEN_LINES.test(sentence.slice(measured.index));
     });
 }
 
 /**
  * #628 从描述里删掉的**正向声称原文**（逐字取自改动前的描述，即 `f80d48ca~1:src/tools/file-tools.js`）。
- * 它是反向证的①一面：接回描述必须被 `positiveMeasuredLineClaims` 抓到；抓不到就说明形状写坏了 / 永真。
+ * ①面：接回描述必须被 `positiveMeasuredLineClaims` 抓到；抓不到就说明形状写坏了 / 永真。
+ * 前两条是**逐字取自改动前描述**的历史正向声称；后三条是假设样本，专门铉住「否定词必须真的统治
+ * `measured`」这一步（旧写法把它们全放过了——没有它们，`NEGATION_SCOPE_BREAK` 与 `NEGATION_MAX_DISTANCE`
+ * 就是没人踩的代码）。
  */
 const READ_DESC_MEASURED_LINE_LEGACIES = [
   "Measured that way on this repo's own `.js` sources under `src/`, `bin/` and `examples/` at the default "
@@ -126,6 +155,10 @@ const READ_DESC_MEASURED_LINE_LEGACIES = [
     + "non-CJK, ~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: "
     + "~190 tokens where lines are short and sparse, ~2,500 on typical source, and ~4,750 where lines are wide, "
     + "comments are dense or the text is CJK \u2014 budget the tail, not the typical case.",
+  // ↓ 三条逐字的假设样本：`not`/`Nothing`/`however` 都管不到 `measured`，必须按正向声称被抓。
+  "The cap is not a table but measured on our tree: 86,000 lines.",
+  "Nothing here is a table; measured on our tree: 151,000 lines.",
+  "The cap is a table, however, measured on our tree: 86,000 lines.",
 ];
 
 /**
@@ -560,7 +593,7 @@ export function fileToolsContract(label, { createFileTools }) {
     // ① 「正向声称」的形状必须咬得住 #628 删掉的那两句原文（逐字取自改动前的描述）——接回来必须被抓。
     for (const legacy of READ_DESC_MEASURED_LINE_LEGACIES) {
       assert.ok(positiveMeasuredLineClaims(`Anchor sentence. ${legacy}`).length > 0,
-        `#628 删掉的那句正向声称接回来却没人咬（形状判据失效 / 被改成了永真）：${legacy.slice(0, 70)}…`);
+        `一句正向声称接回来却没人咬（形状判据失效 / 否定的「统治」判据被改宽了）：${legacy.slice(0, 70)}…`);
     }
     // ② 那些**否定句**不许被当成正向声称——否则「排除否定句」只是把判据从永真换成永假。
     for (const [negated, provenance] of READ_DESC_NEGATED_MEASURE_SENTENCES) {
@@ -577,8 +610,8 @@ export function fileToolsContract(label, { createFileTools }) {
       .filter(([sentence]) => MEASURED_THEN_LINES.test(sentence)).length >= 1,
       "否定句样本里没有一条会踩到「measured … lines」形状：NEGATION_BEFORE_MEASURED 退化成没人踩的代码");
     // ③ 两面样本不许被清空：清空后上面两个循环就是空循环（看起来在验，其实什么都没验）。
-    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 2 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
-      "反向证的两面样本不够（正向 ≥2、否定 ≥4）：那两面退化成空循环（判据没人验）");
+    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 5 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
+      "反向证的两面样本不够（正向 ≥5、否定 ≥4）：那两面退化成空循环（判据没人验）");
     // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);
