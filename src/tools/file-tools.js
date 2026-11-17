@@ -1153,6 +1153,22 @@ export const FILE_TOOL_DEFINITIONS = [
     //   本单一行没碰，当场复测未越界 ⇒ 一列没刷（`densest` 4,384 / CJK 36.6%：记录 4,364 / 37.0%，±容差内；
     //   `median` 6,157 与 `most` 9,407 与记录**逐字相同**）。逐字段旧值→新值写在测试侧角色表那一条。承诺没写高（`assertTierTight`：3,650 ≤ 3,696 < 3,700，零容差一字未动）、
     //   也没补 `measured minimum N`（#543：实测最小值是证据不是承诺）。逐字段旧值→新值写在测试侧角色表那一条。
+    // ⚠ 2026-11-17 第十七刷（issue #609 顶红的复测，**`median` 那一档换人**；测试侧同一件事记作**第十六刷**——
+    //   本文件的刷号自 2026-10-26 起就与测试侧差一格，两条台账各自递增，这里照本文件自己的下一个号写）：
+    //   #609 给 `src/loop/budget.js` 的截断预算加了一圈中文注释（22,481 → **23,998** 字节 / 521 → **550** 行
+    //   ⇒ 均行字节 43.1497 → **43.6327** ⇒ 容量 6,075 → **6,007**），**被改的这个文件自己就是写死样本的第 42/83 个**
+    //   ⇒ **样本中位从 6,056（`src/display/projection.js`）挪到 6,007**，中位元素正是 `src/loop/budget.js`。描述里
+    //   那句 `median` 钉的 `src/loop/error-ledger.js` **本轮一字未动**（6,157 与记录逐字相同）——红的是「描述声称的
+    //   中位行数容量」对样本中位（6,157 vs 6,007 = **2.50%** 越过 ±2%）。两条 ±2% 断言的交集 `[6,034, 6,127]` 非空，
+    //   但里面**没有任何一个实测值**（既不是样本中位也不是被钉文件的实测）⇒ 按 #730 / #769 R3 先例**换人**，
+    //   不按 #493 那样在交集里挑一个既不等于实测也不等于档位的中间数。描述那一档
+    //   `median 6,157 (42.6)` → `median 6,007 (43.6)`（**同位数替换 ⇒ 对本文件字节中性**，这一处本身不动 `self`）；
+    //   其余**三档**当场复测与记录**逐字相同**（`fewest` 3,854 / `densest` 4,384 / `most` 9,407）⇒ 一列没刷；
+    //   `self` 在写本注**之前**复测也仍是 4,577（与记录逐字相同）——它本轮要刷只有一个成因，就是下一行。
+    //   ⚠ **但本注自己给本文件加了字节** ⇒ `self` 那一档按 #537 先例同片重测：133,104 → **135,358** 字节 /
+    //   2,324 → **2,340** 行 ⇒ 均行 57.2737 → **57.8453** ⇒ 容量 **4,577 → 4,531**（下面那句 `own source fits`
+    //   同位数跟着刷；**判据一个没动**：±2% / ±1% 常量、`measureReadLineCapacity`、83 条写死样本、
+    //   `assertTierTight` 全部一字未动——本刷只是复测 + 同步声称；让中位不随样本成员漂移的结构性修法是 #628）。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
@@ -1161,11 +1177,11 @@ export const FILE_TOOL_DEFINITIONS = [
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
       + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,850 lines "
       + "(68.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,850 lines), "
-      + "median 6,157 (42.6), most 9,407 (27.9). "
+      + "median 6,007 (43.6), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
       + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,384 and "
-      + "this tool's own source fits 4,577. "
+      + "this tool's own source fits 4,531. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
