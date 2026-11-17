@@ -5,6 +5,52 @@
 
 ### Changed
 
+- **The `readFile` description no longer quotes numbers measured from this repository (issue #628).**
+  The model-visible copy used to carry two families of in-repo measurements, and both were hostage
+  to source churn: line capacity (`fewest ≥ 3,850 lines … median 6,007 … most 9,407`, plus two CJK
+  anchors — `src/loop/state-view.js` 4,384 and *this tool's own source* 4,531) and the #267 token
+  tiers (190 / 2,493 / 4,773, whose densest anchor **was this file itself**). The cost was real, not
+  theoretical: adding 29 lines of Chinese comments to `src/loop/budget.js` (issue #609) moved the
+  sample median 6,056 → 6,007, so a fix to the truncation marker was required to edit a
+  `readFile` sentence it had nothing to do with — and the guard that forced it had been re-measured
+  seventeen times. Swapping the sample files would only relocate the drift source, so the figures are
+  gone. What stays is what cannot drift: `max_bytes` defaults to **262144 = 256 KiB**, the budget is
+  counted in **UTF-8 bytes**, capacity is a **formula** (`max_bytes ÷ average bytes per line`, i.e.
+  `wc -c` ÷ `wc -l` on the file in hand), `offset` is a **0-based line index**, `limit` is a **line
+  count** (default 200), and a withheld tail reports the exact `offset` to continue from. What is
+  added is one budget hint **derived from `estimateTokens()` itself** rather than measured from any
+  file: ≈ bytes ÷ 3.04 for ASCII source and ≈ bytes ÷ 1.74 for pure Chinese text, so filling the
+  whole 256 KiB costs **~86,000 tokens (ASCII) up to ~151,000 tokens (pure Han)** — labelled a
+  heuristic estimate, not a real tokenizer. The byte cap is deliberately **not** replaced by a token
+  cap: bytes are a definite resource boundary, while 256 KiB swings 1.7× in estimated tokens
+  depending on CJK density. Guards follow the same split (issue #267 / #271 / #275 / #453 / #537 /
+  #543 statistical cells removed — their parse surface *was* the deleted copy — replaced by three
+  deterministic ones): no in-repo figure may reappear in the description (an allow-list of mechanism
+  constants plus banned shapes, with the deleted sentences kept verbatim as a self-test), the token
+  range must equal what `estimateTokens()` computes now (two-sided: ±5 % off is red either way), and
+  the mechanism facts must stay present. The #506 chunked-read invariants (never over budget, never
+  a split multi-byte character, no lost or duplicated line, an explicit exit for over-wide lines)
+  are byte-for-byte untouched — they test behaviour, not statistics. (PR #—)
+- **`readFile` 的描述不再引用「从本仓测出来的数字」（issue #628）。** 模型可见文案原本钉着两组仓内
+  实测，而两组都是源码 churn 的人质：行数容量（`fewest ≥ 3,850 lines … median 6,007 … most 9,407`，
+  另加两个 CJK 锚点 —— `src/loop/state-view.js` 4,384 与 **本工具自己的源码** 4,531）与 #267 的
+  token 三档（190 / 2,493 / 4,773，密实档的锚点**就是这个文件自己**）。代价是实测发生的，不是推测：
+  给 `src/loop/budget.js` 加 29 行中文注释（issue #609）把样本中位从 6,056 挪到 6,007，于是修截断
+  标记的人被迫去改一句与它毫无关系的 `readFile` 文案 —— 而逼他改的那条守卫已经被复测十七次。
+  换样本只是把漂移源挪个地方，所以整组数字删掉。留下的是漂不动的东西：`max_bytes` 默认
+  **262144 = 256 KiB**、预算按 **UTF-8 字节** 计、容量是一条**换算式**（`max_bytes ÷ 平均每行字节`，
+  即对手上那个文件现算 `wc -c` ÷ `wc -l`）、`offset` 是 **0-based 行号**、`limit` 是**行数**（默认 200），
+  没返回的部分由 marker 给出可续读的确切 `offset`。新增的只有一句**由 `estimateTokens()` 自己推出**、
+  而不是从哪个文件量出来的预算提示：ASCII 约 `≈ 字节 ÷ 3.04`、纯汉字约 `≈ 字节 ÷ 1.74` ⇒ 读满
+  256 KiB 大约 **86,000 token（ASCII）到 151,000 token（纯汉字）**，并明写这是启发式估值、不是真实
+  tokenizer。字节上限**没有**被换成 token 上限，这是刻意的：字节是确定的资源边界，而同样 256 KiB
+  按 CJK 密度不同，估算 token 会摆动 1.7×。守卫按同一条界线重排（#267 / #271 / #275 / #453 / #537 /
+  #543 那几格统计断言删除 —— 它们的解析面**就是**被删的那段文案 —— 换成三条确定性判据）：描述里
+  不许再出现任何仓内实测数字（机制常数白名单 + 禁用形状，被删的旧句子原文留在测试里当反向证）、
+  token 区间必须等于 `estimateTokens()` **现算**的区间（双向：偏 ±5% 就红）、机制事实必须在场。
+  `#506` 的分片续读不变量（不超字节 / 不劈坏多字节字符 / 续读不重不漏 / 超宽行有显式出口）
+  一字未动 —— 它们测的是行为，不是统计。（PR #—）
+
 - **A single over-budget piece of content is no longer cut silently (issue #609).** The three ways
   this library loses content differed in honesty: a pruned field keeps its heading and says
   `[已修剪]` (`prunedFieldText`, issue #469), a removed message leaves a `stubFor` stub, and

@@ -664,17 +664,17 @@ test("readFile 描述的 token 区间 == 估算器现算的区间（#628 守卫 
   // 2) 区间上下界必须等于现算的「256 KiB 换算成 token」（ASCII 86,134 / 纯汉字 150,733；双向）。
   assertCloseFigure(lowClaim, ascii.tokens, 0.02, "一次读满 256 KiB 的 ASCII token 下界");
   assertCloseFigure(highClaim, cjk.tokens, 0.02, "一次读满 256 KiB 的纯汉字 token 上界");
-  // 3) 文案自己那套算式必须自洽——模型真会拿它算：256 KiB ÷ 它给的折算率 \u2248 它给的区间。
+  // 3) 文案自己那套算式必须自洽——模型真会拿它算：256 KiB ÷ 它给的折算率 ≈ 它给的区间。
   assertCloseFigure(lowClaim, Math.round(FILE_READ_MAX_BYTES_DEFAULT / asciiDivisorClaim), 0.02,
     "描述内部自洽（下界 vs 它自己给的 ASCII 折算率）");
   assertCloseFigure(highClaim, Math.round(FILE_READ_MAX_BYTES_DEFAULT / cjkDivisorClaim), 0.02,
     "描述内部自洽（上界 vs 它自己给的纯汉字折算率）");
-  // 4) #267 的结论留在**公式**里：ASCII \u2192 纯汉字这段跨度必须 \u22651.5\u00d7（典型值不是上限）。
+  // 4) #267 的结论留在**公式**里：ASCII → 纯汉字这段跨度必须 ≥1.5×（典型值不是上限）。
   assert.ok(highClaim >= lowClaim * 1.5,
     `描述的区间跨度只剩 ${(highClaim / lowClaim).toFixed(2)}\u00d7：#267 修的正是「拿典型值冒充上限」`);
   assert.ok(cjk.tokens >= ascii.tokens * 1.5,
     `估算器给的跨度只剩 ${(cjk.tokens / ascii.tokens).toFixed(2)}\u00d7：估算器改了，描述的区间口径要重谈`);
-  // 5) 反向证：把上界改偏 \u00b15% 都必须红（正向对照同时在场，否则「恒抛」也会骗过这三条）。
+  // 5) 反向证：把上界改偏 ±5% 都必须红（正向对照同时在场，否则「恒抛」也会骗过这三条）。
   assert.doesNotThrow(() => assertCloseFigure(highClaim, cjk.tokens, 0.02, "正向对照"),
     "正向对照就红：说明解析出的上界与现算值本来就不一致（判据在红，不是反向证在红）");
   assert.throws(() => assertCloseFigure(Math.round(highClaim * 1.05), cjk.tokens, 0.02, "反向证：偏大 5%"),
