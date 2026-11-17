@@ -7,7 +7,7 @@
 // 本包此前对这类标记**零判据**（`grep -rn 'DSML' src/` 全空），宿主自己那份拷贝只覆盖顶层
 // run 的终局信封 ⇒ `delegate` 子 run 一个标记都不带。
 //
-// 格子对账（十格，编号与下面 test() 一致）：
+// 格子对账（十一格，编号与下面 test() 一致）：
 //   ① / ②：命中面 —— 真样本端到端、五条特征逐个、优先级 = 清单顺序、大小写不敏感；
 //   ③ / ④：不误伤 —— ``` 围栏与行内码里的字面量不算命中，`offset` / `offer` / `chatcmpl`
 //          / 空正文 / 正常中文总结不算命中，以及**裸串特征的长度下限**这条宿主守卫；
@@ -21,7 +21,9 @@
 //   ⑨：特征集与宿主**逐字同一条**（含顺序），事件分级是 `fact`；
 //   ⑩：one-shot 旗标 —— 直接 `createTerminationManager(ctx)` 对同一个 ctx 连调两次 `finish`
 //      ⇒ 只发一条（主循环里 `finish` 永远只 `return` 一次，旗标今天走不到第二次；这一格直接
-//      造两次终局把旗标咬住，证明它不是死代码）。
+//      造两次终局把旗标咬住，证明它不是死代码）；
+//   ⑪：判据住在 `makeResult` ⇒ **不只 `end_turn`** —— 非抛错的 `max_rounds_cap` 终局同样带
+//      `finalTextShape`、同样发一条（钉住「不只 end_turn」）。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -260,4 +262,35 @@ test("⑩ one-shot 旗标：同一个 ctx 连调两次 finish ⇒ 只发一条�
   assert.equal("finalTextShape" in second, true);
   assert.equal(events.filter((event) => event.type === SHAPE_EVENT).length, 1,
     "同一 ctx 第二次 finish 必须被 one-shot 旗标拦成一条");
+});
+
+// ⑪ 判据住在 `makeResult`（而非 `end_turn` 分支）⇒ **不只 end_turn**：非抛错的 `max_rounds_cap`
+// 终局同样带 `finalTextShape`、同样发事件。评审 #3：`finish` 也服务 `max_rounds_cap` /
+// `final_guard_unverified` / `no_tool` / `stall`。关掉强制收尾让 cap 走最短路径、不额外打模型，
+// reason 稳在 `max_rounds_cap`；关 stall 防止两轮重复工具先于 cap 触发 stall。
+test("⑪ max_rounds_cap 终局（非 end_turn）⇒ 同样带 finalTextShape、同样发一条", async () => {
+  const events = [];
+  const previous = process.env.ERIX_NO_FORCED_FINAL;
+  process.env.ERIX_NO_FORCED_FINAL = "1";
+  let result;
+  try {
+    result = await runDirect({
+      provider: createFakeProvider([
+        toolTurn("<tool_call name=\"a\">"),
+        toolTurn("收尾中\n<｜Function=exec>"),
+      ]),
+      seed: "把活干了",
+      store: createMemoryTranscriptStore(),
+      executeTool: async () => "ok",
+      config: { run: { runId: "cap-862", maxRounds: 2, completion: false, stallDetection: false } },
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+    });
+  } finally {
+    if (previous === undefined) delete process.env.ERIX_NO_FORCED_FINAL;
+    else process.env.ERIX_NO_FORCED_FINAL = previous;
+  }
+  assert.equal(result.termination.reason, "max_rounds_cap", "这一格必须是 cap 终局，不是 end_turn");
+  assert.equal(result.finalTextShape.marker, "<｜Function", "最后一轮正文里的标记要命中");
+  const shapeEvents = events.filter((event) => event.type === SHAPE_EVENT);
+  assert.equal(shapeEvents.length, 1, "max_rounds_cap 同样发一条告警（钉住「不只 end_turn」）");
 });
