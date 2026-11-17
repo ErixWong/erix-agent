@@ -64,6 +64,93 @@ const contentOf = (result) => (result && typeof result === "object" && !Array.is
 /** 取结果里的 metadata（别名/纯字符串结果没有 → undefined）。 */
 const metadataOf = (result) => (result && typeof result === "object" && !Array.isArray(result) ? result.metadata : undefined);
 
+// ---------------------------------------------------------------------------
+// issue #628：readFile 描述里「实测」二字的判据（本文件的正向声称形状 + 它的两面反向证）。
+//
+// 病根（就在我自己刚写的这版判据里）：#628 之前这里是 `assert.match(description, /measured/iu,
+// "给出的行数容量必须声明是实测的")`。#628 把「从本仓量出来的行容量」整段从描述里撤了，留下的两处
+// `measured` 都是**否定句**（"No line capacity is quoted here as a number measured from this repo" 与
+// "…rather than measured from any file here"），于是那条断言被两句否定句满足——**判据看起来跑了，
+// 验的已经不是那件事**（它甚至变成永真：只要还想说「这里没给实测数」，它就必然绿）。
+// ---------------------------------------------------------------------------
+
+/** 句子边界：句末标点**且其后紧跟空白**。`.js`、`3.5`、`÷ 3.04` 这类点后不留空的写法不会被切开。 */
+const SENTENCE_BOUNDARY = /[.!?](?=[\s])/u;
+/** 否定词：只在 `measured` **之前**出现才算这句在否定它（放过「这里没给实测数」那两句）。 */
+const NEGATION_BEFORE_MEASURED = /\b(?:no|not|never|nothing|nor|rather than|instead of|without|unmeasured)\b/iu;
+/** 「实测 → 行容量」的形状：`measured` 之后（同一句内）提到 line / lines。 */
+const MEASURED_THEN_LINES = /measured[\s\S]{0,240}?\bline(?:s)?\b/iu;
+
+/**
+ * 把描述里「从本仓某些文件**实测**出来的行容量」这种**正向声称**抓出来（issue #628）。
+ *
+ * 为什么不能写 `assert.doesNotMatch(description, /measured/iu)`：#628 之后的描述里两处 `measured`
+ * 都是**否定用法**（模型需要知道这里没给过实测数，这两句是政策的一部分），直接禁词会把政策本身判红。
+ * 所以分两步：① 按句切；② 句内在 `measured` **之前**出现否定词 ⇒ 否定句，放过；否则句内 `measured`
+ * 之后又提到 line/lines ⇒ 正向声称，抓出来。
+ *
+ * ⚠ 为什么不是 `/measured[^.]{0,80}lines/iu` 这种形状（派单里的建议写法）：`[^.]` 在 #628 删掉的那句
+ *   原文上走不出 30 个字符——"Measured that way on this repo's own `.js` sources" 里的 `.js` 就是一道
+ *   点号墙；窗口 80 也够不到 158 字符之后的 "3,850 lines"。实测两种旧文案（下面两条 legacy）在它上面
+ *   都是 `false` ⇒ 那种写法是**死正则**，正是本判据要修的那个病。
+ *
+ * 已知松处（与本文件既有口径一致：宁可松，不可假红）：同一句里若在 `measured` **之前**出现一个与实测
+ * 无关的否定词（"the cap is **not** a table but measured on our tree: 3,850 lines"）会被放过。
+ *
+ * @param {string} text readFile 面向模型的描述
+ * @returns {string[]} 命中的句子（正向声称），逐条给报错文案用
+ */
+function positiveMeasuredLineClaims(text) {
+  return String(text ?? "")
+    .split(SENTENCE_BOUNDARY)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence !== "")
+    .filter((sentence) => {
+      const measured = sentence.match(/\bmeasured\b/iu);
+      if (!measured) return false;
+      if (NEGATION_BEFORE_MEASURED.test(sentence.slice(0, measured.index))) return false;
+      return MEASURED_THEN_LINES.test(sentence.slice(measured.index));
+    });
+}
+
+/**
+ * #628 从描述里删掉的**正向声称原文**（逐字取自改动前的描述，即 `f80d48ca~1:src/tools/file-tools.js`）。
+ * 它是反向证的①一面：接回描述必须被 `positiveMeasuredLineClaims` 抓到；抓不到就说明形状写坏了 / 永真。
+ */
+const READ_DESC_MEASURED_LINE_LEGACIES = [
+  "Measured that way on this repo's own `.js` sources under `src/`, `bin/` and `examples/` at the default "
+    + "budget (this codebase, not your tree) \u2014 fewest \u2265 3,850 lines (68.0 bytes/line, the widest lines; "
+    + "the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than "
+    + "3,850 lines), median 6,007 (43.6), most 9,407 (27.9).",
+  "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for "
+    + "non-CJK, ~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: "
+    + "~190 tokens where lines are short and sparse, ~2,500 on typical source, and ~4,750 where lines are wide, "
+    + "comments are dense or the text is CJK \u2014 budget the tail, not the typical case.",
+];
+
+/**
+ * 提到 `measured` 却**不是在声称实测数**的否定句（两面都在用：前两条现在就在描述里，它们是 #628
+ * 政策的一部分；第三条是 #628 之前描述里的否定句，同样不许误判）。反向证的②一面：一条都不许被
+ * `positiveMeasuredLineClaims` 抓成正向声称（否则「排除否定句」只是把永真换成了永假）。
+ * 前两条还带一条现文对账：它们必须逐字在场——反向证的样本自己也会过期（描述里删了它，那条反向证就悄悄失效）。
+ */
+const READ_DESC_NEGATED_MEASURE_SENTENCES = [
+  ["No line capacity is quoted here as a number measured from this repo: this codebase is not your tree, "
+    + "and any such figure goes stale the moment someone edits an unrelated file.", "现在就在描述里"],
+  ["Token budget, derived from the engine's own estimator (~3.5 characters per token for non-CJK, ~1.5 for "
+    + "CJK, \u00d71.15 margin) rather than measured from any file here: tokens \u2248 bytes \u00f7 3.04 for ASCII source "
+    + "and \u2248 bytes \u00f7 1.74 for text that is nothing but Chinese characters \u2014 so a call that fills the whole "
+    + "256KB cap costs ~86,000 tokens of ASCII up to ~151,000 tokens of pure Chinese characters, and a call "
+    + "that fills a tenth of the cap costs a tenth of that.", "现在就在描述里"],
+  ["Nothing outside this repo was measured, so for CJK-heavy code elsewhere fold the formula rather than "
+    + "reusing these numbers.", "#628 之前的描述里（历史形态）"],
+  // ⚠ 上面三条在**形状**面上本来就丌会命中（它们里面 `measured` 之后没有 line/lines）——只拿它们做反向证，
+  //   否定词表就是一条**没人踩过的代码**（实测：把它改坏，本测试仍然绿）。下面这条才是真正铉住那张表的：
+  // 它是政策允许的写法（先否定、同一个句子里后面又提到 lines），必须靠否定词表放过。
+  ["No line capacity is quoted here as a number measured from this repo: nothing in the lines below was "
+    + "measured on our tree.", "假设样本（政策允许的否定句，`measured` 同句后续就带 lines）"],
+];
+
 /**
  * issue #208（收缩后的内核）：把截断 marker 文本里**声称的数字**取回来，与 `metadata` 的同名字段逐项对账。
  *
@@ -425,8 +512,9 @@ export function fileToolsContract(label, { createFileTools }) {
     assert.match(readFileTool.description, /one call/iu, "「一次要够」的口径必须在场");
     // issue #267：额度事实不许只给一个数。旧描述写「~2,500 tokens」，而 2,500 正是实测**中位数**：
     // 密注释 / 宽行 / 中文的窗口实测能到 4,539（尾巴 1.8×）。只报典型值就是让模型拿中位数当上限。
-    // ⚠ 本单新增的是**结构**要求（必须给散布），具体数字由 `test/tools/file-tools.test.js` 用
-    //   三个写死的真实文件当场复测钉住——宿主不必复刻那份测量，但它的描述也得给得出两档。
+    // ⚠ 本单新增的是**结构**要求（必须给散布），宿主不必复刻那份测量，但它的描述也得给得出两档。
+    //   现在这两档由谁钉：#628 删掉了「三个写死文件当场复测 token 三档」那套样本，
+    //   数字改由 `estimateTokens()` 的公式推出，`test/tools/file-tools.test.js` 的**守卫 2** 现算双向对账。
     // 取「从 Token budget 那一句起到描述末尾」而不是「到第一个句号」：后者会在宿主自己写的
     // 「e.g.」上提前截断→没数字→假红；向前扫到结尾只会**多**数几个数（宁可松，不可假红）。
     const budgetTail = readFileTool.description.match(/Token budget[\s\S]*/u)?.[0] ?? "";
@@ -435,21 +523,62 @@ export function fileToolsContract(label, { createFileTools }) {
       .map((match) => Number(match[1].replace(/,/g, "")))
       .filter((value) => value >= 100); // 滤掉估算器常数（~3.5 / ~1.5 字符每 token）
     assert.ok(figures.length >= 2,
-      `token 额度必须至少给两档（典型 + 尾巴），只给一个数就是拿中位数冒充上限：${budgetTail.slice(0, 200)}`);
+      `token 额度必须至少给两档（#267 当时是「典型 + 尾巴」，#628 之后是「ASCII 下界 + 纯汉字上界」两个极端），`
+        + `只给一个数就是拿典型值冒充上限：${budgetTail.slice(0, 200)}`);
     assert.ok(Math.max(...figures) >= Math.min(...figures) * 1.5,
-      `两档之间必须体现真实散布（尾巴 ≥1.5× 低档）：${figures.join(" / ")}`);
+      `两档之间必须体现真实散布（高档 ≥1.5× 低档；#267 的结论，#628 把它留在估算器的跨度里）：${figures.join(" / ")}`);
     // issue #271：`max_bytes` 的行数换算必须给**换算式**而不是一个行数区间。旧文案「~3,000-6,000 lines」没人复测过，
     // 按本仓 83 个真实 `.js` 折算实测量级是千行而非百行（2026-10-13 首次复测：floor 4,387 / 中位 7,290 / 最多 9,772，
     // 旧上限 6,000 低估 1.63×、连实测中位数都没盖住；2026-10-21 复测后同一口径是 4,286 / 7,243 / 9,772，
-    // floor 换了文件——那串数字的真值不在本文件里，在 `test/tools/file-tools.test.js` 的锚点表里）；
-    // 而区间对宿主也没意义（平均行长一变就失效）。
-    // 所以这里只卡结构：要给出「÷ 平均行字节数」的口径，且要声明给出的数是测出来的。具体数字由
-    // `test/tools/file-tools.test.js` 钉住（#271 的 83 个写死路径；#275 后断言改成只钉 fewest/densest/median/most/self
-    // 五个角色锚点 + 与盘上**单向包含**，不再与全树清单 `deepEqual`，也不再把本仓文件总数写回描述。宿主不必复刻那份测量）。
+    // floor 换了文件——那串数字的真值当时钉在 `test/tools/file-tools.test.js` 的锚点表里，那张表已随 #628 整组删除，
+    // 逐次复测台账在 git 历史里）；而区间对宿主也没意义（平均行长一变就失效）。
+    // 所以这里只卡结构：要给出「÷ 平均行字节数」的口径。至于「由谁钉住」，#628 换了口径（旧描述不再给仓内实测的
+    // 行容量，那它也就不再「声明给出的数是测出来的」）：
+    //   · 描述必须自报 token 数的出处是**估算器推导**、且自报是**启发式估值**（下面三条，就在本文件）；
+    //   · token 区间由 `test/tools/file-tools.test.js` 的**守卫 2** 拿 `estimateTokens()` 现算双向对账；
+    //   · 描述里不许出现仓内实测数字（守卫 1：数字白名单 + 禁用形状 + 旧句原文反向证）。
+    // 历史部分照旧：#271 当年钉的是 83 个写死路径，#275 收窄成 fewest/densest/median/most/self 五个角色锚点
+    // + 与盘上**单向包含**（不再与全树清单 `deepEqual`，也不再把本仓文件总数写回描述）——那五个锚点已由 #628 删除。
     assert.match(readFileTool.description, /bytes per line/iu,
       "字节额度要给换算口径：行数 = max_bytes ÷ 平均行字节数（issue #271：给公式而不是区间）");
-    assert.match(readFileTool.description, /measured/iu,
-      "给出的行数容量必须声明是实测的（issue #267/#271：未复测的数就是让模型拿估计数当上限）");
+    // ⚠ issue #628：这里原来钉的是 `assert.match(readFileTool.description, /measured/iu,
+    //   "给出的行数容量必须声明是实测的")`，它在 #628 之后**变成了永真**——描述里根本不再给行容量，
+    //   而剩下的两处 `measured` 都是**否定句**（「这里没给从本仓量出来的数」/「不是从本仓量的」），
+    //   否定句把它满足掉了。判据必须验它说的那件事，不是验那个词：换下面三条，每条都能单独咬（反向证在最后）。
+    assert.match(readFileTool.description, /derived from the engine['\u2019]s own estimator/iu,
+      "token 数的出处必须自报是**引擎估算器推导**（issue #628）：这些数不是从本仓文件量出来的，"
+        + "而是 `src/tokens.js` 那套估算常数推出来的；出处写错或写没，模型就会把推出来的区间当实测区间用");
+    assert.match(readFileTool.description, /heuristic estimate, not a real tokenizer/iu,
+      "必须自报这是**启发式估值**（issue #628）：不写这句，模型会把「~86,000」当成精确 token 数来排预算");
+    const measuredLineClaims = positiveMeasuredLineClaims(readFileTool.description);
+    assert.deepEqual(measuredLineClaims, [],
+      "描述里又出现了「从本仓某些文件**实测**出来的行容量」这种**正向声称**（issue #628 的整条裁决：本仓不是"
+        + "宿主那棵树，这种数随任何一次无关改动过期）。要给容量就给换算式 + 由估算器推出的 token 区间；"
+        + "**否定句**（「这里没给实测数」/「不是从本仓量的」）不算声称，见 positiveMeasuredLineClaims 的注释："
+        + measuredLineClaims.map((sentence) => sentence.slice(0, 80)).join(" // "));
+    // 反向证（三条新判据都不许是死判据）：
+    // ① 「正向声称」的形状必须咬得住 #628 删掉的那两句原文（逐字取自改动前的描述）——接回来必须被抓。
+    for (const legacy of READ_DESC_MEASURED_LINE_LEGACIES) {
+      assert.ok(positiveMeasuredLineClaims(`Anchor sentence. ${legacy}`).length > 0,
+        `#628 删掉的那句正向声称接回来却没人咬（形状判据失效 / 被改成了永真）：${legacy.slice(0, 70)}…`);
+    }
+    // ② 那些**否定句**不许被当成正向声称——否则「排除否定句」只是把判据从永真换成永假。
+    for (const [negated, provenance] of READ_DESC_NEGATED_MEASURE_SENTENCES) {
+      assert.equal(positiveMeasuredLineClaims(`Anchor sentence. ${negated}`).length, 0,
+        `一句否定句（${provenance}）被判成了正向声称（判据在假红方向上坏了）：${negated.slice(0, 70)}…`);
+      if (provenance === "现在就在描述里") {
+        assert.ok(readFileTool.description.includes(negated),
+          `反向证②的样本已不在描述里（它会悄悄过期，负向对照变成空跑）：${negated.slice(0, 70)}…`);
+      }
+    }
+    // ②′ 上面那一面不许是空跑：至少一条否定句样本必须**真的**踩到形状（`measured` 之后同句内带 line/lines），
+    //     否则「放过否定句」这一步根本没被验——实测：没有下面那条样本时，把否定词表改坏本测试仍绿。
+    assert.ok(READ_DESC_NEGATED_MEASURE_SENTENCES
+      .filter(([sentence]) => MEASURED_THEN_LINES.test(sentence)).length >= 1,
+      "否定句样本里没有一条会踩到「measured … lines」形状：NEGATION_BEFORE_MEASURED 退化成没人踩的代码");
+    // ③ 两面样本不许被清空：清空后上面两个循环就是空循环（看起来在验，其实什么都没验）。
+    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 2 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
+      "反向证的两面样本不够（正向 ≥2、否定 ≥4）：那两面退化成空循环（判据没人验）");
     // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);
