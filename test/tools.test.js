@@ -23,6 +23,8 @@ import {
   EXEC_CEILING_MARGIN_MS,
 } from "../bin/idle.js";
 import * as notes from "../src/tools/notes.js";
+// #867：readFile 返回末尾的 token 估值行（剥掉它才能逐字比正文）。
+import { withoutTokenEstimate } from "./contract/file-tools.js";
 
 async function withDirectory(callback) {
   const directory = await makeTmp("erix-cli-tools-test-");
@@ -344,7 +346,8 @@ test("file tools operate on paths outside the working directory", async () => {
       const { executeTool } = createCliTools({ cwd });
 
       assert.equal(
-        await executeTool("readFile", { path: join(outside, "notes.txt") }),
+        // #867：readFile 返回末尾多一行 token 估值行 ⇒ 逐字比正文前先剥掉它。
+        withoutTokenEstimate(await executeTool("readFile", { path: join(outside, "notes.txt") })),
         "1: first\n2: second",
       );
       assert.match(

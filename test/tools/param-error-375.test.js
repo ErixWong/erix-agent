@@ -20,6 +20,8 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createFileTools, paramError, paramErrorFacts } from "../../src/tools/file-tools.js";
+// #867：readFile 返回末尾多了 token 估值行，逐字比正文前先剥掉它。
+import { withoutTokenEstimate } from "../contract/file-tools.js";
 import { paramError as paramErrorFromBarrel } from "../../src/tools/index.js";
 import { makeTmp } from "../helpers/tmp.js";
 
@@ -217,7 +219,10 @@ test("#375 旧通道在默认模式下**逐字不变**（0.29 线上不改任何
       }
     };
     assert.equal(
-      (await call("readFile", { path: "a.txt", max_bytes: "abc" })).text.split("\n").at(-1),
+      // #867：readFile 的返回末尾多了一行 token 估值行 ⇒ 「marker 仍是最后一段正文」要剥掉它再取。
+      // 本格判的是 #375 的「旧通道逐字不变」（marker 文本一字不动），不是「它是整个返回的最后一行」——
+      // 后者从 #867 起不再成立（估值行在它之后）。
+      withoutTokenEstimate((await call("readFile", { path: "a.txt", max_bytes: "abc" })).text).split("\n").at(-1),
       "[参数校正：max_bytes=\"abc\" 不是可用整数，已按 262144 处理；下一步：重传 readFile 并传整数 max_bytes]",
     );
     assert.equal(

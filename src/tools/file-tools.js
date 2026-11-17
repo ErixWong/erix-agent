@@ -40,6 +40,8 @@ import { StringDecoder } from "node:string_decoder";
 import path from "node:path";
 
 import { throwIfAborted } from "../loop/abort.js";
+// issue #867：readFile 返回末尾的 token 估值行**只用**估算器，不改它（口径见 `readTokenEstimateLine`）。
+import { estimateTokens } from "../tokens.js";
 
 // 搜索类工具的单文件读取上限（超过即跳过并计入排除账）。
 export const MAX_FILE_BYTES = 1024 * 1024;
@@ -1043,6 +1045,50 @@ function fileReadMarkers(window, {
 }
 
 // ---------------------------------------------------------------------------
+// readFile 返回末尾的 token 估值行（issue #867 里程碑 1）
+//
+// 只做一件事：把「本次返回有多少 token」以**估值**的口径告诉模型。本切片**不动**任何读取语义
+// （`FILE_READ_MAX_BYTES_DEFAULT`、`offset` / `limit`、`readLineWindow` 的分块与续读一字未改），
+// 也不动估算器本体（`src/tokens.js` 只导入）。
+// ---------------------------------------------------------------------------
+
+/** 估值行的外壳：那两句字面就是「这行是估值」的标注，测试拿它做存在性判据（反向证）。 */
+const READ_TOKEN_ESTIMATE_PREFIX = "[本次返回约 ";
+const READ_TOKEN_ESTIMATE_SUFFIX = " token（引擎启发式估值，非真实 tokenizer）]";
+
+/**
+ * 千分位逗号分组（`12400` → `12,400`）。
+ *
+ * 为什么不用 `Number#toLocaleString()`：它跟 **locale** 走（`en-US` 给 `12,400`、`de-DE` 给
+ * `12.400`、`fr-FR` 给 `12 400`），于是同一个返回文本会随 CI 机器的 ICU 默认语言变字面——而
+ * 这一行是要被测试**逐字**对账的。这里按 3 位一组硬切，任何环境下输出都同一个字符串。
+ *
+ * @param {number} value 非负整数（估值本身向上取整，不会是负数或小数；负号只是防御）
+ * @returns {string}
+ */
+function formatGroupedInteger(value) {
+  const grouped = String(Math.trunc(Math.abs(value))).replace(/\B(?=(?:\d{3})+(?!\d))/gu, ",");
+  return value < 0 ? `-${grouped}` : grouped;
+}
+
+/**
+ * 组装估值行，口径是**写死的**（改它就改掉了测试断言的东西）：
+ *
+ * 数的是**除这一行自己以外**的完整返回文本——正文行（含行号与换行）+ 全部 marker，就是
+ * `readFile` 里 `parts.join("\n")` 那个串。不把估值行自己算进去的理由是**自指**：加上这一行，
+ * 数就变大；数变大又改变这一行的长度（数字多一位 ⇒ 字节多一），再算又要变——没有不动点，
+ * 于是「报出的数」永远不等于「返回文本的 token 数」。这和 #628 从描述里删掉「本文件自己的容量」
+ * 那个锚点是同一种病。所以口径固定成「不含估值行」，`test/tools/file-tools.test.js` 按这个口径
+ * 断言**逐字相等**（`报出的数 === estimateTokens(剥掉估值行的文本)`），不是「差不多」。
+ *
+ * @param {string} body 不含估值行的完整返回文本
+ * @returns {string}
+ */
+function readTokenEstimateLine(body) {
+  return `${READ_TOKEN_ESTIMATE_PREFIX}${formatGroupedInteger(estimateTokens(body))}${READ_TOKEN_ESTIMATE_SUFFIX}`;
+}
+
+// ---------------------------------------------------------------------------
 // 工具 schema（工具名与既有字段保持不变，零迁移；新参数一律 snake_case）
 // ---------------------------------------------------------------------------
 
@@ -1201,7 +1247,12 @@ export const FILE_TOOL_DEFINITIONS = [
       + "Either way the byte cap is far more than a single `limit` will ask for, so it is rarely what stops you. "
       + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) "
       + "rather than conservatively paging 200 lines at a time. Whatever is withheld is reported by a marker that "
-      + "carries the exact `offset` to continue from.",
+      + "carries the exact `offset` to continue from. "
+      // issue #867：返回末尾多一行**估值** token 数，模型得知道它在那里、以及它是什么口径。
+      // 只提机制（位置 + 估值身份 + 不含自己），不提任何仓内实测数字（#628 那一整类刚删掉）。
+      + "Every result ends with one final line carrying an **estimated** token count for the text above it \u2014 the "
+      + "same engine heuristic, not a real tokenizer, and the figure deliberately excludes that line's own length, "
+      + "so read it as what this call roughly cost you, never as a completeness claim.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1694,7 +1745,12 @@ export function createFileTools({
       parameterFacts: [startReport.facts, countReport.facts, maxBytesFacts].filter(Boolean),
       unifiedParamErrors,
     }));
-    return parts.join("\n");
+    // issue #867：最后一行挂一个**估值** token 数（口径与自指的理由见 `readTokenEstimateLine`）。
+    // 除这一行外输出一字不动：行内容、行号、marker 文本与顺序全部原样（由固定夹具逐字节钉着）。
+    // 空正文不插前置空行（「空文件」本来返回空串，别另造一行空白）。
+    const body = parts.join("\n");
+    const estimate = readTokenEstimateLine(body);
+    return body === "" ? estimate : `${body}\n${estimate}`;
   };
   /**
    * 搜索的**唯一**实现体（issue #195 R1）：`searchText` 与它的两个薄别名 `rg`/`grep` 共跑这一份代码。
