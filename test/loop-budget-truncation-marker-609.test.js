@@ -14,6 +14,8 @@
 //   ④ **没被截断的内容一个字节都不变**；
 //   ⑤ 复审 ①：被截到只剩标记前缀时，**「被截断」这句话仍要在最前面**（判据词 `截断`
 //      占住第 1～2 个码点）—— G9 / G9b 钉的就是这一条，旧形状（`budget=5 → "[本条"`）当场红。
+//      二轮验收补的下一格：连判据词首字（2 token）都装不下的预算仍然要拿到**可见**的 `…`
+//      （1 token），只有预算 0 才是空串 —— 正预算里给模型「空内容」也是静默丢失。
 // 外加：标记确定性、措辞与聚合桩同源（`NO_RERUN_SIDE_EFFECT_CLAUSE`）、以及
 // 「这一格在安全层里是最后一道」的可达面事实（G7/G8 —— 免得下一个读者以为标记天天出场）。
 //
@@ -29,6 +31,8 @@ import {
   TRUNCATION_JUDGE_WORD,
   TRUNCATION_JUDGE_WORD_TOKENS,
   TRUNCATION_MARKER_RESERVE_TOKENS,
+  TRUNCATION_OMISSION_MARK,
+  TRUNCATION_OMISSION_MARK_TOKENS,
   TRUNCATION_READ_BACK_CLAUSE,
   safeTruncateMessages,
   truncateTextToBudget,
@@ -287,10 +291,15 @@ test("G9 极小预算既不静默也不超预算：返回值是标记自己的�
     const out = truncateTextToBudget(value, budget);
     assert.ok(estimateTokens(out) <= budget, `budget=${budget} 超预算`);
     assert.equal(hasLoneSurrogate(out), false, `budget=${budget} 勬开代理对`);
-    // 收紧（旧断言 `"["` 也能过）：返回值只能是**标记自己的**前缀，不能是一段内容前缀。
+    // 正预算里没有空串那一格：模型拿到「空内容」也是静默丢失（#609 的原始形状），
+    // 预算 0 才允许空（那一格在 G9b 里显式钉）。
+    assert.notEqual(out, "", `budget=${budget} 返回空串 ⇒ 模型看不出内容被截过`);
+    // 收紧（旧断言 `"["` 也能过）：返回值只能是**标记自己的**前缀，或那个可见省略标记，
+    // 不能是一段内容前缀。
+    const isOmissionMark = out === TRUNCATION_OMISSION_MARK;
     assert.ok(
-      marker.startsWith(out),
-      `budget=${budget} 返回值不是标记的前缀 ⇒ 又回到静默截断：${JSON.stringify(out)}`,
+      marker.startsWith(out) || isOmissionMark,
+      `budget=${budget} 返回值既不是标记的前缀也不是省略标记 ⇒ 又回到静默截断：${JSON.stringify(out)}`,
     );
     if (budget >= TRUNCATION_JUDGE_WORD_TOKENS) {
       // 只要求「装得下判据词」那一格起：输出里必须有「截断」二字，且就在开头。
@@ -299,40 +308,66 @@ test("G9 极小预算既不静默也不超预算：返回值是标记自己的�
         `budget=${budget} 的返回值里没有判据词“截断” ⇒ 模型看不出内容被截过：`
         + JSON.stringify(out),
       );
+      assert.equal(isOmissionMark, false, `budget=${budget} 装得下判据词却只给了省略标记`);
     } else {
-      // 物理下限那一格（见 G9b）：只能带走判据词自己的前缀（“截”），绝不是内容片段。
+      // 装不下判据词的那几格（见 G9b）：只能带走判据词自己的前缀（“截”），
+      // 或连首字都装不下时给那个可见省略标记 —— 两者都不是内容片段。
       assert.ok(
-        TRUNCATION_JUDGE_WORD.startsWith(out),
+        isOmissionMark || TRUNCATION_JUDGE_WORD.startsWith(out),
         `budget=${budget} 返回了判据词以外的片段：${JSON.stringify(out)}`,
       );
+      // 省略标记只服务「连判据词首字都装不下」那一格：预算 ≥ 首字开销时必须走判据词前缀。
+      if (budget >= estimateTokens(TRUNCATION_JUDGE_WORD.slice(0, 1))) {
+        assert.equal(
+          isOmissionMark,
+          false,
+          `budget=${budget} 装得下判据词首字（${estimateTokens(TRUNCATION_JUDGE_WORD.slice(0, 1))} token）`
+          + `却只给了省略标记 ⇒ 信息白丢了：${JSON.stringify(out)}`,
+        );
+      }
     }
   }
 });
 
-test("G9b 判据词的开销 = 4 token：预算 1/2/3 的取舍写死，不留没有用例覆盖的静默分支（复审 ①）", () => {
+test("G9b 判据词 4 token / 省略标记 1 token：预算 0～5 逐字写死，正预算里没有静默空格（复审 ① + 二轮验收）", () => {
   // 本估算器下**一个汉字值 2 token**（tokens.js：cjkTokensPerChar 1.5 × margin 1.15 后取整）
   // ⇒ 判据词「截断」要 4 token，这是「模型能看见『截断』二字」的最低预算。
   assert.equal(estimateTokens("截"), 2);
   assert.equal(TRUNCATION_JUDGE_WORD_TOKENS, 4);
+  // 二轮验收纠正的那条：预算 1 **不是**物理下限 —— 一个可见省略标记只要 1 token。
+  // 两个数字都是现算的实测值（估算器变了这一格跟着红，不是凑数）。
+  assert.equal(estimateTokens("…"), 1);
+  assert.equal(TRUNCATION_OMISSION_MARK, "…");
+  assert.equal(TRUNCATION_OMISSION_MARK_TOKENS, 1);
 
   const value = bigDocument(200);
-  const ladder = [1, 2, 3, 4, 5].map((budget) => truncateTextToBudget(value, budget));
-  // 逐字钉住退化阶梅：估算器系数若变了，这一格要按它现报的值改——它钉的就是当前实测的
-  // 物理下限，不是凑数。
+  const budgets = [0, 1, 2, 3, 4, 5];
+  const ladder = budgets.map((budget) => truncateTextToBudget(value, budget));
+  // 逐字钉住退化阶梅（包括预算 0 那一格）：估算器系数若变了，这一格要按它现报的值改。
   assert.deepEqual(
     ladder,
-    ["", "截", "截", "截断[", "截断["],
+    ["", "…", "截", "截", "截断[", "截断["],
     `退化阶梅变了：${JSON.stringify(ladder)}`,
   );
+  budgets.forEach((budget, index) => {
+    assert.ok(
+      estimateTokens(ladder[index]) <= budget,
+      `预算 ${budget} 超预算（${estimateTokens(ladder[index])} token）⇒ #846 那一族会回来`,
+    );
+  });
   // 取舍（写在这里，不留没名的静默分支）：
-  //   · 预算 1 连一个汉字都装不下（1 个汉字 = 2 token）⇒ 返回空串。宁可不给字，也不给
-  //     一段「看起来像正常内容」的裸前缀（那才是 #609 的原始缺陷形状），而超预算会把 #846
-  //     那族 `budgetUnreachable` 原样引回来；
+  //   · 预算 0：一个 token 都给不出 ⇒ 空串。这是**显式边界**，不是默认值：`validateBudget()`
+  //     对 <=0 招 `invalid_budget`，而 `truncateTextToBudget` 不调它 ⇒ 有人递 0 就落这一格；
+  //   · 预算 1：装不下一个汉字（1 个汉字 = 2 token），但装得下「截断」以外的可见记号
+  //     `…`（1 token）⇒ 返回它，**不返回空串**。以前那一格返回空串，模型看到的是「空内容」，
+  //     内容丢了却一个字没说 —— 那正是 #609 要消灭的静默丢失，不是不可避免的物理下限；
   //   · 预算 2、3 只能带走判据词的第一个字「截」（仍是标记的最开头，不是内容）；
   //   · 预算 >= 4 起必有完整的「截断」（G9 逐格钉）——旧文案里该二字要 ~40 token 才露出来。
-  assert.ok(estimateTokens(ladder[0]) <= 1, "预算 1 不能超预算");
-  assert.ok(ladder[1].length === 1 && ladder[2].length === 1, "预算 2/3 只剩判据词首字");
-  assert.ok(ladder[3].includes("截断"), "预算 4 起必须完整说出‘截断’");
+  assert.equal(ladder[0], "", "预算 0 才是空串：连 1 token 都装不下");
+  assert.equal(ladder[1], TRUNCATION_OMISSION_MARK, "预算 1 必须是可见的 `…`，不能是空串");
+  assert.notEqual(ladder[1], "", "预算 1 退回空串 ⇒ 正预算里又出现静默丢失");
+  assert.ok(ladder[2].length === 1 && ladder[3].length === 1, "预算 2/3 只剩判据词首字");
+  assert.ok(ladder[4].includes("截断"), "预算 4 起必须完整说出‘截断’");
 });
 
 test("G10 反复截断不膨胀：在已带标记的文本上再截一次仍 <= 预算", () => {
@@ -378,14 +413,15 @@ test("G11 修剪字段再超预算：不许出现「既没有完整 [已修剪]�
     }
   }
 
-  // 预算 1～3 那一头不是「没测」：它落的是 G9b 钉住的那条**具名**物理下限（空串 / 「截」），
+  // 预算 1～3 那一头不是「没测」：它落的是 G9b 钉住的那条**具名**退化阶梅（`…` / 「截」），
   // 这里只补一条：这几格同样不许把修剪字段的一半原样吐回去（静默 = 内容形状里没有标记词）。
   for (const budget of [1, 2, 3]) {
     const out = truncateTextToBudget(pruned.text, budget);
     assert.ok(
-      out === "" || TRUNCATION_JUDGE_WORD.startsWith(out),
-      `budget=${budget} 返回值既不是判据词前缀也不是空串 ⇒ 是内容片段：${JSON.stringify(out)}`,
+      out === TRUNCATION_OMISSION_MARK || TRUNCATION_JUDGE_WORD.startsWith(out),
+      `budget=${budget} 返回值既不是判据词前缀也不是省略标记 ⇒ 是内容片段：${JSON.stringify(out)}`,
     );
+    assert.notEqual(out, "", `budget=${budget} 是正预算，不许返回空串（见 G9b）`);
     assert.ok(estimateTokens(out) <= budget, `budget=${budget} 超预算`);
   }
 });

@@ -175,14 +175,34 @@ export const TRUNCATION_MARKER_RESERVE_TOKENS = 320;
  * 「看起来像正常内容」的片段，正是 #609 要消灭的那个形状。判据词提到
  * 第 1～2 个码点后，门槛从 ~40 token 降到 4 token。
  *
- * 下面的数字**由 `estimateTokens` 现算**（估算器变了它跟着变），
- * 用例钉的是当前实测值：一个汉字值 2 token ⇒ 预算 1 连一个字都装不下
- * （物理下限，`G9b` 显式钉住那条取舍）。
+ * 下面的数字**由 `estimateTokens` 现算**（估算器变了它跟着变）：
+ * 一个汉字值 2 token ⇒ 预算 1 装不下一个汉字，那一格
+ * 退到 `TRUNCATION_OMISSION_MARK`（二轮验收：那里不是
+ * 物理下限，`…` 只要 1 token）。
  */
 export const TRUNCATION_JUDGE_WORD = "截断";
 
-/** 判据词自己的开销：低于它，返回值只能带走判据词的前缀（见 `TRUNCATION_JUDGE_WORD`）。 */
+/** 判据词开销：低于它就只能带走判据词的前缀（见上一段）。 */
 export const TRUNCATION_JUDGE_WORD_TOKENS = estimateTokens(TRUNCATION_JUDGE_WORD);
+
+/**
+ * 连判据词首字都装不下时的**兜底可见记号**（#609 二轮）。
+ *
+ * 「预算 1 只剩一个字」是错的：`estimateTokens("截") = 2`，
+ * 但 `estimateTokens("…") = 1` ⇒ 预算 1 仍有一个装得下的
+ * 可见选项。那一格以前递空串 = 内容没了却一个字都没说，
+ * 正是 #609 要消灭的静默丢失。判据词优先的次序不变：装得
+ * 下判据词前缀（预算 ≥2）仍说「截」/「截断」，这个记号只
+ * 补「连一个字都装不下」那一格。
+ *
+ * 预算 0（`validateBudget` 之外的调用面）仍递空串：那时 1
+ * token 都给不出，而超预算会把 #846 那族 `budgetUnreachable`
+ * 引回来。`G9b` 把 0 与 1 两格都逐字钉住。
+ */
+export const TRUNCATION_OMISSION_MARK = "…";
+
+/** 兜底记号的开销（现算，恒 1 token）：预算低于它才允许空串。 */
+export const TRUNCATION_OMISSION_MARK_TOKENS = estimateTokens(TRUNCATION_OMISSION_MARK);
 
 /**
  * 截断标记里「怎么把剩余部分取回来」那一半（issue #609）。
@@ -263,7 +283,9 @@ function fitCharacterCount(characters, budgetTokens) {
  *      `budgetTokens - 标记额度` 上做，预算小到连标记都装不下时整段（含标记）
  *      再走一次同一二分 ⇒ 返回值是**标记自己的前缀**，而标记第一个词就是
  *      判据词（复审 ①），所以最坏情况模型仍看得见「截断」，绝不会拿到一段
- *      「看起来像正常内容」的片段；
+ *      「看起来像正常内容」的片段；连判据词首字（2 token）都装不下的预算 ≥1
+ *      退到 `TRUNCATION_OMISSION_MARK`（二轮验收：**任何正预算都不返回空串**），
+ *      只有预算 0 才是空串；
  *   ③ 同一输入两次调用逐字相同。
  *
  * @param {unknown} text
@@ -299,12 +321,19 @@ export function truncateTextToBudget(text, budgetTokens) {
     composed = compose(contentBudget);
   }
   if (estimateTokens(composed) <= budgetTokens) return composed;
-  // 走到这一格，预算连标记本身都装不下：整段（此时正文已让到 0，
-  // 整段 == 标记）再截一次。退化阶梯由标记自己的前缀给出：判据词排在最前面
-  // ⇒ 拿得下两个字就说「截断」，只拿得下一个字就说「截」，
-  // 物理上连一个字都拿不下（预算 1）才是空串（`G9b` 钉住这条取舍）。
+  // 走到这一格，预算连标记本身都装不下：整段（正文已让到
+  // 0，整段 == 标记）再截一次。退化阶梯由标记自己的前缀
+  // 给出：拿得下两个字就说「截断」，只拿得下一个字就「截」。
   const whole = Array.from(composed);
-  return whole.slice(0, fitCharacterCount(whole, budgetTokens)).join("");
+  const fittedChars = fitCharacterCount(whole, budgetTokens);
+  if (fittedChars > 0) return whole.slice(0, fittedChars).join("");
+  // 前缀是空的（判据词首字要 2 token），但「装不下一个
+  // 汉字」不是物理下限：`…` 只要 1 token ⇒ 预算 ≥1 还有一个
+  // 装得下的可见记号，递空串就是静默丢失（#609）。预算 0
+  // 连 1 token 都给不出才是空串（那一格由 `G9b` 显式钉）。
+  return TRUNCATION_OMISSION_MARK_TOKENS <= budgetTokens
+    ? TRUNCATION_OMISSION_MARK
+    : "";
 }
 
 export function dropOldestUnprotectedRound(messages, protectedMessage) {
