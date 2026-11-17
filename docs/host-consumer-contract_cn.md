@@ -4258,7 +4258,9 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 - `tree` 截断永远带 marker，并给出剩余计数与能放宽它的参数；
 - `readFile` 有界：单次返回不超过 `max_bytes` 个 UTF-8 字节（默认 `262144`，可用
   `ERIX_FILE_READ_MAX_BYTES` 覆盖，钳到 1024-4194304），行窗口按块扫行 + 早停，
-  不再把整个文件读进内存；
+  不再把整个文件读进内存；那个字节预算管的是行窗口与 marker——之后 `readFile` 还会**追加**
+  最后一行，报出它上面那段文本的**估值** token 数（`[本次返回约 N token（引擎启发式估值，非真实 tokenizer）]`，
+  issue #867），所以触顶那一次的实际返回会比 `max_bytes` 多出这一行；
 - 每条截断 marker 都以「可执行的下一步」收尾，带的是**本次调用**的真值（续读要传的
   `readFile` `offset`、被截那行的行号与文件路径、或搜索的续读 `offset`），且只允许点名
   `readFile` 或 `searchText`——`exec` 是 CLI 自己的工具，不属于库（issue #196 R1）；

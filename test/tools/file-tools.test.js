@@ -20,7 +20,7 @@ import {
   FILE_TOOL_DEFINITIONS,
 } from "../../src/tools/file-tools.js";
 import { estimateTokens } from "../../src/tokens.js";
-import { fileToolsContract } from "../contract/file-tools.js";
+import { fileToolsContract, withoutTokenEstimate, TOKEN_ESTIMATE_LINE } from "../contract/file-tools.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -40,7 +40,7 @@ test("库默认不做 containment：cwd 之外的路径照样可读可写（ADR-
     await withDirectory(async (outside) => {
       await writeFile(join(outside, "notes.txt"), "first\nsecond\n", "utf8");
       const { executeTool } = createFileTools({ cwd });
-      assert.equal(await executeTool("readFile", { path: join(outside, "notes.txt") }), "1: first\n2: second");
+      assert.equal(withoutTokenEstimate(await executeTool("readFile", { path: join(outside, "notes.txt") })), "1: first\n2: second");
       assert.match(await executeTool("tree", { path: outside, depth: 1 }), /notes\.txt/u);
       assert.equal(await executeTool("writeFile", { path: join(outside, "w.txt"), content: "ok" }), 2);
     });
@@ -892,4 +892,170 @@ test("#506 反向证：坏分片喂给同一谓词必须红（超预算 / 劈坏
   assert.throws(() => assertChunkedReadFaithful({ original, chunks: dropped, maxBytes: 1_024, label }), /漏了这些行/u,
     "静默漏行的分片没被判红：这正是「截断静默丢内容」那条谎");
 });
+
+// ---------------------------------------------------------------------------
+// issue #867（里程碑 1）：readFile 返回文本的**最后一行**是一个 **token 估值行**。
+//
+// 形状：`[本次返回约 12,400 token（引擎启发式估值，非真实 tokenizer）]`。
+// 口径（与 `src/tools/file-tools.js` 的 `readTokenEstimateLine` 同源，写死的）：数的是
+// **除这一行自己以外**的完整返回文本（正文行 + 行号 + 换行 + 全部 marker）。不把估值行算进去的
+// 理由是**自指**：加上这行，数就变大；数变大又改变这行自己的长度（数字多一位 ⇒ 字节多一），
+// 再算又要变 ⇒ 没有不动点。所以四格判据里对账的是**逐字相等**，不是「±2%」。
+//
+// 四格各管一面，互相不兑岗：
+//   ① 逐字对账：报出的数 === `estimateTokens(剥掉估值行的返回文本)`（用仓内真文件）。
+//   ② 确定性：同一输入连调两次（两个独立实例）逐字相同。
+//   ③ 其余输出一字不动：固定夹具的正文行 / 行号 / marker 部分与**改动前**逐字节相同
+//     （下面三份 GOLDEN 是在基点 `6e3ba30e` 上跑同一夹具抄下来的，不是本次实现现算的）。
+//   ④ 存在性（反向证落点）：只钉「最后一行以 `[本次返回约` 开头、以 `]` 结尾、且全返回只有一行」
+//     ——把实现里那一行删掉，本格必红（不靠别的断言顺带兜住）。
+// ---------------------------------------------------------------------------
+
+/** 固定夹具（③ 的 GOLDEN 就是这三份文件在基点实现上的输出）。 */
+const EST_GOLDEN_MIXED = [
+  "first ascii line",
+  "第二行 含中文 with mixed text",
+  "third line\twith tab and  spaces",
+  "",
+  "fifth line",
+  "第六行 结束",
+];
+const EST_GOLDEN_ROWS = Array.from({ length: 12 }, (_, index) => `row ${index}`);
+const EST_GOLDEN_BIG = Array.from({ length: 40 }, (_, index) => `row-${index} ${"y".repeat(20)}`);
+
+/**
+ * 改动前（基点 `6e3ba30e`）同一夹具的逐字输出——**本切片不许其余输出一字不动**的对照真值。
+ * 拄自：`git stash` 掉实现改动后跑 `createFileTools({cwd}).executeTool("readFile", input)`。
+ */
+const READ_OUTPUT_GOLDEN = [
+  { label: "整份读完（无 marker）", input: { path: "mixed.txt" },
+    output: "1: first ascii line\n2: 第二行 含中文 with mixed text\n3: third line\twith tab and  spaces\n4: \n5: fifth line\n6: 第六行 结束" },
+  { label: "续读 marker", input: { path: "rows.txt", limit: 5 },
+    output: "1: row 0\n2: row 1\n3: row 2\n4: row 3\n5: row 4\n[共 12 行（文件 74B），剩余 7 行；下一步：readFile 传 offset=5 继续]" },
+  { label: "行窗口（offset 不是 0）", input: { path: "mixed.txt", offset: 1, limit: 3 },
+    output: "2: 第二行 含中文 with mixed text\n3: third line\twith tab and  spaces\n4: \n[共 6 行（文件 114B），剩余 2 行；下一步：readFile 传 offset=4 继续]" },
+  { label: "参数校正 marker + 续读 marker", input: { path: "mixed.txt", offset: -3, limit: 2 },
+    output: "1: first ascii line\n2: 第二行 含中文 with mixed text\n[参数校正：offset=-3 是负数，已按 0 处理；下一步：重传 readFile 并传整数 offset]\n[共 6 行（文件 114B），剩余 4 行；下一步：readFile 传 offset=2 继续]" },
+  { label: "字节触顶 marker", input: { path: "big.txt", max_bytes: 1_024 },
+    output: "1: row-0 yyyyyyyyyyyyyyyyyyyy\n2: row-1 yyyyyyyyyyyyyyyyyyyy\n3: row-2 yyyyyyyyyyyyyyyyyyyy\n4: row-3 yyyyyyyyyyyyyyyyyyyy\n5: row-4 yyyyyyyyyyyyyyyyyyyy\n6: row-5 yyyyyyyyyyyyyyyyyyyy\n7: row-6 yyyyyyyyyyyyyyyyyyyy\n8: row-7 yyyyyyyyyyyyyyyyyyyy\n9: row-8 yyyyyyyyyyyyyyyyyyyy\n10: row-9 yyyyyyyyyyyyyyyyyyyy\n11: row-10 yyyyyyyyyyyyyyyyyyyy\n12: row-11 yyyyyyyyyyyyyyyyyyyy\n13: row-12 yyyyyyyyyyyyyyyyyyyy\n14: row-13 yyyyyyyyyyyyyyyyyyyy\n15: row-14 yyyyyyyyyyyyyyyyyyyy\n16: row-15 yyyyyyyyyyyyyyyyyyyy\n[本次返回已达 max_bytes=1KB 上限，共 40 行；下一步：readFile 传 offset=16 继续]" },
+];
+
+/** 拆出末尾的估值行；最后一行不是估值行就当场红（= 实现里那一行被删/改了字面）。 */
+function splitTokenEstimate(output) {
+  const lines = String(output).split("\n");
+  const line = lines.at(-1) ?? "";
+  const match = TOKEN_ESTIMATE_LINE.exec(line);
+  assert.ok(match, `最后一行不是估值行（实现里那一行被删掉或改了字面）：${JSON.stringify(line)}`);
+  return { body: lines.slice(0, -1).join("\n"), line, digits: match[1], reported: Number(match[1].replace(/,/gu, "")) };
+}
+
+test("readFile 报出的 token 数 == estimateTokens(剥掉估值行的返回文本)（#867：逐字相等，不是 ±2%）", async () => {
+  const { executeTool } = createFileTools({ cwd: REPO_ROOT });
+  for (const input of [
+    // 无 marker：只有正文行（含行号与换行）。
+    { path: "src/text/label.js" },
+    // 带续读 marker：marker 文本也必须算进口径（不止正文）。
+    { path: "src/tokens.js", limit: 200 },
+    // CJK 密样本 + 触顶 marker：估值行进千分位，且口径跟着换行与中文一起对得上。
+    { path: CJK_DENSE_READ_ANCHOR, limit: 3, max_bytes: 1_024 },
+  ]) {
+    const output = String(await executeTool("readFile", input));
+    const { body, digits, reported } = splitTokenEstimate(output);
+    assert.ok(body.length > 0, `夹具没给正文：${input.path}`);
+    assert.ok(body !== output, "剥掉估值行必须真的剥掉了一行（否则下面的对账是拿自己对自己）");
+    assert.equal(reported, estimateTokens(body),
+      `${input.path}: 报出的数必须逐字等于对「剥掉估值行的完整返回」现算的估算值（不是容差内，是相等）`);
+    // 口径的反向证：把估值行自己也算进去，必然得到**另一个**数 ⇒ 「不含自己」不是凑巧相等。
+    assert.notEqual(reported, estimateTokens(output),
+      `${input.path}: 含估值行自己的估算值与报出的数相同 ⇒ 自指口径没被这条判据区分开（样本太小或实现变了）`);
+    // 千分位分组是确定性的（不跟 locale）：分组后的字面必须等于「从右往左每 3 位一个逗号」。
+    assert.equal(digits, groupEveryThree(reported), `${input.path}: 数字分组不是每 3 位一组（换了 locale 就会飘）`);
+    if (reported >= 1_000) {
+      assert.match(digits, /^\d{1,3}(?:,\d{3})+$/u, `${input.path}: 四位数以上的必须带千分位逗号`);
+    }
+  }
+});
+
+/** 独立实现的分组（测试侧自写，不借实现的那个正则，否则两边一起坏就看不出来）。 */
+function groupEveryThree(value) {
+  const digits = String(value);
+  const head = digits.length % 3;
+  const chunks = head === 0 ? [] : [digits.slice(0, head)];
+  for (let index = head; index < digits.length; index += 3) chunks.push(digits.slice(index, index + 3));
+  return chunks.join(",");
+}
+
+test("readFile 的估值行是确定性的：同一输入连调两次逐字相同（#867：不跟 locale / 不跟实例）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "mixed.txt"), `${EST_GOLDEN_MIXED.join("\n")}\n`, "utf8");
+    const inputs = { path: "mixed.txt", limit: 4 };
+    // 两个**独立**实例 + 同一实例连调 ⇒ 只要有任何隐藏状态（实例计数、locale、时间）这里就红。
+    const first = String(await createFileTools({ cwd }).executeTool("readFile", inputs));
+    const second = String(await createFileTools({ cwd }).executeTool("readFile", inputs));
+    const third = String(await createFileTools({ cwd }).executeTool("readFile", inputs));
+    assert.equal(first, second, "同一个输入两次返回逐字不同 ⇒ 估值行里混进了不稳定因素");
+    assert.equal(second, third, "第三次与第二次不同 ⇒ 不是偶发");
+    assert.equal(splitTokenEstimate(first).line, splitTokenEstimate(third).line);
+  });
+});
+
+test("加了估值行之后，正文行 / 行号 / marker 部分逐字节不变（#867：对基点 6e3ba30e 的固定夹具）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "mixed.txt"), `${EST_GOLDEN_MIXED.join("\n")}\n`, "utf8");
+    await writeFile(join(cwd, "rows.txt"), `${EST_GOLDEN_ROWS.join("\n")}\n`, "utf8");
+    await writeFile(join(cwd, "big.txt"), `${EST_GOLDEN_BIG.join("\n")}\n`, "utf8");
+    await writeFile(join(cwd, "empty.txt"), "", "utf8");
+    const { executeTool } = createFileTools({ cwd });
+
+    for (const { label, input, output } of READ_OUTPUT_GOLDEN) {
+      // 剥掉末尾估值行之后，剩下的必须与改动前**逐字节**相同（行内容 / 行号 / marker 文本与顺序）。
+      assert.equal(withoutTokenEstimate(String(await executeTool("readFile", input))), output,
+        `${label}：除了末尾的估值行，其余输出一字不许动（本 GOLDEN 拄自基点 6e3ba30e）`);
+    }
+
+    // 空文件：改动前是空串，改动后只剩估值行——**不**多一个前导空行。
+    const emptyOutput = String(await executeTool("readFile", { path: "empty.txt" }));
+    assert.equal(emptyOutput.split("\n").length, 1, "空正文不得插前置空行");
+    assert.equal(withoutTokenEstimate(emptyOutput), "");
+    assert.equal(splitTokenEstimate(emptyOutput).reported, 0, "空文本的估值必须是 0（不是 1）");
+  });
+});
+
+test("估值行永远存在且是最后一行（#867 反向证落点：实现里删掉那一行就红）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "mixed.txt"), `${EST_GOLDEN_MIXED.join("\n")}\n`, "utf8");
+    const { executeTool } = createFileTools({ cwd });
+
+    for (const input of [
+      { path: "mixed.txt" },
+      { path: "mixed.txt", limit: 2 },
+      { path: "mixed.txt", offset: -1, limit: 2 },
+      { path: "mixed.txt", offset: 999 },
+      { path: "mixed.txt", limit: 0 },
+    ]) {
+      const output = String(await executeTool("readFile", input));
+      const lines = output.split("\n");
+      const last = lines.at(-1) ?? "";
+      // 存在性判据（反向证就铉在这两行字面上）：实现里不拼那一行 ⇒ 当场红。
+      assert.ok(last.startsWith("[本次返回约"), `返回文本的最后一行不是估值行：${JSON.stringify(last)}`);
+      assert.ok(last.endsWith(" token（引擎启发式估值，非真实 tokenizer）]"),
+        `估值行末尾没有「引擎启发式估值、非真实 tokenizer」的标注：${JSON.stringify(last)}`);
+      assert.equal(lines.filter((line) => line.startsWith("[本次返回约")).length, 1,
+        `一次返回里出现了多条估值行：${output}`);
+      assert.doesNotMatch(last, /undefined|NaN|\{.*\}/u, `估值行里是模板占位而不是真值：${last}`);
+      // 位置：估值行与上一个 marker / 正文行之间只隔一个 `\n`，而估值行自己不参与那一段（前一行不得又是估值行）。
+      if (lines.length > 1) {
+        assert.ok(lines.at(-2).startsWith("[") || /^\d+: /u.test(lines.at(-2)),
+          `估值行的前一行不是正文行也不是 marker：${JSON.stringify(lines.at(-2))}`);
+      }
+    }
+
+    // 模型得知道有这个数：描述里必须提一句（#867，不提任何仓内实测数字）。
+    const description = readFileDescription();
+    assert.match(description, /ends with one final line carrying an \*\*estimated\*\* token count/u,
+      "描述不再告诉模型「返回末尾有一行估值 token 数」⇒ 模型会把这一行当成工具报错或正文");
+    assert.match(description, /not a real tokenizer/u, "估值行自己必须被声明为**不是**真实 tokenizer");
+  });
+});
+
 

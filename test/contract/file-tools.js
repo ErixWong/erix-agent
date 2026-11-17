@@ -11,6 +11,9 @@
 //   * executeTool 的两种调用形态（位置 (name, input, context) 与结构化 {name,input,context,signal}）；
 //   * allowRead/allowWrite 以**绝对路径**被调用，越界返回「错误：…」文本结果而非抛；
 //   * readFile 单次返回不超过 max_bytes（默认 262144）；
+//     ⚠ #867：返回的**最后一行**是一个 token 估值行（`[本次返回约 N token（引擎启发式估值，非真实 tokenizer）]`）。
+//     本套件**不强制**宿主 fork 也给这一行（它是库自己的输出口径），只要求剥掉它之后正文与 marker
+//     逐字等于本契约的字面量；这一行自己的口径与确定性由 `test/tools/file-tools.test.js` 钉。
 //   * vendor 目录默认跳过且结果尾部带排除账，include_vendor=true 可撤销；
 //   * 排除账 marker 说的是**本次真相**（#222）：类别名 / 计数 / 目录名样本来自遍历现场，
 //     尾部开关提示只提尚未开启的 flag，且 searchText / rg / grep / tree 共用同一条文案；
@@ -63,6 +66,27 @@ const withoutDeprecation = (output) => String(output ?? "")
 const contentOf = (result) => (result && typeof result === "object" && !Array.isArray(result) ? result.content : result);
 /** 取结果里的 metadata（别名/纯字符串结果没有 → undefined）。 */
 const metadataOf = (result) => (result && typeof result === "object" && !Array.isArray(result) ? result.metadata : undefined);
+
+// issue #867：`readFile` 的返回**最后一行**现在是一个 **token 估值行**，形如
+//   `[本次返回约 12,400 token（引擎启发式估值，非真实 tokenizer）]`
+// 它是 `src/tokens.js` 的启发式估值（不是真实 tokenizer），口径是「除这一行以外的全部返回文本」
+// （把估值行自己也算进去是自指：加了这行数就变，再算又要变）。这一行是**追加**的：正文行、行号、
+// marker 文本与顺序一字未动。
+//
+// 契约侧的口径：这一行是**库自己的输出口径**，不由本套件强制（宿主自己的 fork 可以不给），所以
+// 凡逐字比对正文/marker 的断言先剥掉末尾那一行再比。剥的行为本身由 `test/tools/file-tools.test.js`
+// 的四格判据钉住（逐字对账 / 确定性 / 其余输出一字不动 / 存在性反向证）。
+/** 估值行的字面形状（数字带千分位逗号；分组是确定性的，不跟 locale）。 */
+export const TOKEN_ESTIMATE_LINE = /^\[本次返回约 (\d{1,3}(?:,\d{3})*) token（引擎启发式估值，非真实 tokenizer）\]$/u;
+/**
+ * 剥掉末尾的估值行（只认**最后一行**，中间出现同形行不动它）。
+ * @param {unknown} result 工具返回值（字符串或 `{content}`）
+ * @returns {string} 剥掉估值行后的文本；本实现必定剥掉一行，宿主 fork 没给这行时原文返回
+ */
+export function withoutTokenEstimate(result) {
+  const lines = String(contentOf(result) ?? "").split("\n");
+  return TOKEN_ESTIMATE_LINE.test(lines.at(-1) ?? "") ? lines.slice(0, -1).join("\n") : lines.join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // issue #628：readFile 描述里「实测」二字的判据（本文件的正向声称形状 + 它的两面反向证）。
@@ -521,7 +545,8 @@ export function fileToolsContract(label, { createFileTools }) {
       const tools = createFileTools({ cwd });
 
       const positional = await tools.executeTool("readFile", { path: "a.txt" }, {});
-      assert.equal(positional, "1: hello\n2: world");
+      // issue #867：末尾多一行 token 估值行（附加通道，正文一字不动）⇒ 剥掉后逐字比。
+      assert.equal(withoutTokenEstimate(positional), "1: hello\n2: world");
 
       const structured = await tools.executeTool({
         id: "toolu_1",
@@ -529,7 +554,7 @@ export function fileToolsContract(label, { createFileTools }) {
         input: { path: "a.txt", offset: 1 },
         context: { round: 2 },
       });
-      assert.equal(structured, "2: world");
+      assert.equal(withoutTokenEstimate(structured), "2: world");
     });
   });
 
@@ -751,14 +776,14 @@ export function fileToolsContract(label, { createFileTools }) {
 
       const first = await tools.executeTool("readFile", { path: "small.txt", limit: 5 });
       assert.equal(
-        first,
+        withoutTokenEstimate(first),
         // #196 R1.1：marker 从「只报状态」升级为「给出下一步」，字面量随之变（刻意）。
         // 行号与「共 N 行」的口径不变，新增的是「剩余行数 + readFile 传 offset=N」。
         // issue 261013 R3.4：再新增**文件真实大小**（12 行小文件 = 74B，走 formatSize 的 B 档）：
         // 模型要据此估「剩下的额度够不够一次读完」，只看行数估不出体积。
         "1: row 0\n2: row 1\n3: row 2\n4: row 3\n5: row 4\n[共 12 行（文件 74B），剩余 7 行；下一步：readFile 传 offset=5 继续]",
       );
-      assert.equal(await tools.executeTool("readFile", { path: "small.txt" }), lines
+      assert.equal(withoutTokenEstimate(await tools.executeTool("readFile", { path: "small.txt" })), lines
         .map((line, index) => `${index + 1}: ${line}`)
         .join("\n"));
     });

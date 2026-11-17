@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { createCliTools } from "../bin/tools.js";
+import { withoutTokenEstimate } from "./contract/file-tools.js";
 import { makeTmp } from "./helpers/tmp.js";
 
 const execFileAsync = promisify(execFile);
@@ -69,7 +70,9 @@ test("readFile reads arbitrary files", async () => {
       const target = join(outside, "anywhere.txt");
       await writeFile(target, "outside\n", "utf8");
       const { executeTool } = createCliTools({ cwd });
-      assert.equal(await executeTool("readFile", { path: target }), "1: outside");
+      // #867：readFile 的返回**末尾**多一行 token 估值行 ⇒ 逐字比正文前先剥掉它
+      // （剥的口径由 test/tools/file-tools.test.js 的四格判据钉住）。
+      assert.equal(withoutTokenEstimate(await executeTool("readFile", { path: target })), "1: outside");
     });
   });
 });
