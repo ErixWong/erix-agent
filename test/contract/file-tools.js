@@ -64,6 +64,356 @@ const contentOf = (result) => (result && typeof result === "object" && !Array.is
 /** 取结果里的 metadata（别名/纯字符串结果没有 → undefined）。 */
 const metadataOf = (result) => (result && typeof result === "object" && !Array.isArray(result) ? result.metadata : undefined);
 
+// ---------------------------------------------------------------------------
+// issue #628：readFile 描述里「实测」二字的判据（本文件的正向声称形状 + 它的两面反向证）。
+//
+// 病根（就在我自己刚写的这版判据里）：#628 之前这里是 `assert.match(description, /measured/iu,
+// "给出的行数容量必须声明是实测的")`。#628 把「从本仓量出来的行容量」整段从描述里撤了，留下的两处
+// `measured` 都是**否定句**（"No line capacity is quoted here as a number measured from this repo" 与
+// "…rather than measured from any file here"），于是那条断言被两句否定句满足——**判据看起来跑了，
+// 验的已经不是那件事**（它甚至变成永真：只要还想说「这里没给实测数」，它就必然绿）。
+// ---------------------------------------------------------------------------
+
+/** 句子边界：句末标点**且其后紧跟空白**。`.js`、`3.5`、`÷ 3.04` 这类点后不留空的写法不会被切开。 */
+const SENTENCE_BOUNDARY = /[.!?](?=[\s])/u;
+/** 否定词：只有它**真的统治** `measured` 时才算这句在否定实测（放过「这里没给实测数」那两句，见下）。`g` 是给 `matchAll` 用的（此正则不再 `.test`，不受 lastIndex 影响）。 */
+const NEGATION_BEFORE_MEASURED = /\b(?:no|not|never|nothing|nor|rather than|instead of|without|unmeasured)\b/giu;
+/**
+ * 否定作用域的断点：否定词与 `measured` **之间**出现转折词或子句边界，就说明否定管的是别的东西，
+ * 不是 `measured`（"the cap is **not** a table **but** measured on our tree: 86,000 lines" 里 `not` 管的是
+ * "a table"）。见到任何一个 ⇒ 该否定词作废，这句按正向声称处理。
+ */
+const NEGATION_SCOPE_BREAK = /\b(?:but|yet|however|although|though|while)\b|[:;\u2014\u2013]/u;
+/**
+ * 断点词表**每一个 token 一条**承重样本（key = 词表里的字面：一个词，或字符类里的一个字符）。
+ *
+ * 为什么是一张表而不是零散样本（#628 第三轮，打地鼠到此为止）：词表 10 个 token，此前只有 `but` / `;` /
+ * `however` 三个各有一条不带数字的样本。主 agent 在 `a0cbc03b` 上逐个摘掉实测：摘 `yet` / `although` / `:`
+ * 之后**红格数 0**（`though` / `while` / 两个破折号同理）⇒ 词表里 7 个 token 是**没人验的代码**。这张表配
+ * 三条断言（就在本文件「readFile 的描述把『读取额度』写成模型读得到的事实」那个用例里，标号 ④）把这个类
+ * 永远关掉：**加 token 不配样本 ⇒ 双向对账红；摘掉 token ⇒ 它那条样本的「必须不再被抓」红。**
+ *
+ * 每条样本必须同时满足三条（断言逐条验；不满足就**改句子**，不许改判据去迁就样本）：
+ *   ① **不带数字**：一旦句里出现「数字 + lines」，第 ② 步硬规则 `NUMBER_THEN_LINES` 先把它抓走，判定根本
+ *      走不到第 ③ 步的断点词分支 ⇒ 这个 token 又变回没人验（正是本轮要堵的那个病）；
+ *   ② `measured` **之后**同句内有 line/lines ⇒ 踩到 `MEASURED_THEN_LINES` 形状（否则整句不入判，「被抓」
+ *      永远不成立，那条样本只是躺着）；
+ *   ③ 否定词在前、与 `measured` 的距离 ≤ `NEGATION_MAX_DISTANCE`，且它到 `measured` **之间只有这一个**断点
+ *      token（别的 token 抢先命中就会替它承重 ⇒ 摘掉它照旧被抓 ⇒ 「必须不再被抓」那条断言当场红）。
+ */
+const NEGATION_SCOPE_BREAK_SAMPLES = [
+  ["but", "The cap is not a table but measured against the lines of our tree."],
+  ["yet", "The cap is not a table yet measured against the lines of our tree."],
+  ["however", "The cap is not a table, however, measured against the lines of our tree."],
+  ["although", "The cap is not a table although measured against the lines of our tree."],
+  ["though", "The cap is not a table though measured against the lines of our tree."],
+  ["while", "The cap is not a table while measured against the lines of our tree."],
+  [";", "Nothing here is a table; measured against the lines of our tree."],
+  [":", "Nothing here is a table: measured against the lines of our tree."],
+  ["\u2014", "Nothing here is a table \u2014 measured against the lines of our tree."],
+  ["\u2013", "Nothing here is a table \u2013 measured against the lines of our tree."],
+];
+
+/**
+ * 从 `NEGATION_SCOPE_BREAK.source` 读出它**真正**装了哪些 token（6 个词 + 字符类里的 4 个字符）。
+ * **不许手抄一份清单**：抄的那份不会跟着词表改，那就是第二本账（本单要堵的病正是「两本账分家」）。
+ *
+ * 形状锚点：整条正则必须是 `\\b(?:词|词|…)｜[逐字符列出的类]`。有人换写法（再加一条平行分支、词里带
+ * 大小写、或在类里写 `a-z` 区间）会让这里当场抛——那是「请扩解析器」，**不是**把 token 悄悄漏出对账
+ * （漏出去的那个 token 就又回到没人验的状态，而测试照样绿）。
+ *
+ * @param {RegExp} [pattern] 被解析的词表（默认 `NEGATION_SCOPE_BREAK`）
+ * @returns {{words: string[], chars: string[]}} 词分支的词 + 类里的字符（`\uXXXX` 已解成真字符）
+ */
+function negationScopeBreakTokens(pattern = NEGATION_SCOPE_BREAK) {
+  const shape = pattern.source.match(/^\\b\(\?:([a-z|]+)\)\\b\|\[(.*)\]$/u);
+  if (shape === null) {
+    throw new Error(`断点词表的写法不再是「\\b(?:词|…)｜[字符类]」，解析器读不出 token 清单了`
+      + `（宁可当场抛，也不要漏掉一个没人验的 token）：${pattern.source}`);
+  }
+  const classBody = shape[2];
+  if (classBody.includes("-")) {
+    throw new Error(`断点词表的字符类里出现区间写法 "-"：解析器只认逐字符列出，`
+      + `请扩解析器或改回逐字符：${classBody}`);
+  }
+  return { words: shape[1].split("|"), chars: decodeScopeBreakClassBody(classBody) };
+}
+
+/**
+ * 把字符类的**源码文本**逐段读成字符：`.source` 给的是源码，`\u2014` 在那里是字面的 6 个字符
+ * （`\`、`u`、`2`、`0`、`1`、`4`），不解开就会读出 6 个假 token。
+ */
+function decodeScopeBreakClassBody(body) {
+  const chars = [];
+  for (let index = 0; index < body.length; index += 1) {
+    if (body[index] !== "\\") {
+      chars.push(body[index]);
+      continue;
+    }
+    const rest = body.slice(index + 1);
+    const hex4 = rest.match(/^u([0-9a-fA-F]{4})/u);
+    const hexBraced = rest.match(/^u\{([0-9a-fA-F]+)\}/u);
+    if (hex4 !== null) {
+      chars.push(String.fromCodePoint(Number.parseInt(hex4[1], 16)));
+      index += 5; // `\u` + 4 位十六进制
+    } else if (hexBraced !== null) {
+      chars.push(String.fromCodePoint(Number.parseInt(hexBraced[1], 16)));
+      index += 3 + hexBraced[1].length; // `\u{` + 十六进制 + `}`
+    } else {
+      chars.push(rest[0]); // `\]` `\/` 之类：反斜杠只是「下一个字符是字面量」的标记
+      index += 1;
+    }
+  }
+  return chars;
+}
+
+/** 字符类里的字面量：这四个必须转义（`-` 会被读成区间、`]` 会关掉类、开头 `^` 会变取反、`\` 是转义标记）。 */
+const escapeScopeBreakClassChar = (char) => (/[\\\]^.-]/u.test(char) ? `\\${char}` : char);
+
+/**
+ * 造一张**被削弱的**断点词表：只摘掉 `token` 这一个，其余原样保留（解析 → 过滤 → 重建，**真摘**）。
+ * 它就是「把每个 token 逐个摘掉试一遍」的那次人工变异，现在跑在测试里（见 `NEGATION_SCOPE_BREAK_SAMPLES`）。
+ *
+ * @param {string} token 要摘掉的 token（词表里的一个词，或类里的一个字符）
+ * @param {RegExp} [pattern] 原词表
+ * @returns {RegExp} 少了这一个 token 的词表
+ * @throws 词表里根本没有这个 token（摘无可摘 ⇒ 交给「词表 ↔ 样本」双向对账去红，这里先说清原因）
+ */
+function scopeBreakWithout(token, pattern = NEGATION_SCOPE_BREAK) {
+  const { words, chars } = negationScopeBreakTokens(pattern);
+  const restWords = words.filter((word) => word !== token);
+  const restChars = chars.filter((char) => char !== token);
+  if (restWords.length === words.length && restChars.length === chars.length) {
+    throw new Error(`断点词表里没有 token ${JSON.stringify(token)}，摘无可摘（样本表里多了一条没人认领的样本）`);
+  }
+  const parts = [];
+  if (restWords.length > 0) parts.push(`\\b(?:${restWords.join("|")})\\b`);
+  if (restChars.length > 0) parts.push(`[${restChars.map(escapeScopeBreakClassChar).join("")}]`);
+  // 词表原本只剩这一个 token 时，摘掉后一条分支都不剩：给恒不匹配的 `(?!)`（零宽负向查空串）而不是空源码
+  // （`new RegExp("")` 匹配空串 ⇒ 断点词表变成**永真**，方向正好反了）。
+  return new RegExp(parts.length > 0 ? parts.join("|") : "(?!)", "u");
+}
+
+/**
+ * 否定词与 `measured` 的最大距离（去掉两端空白后计）：隔得太远就是两句不相关的话，不算统治。
+ *
+ * ⚠ 这条上限**不再**负责放过描述里的两句政策句（copilot 验收条件 1：那两句的距离**恰好** 40、零余量，
+ * 上限是照着一句话定的，而且任何「距离 ≤40 且没命中断点词」的否定前缀都会被它一起放过）。现在那两句
+ * 由下面的 `MEASURED_POLICY_SENTENCES` **逐字**放过。这条上限目前**只**由一条合成样本钉着（调小就红）：
+ * `READ_DESC_NEGATED_MEASURE_SENTENCES` 里「…nothing in the lines below was measured…」那条（距离恰好 40，
+ * 且它 `measured` 之后没有「数字 + lines」⇒ 不被 `NUMBER_THEN_LINES` 那条硬规则接管，真的走否定统治）。
+ * `READ_DESC_MEASURED_LINE_LEGACIES` 里那条政策句 1 的近似变体（距离 41）**不再**给这条上限承重：
+ * 它带 `86,000 lines`，现在先被硬规则（第 ② 步）抓住，与距离多少无关。
+ */
+const NEGATION_MAX_DISTANCE = 40;
+/** 「实测 → 行容量」的形状：`measured` 之后（同一句内）提到 line / lines。 */
+const MEASURED_THEN_LINES = /measured[\s\S]{0,240}?\bline(?:s)?\b/iu;
+/**
+ * 「数字 + 行/行」的形状：一句话里**写着的**行容量本身（千分位逗号算在数字里）。
+ *
+ * 它走的是**与否定无关**的一条硬规则（见 `positiveMeasuredLineClaims` 第 ② 步）：
+ * 否定可以否定「有没有测」，但否定不了一句话里写着的行数——
+ * "No line capacity is quoted here as a number measured from this repo: 86,000 lines." 里那个
+ * `86,000 lines` 就是一个容量声称，否定词管不着它。旧版只看「`measured` 之前有没有否定词」，
+ * 于是给政策句**加个尾巴**就能重新声称实测行容量（`measured` 之前一字未动 ⇒ 否定统治照旧成立），
+ * 而本单（#628）的全部目的就是禁掉这种声称 ⇒ 这条不能再留成松处。
+ */
+const NUMBER_THEN_LINES = /\b\d[\d,]*\s+(?:lines?|rows?)\b/iu;
+/**
+ * 描述里**仅有的**两句「提到 `measured` 却不是声称实测数」的政策句（#628 的裁决本身，逐字取自现文；
+ * 与 `READ_DESC_NEGATED_MEASURE_SENTENCES` 里标「现在就在描述里」的两条是同样的文字，两处必须同步）。
+ *
+ * 为什么要一张**显式逐字白名单**，而不是让 `NEGATION_MAX_DISTANCE` 继续承重：
+ *   - 政策句 1 的 `No … measured` 距离**恰好** 40 ⇒ 上限是照它校准的，一个词的余量都没有；
+ *   - 且「距离 ≤40 + 没命中断点词」这个条件会顺手放过其它毫不相干的否定前缀（松处，不是政策）。
+ *
+ * ⚠ 白名单**只认逐字**（见 `measuredSentenceKey`：空白归一 + 剥掉被 `split` 吃掉的句末标点之后整句相等）：
+ *   任何变体都不算命中，把一句 `measured … lines` 的正向声称塞进白名单也救不了它——那条句子既不在
+ *   白名单里（变体 ⇒ 不逐字相等），又被下面的断言直接判红（`MEASURED_POLICY_SENTENCES` 每条自己不许踩形状）。
+ */
+const MEASURED_POLICY_SENTENCES = [
+  "No line capacity is quoted here as a number measured from this repo: this codebase is not your tree, "
+    + "and any such figure goes stale the moment someone edits an unrelated file.",
+  "Token budget, derived from the engine's own estimator (~3.5 characters per token for non-CJK, ~1.5 for "
+    + "CJK, \u00d71.15 margin) rather than measured from any file here: tokens \u2248 bytes \u00f7 3.04 for ASCII source "
+    + "and \u2248 bytes \u00f7 1.74 for text that is nothing but Chinese characters \u2014 so a call that fills the whole "
+    + "256KB cap costs ~86,000 tokens of ASCII up to ~151,000 tokens of pure Chinese characters, and a call "
+    + "that fills a tenth of the cap costs a tenth of that.",
+];
+
+/**
+ * 逐字比较用的归一键：连续空白压成单个空格、去首尾空白，再剥掉句末标点——`String.split(SENTENCE_BOUNDARY)`
+ * 会把分隔符**本身**（那个 `.`）吃掉，不剥掉这个尾巴，政策句在切句结果里就永远比不上白名单里的原文。
+ * 除此之外不做任何模糊：不改大小写、不折叠标点、不截前缀。
+ */
+function measuredSentenceKey(text) {
+  return String(text ?? "").replace(/\s+/gu, " ").trim().replace(/[.!?]+$/u, "").trim();
+}
+/** 白名单的归一索引（`measuredSentenceKey` 之后整句相等才算命中）。 */
+const MEASURED_POLICY_KEYS = new Set(MEASURED_POLICY_SENTENCES.map(measuredSentenceKey));
+
+/**
+ * 否定词后面紧跟的这段文字（去掉两端空白）是否还在它的管辖范围内。
+ *
+ * @param {string} prefix `measured` 之前的那段文字
+ * @param {{scopeBreak?: RegExp}} [options] `scopeBreak` = 断点词表，默认 `NEGATION_SCOPE_BREAK`；
+ *   只有「把一个 token 从词表里摘掉再跑一遍」的承重测试会传削弱版（见 `scopeBreakWithout`）。
+ */
+function negationGoverned(prefix, { scopeBreak = NEGATION_SCOPE_BREAK } = {}) {
+  for (const negation of prefix.matchAll(NEGATION_BEFORE_MEASURED)) {
+    const scope = prefix.slice(negation.index + negation[0].length).trim();
+    if (scope.length > NEGATION_MAX_DISTANCE) continue;
+    if (scopeBreak.test(scope)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 把描述里「从本仓某些文件**实测**出来的行容量」这种**正向声称**抓出来（issue #628）。
+ *
+ * 为什么不能写 `assert.doesNotMatch(description, /measured/iu)`：#628 之后的描述里两处 `measured`
+ * 都是**否定用法**（模型需要知道这里没给过实测数，这两句是政策的一部分），直接禁词会把政策本身判红。
+ * 所以不能禁词，只能按句判：先逐字放过政策句，再用一条**与否定无关**的硬规则把「写在句里的行数」钉死，
+ * 最后才轮到否定启发式。完整顺序见下面「判定顺序」。
+ *
+ * 判定顺序（四步，顺序本身就是判据）：
+ *   ① 整句**逐字**命中 `MEASURED_POLICY_SENTENCES` ⇒ 放过（政策句，先于任何启发式）；
+ *   ② 否则，句内含 `measured` 且 `measured` **之后**出现「数字 + line/lines/row/rows」
+ *      （`NUMBER_THEN_LINES`，数字可带千分位逗号）⇒ **直接判为正向声称，不管有没有否定词**。
+ *      理由：**否定可以否定「有没有测」，但否定不了一句话里写着的行数**——
+ *      "No line capacity is quoted here as a number measured from this repo: 86,000 lines" 里那个
+ *      `86,000 lines` 就是一个容量声称，否定词管不着它。没有这一步，任何人给政策句**加个尾巴**
+ *      就能重新声称实测行容量（尾巴在 `measured` **之后**，第 ③ 步的否定统治照旧成立）——
+ *      而本单（#628）的全部目的就是禁掉这种声称，所以这条只能是硬规则，不能留成「已知松处」；
+ *   ③ 否则看 `measured` 之前有没有否定词**真的统治**它，统治 ⇒ 放过。「统治」的判据（不是「前面出现过
+ *      否定词」就算）：否定词与 `measured` 之间出现转折/子句边界（`NEGATION_SCOPE_BREAK`）⇒ 否定管的是
+ *      别的东西，作废；两者距离（去掉两端空白后计）> `NEGATION_MAX_DISTANCE` ⇒ 隔得太远，作废；
+ *   ④ 否则句内 `measured` 之后又提到 line/lines ⇒ 正向声称，抓出来。
+ *
+ * ⚠ 第 ② 步故意**先于**否定启发式，且它只算 `measured` **之后**的文字：政策句自己不会被它误伤
+ *   （句 1 的 `measured` 之后只有「this codebase is not your tree…」，没数字；句 2 之后写的是
+ *   `~86,000 tokens` / `~151,000 tokens`——是 **tokens** 不是 lines），而下面断言里还钉着一条
+ *   「白名单里每条政策的 `measured` 之后也不许出现数字+行」，白名单从此拓不开一句带行数的声称。
+ *
+ * ⚠ 白名单是**逐字**的，不是逃生门：政策句加一个词、换个尾巴就不再命中（②③④ 照旧判它），而把一句
+ *   带 `measured … lines` 形状的话塞进白名单会直接被断言判红；带「数字 + 行」的也一样（硬规则那条
+ *   另有专门的断言看着白名单）。政策句从此**不靠** `NEGATION_MAX_DISTANCE`
+ *   通过（那条上限的余量问题见它自己的注释）。
+ *
+ * ⚠ 为什么不是 `/measured[^.]{0,80}lines/iu` 这种形状（派单里的建议写法）：`[^.]` 在 #628 删掉的那句
+ *   原文上走不出 30 个字符——"Measured that way on this repo's own `.js` sources" 里的 `.js` 就是一道
+ *   点号墙；窗口 80 也够不到 158 字符之后的 "3,850 lines"。实测两种旧文案（下面两条 legacy）在它上面
+ *   都是 `false` ⇒ 那种写法是**死正则**，正是本判据要修的那个病。
+ *
+ * 旧版的松处（已修）：只看「`measured` 之前有没有否定词」，于是 "the cap is **not** a table **but**
+ * measured on our tree: 86,000 lines" 被放过——`not` 管的是 "a table"，却把 `measured` 一起赦免了。
+ * 这正是 `NEGATION_SCOPE_BREAK` 存在的理由。⚠ 给这张**词表**承重的是 `NEGATION_SCOPE_BREAK_SAMPLES`
+ * 那十条**不带数字**的样本（一个 token 一条，配「有它必须被抓 / 摘掉它必须放过」两条断言）：
+ * `READ_DESC_MEASURED_LINE_LEGACIES` 里同族的三条都写着「数字 + lines」⇒ 在第 ② 步就被与否定无关的硬规则
+ * 抓走，根本走不到第 ③ 步（于是把 `but` 或 `;` 从词表里摘掉，测试照样全绿——实测于 #628 独立验收，
+ * 逐 token 的实测结论见 `NEGATION_SCOPE_BREAK_SAMPLES` 的注释）。
+ *
+ * @param {string} text readFile 面向模型的描述
+ * @param {{scopeBreak?: RegExp}} [options] `scopeBreak` = 第 ③ 步用的否定断点词表，默认
+ *   `NEGATION_SCOPE_BREAK`；传削弱版（`scopeBreakWithout`）就是「把这个 token 摘掉再判一遍」，
+ *   承重测试靠它证明每条样本真的靠那个 token 被抓（见 `NEGATION_SCOPE_BREAK_SAMPLES`）。
+ * @returns {string[]} 命中的句子（正向声称），逐条给报错文案用
+ */
+function positiveMeasuredLineClaims(text, { scopeBreak = NEGATION_SCOPE_BREAK } = {}) {
+  return String(text ?? "")
+    .split(SENTENCE_BOUNDARY)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence !== "")
+    .filter((sentence) => {
+      if (MEASURED_POLICY_KEYS.has(measuredSentenceKey(sentence))) return false;
+      const measured = sentence.match(/\bmeasured\b/iu);
+      if (!measured) return false;
+      // ② 硬规则（与否定无关，先于否定启发式）：写了行数就是声称，否定词管不着。
+      if (NUMBER_THEN_LINES.test(sentence.slice(measured.index))) return true;
+      if (negationGoverned(sentence.slice(0, measured.index), { scopeBreak })) return false;
+      return MEASURED_THEN_LINES.test(sentence.slice(measured.index));
+    });
+}
+
+/**
+ * #628 从描述里删掉的**正向声称原文**（逐字取自改动前的描述，即 `f80d48ca~1:src/tools/file-tools.js`）。
+ * ①面：接回描述必须被 `positiveMeasuredLineClaims` 抓到；抓不到就说明形状写坏了 / 永真。
+ * 前两条是**逐字取自改动前描述**的历史正向声称；后五条是假设样本，分别铉住「否定词必须真的统治
+ * `measured`」（三条，**都带数字**）、「白名单只认逐字」与「写了行数就是声称（`NUMBER_THEN_LINES` 那条与
+ * 否定无关的硬规则）」这三步（旧写法把它们全放过了——没有它们，`NEGATION_MAX_DISTANCE` 与那条硬规则就是
+ * 没人踩的代码）。
+ *
+ * ⚠ 给 `NEGATION_SCOPE_BREAK` **词表**承重的样本不在这里，在 `NEGATION_SCOPE_BREAK_SAMPLES`（一个 token
+ *   一条、**全部不带数字**，配「有它必须被抓 / 摘掉它必须放过」两条断言）。本表那三条同族样本都写着
+ *   「数字 + lines」⇒ 在第 ② 步就被硬规则抽走，走不到断点词分支 ⇒ 它们只验硬规则，不验断点词。
+ */
+const READ_DESC_MEASURED_LINE_LEGACIES = [
+  "Measured that way on this repo's own `.js` sources under `src/`, `bin/` and `examples/` at the default "
+    + "budget (this codebase, not your tree) \u2014 fewest \u2265 3,850 lines (68.0 bytes/line, the widest lines; "
+    + "the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than "
+    + "3,850 lines), median 6,007 (43.6), most 9,407 (27.9).",
+  "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for "
+    + "non-CJK, ~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: "
+    + "~190 tokens where lines are short and sparse, ~2,500 on typical source, and ~4,750 where lines are wide, "
+    + "comments are dense or the text is CJK \u2014 budget the tail, not the typical case.",
+  // ↓ 三条逐字的假设样本：`not`/`Nothing`/`however` 都管不到 `measured`，必须按正向声称被抓。
+  //   ⚠ 第三条原先写的是 "The cap **is** a table, however, measured on our tree: 86,000 lines."——那句
+  //   `measured` 前面**根本没否定词**，有无 `NEGATION_SCOPE_BREAK` 都会被抓 ⇒ 它是**假反向证**，
+  //   没覆盖断点分支。补上 `not` 才是真覆盖（实测：删掉断点检查后这条从红变绿）。
+  "The cap is not a table but measured on our tree: 86,000 lines.",
+  "Nothing here is a table; measured on our tree: 151,000 lines.",
+  "The cap is not a table, however, measured on our tree: 86,000 lines.",
+  // ↓ 同族那三条**不带数字**的样本（原来钉 `however` / `but` / `;` 各一条）已搬进
+  //   `NEGATION_SCOPE_BREAK_SAMPLES`：那张表一个 token 一条（十个 token 全有），并多了「把该 token 从词表里
+  //   摘掉后这条必须不再被抓」那条承重断言 ⇒ 留在本表只是重复。它们在这里的使命（「不带数字 ⇒ 判定真的
+  //   落到第 ③ 步的断点词分支」）现在由那张表逐 token 完成；上面三条带数字的同族样本**不担当**那个职责
+  //   （它们先被 `NUMBER_THEN_LINES` 抽走），它们是「旧写法会把它们放过」的历史反向证，一条不许删。
+  // ↓ 白名单不是逃生门（逐字命中才放行）：这句是政策句 1 的**近似变体**——前 43 字符与它逐字相同
+  //   （"No line capacity is quoted here as a number"），只在 `measured` **之前**插了一个断点词 `, however,`
+  //   （顺带把否定统治距离从恰好 40 推到 41），再把尾巴换成带 `lines` 的数 ⇒ 不再逐字命中白名单，
+  //   必须按正向声称被抓。把白名单放宽成「前缀/片段相同即放行」这类松匹配，这条立刻红。
+  "No line capacity is quoted here as a number, however, measured from this repo: 86,000 lines.",
+  // ↓ 硬规则 `NUMBER_THEN_LINES` 钳住的（旧版这里是**已知松处**，#628 本轮把它堵上，不许再退回松处）：
+  //   政策句 1 只加尾巴——`measured` **之前**一字未动 ⇒ `No` 与它的距离仍是恰好 40、也没命中断点词，
+  //   否定启发式照旧会放过它，尽管尾巴里就写着一个 `86,000 lines`。那等于「任何人给政策句加个尾巴
+  //   就能重新声称实测行容量」，而本单的全部目的就是禁掉这种声称。现在它在否定启发式**之前**就被
+  //   硬规则抓住（写了行数就是声称，否定词管不着），所以这条从否定面搬到了正向面：谁把硬规则删掉、
+  //   把它往后退到否定启发式**之后**、或改成「只在全句没否定词时才生效」，这条立刻红。
+  "No line capacity is quoted here as a number measured from this repo: 86,000 lines.",
+];
+
+/**
+ * 提到 `measured` 却**不是在声称实测数**的否定句（两面都在用：前两条现在就在描述里，它们是 #628
+ * 政策的一部分；第三条是 #628 之前描述里的否定句，同样不许误判）。反向证的②一面：一条都不许被
+ * `positiveMeasuredLineClaims` 抓成正向声称（否则「排除否定句」只是把永真换成了永假）。
+ * 前两条还带一条现文对账：它们必须逐字在场——反向证的样本自己也会过期（描述里删了它，那条反向证就悄悄失效）。
+ *
+ * ⚠ 入面条件（本轮收紧）：尾巴里**写着行数**的句子不算否定句——否定可以否定「有没有测」，否定不了
+ *   一个写在句里的行数。旧版那条「政策句 1 + 尾巴 `86,000 lines`」原先当「已知松处」钉在这里，
+ *   现在已逐字搬到 `READ_DESC_MEASURED_LINE_LEGACIES`（正向面）——别再把它搬回来。
+ */
+const READ_DESC_NEGATED_MEASURE_SENTENCES = [
+  ["No line capacity is quoted here as a number measured from this repo: this codebase is not your tree, "
+    + "and any such figure goes stale the moment someone edits an unrelated file.", "现在就在描述里"],
+  ["Token budget, derived from the engine's own estimator (~3.5 characters per token for non-CJK, ~1.5 for "
+    + "CJK, \u00d71.15 margin) rather than measured from any file here: tokens \u2248 bytes \u00f7 3.04 for ASCII source "
+    + "and \u2248 bytes \u00f7 1.74 for text that is nothing but Chinese characters \u2014 so a call that fills the whole "
+    + "256KB cap costs ~86,000 tokens of ASCII up to ~151,000 tokens of pure Chinese characters, and a call "
+    + "that fills a tenth of the cap costs a tenth of that.", "现在就在描述里"],
+  ["Nothing outside this repo was measured, so for CJK-heavy code elsewhere fold the formula rather than "
+    + "reusing these numbers.", "#628 之前的描述里（历史形态）"],
+  // ⚠ 上面三条在**形状**面上本来就丌会命中（它们里面 `measured` 之后没有 line/lines）——只拿它们做反向证，
+  //   否定词表就是一条**没人踩过的代码**（实测：把它改坏，本测试仍然绿）。下面这条才是真正铉住那张表的：
+  // 它是政策允许的写法（先否定、同一个句子里后面又提到 lines），必须靠否定词表放过；
+  // 它同时也是**唯一**一条给 `NEGATION_MAX_DISTANCE` 承重的样本（它没有「数字 + lines」⇒ 不被硬规则接管）。
+  ["No line capacity is quoted here as a number measured from this repo: nothing in the lines below was "
+    + "measured on our tree.", "假设样本（政策允许的否定句，`measured` 同句后续就带 lines，但没有「数字 + lines」）"],
+  // ⚠ 政策句 1 「只加尾巴 `86,000 lines`」那条**不在这里**：它尾巴里写着行数 ⇒ 现在被 `NUMBER_THEN_LINES`
+  //   那条与否定无关的硬规则抓住，已逐字搬进 `READ_DESC_MEASURED_LINE_LEGACIES`（正向面）。
+  //   它以前在这里时叫「已知松处」（否定统治未断 ⇒ 放过），那个松处本轮已堵，不许再退回。
+];
+
 /**
  * issue #208（收缩后的内核）：把截断 marker 文本里**声称的数字**取回来，与 `metadata` 的同名字段逐项对账。
  *
@@ -425,8 +775,9 @@ export function fileToolsContract(label, { createFileTools }) {
     assert.match(readFileTool.description, /one call/iu, "「一次要够」的口径必须在场");
     // issue #267：额度事实不许只给一个数。旧描述写「~2,500 tokens」，而 2,500 正是实测**中位数**：
     // 密注释 / 宽行 / 中文的窗口实测能到 4,539（尾巴 1.8×）。只报典型值就是让模型拿中位数当上限。
-    // ⚠ 本单新增的是**结构**要求（必须给散布），具体数字由 `test/tools/file-tools.test.js` 用
-    //   三个写死的真实文件当场复测钉住——宿主不必复刻那份测量，但它的描述也得给得出两档。
+    // ⚠ 本单新增的是**结构**要求（必须给散布），宿主不必复刻那份测量，但它的描述也得给得出两档。
+    //   现在这两档由谁钉：#628 删掉了「三个写死文件当场复测 token 三档」那套样本，
+    //   数字改由 `estimateTokens()` 的公式推出，`test/tools/file-tools.test.js` 的**守卫 2** 现算双向对账。
     // 取「从 Token budget 那一句起到描述末尾」而不是「到第一个句号」：后者会在宿主自己写的
     // 「e.g.」上提前截断→没数字→假红；向前扫到结尾只会**多**数几个数（宁可松，不可假红）。
     const budgetTail = readFileTool.description.match(/Token budget[\s\S]*/u)?.[0] ?? "";
@@ -435,21 +786,140 @@ export function fileToolsContract(label, { createFileTools }) {
       .map((match) => Number(match[1].replace(/,/g, "")))
       .filter((value) => value >= 100); // 滤掉估算器常数（~3.5 / ~1.5 字符每 token）
     assert.ok(figures.length >= 2,
-      `token 额度必须至少给两档（典型 + 尾巴），只给一个数就是拿中位数冒充上限：${budgetTail.slice(0, 200)}`);
+      `token 额度必须至少给两档（#267 当时是「典型 + 尾巴」，#628 之后是「ASCII 下界 + 纯汉字上界」两个极端），`
+        + `只给一个数就是拿典型值冒充上限：${budgetTail.slice(0, 200)}`);
     assert.ok(Math.max(...figures) >= Math.min(...figures) * 1.5,
-      `两档之间必须体现真实散布（尾巴 ≥1.5× 低档）：${figures.join(" / ")}`);
+      `两档之间必须体现真实散布（高档 ≥1.5× 低档；#267 的结论，#628 把它留在估算器的跨度里）：${figures.join(" / ")}`);
     // issue #271：`max_bytes` 的行数换算必须给**换算式**而不是一个行数区间。旧文案「~3,000-6,000 lines」没人复测过，
     // 按本仓 83 个真实 `.js` 折算实测量级是千行而非百行（2026-10-13 首次复测：floor 4,387 / 中位 7,290 / 最多 9,772，
     // 旧上限 6,000 低估 1.63×、连实测中位数都没盖住；2026-10-21 复测后同一口径是 4,286 / 7,243 / 9,772，
-    // floor 换了文件——那串数字的真值不在本文件里，在 `test/tools/file-tools.test.js` 的锚点表里）；
-    // 而区间对宿主也没意义（平均行长一变就失效）。
-    // 所以这里只卡结构：要给出「÷ 平均行字节数」的口径，且要声明给出的数是测出来的。具体数字由
-    // `test/tools/file-tools.test.js` 钉住（#271 的 83 个写死路径；#275 后断言改成只钉 fewest/densest/median/most/self
-    // 五个角色锚点 + 与盘上**单向包含**，不再与全树清单 `deepEqual`，也不再把本仓文件总数写回描述。宿主不必复刻那份测量）。
+    // floor 换了文件——那串数字的真值当时钉在 `test/tools/file-tools.test.js` 的锚点表里，那张表已随 #628 整组删除，
+    // 逐次复测台账在 git 历史里）；而区间对宿主也没意义（平均行长一变就失效）。
+    // 所以这里只卡结构：要给出「÷ 平均行字节数」的口径。至于「由谁钉住」，#628 换了口径（旧描述不再给仓内实测的
+    // 行容量，那它也就不再「声明给出的数是测出来的」）：
+    //   · 描述必须自报 token 数的出处是**估算器推导**、且自报是**启发式估值**（下面三条，就在本文件）；
+    //   · token 区间由 `test/tools/file-tools.test.js` 的**守卫 2** 拿 `estimateTokens()` 现算双向对账；
+    //   · 描述里不许出现仓内实测数字（守卫 1：数字白名单 + 禁用形状 + 旧句原文反向证）。
+    // 历史部分照旧：#271 当年钉的是 83 个写死路径，#275 收窄成 fewest/densest/median/most/self 五个角色锚点
+    // + 与盘上**单向包含**（不再与全树清单 `deepEqual`，也不再把本仓文件总数写回描述）——那五个锚点已由 #628 删除。
     assert.match(readFileTool.description, /bytes per line/iu,
       "字节额度要给换算口径：行数 = max_bytes ÷ 平均行字节数（issue #271：给公式而不是区间）");
-    assert.match(readFileTool.description, /measured/iu,
-      "给出的行数容量必须声明是实测的（issue #267/#271：未复测的数就是让模型拿估计数当上限）");
+    // ⚠ issue #628：这里原来钉的是 `assert.match(readFileTool.description, /measured/iu,
+    //   "给出的行数容量必须声明是实测的")`，它在 #628 之后**变成了永真**——描述里根本不再给行容量，
+    //   而剩下的两处 `measured` 都是**否定句**（「这里没给从本仓量出来的数」/「不是从本仓量的」），
+    //   否定句把它满足掉了。判据必须验它说的那件事，不是验那个词：换下面三条，每条都能单独咬（反向证在最后）。
+    assert.match(readFileTool.description, /derived from the engine['\u2019]s own estimator/iu,
+      "token 数的出处必须自报是**引擎估算器推导**（issue #628）：这些数不是从本仓文件量出来的，"
+        + "而是 `src/tokens.js` 那套估算常数推出来的；出处写错或写没，模型就会把推出来的区间当实测区间用");
+    assert.match(readFileTool.description, /heuristic estimate, not a real tokenizer/iu,
+      "必须自报这是**启发式估值**（issue #628）：不写这句，模型会把「~86,000」当成精确 token 数来排预算");
+    const measuredLineClaims = positiveMeasuredLineClaims(readFileTool.description);
+    assert.deepEqual(measuredLineClaims, [],
+      "描述里又出现了「从本仓某些文件**实测**出来的行容量」这种**正向声称**（issue #628 的整条裁决：本仓不是"
+        + "宿主那棵树，这种数随任何一次无关改动过期）。要给容量就给换算式 + 由估算器推出的 token 区间；"
+        + "**否定句**（「这里没给实测数」/「不是从本仓量的」）不算声称，见 positiveMeasuredLineClaims 的注释："
+        + measuredLineClaims.map((sentence) => sentence.slice(0, 80)).join(" // "));
+    // ①′ 白名单自己也不许是死条目、也不许被当逃生门（否则「逐字放过」就是新的永真松处）：
+    //    · 每一条必须**逐字**仍在描述里（走与判据同一条切句流水线 + 同一个归一键）——现文删了它，
+    //      那条放过就成了没人认领的松处（白名单悄悄过期）；
+    //    · 每一条自己都不许踩 `measured … lines` 形状，也不许在 `measured` **之后**写「数字 + 行」
+    //      （白名单先于硬规则生效 ⇒ 不钳这一条，往白名单里加一句带行数的政策就能重新钻过 `NUMBER_THEN_LINES`）；
+    //    · 清单不许被清空（清空后下面那个循环就是空循环）。「变体不算命中」那一面由
+    //      `READ_DESC_MEASURED_LINE_LEGACIES` 里那条政策句 1 的近似变体钉着（① 面必须咬住它）。
+    const describedSentenceKeys = new Set(String(readFileTool.description)
+      .split(SENTENCE_BOUNDARY)
+      .map((sentence) => measuredSentenceKey(sentence)));
+    assert.ok(MEASURED_POLICY_SENTENCES.length >= 2,
+      "白名单被清空了（①′ 退化成空循环，「逐字放过」无人验）");
+    for (const policy of MEASURED_POLICY_SENTENCES) {
+      assert.ok(describedSentenceKeys.has(measuredSentenceKey(policy)),
+        `白名单里的政策句已不在描述里（它会悄悄过期，逐字放过退化成没人认领的松处）：${policy.slice(0, 70)}…`);
+      assert.ok(!MEASURED_THEN_LINES.test(policy),
+        `白名单里塞进了一句「measured … lines」的正向声称（白名单只收留逐字命中的政策句，不是消音的逃生门）：${policy.slice(0, 70)}…`);
+      // 白名单是第 ① 步、硬规则是第 ② 步 ⇒ 白名单里那句政策如果 `measured` 之后写了行数，它就会靠白名单
+      // 钻过硬规则（政策句 1 加尾巴就是这形状）。钉住：白名单自己也不许带「数字 + 行」。现文两句都干净
+      // （句 1 之后无数字，句 2 之后只有 `~86,000 tokens` / `~151,000 tokens`，是 tokens 不是 lines）。
+      const policyMeasured = policy.match(/\bmeasured\b/iu);
+      assert.ok(policyMeasured === null || !NUMBER_THEN_LINES.test(policy.slice(policyMeasured.index)),
+        `白名单里的政策句在 measured 之后写了「数字 + 行」（它会在第 ① 步就钻过否定无关的硬规则，重新把行容量声称放回描述）：${policy.slice(0, 70)}…`);
+    }
+    // 反向证（三条新判据都不许是死判据）：
+    // ① 「正向声称」的形状必须咬得住 #628 删掉的那两句原文（逐字取自改动前的描述）——接回来必须被抓。
+    for (const legacy of READ_DESC_MEASURED_LINE_LEGACIES) {
+      assert.ok(positiveMeasuredLineClaims(`Anchor sentence. ${legacy}`).length > 0,
+        `一句正向声称接回来却没人咬（形状判据失效 / 否定的「统治」判据被改宽了）：${legacy.slice(0, 70)}…`);
+    }
+    // ② 那些**否定句**不许被当成正向声称——否则「排除否定句」只是把判据从永真换成永假。
+    for (const [negated, provenance] of READ_DESC_NEGATED_MEASURE_SENTENCES) {
+      assert.equal(positiveMeasuredLineClaims(`Anchor sentence. ${negated}`).length, 0,
+        `一句否定句（${provenance}）被判成了正向声称（判据在假红方向上坏了）：${negated.slice(0, 70)}…`);
+      if (provenance === "现在就在描述里") {
+        assert.ok(readFileTool.description.includes(negated),
+          `反向证②的样本已不在描述里（它会悄悄过期，负向对照变成空跑）：${negated.slice(0, 70)}…`);
+      }
+    }
+    // ①′′ 硬规则（`NUMBER_THEN_LINES`，与否定无关）自己也不许是死判据：至少一条正向样本必须**同时**
+    //     「否定词真的统治 measured」且「measured 之后写着数字 + 行」——只有这种样本能区分「有硬规则」与
+    //     「没硬规则」（旧版把它当已知松处钉在否定面，删掉硬规则也测不出来）。现由那条「政策句 1 + 尾巴
+    //     `86,000 lines`」样本承重（它已从否定面搬进正向面）。
+    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.filter((legacy) => {
+      const at = legacy.match(/\bmeasured\b/iu);
+      return at !== null
+        && negationGoverned(legacy.slice(0, at.index))
+        && NUMBER_THEN_LINES.test(legacy.slice(at.index));
+    }).length >= 1,
+      "正向样本里没有一条是「否定统治成立但句中写着数字+行」的形状：NUMBER_THEN_LINES 退化成没人踩的代码（删了它，给政策句加尾巴就能重新声称实测行容量）");
+    // ②′ 上面那一面不许是空跑：至少一条否定句样本必须**真的**踩到形状（`measured` 之后同句内带 line/lines），
+    //     否则「放过否定句」这一步根本没被验——实测：没有下面那条样本时，把否定词表改坏本测试仍绿。
+    assert.ok(READ_DESC_NEGATED_MEASURE_SENTENCES
+      .filter(([sentence]) => MEASURED_THEN_LINES.test(sentence)).length >= 1,
+      "否定句样本里没有一条会踩到「measured … lines」形状：NEGATION_BEFORE_MEASURED 退化成没人踩的代码");
+    // 另半边（钳方向）：否定面四条一条都不许带「measured 之后写着数字 + 行」——带了它就是正向声称，
+    //   该去 LEGACIES，不该留在否定面当「放过」的样本（旧版那条「政策句 1 + 尾巴 `86,000 lines`」就错在这里）。
+    //   ⚠ 诚实说：本条只钉住「方向」，它**不**区分「只算 `measured` 之后」与「算整个句子」——四条否定样本
+    //   全句里本来就没一个「数字+行」（句 2 只有 `~86,000 tokens`），换成整句版本条依旧绿；那个切片位置
+    //   靠的是上面 ①′′ 那条（硬规则必须在否定启发式之前生效）与代码里的注。
+    assert.ok(READ_DESC_NEGATED_MEASURE_SENTENCES
+      .filter(([sentence]) => {
+        const at = sentence.match(/\bmeasured\b/iu);
+        return at !== null && NUMBER_THEN_LINES.test(sentence.slice(at.index));
+      }).length === 0,
+      "否定面样本里混进了「measured 之后写着数字 + 行」的那类（按硬规则它就是正向声称，该搬去 LEGACIES）");
+    // ④ 断点词表 ↔ 样本 双向对账 + 逐 token 的承重证明（#628 第三轮：这里以前是打地鼠——
+    //   `however`/`but`/`;` 补了样本，`yet`/`although`/`:`/`though`/`while`/两个破折号摘掉都还是绿的）。
+    //   token 清单**从 `NEGATION_SCOPE_BREAK.source` 解析**（`negationScopeBreakTokens`），不手抄第二份清单
+    //   ——抄一份就是第二本账，两本账分家正是本单要堵的病。
+    const { words: scopeBreakWords, chars: scopeBreakChars } = negationScopeBreakTokens();
+    const scopeBreakTokens = [...scopeBreakWords, ...scopeBreakChars];
+    const sampleTokens = NEGATION_SCOPE_BREAK_SAMPLES.map(([token]) => token);
+    assert.deepEqual([...new Set(sampleTokens)].sort(), [...new Set(scopeBreakTokens)].sort(),
+      "断点词表与样本表必须一一对应：词表里加了 token 不配样本 ⇒ 那个 token 就是没人验的代码（样本里多出一条 ⇒ "
+        + `它验的是词表里已不存在的分支）。词表=${JSON.stringify(scopeBreakTokens)} 样本=${JSON.stringify(sampleTokens)}`);
+    assert.ok(scopeBreakTokens.length >= 2,
+      `断点词表只剩 ${scopeBreakTokens.length} 个 token：上面那条对账退化成两个单元素数组相等（④ 变空跑）`);
+    for (const [token, sample] of NEGATION_SCOPE_BREAK_SAMPLES) {
+      // 前提：样本不许带数字（一带就被第 ② 步硬规则 `NUMBER_THEN_LINES` 先截获，判定走不到断点词分支）。
+      assert.equal(/\d/u.test(sample), false,
+        `样本里不许带数字（会被 NUMBER_THEN_LINES 先截获，该 token 又变回没人验）：${sample}`);
+      // 有它 ⇒ 被抓。
+      assert.ok(positiveMeasuredLineClaims(sample).length > 0,
+        `带 token ${JSON.stringify(token)} 的样本必须被抓成正向声称（否则它根本没在验断点词表）：${sample}`);
+      // 摘掉它 ⇒ 不再被抓（承重证明：逐 token 的人工变异，现在跑在测试里）。
+      const weakened = scopeBreakWithout(token);
+      // 变异本身也要成立：原词表认得这个 token、削弱版必须不再认得（否则「摘掉了」只是我以为）。
+      assert.ok(NEGATION_SCOPE_BREAK.test(`x ${token} y`) && !weakened.test(`x ${token} y`),
+        `削弱版必须真的把 token ${JSON.stringify(token)} 摘掉了：原 ${NEGATION_SCOPE_BREAK.source} vs 削弱 ${weakened.source}`);
+      assert.equal(positiveMeasuredLineClaims(sample, { scopeBreak: weakened }).length, 0,
+        `把 token ${JSON.stringify(token)} 从词表里摘掉后这条样本必须**不再**被抓——否则该 token 不承重：${sample}`);
+    }
+    // ③ 两面样本不许被清空：清空后上面两个循环就是空循环（看起来在验，其实什么都没验）。
+    //   下限按现量钉：正向 7（两条逐字历史声称 + 三条带数字的「否定未真的统治」+ 一条「白名单只认逐字」
+    //   + 一条「写着行数就与否定无关」）、否定 4。
+    //   ⚠ 正向面从 10 降到 7：三条**不带数字**的同族样本已逐字搬进 `NEGATION_SCOPE_BREAK_SAMPLES`，并由上面
+    //   ④ 那组「词表 ↔ 样本双向对账 + 逐 token 摘除必须放过」接手承重（那张表十 token 全有 ⇒ 覆盖只多不少）。
+    //   剩下这三条带数字的先被 `NUMBER_THEN_LINES` 抽走，只验硬规则不验断点词，也是一条不许删的历史反向证。
+    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 7 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
+      "反向证的两面样本不够（正向 ≥7、否定 ≥4）：那两面退化成空循环（判据没人验）");
     // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);
