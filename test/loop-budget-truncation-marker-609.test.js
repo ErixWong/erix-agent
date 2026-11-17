@@ -23,6 +23,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { estimateTokens } from "../src/tokens.js";
+import { enforceSize } from "../src/compact/enforce-size.js";
 import { NO_RERUN_SIDE_EFFECT_CLAUSE, aggregateStubText } from "../src/loop/aggregate-budget.js";
 import {
   TRUNCATION_JUDGE_WORD,
@@ -340,4 +341,51 @@ test("G10 反复截断不膨胀：在已带标记的文本上再截一次仍 <= 
   const twice = truncateTextToBudget(once, 1200);
   assert.ok(estimateTokens(twice) <= 1200);
   assert.ok(estimateTokens(twice) <= estimateTokens(once), "同一预算反复过这一格只会更短，不会越长越大");
+});
+
+// ── ③ `[已修剪]`（#469 的修剪标记）与截断标记的边界 ─────────────────────────────────────────
+test("G11 修剪字段再超预算：不许出现「既没有完整 [已修剪]、也没有截断标记」的静默组合（复审 ③）", () => {
+  // 真·修剪器产出的字段（#469 的形状：保留标题，正文换成 `[已修剪]`；本用例不动它的语义）。
+  const enforced = enforceSize([
+    { key: "contract", priority: 100, text: `## 完成报告\n${"细节".repeat(900)}` },
+    { key: "notes", priority: 10, text: `## 观察\n${"证据".repeat(900)}` },
+  ], 40);
+  assert.ok(enforced.prunedKeys.length > 0, "前置：这一格必须真把字段修剪成 [已修剪]");
+  const pruned = enforced.fields.find((field) => field.text.includes("[已修剪]"));
+  assert.ok(pruned !== undefined, `修剪后没有 [已修剪]：${JSON.stringify(enforced.prunedKeys)}`);
+  assert.match(pruned.text, /^## [^\n]*\n\[已修剪\]$/u, "#469 的形状：标题仍在，正文换成 [已修剪]");
+  const prunedTokens = estimateTokens(pruned.text);
+
+  // 预算低于修剪后的文本 ⇒ 前缀截断会把末尾那个完整的 `[已修剪]` 切掉（并叠上截断标记）。
+  for (const budget of [4, 5, 8, 16, prunedTokens - 1, prunedTokens, prunedTokens + 1, 64, 4096]) {
+    const out = truncateTextToBudget(pruned.text, budget);
+    assert.ok(estimateTokens(out) <= budget, `budget=${budget} 超预算`);
+    const keepsPrunedTag = out.endsWith("[已修剪]");
+    const saysTruncated = out.includes(TRUNCATION_JUDGE_WORD);
+    assert.ok(
+      keepsPrunedTag || saysTruncated,
+      `budget=${budget}：既没有完整的 [已修剪]、也没有截断标记 ⇒ 内容丢了却看不出来：`
+      + JSON.stringify(out),
+    );
+    if (budget < prunedTokens) {
+      // 被截那一侧必须**由截断标记说话**：修剪标记被切掉一半（只剩 `## 标题` 或 `[已修`）
+      // 在模型眼里就是一段正常内容，那正是复审 ③ 要挡的组合。
+      assert.ok(saysTruncated, `budget=${budget} 被截了却没说：${JSON.stringify(out)}`);
+      assert.notEqual(out.endsWith("[已修剪]"), true, `budget=${budget} 却带着完整修剪标记：${out}`);
+    } else {
+      // 预算够（含 `budget === prunedTokens` 那一格）：修剪字段逐字不动，也不许叠第二个标记。
+      assert.equal(out, pruned.text, `budget=${budget} 不该再动修剪字段（叠标记就是两个标记互踩）`);
+    }
+  }
+
+  // 预算 1～3 那一头不是「没测」：它落的是 G9b 钉住的那条**具名**物理下限（空串 / 「截」），
+  // 这里只补一条：这几格同样不许把修剪字段的一半原样吐回去（静默 = 内容形状里没有标记词）。
+  for (const budget of [1, 2, 3]) {
+    const out = truncateTextToBudget(pruned.text, budget);
+    assert.ok(
+      out === "" || TRUNCATION_JUDGE_WORD.startsWith(out),
+      `budget=${budget} 返回值既不是判据词前缀也不是空串 ⇒ 是内容片段：${JSON.stringify(out)}`,
+    );
+    assert.ok(estimateTokens(out) <= budget, `budget=${budget} 超预算`);
+  }
 });
