@@ -184,14 +184,17 @@ export const TRUNCATION_JUDGE_WORD_TOKENS = estimateTokens(TRUNCATION_JUDGE_WORD
  * 截断标记里「怎么把剩余部分取回来」那一半（issue #609）。
  *
  * 口径抄 `aggregateStubText()`（被截 + 原始多少 + 怎么续 + 别重跑副作用命令），但
- * **刻意不写 `note_list` / `note_read` 这两个工具名**：这一层既拿不到装配后的工具面，也拿不到
- * 笔记账本，而 #746 的教训正是「不许指挥模型去调一个可能不在场上的工具」——票面里模型就是
- * 自己去猜了一个不存在的 `note_list`。所以笔记那一支只给**条件式且不带工具名**，
- * 主路径给**工具无关**的分段取回（readFile 与 exec 各点一次）。
+ * **整句只说能力、不说工具名**（复审 ②）：工具面由宿主注入（AGENTS.md §1「`runToolLoop`
+ * with `executeTool` injected by the host」），这一层既拿不到装配后的工具面，也拿不到笔记
+ * 账本，而 #746 的教训正是「不许指挥模型去调一个可能不在场上的工具」——票面里模型就是
+ * 自己去猜了一个不存在的 `note_list`。所以旧文案里点名的 `readFile` / `exec` 一并去掉：
+ * 「文件读取**类**工具」是**能力口径**（模型自己对号入座，不指定哪一个），`head`/`tail`/`sed`
+ * 是 shell 命令而非工具名，留着服务走命令行那条路——读法是「用这类能力」，不是「必须调某个工具」。
+ * 笔记那一支仍是条件式且不带工具名。措辞由 `G2` 钉着：出现工具名就红。
  */
 export const TRUNCATION_READ_BACK_CLAUSE =
-  "后续需要剩余部分：请用只读方式分段取回（readFile 传 offset/limit 续读，"
-  + "exec 之类改用 head/tail/sed 指定区间），"
+  "后续需要剩余部分：可用文件读取类工具按 offset/limit 分段读回；"
+  + "命令输出则用 head/tail/sed 之类截取指定区间；"
   + "如本 run 写过笔记也可先从笔记取回要点；没写过就按上面方式重读源头。";
 
 /**

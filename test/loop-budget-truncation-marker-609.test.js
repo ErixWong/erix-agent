@@ -78,14 +78,36 @@ test("G1 截断后尾部带标记，且报的是真数字（原文/保留/被砍
   assert.ok(droppedTokens > 0, "真有内容被砍才报这个数字");
 });
 
-test("G2 标记给可执行的续读指引：工具无关（readFile 与 exec 都在场），且不许硬写 note_* 工具名", () => {
+test("G2 续读指引只说能力、不点名工具（#746 口径：工具面由宿主注入，复审 ②）", () => {
   const marker = truncateTextToBudget(bigDocument(), 4096);
-  assert.match(marker, /offset\/limit/u, "readFile 的分段续读入参要点名");
-  assert.match(marker, /head\/tail\/sed/u, "模型可能用的是 exec ⇒ 那一侧也要有指引");
-  assert.match(marker, /只读方式分段取回/u);
-  assert.match(marker, /写过笔记/u, "笔记那条退路要留（条件式）");
+  // 两支取回路径都要在，且写的是**能力**：「文件读取类工具」不指定哪一个，
+  // `head`/`tail`/`sed` 是 shell 命令（不是工具名），措辞是「用这类能力」而非「必须调某工具」。
+  assert.match(
+    marker,
+    /可用文件读取类工具按 offset\/limit 分段读回/u,
+    "文件读取那一支要按能力口径写，并点明 offset/limit 这两个分段入参",
+  );
+  assert.match(
+    marker,
+    /命令输出则用 head\/tail\/sed 之类截取指定区间/u,
+    "走命令行的那一侧也要有取回指引",
+  );
+  assert.match(marker, /如本 run 写过笔记/u, "笔记那条退路要留（条件式，且不带工具名）");
+  assert.equal(
+    /必须(?:使用|调用)?\s*\S{0,12}工具/u.test(marker),
+    false,
+    "措辞不许读成「必须用某个工具」⇒ 那是把模型钉死在一个可能不在场上的名字上",
+  );
   // #746 的口径：这一层既拿不到装配后的工具面、也拿不到笔记账本 ⇒ 不许指挥模型去调
   // 一个可能不在场上的工具（票面里模型就是自己去猜了不存在的 `note_list`）。
+  // 复审 ② 把这条从 note_* 扩到**所有**工具名：旧文案点名了 readFile 与 exec。
+  for (const toolName of ["readFile", "writeFile", "editFile", "listFiles", "exec", "bash"]) {
+    assert.equal(
+      new RegExp(`\\b${toolName}\\b`, "u").test(marker),
+      false,
+      `标记里不许点名工具 ${toolName}（工具面由宿主注入，见 AGENTS.md §1）`,
+    );
+  }
   assert.equal(/note_(take|list|read|forget)/u.test(marker), false, "标记里不许硬写 note_* 工具名");
   assert.ok(
     marker.includes(TRUNCATION_READ_BACK_CLAUSE),
