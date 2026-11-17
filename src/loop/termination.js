@@ -801,12 +801,19 @@ export function createTerminationManager(ctx) {
       await markRunState(state);
       const result = makeResult(reason, detail, error);
       // ── issue #862（新事件，纯加法）：终稿是**被文本化的工具调用** ⇒ 一条告警 ──────
-      // 每 run **至多一条**（one-shot 旗标在 `runLoopState`，与 `lowBudgetInjectFired`
-      // 同族：它是本次进程的现场，不是跨 resume 的持久判据）。载荷 `marker` = 命中的
+      // 每次**终局**至多一条（`finish` 的 10 个调用点都是 `return finish(...)` ⇒ 一个 run 只
+      // 走一次终局；resume 重跑是**新的终局**，会再发一条）。载荷 `marker` = 命中的
       // 那一条特征原文。`runId` 只在宿主传了时才写键（与 #182 `model_metadata_missing`
       // 同口径：引擎不自编标识）。**不改终态**：这条只是提示，`termination.reason` /
       // `verification` / 退出码都不因它变。它是这条事实**唯一**的 durable 副本
       // ⇒ 分级表里是 `fact`（`src/loop/event-tiers.js`）。
+      // one-shot 旗标 `ctx.finalTextShapeEmitted`（住在 `runLoopState`，与 `lowBudgetInjectFired`
+      // 同族：本次进程的现场，不是跨 resume 的持久判据）。诚实标注：`&& … !== true` 这一半
+      // **今天结构上不可达**——一个 run 里 `finish` 只被 `return` 调用一次，永远只从 `false`
+      // 读它。这面旗是给「以后有人在 `finish` 之后再补一条终局路径」留的冗余护栏：那种路径
+      // 出现后，第二次 `finish` 会被它挡成一条。**今天走引擎主循环没有能触发它的用例**；
+      // `test/loop-final-text-shape-862.test.js` 的 ⑩ 只能直接对同一个 ctx 连调两次 `finish`
+      // 来咬住这面旗（端到端主循环造不出「同一 ctx 两次终局」）。
       if (result.finalTextShape !== undefined && ctx.finalTextShapeEmitted !== true) {
         ctx.finalTextShapeEmitted = true;
         // 与本文件其余发射点同一口径：先接住 `ctx.emitEvent` 再调（直调 `ctx.emitEvent(...)`

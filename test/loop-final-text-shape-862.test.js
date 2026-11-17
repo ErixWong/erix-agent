@@ -7,7 +7,7 @@
 // 本包此前对这类标记**零判据**（`grep -rn 'DSML' src/` 全空），宿主自己那份拷贝只覆盖顶层
 // run 的终局信封 ⇒ `delegate` 子 run 一个标记都不带。
 //
-// 格子对账（九格，编号与下面 test() 一致）：
+// 格子对账（十格，编号与下面 test() 一致）：
 //   ① / ②：命中面 —— 真样本端到端、五条特征逐个、优先级 = 清单顺序、大小写不敏感；
 //   ③ / ④：不误伤 —— ``` 围栏与行内码里的字面量不算命中，`offset` / `offer` / `chatcmpl`
 //          / 空正文 / 正常中文总结不算命中，以及**裸串特征的长度下限**这条宿主守卫；
@@ -16,10 +16,12 @@
 //   ⑥：**终态语义一个字节都没动** —— 仍 `end_turn`，`rounds` / `usage` / `verification`
 //      与不命中那一发同值（停门是修法 B，单开一单，本票不改判定）；
 //   ⑦：`runId` 只在宿主传了时才写键（引擎不自编标识）；
-//   ⑧：one-shot —— 同一 run 至多一条；旗标住在 `runLoopState`（本次进程的现场，不入账、
-//      不进 resume 重置段）⇒ resume 之后那一次终局**重新判、重新发**。这是**选择**不是
-//      遗漏：把「发过没有」写成 durable 判据，跨 resume 重跑的 run 就会**一条都没有**；
-//   ⑨：特征集与宿主**逐字同一条**（含顺序），事件分级是 `fact`。
+//   ⑧：**中途轮不判** —— 两轮都带标记，但第 1 轮是 tool_use（中途、不判），只有终稿那一
+//      轮判 ⇒ 一条；跨 resume 的新终局重新判、重新发；
+//   ⑨：特征集与宿主**逐字同一条**（含顺序），事件分级是 `fact`；
+//   ⑩：one-shot 旗标 —— 直接 `createTerminationManager(ctx)` 对同一个 ctx 连调两次 `finish`
+//      ⇒ 只发一条（主循环里 `finish` 永远只 `return` 一次，旗标今天走不到第二次；这一格直接
+//      造两次终局把旗标咬住，证明它不是死代码）。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -30,6 +32,7 @@ import {
 } from "../src/index.js";
 import { eventTierOf } from "../src/loop/event-tiers.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { createTerminationManager } from "../src/loop/termination.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { runDirect } from "./helpers/run-direct.js";
 
@@ -182,13 +185,14 @@ test("⑦ runId 只在宿主传了时才写键（引擎不自编标识，与 #18
   assert.equal("runId" in shapeEvents[0], false, "宿主没传 runId ⇒ 事件里不该凭空长出一个");
 });
 
-test("⑧ one-shot：一个 run 内两轮都命中也只发一条；跨 resume 会重新判、重新发", async () => {
-  // 同一 run 内两轮都带标记：第 1 轮是 tool_use（不判），第 2 轮是终稿（判一次）⇒ 一条。
+test("⑧ 中途轮不判：两轮都带标记但只有终稿那轮判；跨 resume 的新终局重新判、重新发", async () => {
+  // 两轮都带标记：第 1 轮是 tool_use（中途轮，不进终局判定），第 2 轮才是终稿（判一次）⇒ 一条。
+  // 这一格咬的是「中途轮不算终局」：只有走到终局那发 `finish` 的正文会被判。
   const twoRounds = await runOnce(
     [toolTurn("<invoke name=\"a\">"), textTurn("<｜Function=exec> 收工。")],
     { rounds: 6 },
   );
-  assert.equal(twoRounds.shapeEvents.length, 1, "同一 run 至多一条");
+  assert.equal(twoRounds.shapeEvents.length, 1, "只有终稿那一轮会判，中途的 tool_use 轮不算");
   assert.equal(twoRounds.shapeEvents[0].round, 2);
   assert.equal(twoRounds.shapeEvents[0].marker, "<｜Function");
 
@@ -223,4 +227,37 @@ test("⑨ 特征集就是宿主那五条（顺序 = 优先级），且事件分�
   assert.deepEqual(DEFAULT_TOOLCALL_MARKERS, HOST_MARKERS);
   assert.ok(Object.isFrozen(DEFAULT_TOOLCALL_MARKERS), "共享特征集被下游改写会静默改变优先级");
   assert.equal(eventTierOf(SHAPE_EVENT), "fact", "唯一 durable 副本 ⇒ 删不得");
+});
+
+// ⑩ one-shot 旗标：主循环里 `finish` 的 10 个调用点都是 `return finish(...)` ⇒ 一个 ctx 只
+// 会终局一次，`ctx.finalTextShapeEmitted !== true` 这一半今天永远为真（走不到第二次 finish）。
+// 为了把旗标从「死代码」里拉出来，这里绕开主循环、直接对**同一个 ctx** 连调两次 `finish`，
+// 断言只发一条——旗标真的在挡第二次。ctx 是从 `termination.js` 的 `finish`/`makeResult` 实现
+// 里逐字段读出来的最小集（refreshRunState / markRunState 无 typeof 守卫⇒必须是函数）。
+test("⑩ one-shot 旗标：同一个 ctx 连调两次 finish ⇒ 只发一条（旗标不是死代码）", async () => {
+  const events = [];
+  const ctx = {
+    finalText: REAL_DSML_FINAL,
+    messages: [],
+    rounds: 1,
+    verification: { status: "succeeded" },
+    guardMetrics: {},
+    usage: { input_tokens: 1, output_tokens: 2 },
+    modelUsage: { input_tokens: 1, output_tokens: 2 },
+    engineUsage: {},
+    compactionStats: {},
+    errorLedger: { toUnpersisted: () => [] },
+    finalTextShapeEmitted: false,
+    emitEvent: (event) => events.push(event),
+    refreshRunState: async () => {},
+    markRunState: async () => {},
+  };
+  const { finish } = createTerminationManager(ctx);
+  const first = await finish("end_turn", "done");
+  const second = await finish("end_turn", "again");
+  // 两发都带形状键（判据住在 makeResult，与旗标无关），但事件只有一条（旗标拦住了第二次）。
+  assert.equal("finalTextShape" in first, true);
+  assert.equal("finalTextShape" in second, true);
+  assert.equal(events.filter((event) => event.type === SHAPE_EVENT).length, 1,
+    "同一 ctx 第二次 finish 必须被 one-shot 旗标拦成一条");
 });
