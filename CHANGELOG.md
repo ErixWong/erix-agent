@@ -9,36 +9,52 @@
   this library loses content differed in honesty: a pruned field keeps its heading and says
   `[已修剪]` (`prunedFieldText`, issue #469), a removed message leaves a `stubFor` stub, and
   `truncateTextToBudget()` returned a **bare slice** — the model worked on half a tool result
-  without knowing it had been cut. The tail marker now reports the numbers (original code-point
-  count and estimated tokens, kept characters and tokens, tokens dropped) plus a **tool-agnostic**
-  continuation instruction (`readFile` with `offset`/`limit`, `exec` with `head`/`tail`/`sed`;
+  without knowing it had been cut. The tail marker **leads with the verdict**: the judgement word
+  `截断` occupies the first two code points and the numbers (original code-point count and
+  estimated tokens, kept characters and tokens, tokens dropped) follow behind — ordering is the
+  judgement, because a budget too small for the marker returns only a *prefix* of it, and a prefix
+  carries nothing but what sits at the front. The continuation instruction names
+  **capabilities, never tools** (file-reading *tools of that kind* with `offset`/`limit`;
+  `head`/`tail`/`sed` for command output, which are shell commands rather than tool names;
   notes only as a conditional clause — this layer has neither the assembled tool surface nor the
-  note ledger, so per the #746 discipline it must not name a `note_*` tool), and the “do not
-  re-run a side-effecting command just to complete the output” clause — the latter is now the
-  shared `NO_RERUN_SIDE_EFFECT_CLAUSE` that the aggregate stub quotes too (one wording, not two
-  that expire). **The marker itself costs budget:** the binary search runs on
+  note ledger, so per the #746 discipline it must not name a tool, `note_*` included), and
+  the “do not re-run a side-effecting command just to complete the output” clause — the latter is
+  now the shared `NO_RERUN_SIDE_EFFECT_CLAUSE` that the aggregate stub quotes too (one wording,
+  not two that expire). **The marker itself costs budget:** the binary search runs on
   `budgetTokens − TRUNCATION_MARKER_RESERVE_TOKENS`, and when a budget is too small to hold even
   the marker, the whole string (marker included) goes through the same code-point-safe search
-  again, so `estimateTokens(returned) <= budgetTokens` always holds — the #846 “one protected
-  message over budget” family does not come back. Content that is **not** truncated comes back
-  byte-for-byte unchanged, and the marker is deterministic (same input ⇒ the same string, so run
-  snapshot / resume comparison survives). Thirteen cells in
-  `test/loop-budget-truncation-marker-609.test.js` pin it, including the reverse proof that
-  cutting on the full budget and pasting the marker afterwards really does overflow. (PR #—)
+  again, so what comes back is a prefix **of the marker** and still spells `截断` for every budget
+  of 4 tokens or more (2–3 tokens keep only the leading `截`, 1 token keeps nothing, because one Han
+  character costs 2 tokens in this estimator — a trade-off a test names out loud rather than a
+  silent branch), and `estimateTokens(returned) <= budgetTokens` always holds — the #846 “one
+  protected message over budget” family does not come back. Content that is **not** truncated
+  comes back byte-for-byte unchanged, and the marker is deterministic (same input ⇒ the same
+  string, so run snapshot / resume comparison survives). Sixteen cells in
+  `test/loop-budget-truncation-marker-609.test.js` pin it: the reverse proof that cutting on the
+  full budget and pasting the marker afterwards really does overflow, the extreme-budget ladder
+  above, the boundary where an `[已修剪]` field is itself over budget (never “neither a complete
+  `[已修剪]` nor a truncation marker”), and a lock on the four wording points — verdict, number
+  format, continuation keywords, no-re-run clause — plus the order between them. (PR #—)
 - **单个超预算的内容不再被静默剪掉（issue #609）。** 本仓三种「内容丢失」在诚实度上本来不齐：
   字段被修剪会留标题并写 `[已修剪]`（`prunedFieldText`，issue #469），整条消息被删会留
   `stubFor` 桩，而 `truncateTextToBudget()` 以前返回**裸 slice** ⇒ 模型拿着半截工具结果在干活，
-  却不知道自己被砍了。现在尾部标记**报数字**（原文码点数与估算 token、保留的字符与 token、
-  被砍掉多少 token），并给一条**工具无关**的续读指引（`readFile` 传 `offset`/`limit`，`exec` 用
-  `head`/`tail`/`sed`；笔记只给条件式 —— 这一层既拿不到装配后的工具面也拿不到笔记账本，按
-  #746 的口径不许点名 `note_*`），以及「不要为补全输出重跑有副作用的命令」那一句 —— 后者已
+  却不知道自己被砍了。现在尾部标记**结论先行**：判据词「截断」占住前两个码点，数字（原文码点数
+  与估算 token、保留的字符与 token、被砍掉多少 token）排在后面 —— 顺序本身就是判据，因为预算装
+  不下整条标记时返回值只是它的**前缀**，而前缀只带得走开头的东西。续读指引**只说能力、不点工具名**
+  （「文件读取类工具」按 `offset`/`limit` 分段读回；命令输出用 `head`/`tail`/`sed` —— 那是 shell
+  命令不是工具名；笔记只给条件式 —— 这一层既拿不到装配后的工具面也拿不到笔记账本，按
+  #746 的口径不许点名工具，`note_*` 也在内），以及「不要为补全输出重跑有副作用的命令」那一句 —— 后者已
   抽成 `NO_RERUN_SIDE_EFFECT_CLAUSE`，聚合超限桩引用同一个常量（一份措辞，不是两套必然过期）。
   **标记本身占预算：** 二分跑在 `budgetTokens − TRUNCATION_MARKER_RESERVE_TOKENS` 上；预算小到连
-  标记都装不下时，整段（含标记）再走一次同一条码点安全的二分，所以
+  标记都装不下时，整段（含标记）再走一次同一条码点安全的二分 ⇒ 拿回来的是**标记自己的前缀**，
+  预算 ≥4 token 时仍然拼得出「截断」（2～3 token 只剩首字「截」，1 token 什么都没有，因为本估算器
+  里一个汉字值 2 token —— 这条取舍有用例具名写着，不是静默分支），且
   `estimateTokens(返回值) <= budgetTokens` 恒成立 —— #846「单条受保护消息超预算」那一族不会被
   引回来。**没被截断**的内容逐字原样返回，标记也是确定性的（同输入同输出，run snapshot /
-  resume 的逐字比对仍成立）。`test/loop-budget-truncation-marker-609.test.js` 十三格钉住，
-  含反向证：拿整条预算截完再贴标记确实会超预算。（PR #—）
+  resume 的逐字比对仍成立）。`test/loop-budget-truncation-marker-609.test.js` 十六格钉住：反向证
+  「拿整条预算截完再贴标记确实会超预算」、上面那条极小预算的退化阶梯、`[已修剪]` 字段自身超预算的
+  边界（不许「既没有完整 `[已修剪]`、也没有截断标记」），以及把四个措辞要点 —— 结论词、数字格式、
+  续读关键词、别重跑副作用 —— 连同它们之间的先后顺序一起锁住。（PR #—）
 - **The CHANGELOG coverage gate's own wiring check no longer borrows a documentation step as
   its position landmark (issue #855).** Criterion ⑧ of
   `node scripts/changelog-coverage-check.mjs --self-test` located the blocking step between
