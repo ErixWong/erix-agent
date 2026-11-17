@@ -389,3 +389,46 @@ test("G11 修剪字段再超预算：不许出现「既没有完整 [已修剪]�
     assert.ok(estimateTokens(out) <= budget, `budget=${budget} 超预算`);
   }
 });
+
+// ── ④ 措辞要点逐条锁定（改坏文案要红，而不是只验「常量被拼进去了」）────────────────────────
+test("G12 标记文案的四个要点逐条锁定：结论词 / 数字格式 / 续读关键词 / 别重跑副作用命令（复审 ④）", () => {
+  const value = bigDocument();
+  const out = truncateTextToBudget(value, 4096);
+  const marker = out.slice(markerStartOf(out));
+
+  // 要点 1 结论词：判据词必须是标记的第一个词（`TRUNCATION_JUDGE_WORD` 改了也照样钉开头）。
+  assert.ok(
+    new RegExp(`^${TRUNCATION_JUDGE_WORD}\\[`, "u").test(marker),
+    `标记不是以判据词 + 方括号开头：${JSON.stringify(marker.slice(0, 16))}`,
+  );
+  // 要点 2 数字格式：单位、顺序、分隔符一起锁 —— 模型要靠它们自己算「还要读几段」。
+  assert.match(
+    marker,
+    /^截断\[本条内容已超上下文预算，尾部已被引擎截断：原文共 \d+ 字符 ≈ \d+ token，此处仅保留前 \d+ 字符 ≈ \d+ token，被砍掉约 \d+ token；/u,
+    "结论句 + 数字那一句的措辞/格式/顺序变了 ⇒ 旧文案（判据词排在第 20 多码点）就是这么改回去的",
+  );
+  // 要点 3 续读指引：三个关键词锁在**常量本体**上（拼接方式改了也红）。
+  assert.match(TRUNCATION_READ_BACK_CLAUSE, /可用文件读取类工具按 offset\/limit 分段读回/u);
+  assert.match(TRUNCATION_READ_BACK_CLAUSE, /命令输出则用 head\/tail\/sed 之类截取指定区间/u);
+  assert.match(TRUNCATION_READ_BACK_CLAUSE, /如本 run 写过笔记也可先从笔记取回要点/u);
+  // 要点 4 别重跑副作用命令：这句自己那两条都要在，而且要在标记收尾处。
+  assert.match(NO_RERUN_SIDE_EFFECT_CLAUSE, /不要仅凭截断输出判断成败/u);
+  assert.match(NO_RERUN_SIDE_EFFECT_CLAUSE, /不要为补全输出重跑有副作用的命令/u);
+  assert.ok(
+    marker.endsWith(`${NO_RERUN_SIDE_EFFECT_CLAUSE}]`),
+    `标记没有以「别重跑副作用命令」那句收尾：${JSON.stringify(marker.slice(-60))}`,
+  );
+  // 顺序本身也是判据：预算不够时被砍掉的是尾巴，所以结论必须在最前、警示可以在最后。
+  const positions = [
+    marker.indexOf(TRUNCATION_JUDGE_WORD),
+    marker.indexOf("原文共 "),
+    marker.indexOf(TRUNCATION_READ_BACK_CLAUSE),
+    marker.indexOf(NO_RERUN_SIDE_EFFECT_CLAUSE),
+  ];
+  assert.ok(positions.every((index) => index >= 0), `四段里有一段不在标记里：${positions}`);
+  assert.deepEqual(
+    positions,
+    [...positions].sort((left, right) => left - right),
+    `四段的先后顺序变了（结论必须先行）：${positions}`,
+  );
+});
