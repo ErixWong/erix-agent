@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdir, readFile as readFilePromise, rm, writeFile } from "node:fs/promises";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setImmediate as immediate } from "node:timers";
 import { fileURLToPath } from "node:url";
@@ -402,60 +402,15 @@ test("readFile 的 marker 不带裸字节数，且长路径下仍守住 max_byte
 });
 
 // ---------------------------------------------------------------------------
-// issue #267：`readFile` 的两条「额度事实」必须是复测值、且中英契约文档与源码同源。
-// 两条钉的都是**事实本身**而不是措辞：数字没复测就改 → 红；文档退回旧字面 → 红。
+// issue #267（**剩下一半**）：中英契约文档引用的 readMoreLines marker 字面必须与源码产出同源。
+//
+// ⚠ 2026-11-17 issue #628：本段原本还有一格「描述的 token 三档与当场复测一致」（把 `~190` /
+//   `~2,493` / `~4,773` 三个**写死真实文件**的复测值钉在描述上，密实档的锚点是
+//   `src/tools/file-tools.js` **自己**——改这段注释就会改掉它自己声称的数，自指）。
+//   描述去数字化之后那三个数已不在模型可见面上，那一格连同 `READ_TOKEN_SAMPLES` 与
+//   `measureReadWindowTokens` 一并删除；token 额度现在由估算器公式推出，对账判据见下面
+//   「#628 守卫 2」。契约文档那格与 token 数字无关（它钉的是 marker 字面），原样保留。
 // ---------------------------------------------------------------------------
-
-// 样本是**写死的三个真实文件**（工单硬约束：不许用 `find … | head -14` 这类会随仓库新增文件漂移的
-// 隐式样本）。测法与工单给的复现命令逐字同口径：`estimateTokens(文件前 200 行)`。
-// `measured` 是 2026-10-13 主 agent 与本单各自独立复测的同一个数（下面第一条把它也钉住）。
-const READ_TOKEN_SAMPLES = [
-  // 2026-10-23 #391 复测（**换了文件**，不是只刷数字）：`bin/guard-metrics.js` 被本单加了交付物计数的
-  // 渲染与注释（+607 B / +6 行，前 200 行 = 整个文件），实测 150 → **392** tokens 且成了 CJK 注释密实档
-  // （均行 46 B）——它不再是「短而稀疏」那一个。改钉 `src/text/label.js`（573 B / 17 行英文代码，
-  // 实测 188 tokens），描述里那一档随之 150 → 190（同位数 ⇒ 对本文件字节数是中性的）。
-  { role: "sparse", file: "src/text/label.js", measured: 188 },
-  { role: "typical", file: "bin/sessions.js", measured: 2_493 },
-  { role: "dense", file: "src/tools/file-tools.js", measured: 4_773 }  // 2026-10-22 #358 复测（本文件前 200 行；本仓自己的文件是密实档，注释一改就漂）,
-];
-
-function measureReadWindowTokens(rel) {
-  assert.ok(existsSync(join(REPO_ROOT, rel)), `写死的样本文件不在了：${rel}（改名/删除请同步本测试）`);
-  return estimateTokens(readFileSync(join(REPO_ROOT, rel), "utf8").split("\n").slice(0, 200).join("\n"));
-}
-
-test("readFile 描述的 token 三档与当场复测一致（#267：旧文案只写 ~2,500，正是中位数，尾巴差 1.8×）", () => {
-  const description = FILE_TOOL_DEFINITIONS.find((definition) => definition.name === "readFile").description;
-  const claim = description.match(
-    /first 200 lines of real source files shipped here: ~([\d,]+) tokens[\s\S]{0,120}?~([\d,]+) on typical source, and ~([\d,]+) where lines/u,
-  );
-  assert.ok(claim, "描述不再按「sparse / typical / dense 三档」给 token 额度 → 本测试的解析面失效。"
-    + "改句式可以，但必须同步本测试，不许让这条断言静默变成永真。");
-  const [sparseClaim, typicalClaim, denseClaim] = claim.slice(1).map((v) => Number(v.replace(/,/g, "")));
-  const measured = READ_TOKEN_SAMPLES.map((sample) => ({ ...sample, tokens: measureReadWindowTokens(sample.file) }));
-  const got = Object.fromEntries(measured.map((m) => [m.role, m.tokens]));
-
-  // 0) 写进描述/源码注释/CHANGELOG 的那三个数本身也不许漂（>10% 就要三处一起改）
-  for (const m of measured) {
-    assert.ok(Math.abs(m.tokens - m.measured) <= m.measured * 0.1,
-      `${m.file} 前 200 行实测 ${m.tokens}，与记录值 ${m.measured} 差超过 10% → 额度事实漂移：`
-        + "复测后把描述、src/tools/file-tools.js 的注释、CHANGELOG 的 #267 条目一起改");
-  }
-  // 1) 三档必须由小到大（把尾巴那一档改成比典型值还小 → 这条与第 3 条同时红）
-  assert.ok(sparseClaim < typicalClaim && typicalClaim < denseClaim,
-    `描述声称的三档必须由小到大，实测给的是 ${sparseClaim} / ${typicalClaim} / ${denseClaim}`);
-  // 2) 每一档都得落进当场测得的那个样本（反向证②：把档位改成 ~100 这类偏小的数，这里必红）
-  assert.ok(got.sparse <= sparseClaim * 1.1,
-    `稀疏档声称 ~${sparseClaim} tokens，${READ_TOKEN_SAMPLES[0].file} 实测 ${got.sparse}，描述在夸大下限`);
-  assert.ok(Math.abs(got.typical - typicalClaim) <= typicalClaim * 0.05,
-    `典型档声称 ~${typicalClaim} tokens，${READ_TOKEN_SAMPLES[1].file}（复现样本的中位）实测 ${got.typical}`);
-  assert.ok(got.dense <= denseClaim * 1.05,
-    `密实档（尾巴上限）声称 ~${denseClaim} tokens，${READ_TOKEN_SAMPLES[2].file} 实测 ${got.dense} —— `
-      + "描述又低估了尾巴，这正是 issue #267 要修的那条谎");
-  // 3) 「有尾巴」这件事本身必须为真：否则三档是编出来的，旧写法（只报中位数）也就算不出错
-  assert.ok(got.dense >= got.typical * 1.5,
-    `实测尾巴（${got.dense}）没比典型值（${got.typical}）高到 1.5×，描述里的散布不成立`);
-});
 
 // #264 把 marker 加了 `（文件 …）` 段，但两份契约文档当时禁改、停在旧字面（CHANGELOG 的 #264 条目
 // 已写明「待另单同步」）。`check:docs` 不钉这条字面量（它钉的是 NEXT_STEP_CLAUSE 与 formatSize 档位），
@@ -489,459 +444,299 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 });
 
 // ---------------------------------------------------------------------------
-// issue #271：`readFile` 描述里「一次能装多少行」必须是复测值，而且必须**给换算式**。
-// 旧文案 `~3,000-6,000 lines` 是 #264 那批描述留下的、`#267` 的 worker 明确声明「未复测、一字未改」的第二个数。
-// 本仓 83 个真实 `.js` 按平均行长折算（口径见 measureReadLineCapacity）。**2026-10-13 首次复测**：装得最少的一档
-// 4,387 行、中位 7,290 行、装得最多 9,772 行；**0 个文件低于 3,000、69 个高于 6,000** —— 那句区间整段下移（下限 4,387÷3,000=1.46×、
-// 上限 9,772÷6,000=1.63×，而旧上限连实测**中位数** 7,290 都没盖住），代价是模型在该一次
-// 要够的时候保守分批（正是 #264 治的那个病的反向表现）。所以这里钉的是「模型一次能要多少」这个事实本身。
+// issue #628（2026-11-17）：模型可见的 `readFile` 描述**去数字化**，守卫同步换成两条稳定判据。
 //
-// 口径：一次能装的行数 = floor(FILE_READ_MAX_BYTES_DEFAULT ÷ 平均行字节数)，平均行字节数 = 文件字节数 ÷ 物理行数
-// （wc -l 口径；每行的 `\n` 已经计在字节里，所以**不再另加 1**）。
-// ⚠ 与工单给的 4,411 / 7,120 / 9,954 差 <3%：主 agent 先按 `split("\n").length`（末尾空行也被算成一行）求平均、
-//   再 `+1` 计换行，等于把换行计了两次；本测试用的是 bytes ÷ 行数这个物理分母。方向与结论不变（两种口径都是低估 2×）。
+// 本段原本是什么（四格统计断言 + 它们的数据结构，全部已删）：
+//   · #267 的「描述 token 三档 vs 三个写死样本」+ `READ_TOKEN_SAMPLES` / `measureReadWindowTokens`；
+//   · #271 的「描述声称 vs 83 条写死样本的实测中位 ±2%」与「vs 五个角色文件 ±2% / ±1%」
+//     + `READ_LINE_CAPACITY_SAMPLE` / `READ_LINE_CAPACITY_ROLES`（含 #271 → #609 的十七次复测台账）；
+//   · #453 / #537 / #543 的「描述里的 floor == 全树真最小值（向下取整到 50 行）」+ `assertTierTight`
+//     及其「比 ±50 形态更严」的反向证——解析面是 `fewest ≥ N lines` 那句档位承诺，承诺已删；
+//   · #275 的「全仓扫描只留单调性质」——它守的是「描述里 floor / CJK 最密那两句有没有被新文件推翻」。
+//   那十七次复测的逐条旧值→新值是**历史**，没有搬到这里：见
+//   `git log --oneline -- test/tools/file-tools.test.js` 与 CHANGELOG 的 #271/#275/#453/#537/#543/#609。
 //
-// CJK：**只测了本仓**。2026-10-13 那一刻本仓 CJK 字节占比最高的文件**恰好**就是「装得最少」的那一个（`src/loop/state-view.js`，37%），
-// 所以旧句子把两件事并成了一句（`the 4,387 floor IS the most CJK-dense file`）。描述因此只给换算式 + 实测锚点，
-// **没有**给「CJK 文件一般装多少行」的区间——那正是 #267 里被实测推翻的 `~4,000` 的错法（没测过的东西不许编区间）。
+// 为什么整组删而不是换样本（裁决原文在 issue #628 最后一条评论）：只要描述里钉着「从本仓源码
+// 统计出来的数」，任何一次**与 readFile 无关**的注释改动都可能要求改一句**模型可见**的文案。
+// 实证（不是理论）：#609 给 `src/loop/budget.js` 加 29 行中文注释 ⇒ 样本中位 6,056 → 6,007 ⇒
+// 「描述声称的 median 6,157」越过 ±2% ⇒ 修截断标记的人被迫去改 readFile 的描述；#267 的密实档
+// 锚点更是**本文件自己**（自指）。换样本只是把漂移源挪个地方，所以这里只留不会漂的东西。
 //
-// ⚠ **2026-10-21 复测（工单 261021 那一刀之后）：顶红这两条测试的不是「均行长漂了 ±2%」，是极值的身份换了文件。**
-//   `src/loop/resume-manager.js` 被那一刀净加了 62 行中文注释（130 增 / 68 删），平均行字节 48.6 → 61.15、
-//   CJK 字节占比 9% → 24%，一次能装的行数从 5,391 掉到 **4,286**，**取代** `src/loop/state-view.js`（4,387 行、
-//   37% CJK，自 #271 起一字未动、当场复测 0.00% 漂移）成为「装得最少」那一档；上面那个「floor 就是 CJK 最密那个」
-//   的巧合随之成立不起来，描述拆成了**两个各自复测的锚点**（下面角色表里的 `fewest` 与 `densest`）。
-//   中位随之从记录值 7,290 换成同口径实测的 **7,243**（`median` 那个锚点文件同步刷成实测值；
-//   2026-10-22 起那个锚点文件是 `bin/repl.js`，原先的 `src/loop/termination.js` 被 #386 的 payload 组装
-//   撑大 +74%、容量掉出中位带，见角色表里 median 那一行的注释）。
-//   全树（`src`/`bin`/`examples` 共 91 个 `*.js`）实测的下界也仍是 resume-manager.js 的 4,286 ⇒ 描述里那句 floor 对全树也为真。
-//   ⚠ 代价照 #275 的口径写明：floor 锚点现在钉在一个**本分支正在反复改**的文件上（±2% 只等于 ±7 行 / ±440 字节），
-//     后续再动它的注释仍会红在这里——那是「描述里的数必须是实测值」这个决定的固有代价，不是新 bug。
-//   ⚠ **2026-10-25 起 floor 换到 `bin/provider-timeouts.js`；2026-10-26（issue #537）起承诺值不再是逐字节实测值，而是**
-//     **「实测最小值向下取整到 50 行一档」**（`fewest ≥ 3,900 lines`，实测最小值 3,903）。所以该文件不再「±1 字节敏感」：
-//     加 1 个字节（11,888 → 11,889 ⇒ 67.1695 B/line）容量从 3,903 掉到 3,902，**仍落在 3,900 那一档里 ⇒ 不红**（这正是 #537 要拆的税）。
-//     跨档（实测最小值跌出 3,900..3,949，或涨到 3,950 以上）才红：**2026-10-28（issue #543）起判据是档位紧致性**
-//     `tier_floor ≤ 实测 < tier_floor + 50`（`assertTierTight`，零容差），取代 #537 的 `|实测 − 承诺| ≤ 50`：
-//     旧形态是双向 50，会把「承诺 3,950 / 实测 3,901」（差 47）判绿——档位虚高就是描述在说谎。新形态同时排
-//     虚高（承诺不许高过实测）、虚低（承诺不许落后实测 ≥ 50）与「承诺不在 50 行档边界上」，失败消息会点名修法。
-//
-// ⚠ **2026-10-25 复测（issue #453）：floor 的**口径**错了，不是数字算错。**
-//   #271 以来 `fewest` 钉的是**写死 83 文件样本**的最小值，而描述里那句 floor 读起来是「本仓没有文件比这更少」。
-//   #441 合流带来的 `bin/provider-timeouts.js` 不在样本里，实测容量 **3,903**（11,888 B / 177 行 ⇒ 67.1638 B/line、
-//   CJK 45.02%）——比样本 floor（`src/loop/resume-manager.js` 3,938）更低，而**没有一格测试会红**：
-//   `test/tools/file-tools.test.js` 只复测样本内的极值，全树扫描那格当时只断言 `> 3,000` 并打一行日志。
-//   全树普查（口径 = `src`/`bin`/`examples` 下全部 `*.js`，与描述里 `sources` 同义；`test/` 不在这个面里，
-//   其中 `test/contract/*.js` 虽随包发布但属于测试夹具、容量低到 3,657）容量最低的五个：
-//     `bin/provider-timeouts.js` 3,903（67.16 B/line, 45.02% CJK）/ `src/loop/resume-manager.js` 3,938（66.55, 32.08%）/
-//     `src/store/message-rows.js` 4,199（62.43, 41.89%）/ `src/loop/pending-tool-result.js` 4,240（61.82, 42.34%）/
-//     `src/loop/state-view.js` 4,387（59.75, 37.31%）。
-//   修法（issue 的三选一，选 ①）：floor 是**全称命题**（「没有文件比这更少」），只能靠枚举全树证明 ⇒ `fewest`
-//   角色改钉全树真最小值 `bin/provider-timeouts.js`，描述里写明口径，并新增一格把「描述声称的 floor == 全树实测最小值」
-//   钉死（新文件把真最小值拉低就红）。
-//   **口径分工（一处说清，别再分两处各说一套）**：`floor` = **全树**（`src`/`bin`/`examples`，枚举可证的全称命题）；
-//   `median` / `most` = **固定写死样本**（随新增文件漂移会给全仓加税，`#275` 拆掉的正是这道税）——描述里已明写这两个数
-//   「come from a fixed sample of those sources and describe that sample」，测试也按**样本**复测它们。
-//   ⚠ PR #454 评审退回：`measuredMost` 一度取**全树**末位 ⇒ 新增一个短行文件（容量远大于 9,407）就把描述里的 `most` 顶红
-//     （`main` 59/59 绿、本分支红）——那正是 `#275` 专门拆掉的税。现在 `measuredMost` = 样本末位，全树末位另设 `treeMost`
-//     只供下面那条「全树自洽」断言用。
-//   `densest` 照旧钉样本最密（state-view 37.31%），全树最密现在是 floor 那个文件（45.02%），
-//   由 `anchorsStillHold.densestIsThePinnedOne: false` 如实报告（#271 起就有这一格）。
+// 现在这三格钉的是什么：
+//   守卫 1 描述里不许再出现**任何**仓内实测数字（数字白名单 + 禁用形状，两面都是「不在名单里就红」）；
+//   守卫 2 描述里的 token 区间必须等于 `estimateTokens()` **现算**出来的区间（双向：偏大偏小都红）；
+//   守卫 3 机制事实必须在场（`max_bytes` 默认值、预算按字节、换算式、`offset`/`limit` 语义、marker）。
+// 一字未动的是**行为**判据：下面 `#506` 的分片续读四条不变量（不超字节 / 无 U+FFFD / 续读不重不漏 /
+// 超宽行有显式出口）与它的反向证；字节上限与 offset/limit 语义另由 `test/contract/file-tools.js` 钉着。
 // ---------------------------------------------------------------------------
 
-// 样本是写死的 83 个路径（#271 的工单硬约束：不许 `find … | head -14` 这类随仓库新增文件漂移的隐式样本）。
-// #275：清单与盘上**不再逐条对齐**。旧的 `assert.deepEqual(盘上枚举, 本清单)` + `length === 83` 是给全仓加的税：
-// 任何人新增一个 `src/*.js` 都会红在本文件上，而本文件测的是 readFile 的额度事实。现在耦合方向是**单向**的：
-// 清单里的路径必须仍在盘上（删/改名样本文件 = 测过的数失效，必须红），盘上**多出**文件不算失效——
-// 描述里给的是「本仓口径的实测样本」，不是「本仓共有多少个 `.js`」（那个总数对读自己树的宿主也没意义）。
-// 2026-11-09（issue #769 R10，**本清单零改动**）：floor 从 `src/loop/pending-tool-result.js` 换到
-// `src/loop/resume-manager.js` 时先查了这一份：新 floor **本来就在下面 83 个路径里**（当场复算它**同时**是样本
-// floor 与全树 floor，两边都是 3,696 行），所既不往里加也不从里删（旧条目照 #275 的单向包含口径一律保留）。
-// 现算证据：`#453 floor census` 的 `pinnedSampleFewest` 与 `top5[0]` 本轮逐字相同（见 REPORT-769-r10.md）。
-const READ_LINE_CAPACITY_SAMPLE = [
-  "src/assembly-validators.js", "src/assembly.js", "src/compact/anchors.js", "src/compact/budget.js",
-  "src/compact/enforce-size.js", "src/compact/fold-fidelity.js", "src/compact/fold-llm.js", "src/compact/fold-statistical.js",
-  "src/compact/helpers.js", "src/compact/pipeline.js", "src/compact/provider-summarizer.js", "src/compact/sliding-window.js", "src/compact/strategy-resolution.js",
-  "src/config/api-key.js", "src/config/env.js", "src/config/json-file.js", "src/config/static.js",
-  "src/display/projection.js", "src/index.js", "src/loop/abort.js", "src/loop/aggregate-budget.js",
-  "src/loop/block-helpers.js", "src/loop/budget.js", "src/loop/error-ledger.js", "src/loop/judge-record.js",
-  "src/loop/messages.js", "src/loop/option-normalization.js", "src/loop/orchestrator.js", "src/loop/provider-runner.js",
-  "src/loop/reflection.js", "src/loop/resume-manager.js", "src/loop/run-snapshot-executor.js", "src/loop/state-view.js",
-  "src/loop/task-brief.js", "src/loop/termination.js", "src/loop/tool-result-ttl.js", "src/messages/anthropic.js",
-  "src/messages/canonical.js", "src/messages/openai-normalization.js", "src/messages/rounds.js", "src/providers/anthropic.js",
-  "src/providers/errors.js", "src/providers/http-shared.js", "src/providers/openai.js", "src/providers/payload.js",
-  "src/providers/timeout.js", "src/reflection/governor.js", "src/reflection/judge.js", "src/reflection/l0.js",
-  "src/reflection/wrapup.js", "src/run-state.js", "src/skills/loader.js", "src/store/append-user-turn.js",
-  "src/store/file.js", "src/store/memory.js", "src/store/notes-memory.js", "src/store/notes-port.js",
-  "src/store/notes.js", "src/text/label.js", "src/tokens.js", "src/tools/file-tools.js",
-  "src/tools/index.js", "src/tools/notes.js", "src/tools/providers.js", "src/tools/registry.js",
-  "bin/assembly-root.js", "bin/cli.js", "bin/config.js", "bin/final-guard-support.js",
-  "bin/final-guard.js", "bin/guard-metrics.js", "bin/mcp.js", "bin/repl.js",
-  "bin/session-scan.js", "bin/sessions.js", "bin/skills.js", "bin/tools.js",
-  "examples/exec-demo.js", "examples/memory-benchmark.js", "examples/pi-extension/erix-run-core.js", "examples/pi-extension/erix-run-format.js",
-  "examples/pi-extension/erix-run-jobs.js", "examples/pi-extension/erix-run-parent-wake.js",
-];
-
-// 描述点名的五个角色文件（fewest / densest / median / most + 本工具自己的源码）。
-// `recorded` 是最后一次按本测试自己的口径（`measureReadLineCapacity`）在本棵树上实测的值；下面第一条把它也钉住（漂了就要三处一起改）。
-// 2026-10-21：`fewest` 从 `src/loop/state-view.js` 换成 `src/loop/resume-manager.js`（极值身份换了文件，见上面的 ⚠ 注），
-// 为了不把「floor 与 CJK 最密是同一个文件」当成免费前提，state-view.js 不再删掉而是另挂 `densest` 角色继续钉住。
-const READ_LINE_CAPACITY_ROLES = [
-  // 2026-10-21 按本测试口径复测后更新的 floor 锚点（本分支新加入的中文注释把它顶成了本仓最宽行的那一个）。
-  // 2026-10-22 按本测试自己的口径**再复测**（issue #386 切片 3 给 `src/loop/resume-manager.js` 加了
-  // guard 补跑配额的恢复：22,014 → 23,104 字节 / 360 → 370 行，均行字节 61.15 → 62.44，容量 4,286 → 4,198
-  // ——漂移 -2.05%，刚好越过 ±2% ⇒ 记录值必须按实测同步；**容差常量一个都没动**）。
-  // 2026-10-23 第五刷（issue #401）：`src/loop/resume-manager.js` 加了 resume 侧的折叠免疫
-  // （宿主没折时再折一次 `store.load()` 的返回值，+844 字节 / +10 行），均行字节 62.44 → **63.02**，
-  // 容量 4,198 → **4,159**（−0.93%，容差常量一个都没动）；描述里的 floor 与均行字节随之同步
-  // （4,198 → **4,159**、62.4 → **63.0**，同位数 ⇒ 对本文件字节中性，所以 `self` 那一行不用再刷）。
-  // 2026-10-23 第六刷（issue #404）：同一个文件又加了「复活赛告示」的准入与拼装调用
-  // （+425 字节 / +6 行，均行字节 63.02 → **63.14**），容量 4,159 → **4,151**（−0.19%，仍在 ±2% 内，
-  // 但只剩 0.22% 的字节余量 ⇒ 按本测试自己的口径复测并同步记录值，**容差常量一个都没动**）；
-  // 描述里的 floor 与均行字节随之同步（4,159 → **4,151**、63.0 → **63.1**、CJK 占比 25% → **26%**），
-  // 三处都是同位数替换 ⇒ 对本文件字节中性。`self` 那一行也一并按实测复测（见下）。
-  // 2026-10-23 第七刷（issue #424）：同一个文件又加了「升级路径守卫」的交接字段与注释
-  // （+1,055 字节 / +9 行，均行字节 63.14 → **64.3747**），容量 4,151 → **4,072**（−1.90%，仍在 ±2% 内，
-  // 但均行字节本身越过 ±1% ⇒ 描述里的 floor / 均行字节 / CJK 占比一起按实测同步：4,151 → **4,072**、
-  // 63.1 → **64.4**、26% → **27%**，三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行不用再刷）；
-  // 记录值按本测试自己的口径复测，**容差常量一个都没动**。
-  // 2026-10-24 第八刷（issue #425）：`src/loop/resume-manager.js` 把恢复锚点从「快照采样」改成
-  // 「恢复时按账本现算」（新增纯函数 `countResumeAnchor` 与它的裁定注释，+2,864 字节 / +47 行，
-  // 均行字节 64.3747 → **64.009**），容量 4,072 → **4,095**、CJK 占比 26.66% → **29.71%**。
-  // 2026-10-24 第九刷（issue #425 评审阻塞）：同一个函数又加了**形状判据**（尾部宿主预写行不能只按
-  // 键的命名空间判归属）与它的判别顺序注释，+3,939 字节 / +45 行，均行字节 64.009 → **66.1828**，
-  // 容量 4,095 → **3,960**、CJK 占比 29.71% → **31.94%**（字节 +13.92% 与 CJK 占比都越过限值）。
-  // 记录值按本测试自己的口径复测并同步，`readFile` 描述里的 floor / 均行字节 / CJK 占比随之
-  // `4,072 → 3,960`、`64.4 → 66.2`、`27% → 32%`（三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行
-  // 不用再刷）。`median` / `most` / `densest` 三个角色当场复测未变（样本中位仍是 `src/tools/notes.js`
-  // 6,952，样本最大仍是 `src/loop/abort.js` 9,407，CJK 最密仍是 `src/loop/state-view.js` 37.31%）。
-  // 2026-10-24 第十刷（issue #425 第二轮评审）：`src/loop/resume-manager.js` 只删了一个 token（引擎独占
-  // 命名空间收成 `:engine:`）加改注释，+247 字节 / +1 行，均行字节 66.1828 → **66.5533**、容量
-  // 3,960 → **3,938**、CJK 占比 31.94% → **32.08%**；描述里 floor / 均行字节随之 `3,960 → 3,938`、
-  // `66.2 → 66.6`（同位数 ⇒ 对本文件字节中性），CJK 仍是 32%。本文件自己也多了一段 ⚠ 复测注
-  // （+489 字节 / +4 行）⇒ `self` 那一行按同口径重测：107,772 → **108,261** 字节 / 1,991 → **1,995** 行 /
-  // 容量 4,842 → **4,830**，描述里「this tool's own source fits」随之 4,842 → 4,830（同位数 ⇒ 字节中性）。
-  // 2026-10-25 第十一刷（issue #453，**换文件 + 换口径**）：floor 从写死样本最小值改成**全树真最小值**。
-  // `bin/provider-timeouts.js`（#441 的新文件，不在 83 文件样本里）11,888 B / 177 行 ⇒ 67.1638 B/line、
-  // 容量 **3,903**、CJK 45.02%——比原先样本 floor（`src/loop/resume-manager.js` 3,938）更低，而旧断言只复测样本 ⇒ 一直绿。
-  // floor 是「没有文件比这更少」的全称命题，只能靠枚举 `src`/`bin`/`examples` 全树证明，所以角色改钉这个文件；
-  // 描述里 floor 3,938 → **3,903**、均行字节 66.6 → **67.2**、CJK 32% → **45%**、文件名同步（同位数 ⇒ 对本文件字节中性）。
-  // `resume-manager.js` 仍是样本里的最小值（3,938）但不再是全树 floor；它不再占角色，仍在样本清单里被中位/极值断言扫到。
-  // 容差常量一个都没动。
-  // 2026-10-26 第九刷（issue #537，**这一刷不是数字漂了，是承诺粒度改了**）：
-  //   上面每一次刷都是「实测最小值挪了 ⇒ 描述跟着挪」，于是给最密那个文件加 **1 个字节**就得多刷一次描述
-  //   （承诺值由排版细节决定翻不翻）。#537 把承诺改成 **实测最小值向下取整到 50 行一档**：
-  //   描述写 `fewest ≥ 3,900 lines … (measured minimum 3,903, rounded down to the nearest 50 …)`，
-  //   全称句同步改成 `no file in those three trees reads fewer than 3,900`（比实测更宽 ⇒ 依然为真且不夸大）。
-  //   断言口径也随之改：下面 #453 那格不再 `assert.equal(claim, 实测最小值)`（零容差，但把承诺钉在逐字节噪声上），
-  //   而是 `claim == Math.floor(实测最小值 / 50) * 50`（**仍是零容差**，只把锚点换成 50 行档）+ 一条保守度断言
-  //   `|实测最小值 − claim| ≤ 50`（防承诺长期不刷、漂成过度保守的假小数字）。
-  //   于是实测最小值在 3,900..3,949 这一档里怎么挪都不用动描述；跨档才刷。
-  //   `densest` / `median` / `most` / `self` 四个角色的 ±2% / ±1% 容差机制**一个都没动**（它们量的是单文件漂移，
-  //   与 floor 那个全称命题是两个问题）。本轮只有描述里两个数动（3,903 → 3,900），`self` 行同片复测。
-  //   台账口径：本条计数按 **floor 承诺**的谱系走（#271 起），与上面按文件复测的「第 N 刷」不是同一个计数器。
-  // 2026-10-28 身份迁移（issue #498 S3 A20，**描述一字未动**）：`runId` 退役把
-  //   `src/loop/option-normalization.js` 从 3,907 行容量挪到 **3,901**（删掉白名单里的 `"runId",` 那一行：
-  //   删的是一行 11 字节的短行 ⇒ 均行字节 67.06 → **67.1989**、容量 3,907 → **3,901**），
-  //   于是它取代 `bin/provider-timeouts.js`（3,903）成为全树真最小值。**仍在 3,900..3,949 这一档**
-  //   ⇒ 按 #537 的承诺粒度，描述里的 `fewest ≥ 3,900` 与档位下界依然为真，**描述一个字都不用改**；
-  //   本片只改这一行（`fewest.rel` / `fewest.capacity`），也就是 #540 拆掉「floor 身份牵着文案」之后
-  //   承诺兑现的那一次实测：换人只挪锚点，不动面向模型的句子。
-  // 2026-10-29 第十二刷（issue #498 S3 A21，**跨档，不是数字漂了**）：`maxRounds` 退役把
-  //   `src/loop/option-normalization.js` 从 3,901 行容量压到 **3,895**（白名单删掉 `"maxRounds",`
-  //   那一行，另加一段说明退役的英文注释 ⇒ 35,481 → **36,074** 字节 / 528 → **536** 行，均行字节
-  //   67.1989 → **67.3022**）。3,895 < 3,900 ⇒ 实测最小值**掉出了 `[3,900, 3,950)` 这一档**，
-  //   按 #537 的承诺粒度必须换档：描述里两个数 `fewest \u2265 3,900` 与 `reads fewer than 3,900`
-  //   一起改成 **3,850**（句子结构一字未动，两处同位数 ⇒ 对本文件字节中性 ⇒ `self` 行不用重测）。
-  //   这正是 #543 拆掉「floor 身份牵着文案」之后要的那种复测：**跨档才刷，换人不刷**。
-  // 2026-10-29 第十二刷（issue #550）：`option-normalization.js` 加了一行 session 派生折叠 +
-  // 一个 import 符号（+238 B / +1 行），bytes 越过 ±2% ⇒ 按 #543 机制复测这一行（描述只改 67.2→68.0
-  // 那个平均行字节数，档位 3,850 不变：实测容量 3,853 仍在 [3850, 3899) 里）。
-  // 2026-11-07 第十三刷（issue #730，**换人 + 跨档同时发生**）：本单给 `src/loop/pending-tool-result.js`
-  //   加了 156 行（中段普查与四条放弃成因的中文注释），它从「全树第 N」一举压成**全树一次装得最少**的那一个，
-  //   取代 `src/loop/option-normalization.js`。逐字段旧值 → 新值（全部由**本测试自己的** `measureReadLineCapacity`
-  //   与它自己的 `CJK_CHAR` 当场量得，不是另写一份度量，#714 那次手写数把锚点写歪的教训）：
-  //     · file          `src/loop/option-normalization.js` → `src/loop/pending-tool-result.js`
-  //     · bytes         37,079 → **25,326**
-  //     · lines         545 → **362**
-  //     · bytesPerLine  68.0349 → **69.9613**
-  //     · capacity      3,853 → **3,746**
-  //     · cjkShare      0.1702 → **0.38735**（继任者是中文注释重的文件，不是英文那一个）
-  //   3,746 不在 [3,750, 3,800) 这一档里 ⇒ 按 #537 的承诺粒度换档：描述里 `fewest ≥ 3,850` 与
-  //   `reads fewer than 3,850` 两处一起改成 **3,700**（守卫原话：「全树实测最小值是 3,746 行……把描述里的
-  //   档位改成 3,700」），fewest 那一档的均行字节 `68.0` → **70.0**（同位数
-  //   替换 ⇒ 对 `src/tools/file-tools.js` 字节中性，`self` 那一行不用重测）。旧任 option-normalization.js
-  //   当场实测 3,854（记录 3,853，+0.03%）——它不再占任何角色，但仍在固定样本清单里。
-  //   ⚠ 其余四个角色**一并复测了一个都没刷**（#543：换人才刷，没跨档就不动）：`densest`
-  //   `src/loop/state-view.js` 4,384 行 / CJK 36.6%（记录 4,364 / 37.0%，+0.46% 与 -0.4pt 都在容差里）；
-  //   `median` `src/store/file.js` 6,212（与记录逐字相同）；`most` `src/loop/abort.js` 9,407（逐字相同）；
-  //   `self` `src/tools/file-tools.js` 4,676（记录 4,678，-0.04%）。
-  // 2026-11-08 第十四刷（issue #765，**只动数字：不换人也不跳档**）：本单把中段补桩里那张
-  // `tool_result` 桩抽成导出函数 `buildUnpersistedToolResultStub`（宿主预写用户轮之前的结清行要用同一张桩，
-  // 构造点仍以 `test/loop-resume-unpersisted-tool-results.test.js` 的结构判据为准），就地删了 8 行内联块、
-  // 加了 5 行导出与中文注释 ⇒ bytes 越过 ±2%（**不刷就会拖一个与 readFile 无关的红**）。逐字段旧值 → 新值
-  // （同样由本测试自己的 `measureReadLineCapacity` / `CJK_CHAR` 当场量得）：
-  //     · bytes 25,326 → **25,939**（+2.42%）· lines 362 → **367** · bytesPerLine 69.9613 → **70.6785**
-  //     · capacity 3,746 → **3,708**（仍在 [3,700, 3,750) 这一档里 ⇒ readFile 描述一个字不用改，#537）
-  //     · cjkShare 0.38735 → **0.39138**（新增的还是中文注释；`fewest` 这个角色在描述里没有占比那个数）
-  //   其余四个角色本单一行没碰，当场复测：`densest` 4,384 / 36.6%（记录 4,364 / 37.0%，容差内）、
-  //   `median` 6,212 与 `most` 9,407（与记录逐字相同）、`self` 4,652（记录 4,678，-0.56%，容差内）⇒ 都不刷。
-  // 2026-11-09 第十五刷（issue #769 R10，**换人 + 跨档同时发生**）：floor 从 `src/loop/pending-tool-result.js`
-  //   换到 `src/loop/resume-manager.js`——本单的恢复行独立通道与主干 `#754` 的 legacy 归档判据都写在这个文件里，
-  //   两批中文注释把它的均行字节从旧 floor 的 70.6785 抬到 **70.9154** ⇒ 一次能装的行数跌到 **3,696**，
-  //   比旧任（`pending-tool-result.js` 本树一字未动，实测 3,708 与记录逐字相同）更低 ⇒ 全称命题「没有文件比这
-  //   更少」的当事人变了。逐字段旧值 → 新值（**全部由本测试自己的** `measureReadLineCapacity` 在本树现算，
-  //   夹具 `/tmp/769w10-census.mjs` 把本文件的 `CJK_CHAR` / 度量函数 / 扫描面**原样抽出 eval**，不另抄一份口径：
-  //   #714 那次手写数把锚点写歪的教训）：
-  //     · file          `src/loop/pending-tool-result.js` → `src/loop/resume-manager.js`
-  //     · bytes         25,939 → **74,603**      · lines 367 → **1,052**
-  //     · bytesPerLine  70.6785 → **70.9154**    · capacity 3,708 → **3,696**
-  //     · cjkShare      0.39138 → **0.37370**（继任者的中文注释密，但整体占比低于离任者——`fewest` 这个角色
-  //       在描述里没有占比那个数，所以这一列只是「记录值不许静默过期」的漂移探针，#506）
-  //   3,696 不在 [3,700, 3,750) 这一档里 ⇒ 按 #537 的承诺粒度换档：描述里 `fewest ≥ 3,700` 与 `reads fewer than
-  //   3,700` 两处一起改成 **3,650**，fewest 那一档的均行字节 `70.0` → **70.9**（三处都是同位数替换 ⇒ 对
-  //   `src/tools/file-tools.js` 字节中性，`self` 那一行不用重测）；守卫修法逐字：「把描述里的档位改成 3650」。
-  //   ⚠ 判据一条都没放宽：`assertTierTight` 三条零容差未动、承诺没写高（3,650 ≤ 3,696 < 3,700）、没给描述补
-  //   `measured minimum N`（#543 有 `doesNotMatch` 钉着）、没删例也没 skip。
-  //   ⚠ 其余四个角色**一并复测了一个都不刷**（#543：换人才刷，没越界就不动）：`densest` `src/loop/state-view.js`
-  //   2,631 B / 44 行 / 4,384 / CJK 36.60%（记录 2,643 / 44 / 4,364 / 37.0% ⇒ −0.45% / 0% / +0.46% / −0.40pt，
-  //   全在容差里）；`median` `src/loop/error-ledger.js` 6,727 / 158 / 6,157 与 `most` `src/loop/abort.js`
-  //   1,031 / 37 / 9,407（与记录**逐字相同**）；`self` `src/tools/file-tools.js` 131,414 B / 2,312 行 ⇒ 4,611
-  //   （记录 130,123 / 2,302 / 4,637 ⇒ +0.99% / +0.43% / −0.56%，±2% 内；本单对描述只做同位数替换 ⇒ 字节中性）。
-  //   样本清单这一侧**零改动**：新 floor `src/loop/resume-manager.js` 本来就在 83 个写死样本里（当场实测它
-  //   **同时**是样本 floor，见下面 #453 那格的 `pinnedSampleFewest`），单向包含关系不需要动清单。
-    // 2026-11-14 复测（#827 第 6 刀，工单 261114-03）：`toolOutputs` 的读侧从快照搬到账本轮记录，
-  // `resume-manager.js` +2,122 B / +21 行（新增一段注释 + 账本推导）⇒ 字节 74,603 → **76,725**
-  // （+2.84%，越过 ±2%）。按本测试自己的口径复测这一行：行数 1,052 → 1,073、
-  // 平均行字节 70.9154 → 71.5051、容量 3,696 → **3,666**、CJK 占比 0.36 → **0.3758**。
-  // 描述里引用的 floor 那句（`fewest`）不写具体容量 ⇒ 描述不动。
-  // 2026-11-15（#838 S3c）：S2 删除 `resume-manager.js` 写侧后，它从 76,725 B / 1,073 行变为
-  // 64,262 B / 994 行（71.5051 → 64.6499 B/line，容量 3,666 → 4,054，CJK 0.3758 → 0.33678）。
-  // 全树和样本 floor 因此都迁到 `option-normalization.js`（37,333 B / 549 行，68.0018 B/line，
-  // 容量 3,854，CJK 0.17052）；`fewest` 角色随之换锚。描述档位从 3,650 → 3,850，70.9 → 68.0。
-  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 37_333, lines: 549, bytesPerLine: 68.0018, capacity: 3_854, cjkShare: 0.17052 } },
-  // CJK 字节占比最高的那一个（2026-10-13 到 2026-10-31 一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
-  // 2026-10-31 第一刷（issue #246 第一刀）：这个文件第一次被真实接线（`orchestrator.js` 的
-  // `runSnapshotContext` 转发面），文件头注释里「本单不接线」那句改成接线事实（+14 B，**行数不变**）。
-  // bytes 越过 ±2% 内侧（+0.53%）⇒ 按本测试自己的口径复测这一行（容量 4,387 → 4,364，描述里
-  // 「fits 4,387」仍在 ±1% 内，故描述一字未改；CJK 占比 37.31% → 37.00%，描述里的 `37%` 逐字仍然成立）。
-  // 2026-11-15（#838 S3c）复测：2,643 → 2,631 B，60.0682 → 59.7955 B/line，
-  // 容量 4,364 → 4,384，CJK 占比 0.37 → 0.36602。
-  { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_631, lines: 44, bytesPerLine: 59.7955, capacity: 4_384, cjkShare: 0.36602 } },
-  // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
-  // `src/loop/termination.js` 加了 finalGuard payload 的组装与四个上限常量（+8,638 B / +163 行，
-  // 字节 +74%），它的容量从 7,227 掉到 6,255，已经不再是样本中位（实测中位 7,225）——
-  // 再把它当 median 锚点，描述里那句「median 7,243」就成了谎话。改钉 `bin/repl.js`
-  // （29,279 B / 809 行 ⇒ 7,243 行，与样本中位差 0.25%，且分母比 provider-summarizer.js 大 7 倍，
-  // ±2% 的抖动额度从 ±2 行变成 ±16 行）。描述里的 `median 7,243 (36.3)` 因此**一个字都不用改**。
-  // 2026-10-23 第三刷（#391 改了 `bin/repl.js`：`--require-deliverable` + `loopOptions.deliverables` +
-  // `loopOptions.cwd`，+1,872 B / +30 行 ⇒ 7,243 → **7,009**，-3.2% 已超出 ±2%）：角色文件仍是
-  // `bin/repl.js`（与当场样本中位 7,117 差 1.5%，仍在 ±2% 内），但记录值与描述里的
-  // `median 7,009 (37.4)` 一起刷新（同位数改动 ⇒ 字节中性）。
-  // 2026-10-23 第四刷（#391 R2 又改了 `bin/repl.js`：`--require-deliverable [<path>]` 的可选值解析 +
-  // 帮助文本，+2,603 B / +44 行 ⇒ 7,009 → 6,812，-4.3% 已**掉出**样本中位 7,117 的 ±2% 带）：
-  // 这次**换文件**——`median` 改钉 `src/tools/registry.js`（6,250 B / 170 行 ⇒ 7,130，与样本中位差
-  // 0.18%，分母够大：±2% 的额度是 ±142 行）。`bin/repl.js` 不再占任何角色（它仍在样本清单里，
-  // 只是不再是「最接近中位」的那一个）。描述里的 `median 7,009 (37.4)` → `median 7,130 (36.8)`
-  // 是**同位数替换**（对本文件字节数中性，所以这一行不因描述改动而再刷）。
-  // 历史：2026-10-21 从 #271 的记录值（11,471 B / 319 行 → 7,290）刷成同口径实测值（11,643 / 321 / 36.271）。
-  // 2026-10-23 第五刷（issue #406 B2-a，**换文件**）：`src/index.js` 也是本样本的一员，本单给它加了
-  // 三条包根导出与它们的注释（4,407 B / 120 行 ⇒ 5,125 B / 127 行，均行 36.73 → 40.35），容量
-  // 7,138 → **6,496**——刚好从样本中位的**上方**跨到下方，把中位那个元素从 `src/config/api-key.js`
-  // （7,117）顶成了 `src/tools/notes.js`（**6,952**，实测中位恰好就是它）。所以这一行改钉
-  // `src/tools/notes.js`（29,901 B / 793 行 ⇒ 37.7062 B/line ⇒ 6,952，与样本中位差 0.00%，
-  // 分母够大：±2% 的额度是 ±139 行），描述里的 `median 7,130 (36.8)` → `median 6,952 (37.7)`
-  // 是**同位数替换**（对本文件字节数中性，所以 `self` 那一行不用再刷）。
-  // 上一任 `src/tools/registry.js`（7,130）仍在样本清单里，只是不再是「最接近中位」的那一个。
-  // 2026-10-24 第八刷（issue #439，与 main 上 #406 B2-a 的第五刷**合流后是同一条结论**）：
-  // `src/loop/error-ledger.js` 也是本样本的一员，本单给 `capError` 加了「保留 `error.phase`」的归一化与
-  // 注释（4,248 B / 119 行 ⇒ 6,727 B / 158 行，均行字节 35.70 → 42.58；含评审退回项给 `error.phase`
-  // 的 getter 兜底），它的容量 7,343 → 6,157 掉到中位以下 ⇒ **样本中位从 7,117 变成 6,952**
-  // （−2.3%，越过 ±2%）。两支独立走到同一个落点，合并后**一字不差**（所以不再刷第二遍）：
-  // ① `median` 角色钉 `src/tools/notes.js`（29,901 B / 793 行 ⇒ 37.7062 B/line ⇒ 6,952 行，与当场样本
-  //    中位**完全相等**，且分母够大：±2% 的额度是 ±139 行）；② 描述里的 `median 7,130 (36.8)` →
-  //    `median 6,952 (37.7)` 是**同位数替换**（对本文件字节数中性 ⇒ `self` 那一行不用再刷）；
-  // ③ `src/tools/registry.js`（容量 7,130 未变）不再占任何角色。**容差常量一个都没动。**
-  // 这次换文件把「中位锚点紧贴样本中位」的脆弱性清掉了：`error-ledger.js` 现在离中位还有 795 行的
-  // 余量，再改它不会一步越过 ±2%（#439 的注释因此可以写全）。
-  // 2026-10-26 第十二刷（issue #469，宿主裁决 ①②③）：这次动的是**本样本里的两个文件**——
-  // `src/compact/fold-llm.js`（限时/输入有界/续写基底/降级归因四块）与 `provider-summarizer.js`
-  // （显式关思考 + 每次调用的剩余预算）。fold-llm 的容量 6,952 量级 → 6756（38.796 B/line），恰好落在样本中位上
-  // ⇒ 角色从 `src/tools/notes.js` 改钉它（与当场样本中位完全相等）。描述里 `median 6,952 (37.7)` →
-  // `median 6,756 (38.8)` 是**同位数替换**（对本文件字节中性）。容差常量一个都没动。
-  // 2026-11-01 第十四刷（issue #661，**换文件**）：`src/compact/fold-llm.js` 的摘要器失败出口从
-  // 「返回降级替代物」改成抛 `summarizer_failed`（删掉那条替代路径、补上分类与账本事实），
-  // 净 +3,221 字节 / +40 行 ⇒ 均行字节 40.9604 → **42.8245**、容量 6,399 → **6,121**（−4.3%，越过 ±2%）。
-  // 更关键的是**样本中位同时挪了**（6,399 → 6,268）：它不再是「最接近中位」的那个文件（差 2.3%）。
-  // 按 #275 的「中位只钉写死样本」口径换锚点：改钉 `src/store/file.js`（24,171 B / 578 行 ⇒
-  // 41.8183 B/line ⇒ 6,268 行，与当场样本中位**完全相等**，分母 578 行 ⇒ ±2% 的额度是 ±125 行）。
-  // 描述里 `median 6,399 (41.0)` → `median 6,268 (41.8)` 是**同位数替换**（对本文件字节中性 ⇒
-  // `self` 那一行不用再刷）。容差常量一个都没动。
-  // issue #714（叠在 #421 / PR #712 之上）：`loadRawRows` 落在这个文件里（store 面 + 中英注释），从 24,171 B / 578 行
-  // 长到 25,021 B / 593 行（+3.52% / +2.6%，前者超出 ±2%），容量 6,268 → **6,212**（均行 41.8183 → 42.1939）。
-  // 守卫自己的判词（动常量**之前**打的，逐字）：
-  //
-  //     src/store/file.js 字节数（#271 记录值）：实测/基准 24171，另一次 25021，差 3.52% 超出 ±2.0% → 事实漂移：
-  //     复测后把 readFile 描述、本测试的记录值、CHANGELOG 的 #271 条目一起改
-  //
-  // CJK 占比 18.96% → **19.87%**（新增的是中文注释）：那一轮**没红**（±2pp 容差内），但按 #271「记录值不许静默
-  // 过期」的口径一起刷新。⚠ 占比必须用**本文件的 `CJK_CHAR`（按 Unicode Script：Han/Hiragana/Katakana/Hangul）**量——
-  // 拿一个把全角标点也算进去的自制正则会得到 23.2%（本轮真的踩过：于是这条断言当场把错的记录值打回来）。
-  // ⇒ 描述里那一档 `median 6,268 (41.8)` → `median 6,212 (42.2)`（**同位数改动 ⇒ 对本工具自己的源码字节数中性**，
-  // `self` 那个角色因此一个字都不用动，见上面 #409 的同一手法）。`median` 这个标签仍然为真：本文件在写死样本
-  // （83 个文件）里按容量排第 **40/83**，样本中位是 6,242，仍在中位带里 —— 换人的是位置而不是档位。
-  // CHANGELOG 的 #271 条目是**历史**（记录当时的事实），按本仓「历史不改写」口径不动它，动的是描述与本表。
-  // 2026-11-08 第十四刷（issue #769 R2）：同一个文件又长了——恢复行**独立通道**（`recoveryRowsPath()`、它自己那份
-  // `recoveryDedupCaches`、`appendRecoveryRow()` / `listRecoveryRows()`，以及为了 `--strict` 不报 TS2353 而补进
-  // `@returns` 声明的那两个方法）：25,021 → **27,630** 字节（+10.43%，超 ±2%）/ 593 → **636** 行 /
-  // 均行字节 42.1939 → **43.4434** / 容量 6,212 → **6,034**（−2.87%）/ CJK 占比 19.87% → **21.31%**
-  // （新增的全是中文注释，仍按本文件 `CJK_CHAR` 的口径量）。⇒ 描述那一档同位数刷新：`median 6,212 (42.2)`
-  // → `median 6,034 (43.4)`。**角色不换人**（先例：#714 `cdb90de` 同一根因只刷实测；#730 `c83022d` 才换人）。
-  // ⚠ 上一轮（#769 R2）报出来的那两个余量本轮到期：本文件当时按容量排第 **40/83**，与样本中位 **6,157**
-  // 只剩 **0.14 个行数**的余量（|6,034 − 6,157| = 123，容差 6,157×2% = 123.14），注释里写的是
-  // 「下一轮样本里任何文件动一行都要重新对账：要么再刷一次实测，要么按 #730 的先例把 `median` 角色交给
-  // 当时真在中位的那一个」——本轮就是那「下一轮」。
-  // 2026-11-09（issue #769 R3，**换人**）：`src/store/file.js` 又被本单长了（`clearRecoveryRows()` + 路径助手 +
-  // `@returns` 声明，27,630 → 29,368 字节 / 636 → 666 行，均行字节 43.4434 → **44.0961** ⇒ 容量
-  // 6,034 → **5,944**，在样本里掉到第 **38/83**），而样本中位仍是 **6,157**（`src/loop/error-ledger.js`）
-  // ⇒ 同时满足「描述声称的中位行数容量 ±2%（对样本中位）」与「median 档 == 那个文件当场实测 ±2%」的档位区间
-  // 只剩 `[6,034, 6,063]`，里面**没有任何一个是被钉文件的实测值**（5,944 距中位 3.46%）⇒ 按 #730 先例换人，
-  // 把 `median` 交给当时真在中位的 `src/loop/error-ledger.js`。`src/store/file.js` 仍在样本清单里，
-  // 只是不再占角色。**容差常量与档位换算式一个都没动**。
-  // ⚠ **2026-11-17 第十六刷（issue #609 顶红的那一次复测，**换人**；描述侧 `src/tools/file-tools.js`
-  // 同一条事件记作**第十七刷** —— 两份刷号自 2026-10-26 起就各自递增（#537 的台账口径注写明过这件事），
-  // 本行照本文件的下一个号写，不改写任何历史条目）**：本单给 `src/loop/budget.js` 的
-  // `TRUNCATION_OMISSION_MARK`（「任何正预算都不递空串」那一格）补了中文注释：22,481 → **23,998** 字节 /
-  // 521 → **550** 行 ⇒ 均行字节 43.1497 → **43.6327** ⇒ 容量 6,075 → **6,007**、CJK 占比（**本文件的 `CJK_CHAR` 口径**）
-  // 22.94% → **24.50%**。于是**样本中位自己挪了**：6,056（`src/display/projection.js`）→ **6,007**，而中位那个元素
-  // 就是 `src/loop/budget.js` 自己（写死样本 83 个里的第 **42/83** 名，奇数口径下唯一那个）。被钉的
-  // `src/loop/error-ledger.js` 本轮一字未动（6,727 B / 158 行 / 6,157 与记录**逐字相同**），红的不是它，是
-  // 「描述声称的中位行数容量」那一条：`medianClaim 6,157` 对样本中位 6,007 差 **2.50%** 越过 ±2%。两条 ±2%
-  // 断言的交集 `[6,034, 6,127]` **非空但里面没有任何一个实测值**（样本中位 6,007 不在其中，被钉文件的实测
-  // 6,157 也不在其中）⇒ 按 #730 / #769 R3 先例**换人**（把角色交给当时真在中位的那一个），**不**按 #493 那一刷
-  // 在交集里挑一个「既不等于实测也不等于中位」的中间数。逐字段旧值 → 新值（**全部由本测试自己的**
-  // `measureReadLineCapacity` / `CJK_CHAR` 在本树现算，夹具 `/tmp/609-linecap-census.mjs` 把本文件的度量函数、
-  // 样本清单、角色表、扫描面**原样抽出 eval**，不另抄一份口径 —— #714 手写数把锚点写歪的教训）：
-  //   · file          `src/loop/error-ledger.js` → `src/loop/budget.js`
-  //   · bytes         6,727 → **23,998**          · lines 158 → **550**
-  //   · bytesPerLine  42.5759 → **43.6327**       · capacity 6,157 → **6,007**
-  //   · cjkShare      0.29567 → **0.24502**（离任者是 CJK 密的小文件；这一列只是「记录值不许静默过期」的
-  //     漂移探针，描述里没有 median 的占比那个数，#506）
-  // 描述那一档 `median 6,157 (42.6)` → `median 6,007 (43.6)` 是**同位数替换**（⇒ 对 `src/tools/file-tools.js`
-  // 字节中性，`self` 不因这一处重测；本轮 `self` 动是因为下面那条历史注自己加了字节）。刷完两条 ±2% 都是
-  // **0.00%**（`medianClaim` 逐字等于样本中位，也逐字等于 `byRole.median.capacity`）——这是「档位数字就是实测值」
-  // 最强的那一格，不是把容差调宽换来的：**±2% / ±1% 常量、`measureReadLineCapacity`、83 条写死样本一个字节都没动**。
-  // ⚠ 代价照 #275 的口径写明：中位锚点现在钉在一个**本分支正在反复改**的文件上（#609 的截断预算面就在这里），
-  //   ±2% 只等于 ±120 行容量 / ±0.87 B/line。结构性修法（让中位不随样本成员与单文件注释漂移）是 issue **#628**
-  //   的事，本单不在此处顺手改口径。
-  { role: "median", file: "src/loop/budget.js", recorded: { bytes: 23_998, lines: 550, bytesPerLine: 43.6327, capacity: 6_007, cjkShare: 0.24502 } },
-  // 2026-10-23 #391：`most` 也**换了文件**——`bin/guard-metrics.js` 从 456 B / 17 行长到 1,063 B / 23 行
-  // （均行 26.8 → 46.2），容量 9,772 → 5,671，已经不是「一次装得最多」那一个。样本里现在最大的是
-  // `src/messages/openai-normalization.js`（5,496 B / 201 行 ⇒ 27.34 B/line ⇒ 9,587 行），描述里那一档随之
-  // `most 9,772 (26.8)` → `most 9,587 (27.3)`（同位数 ⇒ 对本文件字节数中性）。
-  // 2026-10-23 第七刷（issue #409）：`most` 又**换了文件**——`src/messages/openai-normalization.js` 这一刀把
-  // 引数解析换成共享入口 `parseToolArguments`（`src/messages/tool-arguments.js`），从 5,496 B / 201 行
-  // 长到 6,232 B / 207 行（均行 27.34 → 30.11），容量 9,587 → 8,707，已不是「一次装得最多」那一个。
-  // 样本里现在最大的是 `src/loop/abort.js`（1,031 B / 37 行 ⇒ 27.86 B/line ⇒ 9,407 行），描述里那一档随之
-  // `most 9,587 (27.3)` → `most 9,407 (27.9)`（同位数 ⇒ 对本文件字节数中性）。
-  { role: "most", file: "src/loop/abort.js", recorded: { bytes: 1_031, lines: 37, bytesPerLine: 27.8649, capacity: 9_407, cjkShare: 0 } },
-  // self 这一行在 PR #291 返工（必修 4）里重测过：`classifyFileToolResult` 的 JSDoc 改成按 `kind`
-  // 关联的判别联合（工单明说改它的 JSDoc 是允许的，生成的 `.d.ts` 里 `kind:"bytes"` 那一支的
-  // `bytes` 必须是 `number`），而本行原本记录的 89,537 字节与当时 1,718 行已经被此前几个单
-  // 顶到 ±2% 限的内侧只剩 11 字节——任何一次注释改动都会报「事实漂移」。按本测试自己给的
-  // 口径（`measureReadLineCapacity`）复测后更新；那次只刷了记录值，描述里点名的 `5,029` 仍在 ±1% 容差内。
-  // 2026-10-21 又刷了一次，原因就是上面那条 ⚠ 里那一刀改了 `readFile` 的描述本身（描述就在这个文件里）：
-  // 现在描述里那句「this tool's own source fits 4,938」与本行记录的是**同一个实测值**（不再是旧记录值 5,029）。
-  // 2026-10-22 再刷一次：issue #215/#222 改了本文件的 `tree` 根标签与排除账 marker（+3.9% 字节、+56 行），
-  // 自指锚点当场红（这正是它该做的事）；描述里的自身容量 `4,966` 随之实测为 `4,938` 并已同步。
-  // 2026-10-22 第三刷：issue #219/#221 给搜索根加了存在性判定、把弃用提示的 mode 改成按入参生成
-  // （+3.9% 字节、+59 行），自指锚点同样当场红；描述里的自身容量 `4,938` 随之实测为 `4,896` 并已同步。
-  // ⚠ 自指：改本文件的任何注释与描述都会挪动这一行的字节数——改完先跑本测试再定数字（同一位数的数字改动是字节中性的）。
-    // 2026-10-22 第四刷（rebase 到已含 #219/#221 的 main 之后重测）：issue #358 给读侧加了
-  // `[参数校正：…]` / `[已到末尾：…]`、`normalizeIntegerWithReport` 与中文路径文案。描述里那句
-  // 「this tool's own source fits」随之 4,896 → 4,857（同位数改动 ⇒ 字节中性，所以复测在此之前做完即可）。
-  // 2026-10-22 第五刷（issue #386 切片 3）：本单只改了上面 `fewest` 那一行的记录值与本文件的两条注释、
-  // 外加 `readFile` 描述里的两个数（floor 4,286 → 4,198、本工具自身容量 4,857 → 4,844），自指锚点照旧
-  // 当场红、按同口径复测后同步。
-  // 2026-10-23（issue #404）：描述里的 floor / 均行字节 / 自身容量三处数字同步（同位数 ⇒ 字节中性），
-  // 记录值按本测试口径复测：107,620 → **107,772** 字节 / 1,989 → **1,991** 行 / 容量 4,844 → **4,842**。
-  // 2026-10-25（issue #453）：本文件多了一段 #453 复测注 + 描述改写（floor 换文件、口径写明、自身容量同步），
-  // 自指锚点照旧当场红，按同口径复测：108,261 → **109,959** 字节 / 1,995 → **2,007** 行 / 容量 4,830 → **4,784**
-  // （描述里「this tool's own source fits」同步 4,830 → 4,784，同位数 ⇒ 字节中性）。
-  // 容量 4,784 仍低于样本中位 6,952，所以「CJK 按比例压低行数」那条断言照旧成立。
-  // 2026-10-26 第九刷（issue #537，同片复测）：描述里 floor 那句改成「实测最小值向下取整到 50」（两处 3,903 → 3,900）
-  // 并在本文件描述段加了一段 #537 复测注，自指锚点照旧挪动，按同口径复测：
-  // 109,959 → **111,133** 字节 / 2,007 → **2,014** 行 / 均行字节 54.7877 → **55.1802** / 容量 4,784 → **4,750**
-  // （描述里「this tool's own source fits」同步 4,784 → 4,750，同位数 ⇒ 字节中性）。
-  // 容量 4,750 仍低于样本中位 6,952，「CJK 按比例压低行数」那条断言仍成立。
-  // 2026-10-27 第十刷（issue #540，**不是数字漂了，是把叙事从易变身份上摘下来**）：
-  //   `readFile` 描述里 floor 那句原本兼着「floor 自己是 CJK 重文件（45%）」的断言 ⇒ 谁最少一漂、文案就变假话。
-  //   本片把 CJK 警告改挂 `densest`（`src/loop/state-view.js` 37.31%，#271 起一字未动）⇒ 描述不再点名 floor 那个文件，
-  //   floor 那句只剩换算式 + 档位下界（两个数 `3,900` / `3,903` 一字未动）。本文件自己的描述句改了 ⇒ `self` 行同片复测：
-  //   111,133 → **112,481** 字节 / 2,014 → **2,025** 行 / 均行字节 55.1802 → **55.5462** / 容量 4,750 → **4,719**
-  //   （描述里「this tool's own source fits」同步 4,750 → 4,719，同位数 ⇒ 字节中性）。
-  //   容量 4,719 仍低于样本中位 6,532，「CJK 按比例压低行数」那条断言仍成立。容差常量一个都没动。
-  // 2026-10-28 第十一刷（issue #543，**不是数字漂了，是把证据从承诺里摘出去**）：
-  //   描述里 `measured minimum 3,903` 这半句**删掉了**（它不是承诺，是证据；A20 之后全树真最小值已是 3,901，
-  //   而 #537 的 `|实测 − 承诺| ≤ 50` 照样绿 ⇒ 一个活在绿色门禁里的假数字）。保留的是换算式
-  //   （`rounded down to the nearest 50`）与档位下界（`fewest ≥ 3,900 … no file … fewer than 3,900 lines`）。
-  //   本文件自己的描述句改了（净 +1,518 字节 / +11 行）⇒ `self` 行同片复测：
-  //   112,481 → **113,999** 字节 / 2,025 → **2,036** 行 / 均行字节 55.5462 → **55.9917** / 容量 4,719 → **4,681**
-  //   （描述里「this tool's own source fits」同步 4,719 → 4,681，同位数 ⇒ 字节中性，所以上面这一行就是终值）。
-  //   容量 4,681 仍低于样本中位 6,532，「CJK 按比例压低行数」那条断言仍成立。容差常量一个都没动。
-  // 2026-11-01 第十三刷（issue #375：参数错误统一出口 `paramError` + `paramErrorMode`）：本文件新增
-  // 事实集 / 统一出口 / 四条通道的接线与注释（净 +13,816 字节 / +245 行，均行字节 55.9917 → **56.0346**），
-  // 自指锚点照旧当场红，按本测试自己的口径复测：113,999 → **127,815** 字节 / 2,036 → **2,281** 行 /
-  // 容量 4,681 → **4,678**（描述里「this tool's own source fits」同步 4,681 → 4,678，同位数 ⇒ 字节中性）。
-  // CJK 占比 28.10% → **28.61%**（仅记录值漂移探针，描述没有引用它）。容差常量一个都没动。
-  // 2026-11-08 第十四刷配套（issue #769 R2）：本文件只改了两处**同位数**描述（`median 6,212 (42.2)` →
-  //   `6,034 (43.4)`、「this tool's own source fits」4,678 → 4,637）⇒ 对模型可见面字节中性；但第十四刷的
-  //   历史注长了 6 行 / +767 字节，叠上本轮之前已经漂着的 +1,541 字节 ⇒ 累计 127,815 → **130,123** 字节
-  //   （+1.81%，仍在 ±2% 内但只剩 0.19pp）/ 2,281 → **2,302** 行 / 均行字节 56.0346 → **56.5261** /
-  //   容量 4,678 → **4,637**。按 #271「记录值不许静默过期」当场刷新，**容差常量一个都没动**。
-  //   容量 4,637 仍低于样本中位 6,157 ⇒「CJK 按比例压低行数」那句仍成立。
-  // 2026-11-09 第十五刷配套（issue #769 R10）：本文件改了 `fewest` 那一档的两个档位数字与均行字节（都是同位数
-  //   ⇒ 对模型可见面字节中性），**但描述上方的历史注自己长了**（`src/tools/file-tools.js` + 7 行）⇒
-  //   按 #537 同一条先例（「改描述句就会改这个文件自己的字节数」，它当时把 `own source fits` 从 4,784 刷到 4,750）
-  //   当场重测这一行：130,123 → **133,104** 字节 / 2,302 → **2,324** 行 / 均行字节 56.5261 → **57.2737** /
-  //   容量 4,637 → **4,577** / CJK 占比 28.87% → **29.21%**（新增的还是中文注释，仍按本文件 `CJK_CHAR` 口径）。
-  //   描述那句 `this tool's own source fits` 随之 4,637 → **4,577**（**同位数替换**，刷完再测一次：逐字相同
-  //   ⇒ 已收敛，不再取第二轮）。容量 4,577 仍低于样本中位 6,157 ⇒「CJK 按比例压低行数」仍成立。
-  // 2026-11-17 第十六刷配套（issue #609 顶红的复测；测试侧记第十六刷，描述侧同一条记第十七刷——两份台账
-  //   自 2026-10-26 起就各递增各的，#537 那条台账口径注里写明了这一点）：本单对模型可见面只做了两处
-  //   **同位数**替换（`median 6,157 (42.6)` → `6,007 (43.6)`、`own source fits` 4,577 → 4,531）⇒ 字节中性；
-  //   刷这一行的成因依旧只是「历史注自己长了」（`src/tools/file-tools.js` + 16 行）⇒ 按 #537 先例当场重测：
-  //   133,104 → **135,358** 字节 / 2,324 → **2,340** 行 / 均行字节 57.2737 → **57.8453** / 容量 4,577 → **4,531** /
-  //   CJK 占比 29.21% → **29.60%**（新增的还是中文注释，仍按本文件 `CJK_CHAR` 口径——上一轮 #714 踩过拿
-  //   含全角标点的自制正则量会得到不同数的那个坑）。描述那句随之 4,577 → **4,531**（同位数替换，
-  //   连测两次逐字相同 ⇒ 已收敛）。容量 4,531 仍低于**本轮新测的**样本中位 6,007 ⇒「CJK 按比例压低行数」仍成立。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 135_358, lines: 2_340, bytesPerLine: 57.8453, capacity: 4_531, cjkShare: 0.29602 } },
-];
-
-const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
-const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
-
-// issue #506：CJK 密度的**被测性质**是「存在一个密度 ≥ 阈值的样本 + 它在 readFile 截断路径上的行为正确」，
-// **不是**「谁最密」。后者是**相对量**：谁最密取决于**别人**的注释有多长，于是任何人在 `src/**` 里新增或改写
-// 中文注释都可能换人 ⇒ 一条与改动毫无关系的测试红（#497 修单实测：给 `src/loop/option-normalization.js`
-// 写中文注释 → 本文件 2 条红，报错只说「最密样本不是 state-view.js」，不提示「你刚写的注释导致的」，
-// 排查者会往 readFile 的截断/CJK 逻辑上找，而代码其实没问题）。
-//
-// 测试隔离（与 AGENTS §3 测试隔离规则同源）：单元测试**不应对生产代码的注释语言分布敏感**——这一次它依赖的
-// 不是真实用户配置/环境，而是**源码文本本身**，同样属于「测试耦合了与它无关的东西」。所以这一族断言钉的是
-// 「密度下界 + 截断路径行为」，不再钉排名；当场排名只作**信息性输出**（见下面 `#506 CJK density ranking`）。
-const CJK_DENSE_SAMPLE_FLOOR = 0.35;
-
-// 角色按**名字**取，不按 `ROLES[0]` 取：2026-10-21 之后 floor 与 CJK 最密落在两个不同文件上，
-// 靠下标把两件事当成一个文件就是本次红的根因（`ROLES[0]` 同时被当作了 floor 与 densest 的锚点）。
-function roleFile(role) {
-  const entry = READ_LINE_CAPACITY_ROLES.find((item) => item.role === role);
-  assert.ok(entry, `角色清单里没有 ${role}（本测试的锚点口径失效，请同步本测试）`);
-  return entry.file;
+/** readFile 面向模型的描述——三格 #628 判据共同的被测面。 */
+function readFileDescription() {
+  const definition = FILE_TOOL_DEFINITIONS.find((item) => item.name === "readFile");
+  assert.ok(definition, "FILE_TOOL_DEFINITIONS 里找不到 readFile（本文件三格 #628 判据的被测面失效）");
+  return definition.description;
 }
 
-// 口径就写在这里：平均行字节数 = 文件字节数 ÷ 物理行数（每行的 \n 已含在字节里，不再 +1）。
+/**
+ * 描述里**允许**出现的数字，逐个注明出处。允许的理由只有一个：它是**机制事实**
+ * （默认值 / 单位 / 估算器常数 / 由估算器公式推出的量），不是「从本仓某些文件测出来的数」。
+ * 白名单是守卫 1 的 catch-all：任何没在这里挂号的数字都红，包括那些还没进
+ * `READ_DESC_MEASURED_FIGURES` 的新统计量——不必每漂移一次就来补一条禁用项。
+ */
+const READ_DESC_ALLOWED_FIGURES = new Map([
+  ["0", "`offset` 的默认值与 `0-based` 的 0（语义事实）"],
+  ["1", "结果行号是 `1-based` 的 1（语义事实）"],
+  ["200", "`limit` 默认行数，以及 `offset=200` 那句续读示例（默认值事实）"],
+  ["8", "`UTF-8` 这个名字里的 8（编码名，不是测量值）"],
+  ["262144", "`max_bytes` 默认字节数——`scripts/docs-drift-check.mjs` 拿它当真值锚点，**不许改值**"],
+  ["256", "同一个默认值的可读写法 `256KB`（同一个事实的第二种拼写）"],
+  ["3", "「一个 CJK 字符 3 个 UTF-8 字节」（UTF-8 编码事实）"],
+  ["3.5", "估算器常数 `charsPerToken = 3.5`（`src/tokens.js`）"],
+  ["1.5", "估算器常数 `cjkTokensPerChar = 1.5`（`src/tokens.js`）"],
+  ["1.15", "估算器常数 `margin = 1.15`（`src/tokens.js`，是余量系数，不是「误差 ≤ 15%」的保证）"],
+  ["3.04", "ASCII 的字节 / token 折算率：由 `estimateTokens` 现算（守卫 2 双向对账）"],
+  ["1.74", "纯汉字的字节 / token 折算率：同上"],
+  ["86000", "一次读满 256 KiB 的 ASCII token 下界：由 `estimateTokens` 现算（守卫 2 对账）"],
+  ["151000", "一次读满 256 KiB 的纯汉字 token 上界：同上"],
+  ["1000", "`limit=1000` 那个「一次要够」的示例参数"],
+]);
+
+/**
+ * #628 从描述里删掉的**仓内实测数字**（历史清单，逐个注明它当初是谁）。
+ * 它是守卫 1 的点名面：`READ_DESC_ALLOWED_FIGURES` 已经会拦住它们，这一张的作用是把报错
+ * 说清——「这个数字是 #628 删掉的实测值」比「这个数字没挂号」有用得多。
+ * 清单本身可被改坏：把任何一个塞回描述，这里当场点名红。
+ */
+const READ_DESC_MEASURED_FIGURES = new Map([
+  ["3850", "#271/#769 的 `fewest ≥ 3,850 lines` 档位"],
+  ["3903", "#453/#537 的全树实测最小值（`measured minimum 3,903`）"],
+  ["3900", "#537 的 floor 档位（向下取整到 50）"],
+  ["6007", "#609 复测后的 `median 6,007 (43.6)` 档"],
+  ["6157", "#769 R3 的 `median 6,157 (42.6)` 档"],
+  ["9407", "#271 的 `most 9,407 (27.9)` 档"],
+  ["4384", "CJK 锚点 `src/loop/state-view.js` 的行数容量"],
+  ["4577", "`this tool's own source fits`（本文件自己，#628 前的倒数第二版）"],
+  ["4531", "`this tool's own source fits`（本文件自己，#628 前的最后一版）"],
+  ["190", "#267 的稀疏档 token（`src/text/label.js` 前 200 行）"],
+  ["2493", "#267 的典型档 token（`bin/sessions.js`）"],
+  ["4773", "#267 的密实档 token（**本文件自己**：自指锚点）"],
+  ["2500", "旧文案的「~2,500 典型值」（#267 修的正是拿中位数冒充上限）"],
+  ["4750", "旧文案的「~4,750 尾巴」"],
+  ["83", "本仓 `.js` 文件总数（#275 已删过一次，别让它回来）"],
+  ["3000", "#264 旧文案的下界（`~3,000-6,000 lines`，没人复测过）"],
+  ["6000", "#264 旧文案的上界（同上）"],
+]);
+
+/** 描述里不许再出现的句式（**形状**，与具体数字无关）：命中即红。 */
+const READ_DESC_BANNED_SHAPES = [
+  [/\bfewest\b/u, "`fewest` 档位词（#271 的全树最小值承诺）"],
+  [/\bmedian\b/u, "`median`（#271 的样本中位）"],
+  [/\bmost\s+[\d,]/u, "`most <数字>`（#271 的样本最大值；英文 `at most max_bytes` 不带数字，不算命中）"],
+  [/measured minimum/u, "`measured minimum N`（#543 已把它请出承诺，#628 整段删除）"],
+  [/rounded down to (?:the nearest|a multiple of) 50/u, "「向下取整到 50 行」的档位换算式（档位本身已删）"],
+  [/whole-tree minimum/u, "「全树最小值」那类全称承诺（要枚举全树才成立，新增文件就能推翻）"],
+  [/fixed sample/u, "「固定样本」口径（#453 / PR #454 的免责声明；样本口径整组已删）"],
+  [/[\d,]+% of its bytes are CJK/u, "某个文件的 CJK 字节占比（#271 的 `densest` 锚点）"],
+  [/[\d,]+ `?\.js`? files\b/u, "「本仓有多少个 `.js`」（#275 删过一轮）"],
+  [/not one of the [\d,]+ falls below/u, "「N 个文件从不下穿某档」（#275 删过）"],
+  [/[\d,]+ of them take over/u, "「多少个文件超过某档」（#275 删过）"],
+  [/~3,000-6,000/u, "未复测的旧区间 `~3,000-6,000 lines`（#271 要修的正是它）"],
+  [/short and sparse/u, "#267 的「稀疏 / 典型 / 密实」三档叙事（token 那三档样本已删）"],
+];
+
+/**
+ * 反向证用的**旧句子原文**（从改动前的描述里逐字抄下来）。每条都是一次真实的历史形态：
+ * 把它接回描述，守卫 1 的两面（数字 + 形状）必须咬。判据失效（正则写坏、白名单被清空）时，
+ * 这些句子会重新变成合法文案 ⇒ 本测试当场红。
+ */
+const READ_DESC_LEGACY_SENTENCES = [
+  " Measured that way on this repo's own `.js` sources under `src/`, `bin/` and `examples/` "
+    + "\u2014 fewest \u2265 3,850 lines (68.0 bytes/line, the widest lines; the whole-tree minimum rounded "
+    + "down to the nearest 50, so no file in those three trees reads fewer than 3,850 lines), "
+    + "median 6,007 (43.6), most 9,407 (27.9). The floor is a whole-tree minimum rounded down to "
+    + "a multiple of 50; median and most come from a fixed sample of those sources.",
+  " The most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are "
+    + "CJK) fits 4,384 and this tool's own source fits 4,531; measured minimum 3,903.",
+  " Token budget: ~190 tokens where lines are short and sparse, ~2,500 on typical source, "
+    + "and ~4,773 where lines are wide.",
+  " the 83 `.js` files shipped here; not one of the 83 falls below 3,000, and 69 of them take over "
+    + "6,000; the old copy said ~3,000-6,000 lines.",
+];
+
+/** 抽出描述里的数字：`{ raw, value }`，`value` 去掉千分位逗号，小数按字面比（`3.50` ≠ `3.5`）。 */
+function extractDescriptionFigures(text) {
+  return [...text.matchAll(/(?<![\d.])(\d[\d,]*(?:\.\d+)?)(?![\d])/gu)].map((match) => ({
+    raw: match[1],
+    value: match[1].replace(/,/gu, ""),
+  }));
+}
+
+test("readFile 描述里没有仓内实测数字（#628 守卫 1：数字白名单 + 禁用形状 + 自带反向证）", () => {
+  const description = readFileDescription();
+  const figures = extractDescriptionFigures(description);
+  assert.ok(figures.length > 0, "描述里一个数字都抽不出来：抽取正则坏了（白名单会退化成永真）");
+  // ① 点名面：#628 删掉的那些实测数字不许回来（回来就报出它当初是谁，而不是只说「不合法」）。
+  const resurrected = figures.filter((figure) => READ_DESC_MEASURED_FIGURES.has(figure.value));
+  assert.deepEqual(resurrected.map((figure) => `${figure.raw}（${READ_DESC_MEASURED_FIGURES.get(figure.value)}）`), [],
+    "模型可见的 readFile 描述里又出现了 #628 删掉的**仓内实测数字**：这类数字是从本仓源码统计出来的，"
+    + "任何一次与 readFile 无关的注释改动都能让它过期（#628 的整条裁决）。要留它就得同时给出"
+    + "「它为什么不随源码 churn 漂」的理由，并在这里挂号——那正是守卫 2 那种由公式推出的量。");
+  // ② catch-all：不在白名单里的数字（含未来新增的统计量）一律红。
+  for (const figure of figures) {
+    assert.ok(READ_DESC_ALLOWED_FIGURES.has(figure.value),
+      `描述里的数字 ${figure.raw} 没有挂号：模型可见面只许出现机制事实（默认值 / 单位 / 估算器常数 / `
+        + `由估算器推出的量）。如果它是对某个文件量出来的，按 #628 删掉；如果它真是机制事实，`
+        + `在 READ_DESC_ALLOWED_FIGURES 里写清出处再进来`);
+  }
+  // ③ 形状面：即便数字换了个值，旧句式本身也不许回来。
+  for (const [shape, why] of READ_DESC_BANNED_SHAPES) {
+    assert.doesNotMatch(description, shape, `描述里又出现了「${why}」这个形状：#628 之后模型可见面不再给这种量`);
+  }
+  // ④ 白名单不许躺着「描述里根本没有」的数字：那等于给未来的漂移留了个空门。
+  const present = new Set(figures.map((figure) => figure.value));
+  assert.deepEqual([...READ_DESC_ALLOWED_FIGURES.keys()].filter((key) => !present.has(key)), [],
+    "白名单里有描述里根本不存在的数字：要么它在等一个已删的数字回来（那就删掉这条挂号），"
+    + "要么某个机制常数被改了（先确认真值，再改这里与 `src/tools/file-tools.js`）");
+  // ⑤ 反向证 A：把四段**旧句子原文**接回描述，数字面必须每次都被咬。
+  for (const legacy of READ_DESC_LEGACY_SENTENCES) {
+    const polluted = extractDescriptionFigures(description + legacy);
+    const bitten = polluted.filter((figure) => READ_DESC_MEASURED_FIGURES.has(figure.value)
+      || !READ_DESC_ALLOWED_FIGURES.has(figure.value));
+    assert.ok(bitten.length > 0, `旧句子接回描述后没人咬（判据①的数字面失效）：${legacy.slice(0, 60)}…`);
+  }
+  // ⑥ 反向证 B：禁用形状一条都不许是死正则——每条都要能在某段旧句子上真的命中。
+  const deadShapes = READ_DESC_BANNED_SHAPES
+    .filter(([shape]) => !READ_DESC_LEGACY_SENTENCES.some((legacy) => shape.test(legacy)))
+    .map(([, why]) => why);
+  assert.deepEqual(deadShapes, [], "禁用形状里这些正则连旧句子都咬不到（清单被改坏 / 正则写错）："
+    + deadShapes.join("、"));
+});
+
+/**
+ * 256 KiB 的**两个极端**，用 `src/tokens.js` 的估算器现算（本单硬约束：不许改估算器，也不许
+ * 把这些数抄成常量）。纯汉字样本按「一个汉字 3 个 UTF-8 字节」取整到整字 ⇒ 262,143 字节，
+ * 比 256 KiB 少 1 字节（0.0004%，远在 2% 容差之内；下面的自洽判据用的是同一个字节数）。
+ */
+const READ_CAP_TOKEN_EXTREMES = (() => {
+  const measure = (text) => {
+    const bytes = Buffer.byteLength(text, "utf8");
+    const tokens = estimateTokens(text);
+    return { bytes, tokens, bytesPerToken: bytes / tokens };
+  };
+  return {
+    ascii: measure("a".repeat(FILE_READ_MAX_BYTES_DEFAULT)),
+    cjk: measure("\u4e2d".repeat(Math.floor(FILE_READ_MAX_BYTES_DEFAULT / 3))),
+  };
+})();
+
+/** 双向对账：偏大与偏小都红（容差是「允许四舍五入」，不是「允许漂移」）。 */
+function assertCloseFigure(claim, computed, tolerance, label) {
+  const drift = Math.abs(claim - computed) / computed;
+  assert.ok(drift <= tolerance,
+    `${label}：描述写 ${claim}，现算 ${computed.toFixed(2)}，偏 ${(drift * 100).toFixed(2)}% > 容差 ${(tolerance * 100).toFixed(0)}%`);
+  return drift;
+}
+
+test("readFile 描述的 token 区间 == 估算器现算的区间（#628 守卫 2：估算器改了而文案没跟就红，双向）", () => {
+  const description = readFileDescription();
+  const divisors = description.match(
+    /tokens \u2248 bytes \u00f7 ([\d.]+) for ASCII source and \u2248 bytes \u00f7 ([\d.]+) for text that is nothing but Chinese characters/u,
+  );
+  assert.ok(divisors, "描述不再按「\u2248 bytes \u00f7 N（ASCII）/ \u2248 bytes \u00f7 N（纯汉字）」给折算率 "
+    + "\u2192 本测试的解析面失效（同步本测试，不许让断言静默变成永真）");
+  const bounds = description.match(
+    /costs ~([\d,]+) tokens of ASCII up to ~([\d,]+) tokens of pure Chinese characters/u,
+  );
+  assert.ok(bounds, "描述不再按「~N tokens（ASCII）… ~M tokens（纯汉字）」给一次读满 256 KiB 的区间 "
+    + "\u2192 解析面失效（同上）");
+  const [asciiDivisorClaim, cjkDivisorClaim] = divisors.slice(1).map(Number);
+  const [lowClaim, highClaim] = bounds.slice(1).map((value) => Number(value.replace(/,/gu, "")));
+  const ascii = READ_CAP_TOKEN_EXTREMES.ascii;
+  const cjk = READ_CAP_TOKEN_EXTREMES.cjk;
+  // 0) 样本前提：汉字必须真是 3 字节/字（否则「字节 ÷ 折算率」这套算式与描述那句话一起失效）。
+  assert.equal(Buffer.byteLength("\u4e2d", "utf8"), 3,
+    "「\u4e2d」不再是 3 个 UTF-8 字节：描述里「3 UTF-8 bytes per character」与下面的换算都要重谈");
+  assert.ok(cjk.bytes >= FILE_READ_MAX_BYTES_DEFAULT - 4,
+    `纯汉字样本只有 ${cjk.bytes} 字节，离 256 KiB 太远（取整逻辑坏了）`);
+  // 1) 两个折算率必须等于 `estimateTokens` 现算的「字节 / token」（实测口径：ASCII 3.0434、纯汉字 1.7391）。
+  assertCloseFigure(asciiDivisorClaim, ascii.bytesPerToken, 0.05, "ASCII 的字节 / token 折算率");
+  assertCloseFigure(cjkDivisorClaim, cjk.bytesPerToken, 0.05, "纯汉字的字节 / token 折算率");
+  // 2) 区间上下界必须等于现算的「256 KiB 换算成 token」（ASCII 86,134 / 纯汉字 150,733；双向）。
+  assertCloseFigure(lowClaim, ascii.tokens, 0.02, "一次读满 256 KiB 的 ASCII token 下界");
+  assertCloseFigure(highClaim, cjk.tokens, 0.02, "一次读满 256 KiB 的纯汉字 token 上界");
+  // 3) 文案自己那套算式必须自洽——模型真会拿它算：256 KiB ÷ 它给的折算率 \u2248 它给的区间。
+  assertCloseFigure(lowClaim, Math.round(FILE_READ_MAX_BYTES_DEFAULT / asciiDivisorClaim), 0.02,
+    "描述内部自洽（下界 vs 它自己给的 ASCII 折算率）");
+  assertCloseFigure(highClaim, Math.round(FILE_READ_MAX_BYTES_DEFAULT / cjkDivisorClaim), 0.02,
+    "描述内部自洽（上界 vs 它自己给的纯汉字折算率）");
+  // 4) #267 的结论留在**公式**里：ASCII \u2192 纯汉字这段跨度必须 \u22651.5\u00d7（典型值不是上限）。
+  assert.ok(highClaim >= lowClaim * 1.5,
+    `描述的区间跨度只剩 ${(highClaim / lowClaim).toFixed(2)}\u00d7：#267 修的正是「拿典型值冒充上限」`);
+  assert.ok(cjk.tokens >= ascii.tokens * 1.5,
+    `估算器给的跨度只剩 ${(cjk.tokens / ascii.tokens).toFixed(2)}\u00d7：估算器改了，描述的区间口径要重谈`);
+  // 5) 反向证：把上界改偏 \u00b15% 都必须红（正向对照同时在场，否则「恒抛」也会骗过这三条）。
+  assert.doesNotThrow(() => assertCloseFigure(highClaim, cjk.tokens, 0.02, "正向对照"),
+    "正向对照就红：说明解析出的上界与现算值本来就不一致（判据在红，不是反向证在红）");
+  assert.throws(() => assertCloseFigure(Math.round(highClaim * 1.05), cjk.tokens, 0.02, "反向证：偏大 5%"),
+    /偏 /u, "上界偏大 5% 没被判红：容差被放宽了，还是估算器改了而文案没跟？");
+  assert.throws(() => assertCloseFigure(Math.round(highClaim * 0.95), cjk.tokens, 0.02, "反向证：偏小 5%"),
+    /偏 /u, "上界偏小 5% 没被判红：双向对账退成了单向（只许低估），描述可以随便往小里写");
+  console.log("#628 token range (estimator-derived, not measured):", JSON.stringify({
+    capBytes: FILE_READ_MAX_BYTES_DEFAULT,
+    ascii: { bytes: ascii.bytes, tokens: ascii.tokens, bytesPerToken: Number(ascii.bytesPerToken.toFixed(4)) },
+    cjk: { bytes: cjk.bytes, tokens: cjk.tokens, bytesPerToken: Number(cjk.bytesPerToken.toFixed(4)) },
+    claimed: { low: lowClaim, high: highClaim, asciiDivisor: asciiDivisorClaim, cjkDivisor: cjkDivisorClaim },
+  }));
+});
+
+test("readFile 描述只给机制事实：字节上限 / 换算式 / offset 与 limit 语义 / marker 续读（#628 守卫 3）", () => {
+  const description = readFileDescription();
+  assert.match(description, /at most `max_bytes` UTF-8 bytes \(default 262144 = 256KB\)/u,
+    "字节硬上限与默认值必须在场：262144 同时是 `scripts/docs-drift-check.mjs` 的真值锚点，**不许改值**");
+  assert.match(description, /the budget is counted in BYTES/u,
+    "必须写明预算按 **UTF-8 字节** 计（#628 明确排除「把字节上限换成 token 上限」：字节是确定边界，估算值不是）");
+  assert.match(description, /max_bytes \u00f7 average bytes per line/u,
+    "行数容量要给**换算式**（#271 的期望修法：给公式，而不是给一个会过期的区间）");
+  assert.match(description, /`wc -c` \u00f7 `wc -l`/u,
+    "换算式要给宿主**在自己的树上**能现算的口径");
+  assert.match(description, /`offset` is a \*\*0-based\*\* line index/u,
+    "`offset` 必须是 **0-based 行号**（行是寻址单位，不许换成 token）");
+  assert.match(description, /`limit` is a \*\*line count\*\*, default 200/u,
+    "`limit` 必须是**行数**、默认 200（同上）");
+  assert.match(description, /a marker that carries the exact `offset` to continue from/u,
+    "续读指引必须在场：marker 给出可续读的行偏移（#506/#609 那条「静默截断」的病就靠它闭环）");
+  assert.match(description, /far more than a single `limit` will ask for/u,
+    "「字节上限远大于一次 `limit` 会要的量」这条行为指导必须在场（#264/#271 共同要治的保守分批）");
+  assert.match(description, /in one call/u, "「一次要够」的口径必须在场（#264 的反向病：保守分批）");
+  assert.match(description, /heuristic estimate, not a real tokenizer/u,
+    "token 区间必须自报是**引擎启发式估值**：它是推出来的，不是真实 tokenizer，也不是实测（#628）");
+  assert.doesNotMatch(description, /~3,000-6,000/u,
+    "未复测的旧区间 `~3,000-6,000 lines` 又回来了（#271 要修的正是它）");
+});
+
+// ---------------------------------------------------------------------------
+// 下面三件是 `#506` **行为判据**的样本前提（不是统计断言，#628 保留）。
+// 原来它们与 83 条写死样本、五角色表放在一起；那张表已随 #628 删除，这里只留下 #506 真正需要的：
+//   · `CJK_DENSE_READ_ANCHOR`：原 `densest` 角色的那个文件。#506 要测的是「CJK 密的文件经过
+//     readFile 截断路径会不会丢内容 / 会不会劈坏多字节字符」，所以要一个真的 CJK 密的样本，
+//     而不是「当场排名最密的那一个」（相对量：任何人在 `src/**` 写中文注释都能换人 ⇒ 与改动无关的红，
+//     #497 实测过）。所以钉**密度下界** + 行为，不钉排名。
+//   · `measureReadLineCapacity`：口径是「平均行字节 = 文件字节 ÷ 物理行数（`wc -l` 口径，
+//     每行的 `\n` 已计在字节里，不再 +1）」。#506 只用它的 `cjkShare`；`capacity` 不再被断言。
+// ---------------------------------------------------------------------------
+
+const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+// issue #506：CJK 密度的**被测性质**是「存在一个密度 ≥ 阈值的样本 + 它在截断路径上行为正确」，
+// **不是**「谁最密」。阈值 0.35 是 #506 定下的（#628 一个字没动）：跌破它就换锚点，别放宽下界。
+const CJK_DENSE_SAMPLE_FLOOR = 0.35;
+
+/** #506 截断路径行为判据的 CJK 密样本（自 #271 起一字未动；换它要连带重测密度前提）。 */
+const CJK_DENSE_READ_ANCHOR = "src/loop/state-view.js";
+
 function measureReadLineCapacity(rel) {
   const abs = join(REPO_ROOT, rel);
-  assert.ok(existsSync(abs), `写死的样本文件不在了：${rel}（改名/删除请同步本测试与 readFile 描述里的数）`);
+  assert.ok(existsSync(abs), `样本文件不在了：${rel}（改名/删除请同步 #506 那条行为判据的锚点）`);
   const content = readFileSync(abs, "utf8");
   const bytes = Buffer.byteLength(content, "utf8");
   const newlines = (content.match(/\n/gu) ?? []).length;
@@ -960,265 +755,6 @@ function measureReadLineCapacity(rel) {
     capacity: Math.floor(FILE_READ_MAX_BYTES_DEFAULT / bytesPerLine),
   };
 }
-
-// 全仓扫描（src/bin/examples 下的 `*.js`）。#275 后它**不再与写死清单逐条对齐**，
-// 只用来跑单调性质与信息性输出（见下面那条「加一个文件不该红」的测试）。
-function listShippedSourceFiles() {
-  const found = [];
-  const walk = (dir) => {
-    for (const entry of readdirSync(join(REPO_ROOT, dir), { withFileTypes: true })) {
-      const rel = `${dir}/${entry.name}`;
-      if (entry.isDirectory()) walk(rel);
-      else if (entry.isFile() && entry.name.endsWith(".js")) found.push(rel);
-    }
-  };
-  for (const dir of READ_LINE_CAPACITY_DIRS) walk(dir);
-  return found.sort();
-}
-
-function assertClose(actual, expected, tolerance, label) {
-  assert.ok(Math.abs(actual - expected) <= Math.abs(expected) * tolerance,
-    `${label}：实测/基准 ${expected}，另一次 ${actual}，差 ${(Math.abs(actual - expected) / Math.abs(expected) * 100).toFixed(2)}%`
-    + ` 超出 ±${(tolerance * 100).toFixed(1)}% → 事实漂移：复测后把 readFile 描述、本测试的记录值、CHANGELOG 的 #271 条目一起改`);
-}
-
-// issue #543：floor 承诺的判据是**档位紧致性**，不是「离实测不太远」。
-// `tier_floor ≤ measured < tier_floor + 50`（零容差，三条一起）：
-//   ① `tier_floor ≤ measured`：承诺**不许高过**实测。否则描述里那句「no file … reads fewer than 3,900」
-//      就是在说谎——真有文件读得比它少。这是 #537 的 `|measured − claim| ≤ 50` **放过**的那一侧：
-//      实测 3,901 / 承诺 3,950 只差 47 ⇒ 旧形态**绿**，一个虚高一档的假数字活在绿色门禁里。
-//   ② `measured < tier_floor + 50`：承诺**不许低到没意义**（长期不刷、漂成过度保守的假小数字，
-//      让模型保守分批）。这一侧旧形态也有，但它按「离实测多远」量，新形态按「档位边界」量。
-//   ③ `tier_floor % 50 === 0`：承诺必须真的落在 50 行档的边界上，否则「rounded down to the nearest 50」
-//      这句换算式本身是假的（旧形态对承诺值是否为档位边界**一个字都没说**）。
-// 为什么这比「逐字节等于实测最小值」（#453 的零容差 `assert.equal`）强而不是弱：档位紧致性同时排除了
-// 「档位虚高」（①）与「档位虚低」（②），而它**永不因换人而陈旧**——floor 换文件只要实测仍在同一档，
-// 描述一个字都不用改（这正是 #537/#540 铺的路，本片把断言也搬到同一条路上）。
-// ⚠ 谁把这里退回旧的 `|measured − tierFloor| ≤ 50` 形态，下面那条「比 ±50 更严」的测试会当场红。
-function assertTierTight(measured, tierFloor, label, step = 50) {
-  assert.equal(tierFloor % step, 0,
-    `${label}：承诺值 ${tierFloor} 不是 ${step} 的整数倍 → 「实测最小值向下取整到 ${step}」这句换算式成了假话（#543）`);
-  assert.ok(tierFloor <= measured,
-    `${label}：档位虚高（承诺高于实测）—— 描述承诺 no file reads fewer than ${tierFloor}，`
-    + `但全树实测最小值是 ${measured} 行（差 ${tierFloor - measured} 行）⇒ 这句话在说谎。`
-    + `把描述里的档位改成 ${Math.floor(measured / step) * step}（#543 档位紧致性 ①）`);
-  assert.ok(measured < tierFloor + step,
-    `${label}：档位虚低（承诺落后实测 ≥ ${step} 行）—— 实测最小值 ${measured} 行已经掉出 ${tierFloor} 这一档`
-    + `（[${tierFloor}, ${tierFloor + step})），承诺变成过度保守的假小数字 ⇒ 把描述里的档位改成 ${Math.floor(measured / step) * step}`
-    + `（#543 档位紧致性 ②）`);
-}
-
-test("readFile 行数容量的五个角色锚点未漂移，样本清单仍盘上可寻（#271：数不许静默过期；#275：不再与全树钉死）", () => {
-  // #275：旧的 `length === 83` 与 `deepEqual(盘上枚举, 本清单)` 已删（那是给全仓加的税）。
-  // 剩下的耦合是**单向包含**：样本文件被删/改名就当场红，盘上新增多出文件不红。
-  const onDisk = new Set(listShippedSourceFiles());
-  const missing = READ_LINE_CAPACITY_SAMPLE.filter((rel) => !onDisk.has(rel));
-  assert.deepEqual(missing, [],
-    `写死的样本文件在盘上找不到了：${missing.join(", ")} → 按 measureReadLineCapacity 的口径复测后，`
-    + "把 readFile 描述、本清单、CHANGELOG 的 #271 条目一起改（新增文件不会走到这条：盘上多出东西不算失效）");
-  for (const { role, file, recorded } of READ_LINE_CAPACITY_ROLES) {
-    const got = measureReadLineCapacity(file);
-    assertClose(got.bytes, recorded.bytes, 0.02, `${file} 字节数（#271 记录值）`);
-    assertClose(got.lines, recorded.lines, 0.02, `${file} 行数（#271 记录值）`);
-    assertClose(got.capacity, recorded.capacity, 0.02, `${file} 一次能装的行数（#271 记录值）`);
-    // 这个文件的 CJK 占比只有 `densest` 角色会出现在描述里；其余角色的占比只是「记录值不许静默过期」的漂移探针。
-    // #506：失败文案必须说清是**哪个角色**、以及描述到底有没有引用它——否则下一位会去描述里找一个不存在的数。
-    assert.ok(Math.abs(got.cjkShare - recorded.cjkShare) <= 0.02,
-      `${file}（${role} 角色）的 CJK 字节占比从 ${(recorded.cjkShare * 100).toFixed(1)}% 变成 ${(got.cjkShare * 100).toFixed(1)}%`
-      + (role === "densest"
-        ? " → 描述里 CJK 那半句（含 37% 这个数）要重测"
-        : " → 描述没有引用这个占比，按本测试口径复测并刷新角色表的记录值即可（不是描述要改）"));
-  }
-  // 描述里「floor 那个文件」与「CJK 锚点那个文件」这两句话的前提（2026-10-21 起它们是**两个**文件，所以各自钉角色）。
-  // 2026-10-25（issue #453）：两个角色现在钉的是**不同口径**——`fewest` 是全树（`src`/`bin`/`examples`）真最小值，
-  // `densest` 仍是写死样本里 CJK 最密的那一个。理由写在上面那段 ⚠ #453 里：floor 是全称命题，只能枚举全树证明；
-  // 中位/最密是「典型 / 样本」事实，全树枚举会随新增文件漂移（那正是 #275 要拆掉的税）。
-  const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
-  const scannedRows = listShippedSourceFiles().map(measureReadLineCapacity);
-  const fewest = scannedRows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
-  assert.equal(fewest.rel, roleFile("fewest"),
-    `全树「一次装得最少」的文件已不是 ${roleFile("fewest")}（现在是 ${fewest.rel}，${fewest.capacity} 行）→ floor 数字要重测`);
-  // issue #506：`densest` 这一格**不再问「谁最密」**（见 `CJK_DENSE_SAMPLE_FLOOR` 那段：相对量 ⇒ 任何一次中文
-  // 注释都可能换人 ⇒ 与 readFile 毫无关系的红）。改成钉**被测性质**：
-  //   ① 描述点名的 CJK 锚点自己必须真的 CJK 密（≥ 下界）——「CJK 会按比例压低行数」那句的样本前提；
-  //   ② 它在 readFile 截断路径上的行为必须正确——下一格 `#506 CJK 密样本…` 是行为判据（字节预算 / 不劈坏
-  //      多字节字符 / 分片续读零丢失）。
-  const cjkAnchor = measureReadLineCapacity(roleFile("densest"));
-  assert.ok(cjkAnchor.cjkShare >= CJK_DENSE_SAMPLE_FLOOR,
-    `${roleFile("densest")} 的 CJK 字节占比只剩 ${(cjkAnchor.cjkShare * 100).toFixed(1)}%（下界 ${(CJK_DENSE_SAMPLE_FLOOR * 100).toFixed(0)}%）：`
-    + "描述里「the most CJK-dense file in that fixed sample（… % of its bytes are CJK）」这句的样本前提不再成立 ⇒ "
-    + "换一个真的 CJK 密的固定样本当锚点（并同步角色表与描述），不要靠放宽下界让它变绿");
-  // 描述里「floor 文件 / CJK 锚点文件」是两个名字：这是**角色表的事实**，不再靠当场排名。
-  assert.notEqual(roleFile("densest"), roleFile("fewest"),
-    "CJK 锚点与 floor 落到了同一个文件：描述里的「floor 文件 / CJK 锚点文件」两个名字要重新审视（本条不许静默默过）");
-  // 信息性（**不断言**）：当场排名如实报告。它不参与判据（#506），但「有没有换人」必须看得见——换人不等于红，
-  // 只说明描述里 "the most CJK-dense" 这句**相对话**需要一次人工复读（相对量不适合当断言，见上面那段）。
-  const liveDensest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
-  console.log("#506 CJK density ranking (informational, not asserted):", JSON.stringify({
-    pinnedAnchor: roleFile("densest"),
-    pinnedShare: Number((cjkAnchor.cjkShare * 100).toFixed(2)),
-    floorPercent: Number((CJK_DENSE_SAMPLE_FLOOR * 100).toFixed(0)),
-    liveDensest: { file: liveDensest.rel, cjkShare: Number((liveDensest.cjkShare * 100).toFixed(2)) },
-    anchorIsLiveDensest: liveDensest.rel === roleFile("densest"),
-  }));
-});
-
-test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,000-6,000 lines` 上限低估 1.6×）", () => {
-  const description = FILE_TOOL_DEFINITIONS.find((definition) => definition.name === "readFile").description;
-  assert.doesNotMatch(description, /~3,000-6,000/u, "未复测的旧区间 `~3,000-6,000 lines` 又回来了（issue #271 要修的正是它）");
-  assert.match(description, /max_bytes ÷ average bytes per line/u,
-    "字节额度必须给**换算式**（#271 期望修法 1：给公式而不是区间）");
-  assert.match(description, /far more than a single `limit` will ask for/u,
-    "「字节上限远大于一次 limit 会要的量」这条行为指导必须在场（#264/#271 共同要治的保守分批）");
-
-  // #537：`fewest` 那一档现在是**向下取整的承诺**（`fewest ≥ 3,900 lines`，实测最小值 3,903），
-  // 所以解析面允许一个可选的 `≥`；均行字节仍然紧跟在括号里（描述内部自洽那一条靠它算）。
-  const tiers = description.match(
-    /fewest\s*(?:\u2265\s*)?([\d,]+) lines \(([\d.]+) bytes\/line[^)]*\), median ([\d,]+) \(([\d.]+)\), most ([\d,]+) \(([\d.]+)\)/u,
-  );
-  assert.ok(tiers, "描述不再按「fewest / median / most + 各自 bytes/line」给行数容量 → 本测试的解析面失效。"
-    + "改句式可以，但必须同步本测试，不许让这条断言静默变成永真。");
-  const [fewestClaim, fewestBplClaim, medianClaim, medianBplClaim, mostClaim, mostBplClaim] = tiers.slice(1)
-    .map((value) => Number(value.replace(/,/g, "")));
-  // #275：模型可见面**不再声称文件条数**。旧句式「Measured that way on the 83 `.js` files shipped here …
-  // not one of the 83 falls below 3,000, and 69 of them take over 6,000」里那三个总量（83 / 0 of 83 / 69 of 83）
-  // 随仓库演化必然过期，对读自己树的宿主也没有意义；写在那里就等于给全仓加一道与 readFile 无关的税。
-  // 下面三条反向证让「有人又把总量写回描述」当场红。
-  assert.doesNotMatch(description, /\b[\d,]+ `?\.js`? files\b/u,
-    "描述又开头声称「本仓有多少个 `.js`」（#271 旧文案的 the 83 `.js` files）：本仓文件总数不是 readFile 的事实，别写回模型可见面");
-  assert.doesNotMatch(description, /not one of the [\d,]+ falls below/u,
-    "描述又给了「N 个文件从不下穿某一档」这种依赖全仓条数的总量（#275 已删，要回去就连带把统计根子钉回来）");
-  assert.doesNotMatch(description, /[\d,]+ of them take over/u,
-    "描述又给了「多少个文件一次能装超过某一档」这种依赖全仓条数的总量（#275 已删，同上）");
-  // PR #454 评审建议 1：这句免责声明是「median/most 只描述固定样本」的**唯一**在场证据，而它此前可被
-  // **静默删除**（整段删掉后本文件仍 60/60 绿）。正钉住：删掉就红（变异自证见 CHANGELOG 的 #453 评审条目）。
-  assert.match(description, /median and most come from a fixed sample of those sources/u,
-    "描述里「median and most come from a fixed sample of those sources」的免责声明不见了：删掉它，"
-    + "`most` 就重新变成「全树最大值」的谎话（PR #454 评审建议 1）");
-  // 2026-10-21：floor 与「CJK 最密」落在两个不同文件上，句子拆成了**两个各自复测的锚点**，解析面跟着拆。
-  // 2026-10-25（#453）：句子又加了一个前提——floor 是**全树最小值**（`src`/`bin`/`examples`），中位/最多来自固定样本。
-  // 2026-10-27（#540）：**叙事从易变身份上摘下来**——floor 那句不再点名文件、不再声称「floor 自己是 CJK 重文件」，
-  // CJK 警告只挂在 `densest` 角色上（`src/loop/state-view.js`，固定样本锚点）。于是解析面从 7 个捕获位收成 4 个：
-  // CJK 最密文件 + 它的占比 + 它的容量 + 本工具自身容量。floor 一侧的数字断言仍在上面的 `tiers` 里（一字未动）。
-  const cjk = description.match(
-    /the most CJK-dense file in that fixed sample \(`([^`]+)`, (\d+)% of its bytes are CJK\) fits ([\d,]+) and this tool's own source fits ([\d,]+)/u,
-  );
-  assert.ok(cjk, "描述不再按「CJK 最密那个文件 + 它的占比与容量 / 本工具自身源码容量」给出 CJK 锚点"
-    + " → 解析面失效（同步本测试，不许让这条断言静默变成永真）");
-  const densestFileClaim = cjk[1];
-  const cjkPercentClaim = Number(cjk[2]);
-  const densestCapacityClaim = Number(cjk[3].replace(/,/g, ""));
-  const selfCapacityClaim = Number(cjk[4].replace(/,/g, ""));
-  // 旧句子把两件事当成一件（`the 4,387 floor IS the most CJK-dense file`），2026-10-21 的复测已推翻它；
-  // 写回来就红（否则两个锚点会重新只在同一个文件上被钉住，floor 一换文件就又静默过期）。
-  assert.doesNotMatch(description, /floor IS the most CJK-dense/u,
-    "描述又把「floor 恰好就是 CJK 最密那一个」写回来了：2026-10-21 实测 floor 是 `src/loop/resume-manager.js`（CJK 24%）、"
-    + "CJK 最密是 `src/loop/state-view.js`（37%），两个锚点必须各自复测各自说");
-  // #540 反向证（**这是本片的重点**）：CJK 属性**不许再绑在 floor 身份上**。
-  // ① 旧句式（`the 3,900 floor is itself a CJK-heavy file (\`…\`, 45% …), while the most …`）写回来就红：
-  //    那句话让「谁最少」牵着面向模型的文案（floor 一换文件、继任者 CJK ≈ 0 ⇒ 当场变谎话），
-  //    而它本来想说的是「CJK 会压低行数」，那件事挂在 `densest` 角色上就够（#271 起一字未动的固定样本锚点）。
-  assert.doesNotMatch(description, /CJK-heavy file/u,
-    "描述又声称某个文件是「CJK-heavy file」并把占比写进去：CJK 警告只挂在 `densest` 角色上（固定样本锚点），"
-    + "不许再绑回 floor（floor 身份会随任何一次注释改动漂移，而它牵着面向模型的文案——#540 拆掉的正是这根引线）");
-  // ② 结构性反向证：**任何含 CJK 的句子都不许提到 floor**（否则属性又跟身份挂在一起了）。
-  const cjkSentences = description.split(/(?<=\.)\s+/u).filter((sentence) => /CJK/u.test(sentence));
-  assert.ok(cjkSentences.length > 0, "描述里不再有 CJK 那一段 → 解析面失效（同步本测试）");
-  for (const sentence of cjkSentences) {
-    assert.doesNotMatch(sentence, /floor/u,
-      `CJK 那句话里又提到了 floor：「${sentence}」→ CJK 属性必须只挂在 \`densest\` 角色上（#540）`);
-  }
-  // ③ 描述**不再点名 floor 那个文件**（换人时一个字都不用改；这也是身份迁移反向证的判据）。
-  assert.ok(!description.includes(roleFile("fewest")),
-    `描述又点名了 floor 那个文件（\`${roleFile("fewest")}\`）：floor 是谁会随任何一次注释改动漂移，`
-    + "面向模型的文案不许依赖它（#540；换人时描述应当一字不动）");
-
-  // 当场复测（写死路径，同一口径）
-  // 2026-10-25（#453 + PR #454 评审）：**两套口径各取所需，别混** ——
-  //   `floor` = 全树（`src`/`bin`/`examples`）最小值（全称命题，只能靠枚举证明）；
-  //   `median` / `most` 与 CJK 最密 = 固定写死样本（随新增文件漂移会给全仓加税，见上面 ⚠ #453）。
-  // 评审实测的税：`measuredMost` 原先取全树末位 ⇒ 新增一个**短行**文件（容量 64,198 ≫ 9,407）就让
-  // 「描述声称的「一次最多装多少行」」那条 ±1% 断言变红，而描述里的 `most` 说的本来就是**样本**。
-  const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
-  const scannedRows = listShippedSourceFiles().map(measureReadLineCapacity);
-  const byRole = Object.fromEntries(READ_LINE_CAPACITY_ROLES.map(({ role, file }) => [role, measureReadLineCapacity(file)]));
-  const sampleCaps = rows.map((row) => row.capacity).sort((a, b) => a - b);
-  const treeCaps = scannedRows.map((row) => row.capacity).sort((a, b) => a - b);
-  const measuredFewest = treeCaps[0];
-  // `most` 是样本最大值（描述里那句 `median and most come from a fixed sample`）；全树最大值只用于下面
-  // 那条「全树自洽」的包含关系，**不参与**描述声称的比对（否则新增无害文件就变红 = #275 拆掉的税）。
-  const measuredMost = sampleCaps[sampleCaps.length - 1];
-  const treeMost = treeCaps[treeCaps.length - 1];
-  const measuredMedian = sampleCaps.length % 2 === 1
-    ? sampleCaps[(sampleCaps.length - 1) / 2]
-    : (sampleCaps[sampleCaps.length / 2 - 1] + sampleCaps[sampleCaps.length / 2]) / 2;
-
-  // 1) 声称的三个档位必须由小到大，且与当场实测同档（旧文案 3,000 / — / 6,000 在这里必红）
-  assert.ok(fewestClaim < medianClaim && medianClaim < mostClaim,
-    `描述声称的档位必须由小到大，实际是 ${fewestClaim} / ${medianClaim} / ${mostClaim}`);
-  // #540：原先这里还有两条把「floor 那个文件」钉进描述的断言（`floorRepeatClaim == fewestClaim`、
-  // `floorFileClaim == roleFile("fewest")`）。它们量的正是本片要摘掉的东西：floor 是谁会随任何一次注释改动漂移
-  // （`option-normalization.js` 3,905 vs `provider-timeouts.js` 3,903，余量 2 行），而它们却把面向模型的文案
-  // 钉在那个身份上 ⇒ 换人就得改文案。现在反向证接管：上面 ①②③ 三条断言「描述不许把 CJK 绑在 floor 上、
-  // 不许点名 floor 那个文件」，换人时**一个字都不用改**（身份迁移反向证已实跑，见 CHANGELOG #540）。
-  assertClose(fewestClaim, measuredFewest, 0.02, "描述声称的「一次最少装多少行」");
-  assertClose(medianClaim, measuredMedian, 0.02, "描述声称的中位行数容量");
-  assertClose(mostClaim, measuredMost, 0.01, "描述声称的「一次最多装多少行」");
-  // 1b) #275：三个档位还必须逐个对上**那 4 个锚点文件**的当场实测（不靠全树分布也算得出同一个结论）。
-  //     这就是「把声称数字改坏就红」的反向证（本单实跑）：上限 9,772 改成 6,000 → 红「档位必须由小到大」；
-  //     改成不打乱大小的 8,000 → 红 ±1% 容差那条（「实测/基准 9772，另一次 8000，差 18.13%」）；要让 1b) 也喂饱，
-  //     只能把那个数字改回 9,772 本身（它的 bytes/line 与 2) 的自洽也只允许这一个值）。
-  assertClose(fewestClaim, byRole.fewest.capacity, 0.02, `描述声称的 fewest 档 == ${byRole.fewest.rel} 当场实测`);
-  assertClose(medianClaim, byRole.median.capacity, 0.02, `描述声称的 median 档 == ${byRole.median.rel} 当场实测`);
-  assertClose(mostClaim, byRole.most.capacity, 0.01, `描述声称的 most 档 == ${byRole.most.rel} 当场实测`);
-
-  // 2) 每档配的 bytes/line 必须真是那个文件的均行字节，且与声称行数在公式下自洽
-  assertClose(fewestBplClaim, byRole.fewest.bytesPerLine, 0.01, "fewest 档声称的平均行字节");
-  assertClose(medianBplClaim, byRole.median.bytesPerLine, 0.01, "median 档声称的平均行字节");
-  assertClose(mostBplClaim, byRole.most.bytesPerLine, 0.01, "most 档声称的平均行字节");
-  for (const [label, lines, bpl] of [["fewest", fewestClaim, fewestBplClaim], ["median", medianClaim, medianBplClaim], ["most", mostClaim, mostBplClaim]]) {
-    assertClose(lines, Math.floor(FILE_READ_MAX_BYTES_DEFAULT / bpl), 0.05, `描述内部自洽（${label}：行数应等于 max_bytes ÷ 它自己给的 bytes/line）`);
-  }
-
-  // 3) #275：描述里不再有「样本数 / 多少个高于某档」这两个总量，于是那一段历史声称（#264 旧文案
-  //    `~3,000-6,000 lines`）以**测试内常量**留档：实测中位必须仍盖过旧上限、实测下界必须仍远高于它的一半，
-  //    否则「保守分批」那个旧口径重新成立，描述的整段换算要重谈。这个事实不依赖任何文件条数。
-  const LEGACY_UNMEASURED_CEILING = 6_000; // #264 旧文案的上限（当时没人复测）
-  const LEGACY_UNMEASURED_FLOOR = 3_000;   // #264 旧文案的下界
-  assert.ok(LEGACY_UNMEASURED_FLOOR < measuredFewest,
-    `旧下界 ${LEGACY_UNMEASURED_FLOOR} 重新变得可信（实测下界只有 ${measuredFewest}）→ #271 的结论要重测`);
-  assert.ok(measuredMedian > LEGACY_UNMEASURED_CEILING,
-    `实测中位行数容量 ${measuredMedian} 没有超过 ${LEGACY_UNMEASURED_CEILING}：旧上限重新成立了，描述与本测试的口径都要重谈`);
-  assert.ok(rows.every((row) => row.capacity >= measuredFewest && row.capacity <= measuredMost),
-    "样本内的极值不自洽（重算逻辑被改坏）");
-  assert.ok(scannedRows.every((row) => row.capacity >= measuredFewest && row.capacity <= treeMost),
-    "全树扫描的极值不自洽（重算逻辑被改坏）");
-
-  // 4) CJK：本仓实测支持「CJK 让行数按比例下降」这句话；但描述不许给没测过的 CJK 区间。
-  //    2026-10-21 起这一节钉**两个**锚点：CJK 锚点那个文件（身份 + 占比 + 它的容量）与 floor 那个文件自己的占比。
-  // issue #506：这里**不再**断言「它就是样本里当场实测最密的那一个」——「最密」是**相对量**（见
-  // `CJK_DENSE_SAMPLE_FLOOR` 那段）：谁最密取决于别人的注释有多长，于是任何一次中文注释都能让这条红，
-  // 而它与被测性质（CJK 密文件经截断路径的行为）毫无关系。保留的是**被测性质**：描述点名的锚点必须真的
-  // CJK 密（≥ 下界），且它自己的占比与容量都按当场实测钉住（这两条是描述里那句数字的唯一出处）。
-  assert.equal(densestFileClaim, roleFile("densest"), "描述点名的 CJK 锚点文件与 `densest` 角色清单不齐");
-  assert.ok(byRole.densest.cjkShare >= CJK_DENSE_SAMPLE_FLOOR,
-    `描述点名的 CJK 锚点 ${densestFileClaim} 实测只有 ${(byRole.densest.cjkShare * 100).toFixed(1)}%`
-    + `（下界 ${(CJK_DENSE_SAMPLE_FLOOR * 100).toFixed(0)}%）⇒ 「CJK 让行数按比例下降」这句的样本前提不再成立：`
-    + "换一个真的 CJK 密的固定样本当锚点（并同步角色表与描述），不要靠放宽下界让它变绿");
-  assertClose(cjkPercentClaim, byRole.densest.cjkShare * 100, 0.05, "描述声称的 CJK 字节占比");
-  assertClose(densestCapacityClaim, byRole.densest.capacity, 0.01, "描述声称的「CJK 最密那个文件一次能装多少行」");
-  // #540：`floorCjkPercentClaim` 那条（`assertClose(floorCjkPercentClaim, byRole.fewest.cjkShare * 100, 0.05)`）
-  // 已按工单要求**不是简单删掉**，而是换成语义相反的断言（见上面 ①②③：描述里不许再把 CJK 属性绑在 floor 身份上，
-  // 也不许点名 floor 那个文件）。`densest` 一侧的实测断言（文件身份 + 占比 + 容量）原样保留，一字未动。
-  assert.doesNotMatch(description, /\bfloor\b[^.]*%\s*of its bytes are CJK/iu,
-    "描述又把 CJK 占比挂回 floor 那半句了（`the 3,900 floor is itself a CJK-heavy file …` 的句式）："
-    + "CJK 锚点只属于 `densest` 角色（#540）");
-  assertClose(selfCapacityClaim, byRole.self.capacity, 0.01, "描述声称的「本工具自己的源码一次能装多少行」");
-  assert.ok(byRole.self.capacity < measuredMedian,
-    `描述说 CJK 会按比例压低行数，但 ${byRole.self.rel}（CJK ${(byRole.self.cjkShare * 100).toFixed(1)}%）实测 ${byRole.self.capacity} 行，不低于中位 ${measuredMedian}`);
-  assert.doesNotMatch(description, /~[\d,]+ lines[^.]*CJK|CJK[^.]*~[\d,]+ lines/u,
-    "描述给 CJK 编了一个行数区间——本仓只测过上面那一个 CJK 锚点，没测过的东西写「按公式自行折算」（#267 的 `~4,000` 教训）");
-});
 
 // ---------------------------------------------------------------------------
 // issue #506：CJK 密样本在 readFile **截断路径**上的行为判据。
@@ -1302,7 +838,7 @@ function assertChunkedReadFaithful({ original, chunks, maxBytes, label }) {
 }
 
 test("#506 CJK 密样本在 readFile 截断路径上行为正确（分片续读零丢失 / 预算按 UTF-8 字节计 / 不劈坏多字节字符）", async () => {
-  const anchor = roleFile("densest");
+  const anchor = CJK_DENSE_READ_ANCHOR; // #628：钉**名字**而不是「当场排名最密那一个」（见上面锚点注）
   const measured = measureReadLineCapacity(anchor);
   // ① 前提：这个样本必须真的 CJK 密 —— 否则下面测的是一个普通文件。
   assert.ok(measured.cjkShare >= CJK_DENSE_SAMPLE_FLOOR,
@@ -1324,8 +860,9 @@ test("#506 CJK 密样本在 readFile 截断路径上行为正确（分片续读�
 
 // ---------------------------------------------------------------------------
 // issue #506 反向证：上面那条判据**真的会红**。三类坏分片喂给同一个谓词，每类都必须点名自己的病。
-// （不做「改坏 src 再跑一遍」那种一次性手工变异：本仓的规矩是判据要能自我证伪，先例见 `assertTierTight`
-//  那条「比 #537 的 ±50 形态更严」的测试。手工变异另跑一次，结论写进交付/CHANGELOG。）
+// （不做「改坏 src 再跑一遍」那种一次性手工变异：本仓的规矩是判据要能自我证伪。
+//  先例曾是 `assertTierTight` 那条「比 #537 的 ±50 形态更严」的测试（#628 随档位承诺一起删），
+//  现在的同族先例是本文件上面 #628 守卫 1 的⑤⑥与守卫 2 的⑤。手工变异另跑一次，结论写进交付/CHANGELOG。）
 // ---------------------------------------------------------------------------
 test("#506 反向证：坏分片喂给同一谓词必须红（超预算 / 劈坏多字节字符 / 静默漏行）", () => {
   const original = "第一行中文注释\n第二行也是中文\n";
@@ -1356,150 +893,3 @@ test("#506 反向证：坏分片喂给同一谓词必须红（超预算 / 劈坏
     "静默漏行的分片没被判红：这正是「截断静默丢内容」那条谎");
 });
 
-// ---------------------------------------------------------------------------
-// issue #453：描述里的 floor 是**全树**（`src`/`bin`/`examples`）真最小值，不是 83 文件样本的最小值。
-// 缺口现场：#441 带来的 `bin/provider-timeouts.js` 不在写死样本里，容量 3,903 < 样本 floor 3,938，
-// 而当时没有一格会红（描述里那句 floor 对全树已经不是真话，测试只复测样本）。这一格就是补上的那块：
-// 新增文件把真最小值拉低 ⇒ 红；描述里的数字与全树实测对不上 ⇒ 红（不靠 ±2% 容差：floor 是承诺，不是估计）。
-// issue #537（2026-10-26）：承诺**粒度**改了——不再是「逐字节等于实测最小值」，而是
-// 「实测最小值向下取整到 50 行一档」。零容差保留，只是锚点从「字节级噪声」换成「50 行档」。
-// issue #543（2026-10-28）：判据从「离实测多远」换成**档位紧致性**（`assertTierTight`）：
-//   (a) `tier_floor ≤ 实测最小值`（承诺不许高过实测——#537 的 `|差| ≤ 50` 是双向的，会放过虚高一档）；
-//   (b) `实测最小值 < tier_floor + 50`（承诺不许落后实测 ≥ 50 行，否则变成过度保守的假小数字）；
-//   (c) `tier_floor % 50 === 0`（承诺必须真的落在 50 行档边界上，否则换算式本身是假的）。
-// 三条一起 ⇒ 同一个 50 行档内实测最小值怎么挪都不需要改描述，跨档才红；而且它**永不因 floor 换人而陈旧**。
-// 另：描述里不再自报精确实测最小值（#543）——那是**证据**不是承诺，所以本节不再解析 `measured minimum N`。
-// ---------------------------------------------------------------------------
-test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文件把下限拉低时，旧断言无感；#537：承诺粒度 = 向下取整到 50）", () => {
-  const description = FILE_TOOL_DEFINITIONS.find((definition) => definition.name === "readFile").description;
-  // #537：承诺句带一个可选的 `≥`（`fewest ≥ 3,900 lines`）；解析不到就红，不许静默变成永真。
-  const claimMatch = description.match(/fewest\s*(?:\u2265\s*)?([\d,]+) lines/u);
-  assert.ok(claimMatch, "描述里不再有 `fewest <数字> lines` 这一档 → 本测试的解析面失效（同步本测试，不许让断言静默变成永真）");
-  const claim = Number(claimMatch[1].replace(/,/g, ""));
-  // #543：描述**不再**自报精确的 `measured minimum N`（精确实测值是**证据**，不是承诺：写进对外文案就等于
-  // 让每次 floor 换人都欠一次文案同步），但「档位是怎么来的」这句换算式必须还在，否则承诺值又退回一个无出处的裸数字。
-  assert.match(description, /rounded down to the nearest 50/u,
-    "描述不再说明档位是「向下取整到 50 行」得来的：承诺值会退回一个无出处的裸数字（#543）");
-  assert.doesNotMatch(description, /measured minimum [\d,]+/u,
-    "描述又自报了精确的 `measured minimum N`：实测最小值是**证据**不是承诺，写进面向模型的文案就等于让每次 floor 换人都欠一次文案同步"
-    + "（#543；承诺只有档位，档位由 `assertTierTight` 钉住）");
-  // 全称句的**下界**也要与承诺值一致（比实测更宽 ⇒ 依然为真且不夸大）。
-  const universalMatch = description.match(/no file in those three trees reads fewer than ([\d,]+)/u);
-  assert.ok(universalMatch,
-    "描述不再明写 floor 的口径（`src`/`bin`/`examples` 三棵树的最小值）→ 读者会把它当成本仓任意 `.js` 的下限（#453）");
-  const universalBound = Number(universalMatch[1].replace(/,/g, ""));
-
-  const scanned = listShippedSourceFiles().map(measureReadLineCapacity);
-  const fewest = scanned.reduce((a, b) => (b.capacity < a.capacity ? b : a));
-  const pinned = measureReadLineCapacity(roleFile("fewest"));
-
-  // 1) `fewest` 角色钉的必须就是全树真最小值（新文件一低就红；不是「> 3,000」那种松阈值）。
-  assert.equal(fewest.rel, pinned.rel,
-    `全树「一次装得最少」已不是 ${pinned.rel}（现在是 ${fewest.rel}，${fewest.capacity} 行 / ${fewest.bytesPerLine.toFixed(2)} B/line）`
-    + " → readFile 描述里的 floor 已不再对全树为真：按 measureReadLineCapacity 复测后同步描述、角色表与本测试");
-  assert.equal(fewest.capacity, pinned.capacity,
-    `${fewest.rel} 容量实测 ${fewest.capacity} 与角色表记录值 ${pinned.capacity} 不同（同一个文件的两份实测对不上）`);
-
-  // 2) #543：**档位紧致性**（零容差、双向、锚点是描述里的档位而不是实测值）——
-  //    `tier_floor ≤ 实测 < tier_floor + 50`，判据本体在 `assertTierTight`（上面有注释说明三条）。
-  //    本条取代 #537 的 `|实测 − 承诺| ≤ 50`：旧形态是**双向 50**，会把「承诺 3,950 / 实测 3,901」（差 47）
-  //    判绿 —— 那就是「档位虚高、描述在说谎」这条假数字通道。新形态同时排除虚高（①）与虚低（②），
-  //    并额外要求承诺落在 50 行档的边界上（③），而它**永不因 floor 换人而陈旧**（同档内一个字都不用改）。
-  assertTierTight(fewest.capacity, claim, `描述承诺的 floor vs 全树实测最小值（${fewest.rel}）`);
-
-  // 3) 描述里自报的 `measured minimum` 已按 #543 从**面向模型的承诺**里摘掉（它只是证据，不是承诺：
-  //    写进去等于让每次 floor 换人都欠一次文案同步）。这里只钉**剩下的那一半**：
-  //    全称句的下界与承诺值必须一字不差（同一段话里两个下界互相矛盾 = 读者会信那个更小的）。
-  assert.equal(universalBound, claim,
-    `全称句说「no file … reads fewer than ${universalBound}」而承诺值是 ${claim}：同一段话里两个下界必须一致（#543）`);
-
-  // 4) 口径证明（信息性 + 一条恒真的包含关系）：#271 的写死样本只覆盖全树的一部分，它的下界**不低于**全树下界；
-  //    样本下界高于全树下界—— 这正是 #453 的缺口，也是为什么这一格必须枚举全树而不是复测样本。
-  const sampleRows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
-  const sampleFewest = sampleRows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
-  assert.ok(sampleFewest.capacity >= fewest.capacity,
-    `写死样本的下界 ${sampleFewest.capacity}（${sampleFewest.rel}）反而低于全树下界 ${fewest.capacity}：样本不是全树的子集？重算逻辑被改坏`);
-  console.log("#453 floor census:", JSON.stringify({
-    scope: READ_LINE_CAPACITY_DIRS.join("/"),
-    scanned: scanned.length,
-    top5: scanned.slice().sort((a, b) => a.capacity - b.capacity).slice(0, 5).map((row) => ({
-      file: row.rel,
-      bytes: row.bytes,
-      lines: row.lines,
-      bytesPerLine: Number(row.bytesPerLine.toFixed(4)),
-      capacity: row.capacity,
-      cjkShare: Number((row.cjkShare * 100).toFixed(2)),
-    })),
-    pinnedFewest: { file: pinned.rel, capacity: pinned.capacity },
-    pinnedSampleFewest: { file: sampleFewest.rel, capacity: sampleFewest.capacity },
-    claim,
-    tierFloorFromMeasurement: Math.floor(fewest.capacity / 50) * 50,
-    universalBound,
-    tierTight: { floor: claim, measured: fewest.capacity, span: [claim, claim + 50] },
-  }));
-});
-
-// ---------------------------------------------------------------------------
-// issue #543 反向证 ②：**新的档位紧致性断言真的比旧的 ±50 形态更严**。
-// 这条测试存在的理由：把 `assertTierTight` 退回 #537 的 `|实测 − 承诺| ≤ 50` 语义，**它必须红**。
-// 它红的方式不是看源码文本，而是真的调用那个谓词：旧语义会放过（3,901, 3,950）这一对（差 47），
-// 于是下面那两条 `assert.throws` 当场变成「它没抛」⇒ 红。这是「退回旧形态」的可执行闸门。
-// ---------------------------------------------------------------------------
-test("readFile floor 的档位紧致性断言比 #537 的 ±50 形态更严（#543 反向证：承诺虚高到 3,950 必须判红）", () => {
-  // 先记录旧形态的语义（不是断言目标，是**对照物**）：双向 50 ⇒ 实测 3,901 / 承诺 3,950 只差 47，旧形态绿。
-  const legacyWithinFifty = (measured, claim) => Math.abs(measured - claim) <= 50;
-  assert.ok(legacyWithinFifty(3_901, 3_950),
-    "旧形态（|实测 − 承诺| ≤ 50）应当放过「实测 3,901 / 承诺 3,950」这一对：它是本片要拆的假数字通道的入口"
-    + "（如果这条红了，说明本测试的对照物写错了，不是被测代码的问题）");
-  // ① 档位虚高（承诺高于实测）：3,950 > 3,901 ⇒ 必须判红。旧形态在这一对上**绿** ⇒ 新形态严格更严。
-  assert.throws(() => assertTierTight(3_901, 3_950, "反向证：承诺虚高一档"), /档位虚高/u,
-    "紧致性断言没把「承诺 3,950 / 实测 3,901」判红 —— 要么断言被退回旧的 ±50 形态（#543 不许），"
-    + "要么三条判据少了一条（档位虚高 = 描述在对模型说谎）");
-  // ② 档位虚低（承诺落后实测 ≥ 50）：3,901 已掉出 [3,850, 3,900) ⇒ 也必须判红（这一侧旧形态也有，但它按距离量）。
-  assert.throws(() => assertTierTight(3_901, 3_850, "反向证：承诺虚低一档"), /档位虚低/u,
-    "紧致性断言没把「实测 3,901 / 承诺 3,850」判红 —— 承诺落后实测 ≥ 50 行就是过度保守的假小数字");
-  // ③ 承诺不在档位边界上（3,903 不是 50 的整数倍）：旧形态对这一点**一个字都没说**，新形态必须判红。
-  assert.throws(() => assertTierTight(3_901, 3_903, "反向证：承诺不是档位边界"), /不是 50 的整数倍/u,
-    "紧致性断言没把「承诺值不在 50 行档边界上」判红 —— 那样「rounded down to the nearest 50」这句换算式就是假话");
-  // ④ 正向：今天这对（实测 3,901 / 承诺 3,900）必须通过 —— 否则本测试会以「把所有值都判红」的方式假绿。
-  assert.doesNotThrow(() => assertTierTight(3_901, 3_900, "正向：今天这一对"),
-    "紧致性断言把今天这一对（实测 3,901 / 承诺 3,900）也判红了：三条判据里有一条方向反了");
-});
-
-// ---------------------------------------------------------------------------
-// issue #275：全仓扫描（src/bin/examples 下的 `*.js`）从「钉死条数」降级为**只断单调性质 + 信息性输出**。
-// 它保留的价值是「描述里 floor / CJK 最密那两句有没有被新文件推翻」；它**不再**因为
-// 「有人新增了一个普通的 `.js`」而红——旧写法 `assert.deepEqual(盘上枚举, 写死清单)` 正是在这里给全仓加税：
-// 红的是一个测 readFile 额度的文件，而改的人往往不知道为什么红。
-// 单调性说明：本格的阈值是**松的**（旧文案的 3,000），普通新增（平均行字节不超过约 87B）不会碍它；
-// 真正「新文件把 floor 拉低」的硬闸在上一格（`承诺值 == 全树真最小值向下取整到 50`，#453/#537），这一格只守旧文案那档底线。
-// ---------------------------------------------------------------------------
-
-test("readFile 行数容量：全仓扫描只留单调性质与信息性输出，新增一个文件不得变红（#275）", () => {
-  const scanned = listShippedSourceFiles().map(measureReadLineCapacity);
-  // 单调性质 1：盘上能找到的文件不少于写死样本（新增只会变大；跌到比样本还少才是真信号）。
-  assert.ok(scanned.length >= READ_LINE_CAPACITY_SAMPLE.length,
-    `盘上 ${READ_LINE_CAPACITY_DIRS.join("/")} 的 *.js 只剩 ${scanned.length} 个，比 #271 的写死样本（${READ_LINE_CAPACITY_SAMPLE.length}）还少`
-    + " → 有样本文件被删除，描述里的档位要重测（新增不会走到这条）");
-  // 单调性质 2：全树实测下界仍不得跌进 #264 旧文案那档（阈值取旧下界 3,000 而不是描述声称的 floor，
-  // 就是为了让新增宽容件不红；「承诺值 == 全树下界向下取整到 50」的硬闸在上一格）。
-  const fewest = scanned.reduce((a, b) => (b.capacity < a.capacity ? b : a));
-  const densest = scanned.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
-  assert.ok(fewest.capacity > 3_000,
-    `${fewest.rel} 一次只能装 ${fewest.capacity} 行（均行 ${fewest.bytesPerLine.toFixed(1)}B），已跌进旧文案的 3,000 那档`
-    + " → 描述里的 floor 已被新文件推翻，要按 measureReadLineCapacity 重测并改描述");
-  // 信息性输出（不断言）：本仓当前分布、极值落在哪两个文件上、描述点名的两个锚点是否仍站得住。
-  // ⚠ `fewest` 角色 2026-10-25（#453）起钉的是全树真最小值 ⇒ `fewestIsThePinnedOne` 必须为 true
-  //   （上一格把它钉死了；这里只报告）；`densest` 仍钉写死样本（全树最密现在是 floor 那个文件 45.02%），
-  //   所以 `densestIsThePinnedOne` 为 false 是**如实报告**的已知差异，不是红。
-  console.log("#275 read-line capacity sweep:", JSON.stringify({
-    scanned: scanned.length,
-    pinnedSample: READ_LINE_CAPACITY_SAMPLE.length,
-    fewest: { file: fewest.rel, capacity: fewest.capacity, bytesPerLine: Number(fewest.bytesPerLine.toFixed(2)) },
-    densest: { file: densest.rel, cjkShare: Number((densest.cjkShare * 100).toFixed(1)) },
-    anchorsStillHold: {
-      fewestIsThePinnedOne: fewest.rel === roleFile("fewest"),
-      densestIsThePinnedOne: densest.rel === roleFile("densest"),
-    },
-  }));
-});
