@@ -463,6 +463,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/fold-note-honesty-741.test.js` | 0 | `onEvent`×2 | MIGRATE · NOT-OPTION-SURFACE（人手裁决 #741：两处 `onEvent` 都写在 `capabilities.hooks` 规位里，槽位名本身就是新家 ⇒ 扁平写点实测 0，无待迁项） |
 | `test/loop-host-steer-turn-753.test.js` | 8 | `onEvent`×6, `onObserverError`×2 | MIGRATE · S7c（8）（#753 C1 落树于 S7c 关闭之后：8 点全是顶层扁平回调搭台，重新排队迁 `capabilities.hooks`） |
 | `test/store/ledger-recovery-rows-769.test.js` | 1 | `onEvent`×1 | MIGRATE · S7c（1） |  <!-- #769 R3 人手裁决：一个 `runDirect` 顶层扁平 `onEvent` 搭台同时收 `persistence_capability_degraded` 与终局事件，不在 `runToolLoop` 选项面规位里 ⇒ 沿 #495/#753 先例归 S7c，重新排队 -->
+| `test/run-event-handlers-textualized-862.test.js` | 1 | `onEvent`×1 | TODO（人手裁决：分类列） |
 
 > **人手裁决（#753 C1）：`test/loop-host-steer-turn-753.test.js` = `MIGRATE · S7c（8）`。**先记一句事实：
 > 本片的**新能力面写点**（`capabilities.hooks.nextUserTurn`）一子都不在本表里——AST 抽到的 8 点全是
@@ -512,8 +513,9 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 10 | 31 |  <!-- #741：`test/compact/fold-note-honesty-741.test.js` 并入本类（文件数 9→10，写点 0→0）：它的 `onEvent` 落在 `capabilities.hooks` 规位里，扁平写点实测 0 -->
 | `COMPAT-PIN` | 13 | 81 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
 | `OWNED-BY-S5` | 5 | 13 |
+| `TODO（人手裁决：分类列）` | TODO（人工维护：无清单可数） | 1 |
 | `OWNED-BY-S6` | 5 | 28 |
-| **合计（现在实测）** | **70** | **200** |
+| **合计（现在实测）** | **71** | **201** |
 
 脚注：
 
