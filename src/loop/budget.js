@@ -164,6 +164,23 @@ export function toolContextFor({
 export const TRUNCATION_MARKER_RESERVE_TOKENS = 320;
 
 /**
+ * 标记的**判据词**（issue #609 复审 ①）：「被截断」这件事必须落在标记**最前面的码点**上。
+ *
+ * 为什么是位置问题而不是措辞问题：预算小到连标记都装不下时，返回值只能是标记的前缀，
+ * 而前缀能带走的**只有开头那几个码点**。旧文案以「[本条内容已超上下文预算，尾部已被引擎
+ * 截断」这一长串开头 ⇒ `截断` 二字落在第 20 多个码点（本估算器下要 ~40 token 才看得见），
+ * 于是 `budget=1 → "["`、`budget=5 → "[本条"`：模型拿到的仍是「看起来像正常内容」的片段，
+ * 正是 #609 要消灭的那个形状。判据词提到第 1～2 个码点后，门槛从 ~40 token 降到 4 token。
+ *
+ * 下面的数字**由 `estimateTokens` 现算**（估算器变了它跟着变），用例钉的是当前实测值：
+ * 一个汉字值 2 token ⇒ 预算 1 连一个字都装不下（物理下限，`G9b` 显式钉住那条取舍）。
+ */
+export const TRUNCATION_JUDGE_WORD = "截断";
+
+/** 判据词自己的开销：低于它，返回值只能带走判据词的前缀（见 `TRUNCATION_JUDGE_WORD`）。 */
+export const TRUNCATION_JUDGE_WORD_TOKENS = estimateTokens(TRUNCATION_JUDGE_WORD);
+
+/**
  * 截断标记里「怎么把剩余部分取回来」那一半（issue #609）。
  *
  * 口径抄 `aggregateStubText()`（被截 + 原始多少 + 怎么续 + 别重跑副作用命令），但
@@ -180,6 +197,9 @@ export const TRUNCATION_READ_BACK_CLAUSE =
 /**
  * 单条截断的尾部标记（issue #609）：内容被砍了要让模型看见，并且**报数字**。
  *
+ * 排列顺序是判据（复审 ①）：**判据词打头** ⇒ 被截成前缀也仍然说得出「被截断了」；
+ * 数字与续读指引排在后面，预算不够时先牺牲它们，绝不牺牲「被截了」这句话本身。
+ *
  * 确定性：输出只由这四个数字决定（无时间戳、无随机）⇒ 同一输入两次调用逐字相同，
  * run snapshot / resume 重放因此还能逐字比对。
  *
@@ -191,7 +211,8 @@ export function truncationMarkerText({
   originalChars, originalTokens, keptChars, keptTokens,
 }) {
   const droppedTokens = Math.max(0, originalTokens - keptTokens);
-  return "[本条内容已超上下文预算，尾部已被引擎截断："
+  // 判据词占住最前面的码点（见 `TRUNCATION_JUDGE_WORD` 那段：这里换顺序就是换判据）。
+  return `${TRUNCATION_JUDGE_WORD}[本条内容已超上下文预算，尾部已被引擎截断：`
     + `原文共 ${originalChars} 字符 ≈ ${originalTokens} token，`
     + `此处仅保留前 ${keptChars} 字符 ≈ ${keptTokens} token，被砍掉约 ${droppedTokens} token；`
     + TRUNCATION_READ_BACK_CLAUSE
@@ -229,7 +250,9 @@ function fitCharacterCount(characters, budgetTokens) {
  * 三条不变量（每条都有用例钉着）：
  *   ① 没被截断的输入**一个字节都不变**（下面那行早退，不加任何前后缀）；
  *   ② `estimateTokens(返回值) <= budgetTokens`：二分在 `budgetTokens - 标记额度` 上做，
- *      预算小到连标记都装不下时整段（含标记）再走一次同一二分（宁可标记被截半也不静默）；
+ *      预算小到连标记都装不下时整段（含标记）再走一次同一二分 ⇒ 返回值是**标记自己的
+ *      前缀**，而标记第一个词就是判据词（复审 ①），所以最坏情况模型仍看得见「截断」，
+ *      绝不会拿到一段「看起来像正常内容」的片段；
  *   ③ 同一输入两次调用逐字相同。
  *
  * @param {unknown} text
@@ -265,7 +288,9 @@ export function truncateTextToBudget(text, budgetTokens) {
     composed = compose(contentBudget);
   }
   if (estimateTokens(composed) <= budgetTokens) return composed;
-  // 走到这一格，预算连标记本身都装不下：整段（含标记）再截一次，标记至少还剩半句。
+  // 走到这一格，预算连标记本身都装不下：整段（此时正文已让到 0，整段 == 标记）再截一次。
+  // 退化阶梯由标记自己的前缀给出：判据词排在最前面 ⇒ 拿得下两个字就说「截断」，只拿得下一个
+  // 字就说「截」，物理上连一个字都拿不下（预算 1）才是空串（`G9b` 钉住这条取舍）。
   const whole = Array.from(composed);
   return whole.slice(0, fitCharacterCount(whole, budgetTokens)).join("");
 }

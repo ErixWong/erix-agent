@@ -11,7 +11,9 @@
 //   ② `estimateTokens(返回值) <= budgetTokens`（标记自己占预算，二分在
 //      `budgetTokens − TRUNCATION_MARKER_RESERVE_TOKENS` 上做 —— 否则 #846 那一族原样回来）；
 //   ③ 码点安全（切点只落码点边界，不劈开代理对）；
-//   ④ **没被截断的内容一个字节都不变**。
+//   ④ **没被截断的内容一个字节都不变**；
+//   ⑤ 复审 ①：被截到只剩标记前缀时，**「被截断」这句话仍要在最前面**（判据词 `截断`
+//      占住第 1～2 个码点）—— G9 / G9b 钉的就是这一条，旧形状（`budget=5 → "[本条"`）当场红。
 // 外加：标记确定性、措辞与聚合桩同源（`NO_RERUN_SIDE_EFFECT_CLAUSE`）、以及
 // 「这一格在安全层里是最后一道」的可达面事实（G7/G8 —— 免得下一个读者以为标记天天出场）。
 //
@@ -23,6 +25,8 @@ import test from "node:test";
 import { estimateTokens } from "../src/tokens.js";
 import { NO_RERUN_SIDE_EFFECT_CLAUSE, aggregateStubText } from "../src/loop/aggregate-budget.js";
 import {
+  TRUNCATION_JUDGE_WORD,
+  TRUNCATION_JUDGE_WORD_TOKENS,
   TRUNCATION_MARKER_RESERVE_TOKENS,
   TRUNCATION_READ_BACK_CLAUSE,
   safeTruncateMessages,
@@ -40,6 +44,13 @@ function hasLoneSurrogate(text) {
   return Buffer.from(text, "utf8").toString("utf8") !== text;
 }
 
+/** 标记在返回值里的起点（判据词就是标记的第一个字，复审 ①）。 */
+function markerStartOf(text) {
+  const index = text.indexOf(TRUNCATION_JUDGE_WORD);
+  assert.ok(index >= 0, `返回值里找不到判据词：${text.slice(0, 60)}`);
+  return index;
+}
+
 /** 把标记里那四个数字取回来（逐字解析，断言的是模型真能读到的数，不是内部变量）。 */
 function markerNumbers(marker) {
   const matched = /原文共 (\d+) 字符 ≈ (\d+) token，此处仅保留前 (\d+) 字符 ≈ (\d+) token，被砍掉约 (\d+) token/u;
@@ -54,7 +65,7 @@ test("G1 截断后尾部带标记，且报的是真数字（原文/保留/被砍
   assert.notEqual(out, value, "超预算必须被截");
   assert.match(out, /\[本条内容已超上下文预算，尾部已被引擎截断：/u, "模型必须看见「被截了」");
 
-  const markerStart = out.indexOf("[本条内容已超上下文预算");
+  const markerStart = markerStartOf(out);
   const keptText = out.slice(0, markerStart);
   const marker = out.slice(markerStart);
   const [originalChars, originalTokens, keptChars, keptTokens, droppedTokens] = markerNumbers(marker);
@@ -122,7 +133,7 @@ test("G3b 反向证：这条预算判据不是恒绿 —— 先截后贴（旧�
 test("G3c 二分确实跑在 `budgetTokens − 标记额度` 上：正文只拿让出额度之后那块", () => {
   const budget = 4096;
   const out = truncateTextToBudget(bigDocument(), budget);
-  const markerStart = out.indexOf("[本条内容已超上下文预算");
+  const markerStart = markerStartOf(out);
   const keptTokens = markerNumbers(out.slice(markerStart))[3];
   const allowance = budget - TRUNCATION_MARKER_RESERVE_TOKENS;
   // 二分取的是「不超过额度」的最长前缀：拿满了额度（码点粒度内），又不多吃。
@@ -237,17 +248,68 @@ test("G8 安全层：预算宽松时逐字不动，且第一步是整轮删除�
   assert.ok(tight.tokensAfter <= 64_000);
 });
 
-test("G9 极小预算既不静默也不超预算：返回标记自己的最长码点前缀", () => {
+test("G9 极小预算既不静默也不超预算：返回值是标记自己的前缀，判据词排最前（复审 ①）", () => {
   const value = bigDocument(200);
-  for (const budget of [1, 5, 20]) {
+  // 兑底分支里正文会被让到 0 ⇒「整段」就是这条零保留的标记，拿它当前缀尺子。
+  const marker = truncationMarkerText({
+    originalChars: Array.from(value).length,
+    originalTokens: estimateTokens(value),
+    keptChars: 0,
+    keptTokens: 0,
+  });
+  // 结构守卫：判据词必须在标记**开头**（否则下面「前缀也带判据词」的断言名不副实）。
+  assert.ok(marker.startsWith(TRUNCATION_JUDGE_WORD), `标记没以判据词开头：${marker.slice(0, 24)}`);
+
+  for (const budget of [1, 2, 5, 10, 20, 64, TRUNCATION_JUDGE_WORD_TOKENS]) {
     const out = truncateTextToBudget(value, budget);
-    assert.ok(out.length > 0, `budget=${budget} 直接返回空串 = 又变回静默丢失`);
     assert.ok(estimateTokens(out) <= budget, `budget=${budget} 超预算`);
-    assert.equal(hasLoneSurrogate(out), false);
-    // 装不下整条标记时宁可把标记截半（仍是「本条内容已超上下文预算…」的开头），
-    // 也不要退化成「看起来像正常内容」的裸前缀。
-    assert.equal("[本条内容已超上下文预算".startsWith(out.slice(0, 6)), true, out);
+    assert.equal(hasLoneSurrogate(out), false, `budget=${budget} 勬开代理对`);
+    // 收紧（旧断言 `"["` 也能过）：返回值只能是**标记自己的**前缀，不能是一段内容前缀。
+    assert.ok(
+      marker.startsWith(out),
+      `budget=${budget} 返回值不是标记的前缀 ⇒ 又回到静默截断：${JSON.stringify(out)}`,
+    );
+    if (budget >= TRUNCATION_JUDGE_WORD_TOKENS) {
+      // 只要求「装得下判据词」那一格起：输出里必须有「截断」二字，且就在开头。
+      assert.ok(
+        out.startsWith(TRUNCATION_JUDGE_WORD) && out.includes("截断"),
+        `budget=${budget} 的返回值里没有判据词“截断” ⇒ 模型看不出内容被截过：`
+        + JSON.stringify(out),
+      );
+    } else {
+      // 物理下限那一格（见 G9b）：只能带走判据词自己的前缀（“截”），绝不是内容片段。
+      assert.ok(
+        TRUNCATION_JUDGE_WORD.startsWith(out),
+        `budget=${budget} 返回了判据词以外的片段：${JSON.stringify(out)}`,
+      );
+    }
   }
+});
+
+test("G9b 判据词的开销 = 4 token：预算 1/2/3 的取舍写死，不留没有用例覆盖的静默分支（复审 ①）", () => {
+  // 本估算器下**一个汉字值 2 token**（tokens.js：cjkTokensPerChar 1.5 × margin 1.15 后取整）
+  // ⇒ 判据词「截断」要 4 token，这是「模型能看见『截断』二字」的最低预算。
+  assert.equal(estimateTokens("截"), 2);
+  assert.equal(TRUNCATION_JUDGE_WORD_TOKENS, 4);
+
+  const value = bigDocument(200);
+  const ladder = [1, 2, 3, 4, 5].map((budget) => truncateTextToBudget(value, budget));
+  // 逐字钉住退化阶梅：估算器系数若变了，这一格要按它现报的值改——它钉的就是当前实测的
+  // 物理下限，不是凑数。
+  assert.deepEqual(
+    ladder,
+    ["", "截", "截", "截断[", "截断["],
+    `退化阶梅变了：${JSON.stringify(ladder)}`,
+  );
+  // 取舍（写在这里，不留没名的静默分支）：
+  //   · 预算 1 连一个汉字都装不下（1 个汉字 = 2 token）⇒ 返回空串。宁可不给字，也不给
+  //     一段「看起来像正常内容」的裸前缀（那才是 #609 的原始缺陷形状），而超预算会把 #846
+  //     那族 `budgetUnreachable` 原样引回来；
+  //   · 预算 2、3 只能带走判据词的第一个字「截」（仍是标记的最开头，不是内容）；
+  //   · 预算 >= 4 起必有完整的「截断」（G9 逐格钉）——旧文案里该二字要 ~40 token 才露出来。
+  assert.ok(estimateTokens(ladder[0]) <= 1, "预算 1 不能超预算");
+  assert.ok(ladder[1].length === 1 && ladder[2].length === 1, "预算 2/3 只剩判据词首字");
+  assert.ok(ladder[3].includes("截断"), "预算 4 起必须完整说出‘截断’");
 });
 
 test("G10 反复截断不膨胀：在已带标记的文本上再截一次仍 <= 预算", () => {
