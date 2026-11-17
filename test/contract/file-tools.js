@@ -84,9 +84,116 @@ const NEGATION_BEFORE_MEASURED = /\b(?:no|not|never|nothing|nor|rather than|inst
  * "a table"）。见到任何一个 ⇒ 该否定词作废，这句按正向声称处理。
  */
 const NEGATION_SCOPE_BREAK = /\b(?:but|yet|however|although|though|while)\b|[:;\u2014\u2013]/u;
-// ⚠ 这张表目前只有三个分支真的承重（`but` / `;` / `however`），各自的承重样本是
-//   `READ_DESC_MEASURED_LINE_LEGACIES` 末尾那**三条不带数字**的（带数字的会在第 ② 步硬规则就被抓走，
-//   走不到这里 ⇒ 摘词也不会红）。其余分支（`yet`/`although`/`though`/`while`/`:`/两个破折号）**没有**承重样本。
+/**
+ * 断点词表**每一个 token 一条**承重样本（key = 词表里的字面：一个词，或字符类里的一个字符）。
+ *
+ * 为什么是一张表而不是零散样本（#628 第三轮，打地鼠到此为止）：词表 10 个 token，此前只有 `but` / `;` /
+ * `however` 三个各有一条不带数字的样本。主 agent 在 `a0cbc03b` 上逐个摘掉实测：摘 `yet` / `although` / `:`
+ * 之后**红格数 0**（`though` / `while` / 两个破折号同理）⇒ 词表里 7 个 token 是**没人验的代码**。这张表配
+ * 三条断言（就在本文件「readFile 的描述把『读取额度』写成模型读得到的事实」那个用例里，标号 ④）把这个类
+ * 永远关掉：**加 token 不配样本 ⇒ 双向对账红；摘掉 token ⇒ 它那条样本的「必须不再被抓」红。**
+ *
+ * 每条样本必须同时满足三条（断言逐条验；不满足就**改句子**，不许改判据去迁就样本）：
+ *   ① **不带数字**：一旦句里出现「数字 + lines」，第 ② 步硬规则 `NUMBER_THEN_LINES` 先把它抓走，判定根本
+ *      走不到第 ③ 步的断点词分支 ⇒ 这个 token 又变回没人验（正是本轮要堵的那个病）；
+ *   ② `measured` **之后**同句内有 line/lines ⇒ 踩到 `MEASURED_THEN_LINES` 形状（否则整句不入判，「被抓」
+ *      永远不成立，那条样本只是躺着）；
+ *   ③ 否定词在前、与 `measured` 的距离 ≤ `NEGATION_MAX_DISTANCE`，且它到 `measured` **之间只有这一个**断点
+ *      token（别的 token 抢先命中就会替它承重 ⇒ 摘掉它照旧被抓 ⇒ 「必须不再被抓」那条断言当场红）。
+ */
+const NEGATION_SCOPE_BREAK_SAMPLES = [
+  ["but", "The cap is not a table but measured against the lines of our tree."],
+  ["yet", "The cap is not a table yet measured against the lines of our tree."],
+  ["however", "The cap is not a table, however, measured against the lines of our tree."],
+  ["although", "The cap is not a table although measured against the lines of our tree."],
+  ["though", "The cap is not a table though measured against the lines of our tree."],
+  ["while", "The cap is not a table while measured against the lines of our tree."],
+  [";", "Nothing here is a table; measured against the lines of our tree."],
+  [":", "Nothing here is a table: measured against the lines of our tree."],
+  ["\u2014", "Nothing here is a table \u2014 measured against the lines of our tree."],
+  ["\u2013", "Nothing here is a table \u2013 measured against the lines of our tree."],
+];
+
+/**
+ * 从 `NEGATION_SCOPE_BREAK.source` 读出它**真正**装了哪些 token（6 个词 + 字符类里的 4 个字符）。
+ * **不许手抄一份清单**：抄的那份不会跟着词表改，那就是第二本账（本单要堵的病正是「两本账分家」）。
+ *
+ * 形状锚点：整条正则必须是 `\\b(?:词|词|…)｜[逐字符列出的类]`。有人换写法（再加一条平行分支、词里带
+ * 大小写、或在类里写 `a-z` 区间）会让这里当场抛——那是「请扩解析器」，**不是**把 token 悄悄漏出对账
+ * （漏出去的那个 token 就又回到没人验的状态，而测试照样绿）。
+ *
+ * @param {RegExp} [pattern] 被解析的词表（默认 `NEGATION_SCOPE_BREAK`）
+ * @returns {{words: string[], chars: string[]}} 词分支的词 + 类里的字符（`\uXXXX` 已解成真字符）
+ */
+function negationScopeBreakTokens(pattern = NEGATION_SCOPE_BREAK) {
+  const shape = pattern.source.match(/^\\b\(\?:([a-z|]+)\)\\b\|\[(.*)\]$/u);
+  if (shape === null) {
+    throw new Error(`断点词表的写法不再是「\\b(?:词|…)｜[字符类]」，解析器读不出 token 清单了`
+      + `（宁可当场抛，也不要漏掉一个没人验的 token）：${pattern.source}`);
+  }
+  const classBody = shape[2];
+  if (classBody.includes("-")) {
+    throw new Error(`断点词表的字符类里出现区间写法 "-"：解析器只认逐字符列出，`
+      + `请扩解析器或改回逐字符：${classBody}`);
+  }
+  return { words: shape[1].split("|"), chars: decodeScopeBreakClassBody(classBody) };
+}
+
+/**
+ * 把字符类的**源码文本**逐段读成字符：`.source` 给的是源码，`\u2014` 在那里是字面的 6 个字符
+ * （`\`、`u`、`2`、`0`、`1`、`4`），不解开就会读出 6 个假 token。
+ */
+function decodeScopeBreakClassBody(body) {
+  const chars = [];
+  for (let index = 0; index < body.length; index += 1) {
+    if (body[index] !== "\\") {
+      chars.push(body[index]);
+      continue;
+    }
+    const rest = body.slice(index + 1);
+    const hex4 = rest.match(/^u([0-9a-fA-F]{4})/u);
+    const hexBraced = rest.match(/^u\{([0-9a-fA-F]+)\}/u);
+    if (hex4 !== null) {
+      chars.push(String.fromCodePoint(Number.parseInt(hex4[1], 16)));
+      index += 5; // `\u` + 4 位十六进制
+    } else if (hexBraced !== null) {
+      chars.push(String.fromCodePoint(Number.parseInt(hexBraced[1], 16)));
+      index += 3 + hexBraced[1].length; // `\u{` + 十六进制 + `}`
+    } else {
+      chars.push(rest[0]); // `\]` `\/` 之类：反斜杠只是「下一个字符是字面量」的标记
+      index += 1;
+    }
+  }
+  return chars;
+}
+
+/** 字符类里的字面量：这四个必须转义（`-` 会被读成区间、`]` 会关掉类、开头 `^` 会变取反、`\` 是转义标记）。 */
+const escapeScopeBreakClassChar = (char) => (/[\\\]^.-]/u.test(char) ? `\\${char}` : char);
+
+/**
+ * 造一张**被削弱的**断点词表：只摘掉 `token` 这一个，其余原样保留（解析 → 过滤 → 重建，**真摘**）。
+ * 它就是「把每个 token 逐个摘掉试一遍」的那次人工变异，现在跑在测试里（见 `NEGATION_SCOPE_BREAK_SAMPLES`）。
+ *
+ * @param {string} token 要摘掉的 token（词表里的一个词，或类里的一个字符）
+ * @param {RegExp} [pattern] 原词表
+ * @returns {RegExp} 少了这一个 token 的词表
+ * @throws 词表里根本没有这个 token（摘无可摘 ⇒ 交给「词表 ↔ 样本」双向对账去红，这里先说清原因）
+ */
+function scopeBreakWithout(token, pattern = NEGATION_SCOPE_BREAK) {
+  const { words, chars } = negationScopeBreakTokens(pattern);
+  const restWords = words.filter((word) => word !== token);
+  const restChars = chars.filter((char) => char !== token);
+  if (restWords.length === words.length && restChars.length === chars.length) {
+    throw new Error(`断点词表里没有 token ${JSON.stringify(token)}，摘无可摘（样本表里多了一条没人认领的样本）`);
+  }
+  const parts = [];
+  if (restWords.length > 0) parts.push(`\\b(?:${restWords.join("|")})\\b`);
+  if (restChars.length > 0) parts.push(`[${restChars.map(escapeScopeBreakClassChar).join("")}]`);
+  // 词表原本只剩这一个 token 时，摘掉后一条分支都不剩：给恒不匹配的 `(?!)`（零宽负向查空串）而不是空源码
+  // （`new RegExp("")` 匹配空串 ⇒ 断点词表变成**永真**，方向正好反了）。
+  return new RegExp(parts.length > 0 ? parts.join("|") : "(?!)", "u");
+}
+
 /**
  * 否定词与 `measured` 的最大距离（去掉两端空白后计）：隔得太远就是两句不相关的话，不算统治。
  *
@@ -145,12 +252,18 @@ function measuredSentenceKey(text) {
 /** 白名单的归一索引（`measuredSentenceKey` 之后整句相等才算命中）。 */
 const MEASURED_POLICY_KEYS = new Set(MEASURED_POLICY_SENTENCES.map(measuredSentenceKey));
 
-/** 否定词后面紧跟的这段文字（去掉两端空白）是否还在它的管辖范围内。 */
-function negationGoverned(prefix) {
+/**
+ * 否定词后面紧跟的这段文字（去掉两端空白）是否还在它的管辖范围内。
+ *
+ * @param {string} prefix `measured` 之前的那段文字
+ * @param {{scopeBreak?: RegExp}} [options] `scopeBreak` = 断点词表，默认 `NEGATION_SCOPE_BREAK`；
+ *   只有「把一个 token 从词表里摘掉再跑一遍」的承重测试会传削弱版（见 `scopeBreakWithout`）。
+ */
+function negationGoverned(prefix, { scopeBreak = NEGATION_SCOPE_BREAK } = {}) {
   for (const negation of prefix.matchAll(NEGATION_BEFORE_MEASURED)) {
     const scope = prefix.slice(negation.index + negation[0].length).trim();
     if (scope.length > NEGATION_MAX_DISTANCE) continue;
-    if (NEGATION_SCOPE_BREAK.test(scope)) continue;
+    if (scopeBreak.test(scope)) continue;
     return true;
   }
   return false;
@@ -195,15 +308,19 @@ function negationGoverned(prefix) {
  *
  * 旧版的松处（已修）：只看「`measured` 之前有没有否定词」，于是 "the cap is **not** a table **but**
  * measured on our tree: 86,000 lines" 被放过——`not` 管的是 "a table"，却把 `measured` 一起赦免了。
- * 这正是 `NEGATION_SCOPE_BREAK` 存在的理由，六条这样的样本在 `READ_DESC_MEASURED_LINE_LEGACIES` 里钉住它。
- * ⚠ 但其中**只有那三条不带数字的**真正给「断点词表」承重（各自钉住一个词：`however` / `but` / `;`）：
- *   另外三条都写着「数字 + lines」⇒ 在第 ② 步就被与否定无关的硬规则抓走，根本走不到第 ③ 步
- *   （于是把 `but` 或 `;` 从词表里摘掉，测试照样全绿——实测于 #628 独立验收）。
+ * 这正是 `NEGATION_SCOPE_BREAK` 存在的理由。⚠ 给这张**词表**承重的是 `NEGATION_SCOPE_BREAK_SAMPLES`
+ * 那十条**不带数字**的样本（一个 token 一条，配「有它必须被抓 / 摘掉它必须放过」两条断言）：
+ * `READ_DESC_MEASURED_LINE_LEGACIES` 里同族的三条都写着「数字 + lines」⇒ 在第 ② 步就被与否定无关的硬规则
+ * 抓走，根本走不到第 ③ 步（于是把 `but` 或 `;` 从词表里摘掉，测试照样全绿——实测于 #628 独立验收，
+ * 逐 token 的实测结论见 `NEGATION_SCOPE_BREAK_SAMPLES` 的注释）。
  *
  * @param {string} text readFile 面向模型的描述
+ * @param {{scopeBreak?: RegExp}} [options] `scopeBreak` = 第 ③ 步用的否定断点词表，默认
+ *   `NEGATION_SCOPE_BREAK`；传削弱版（`scopeBreakWithout`）就是「把这个 token 摘掉再判一遍」，
+ *   承重测试靠它证明每条样本真的靠那个 token 被抓（见 `NEGATION_SCOPE_BREAK_SAMPLES`）。
  * @returns {string[]} 命中的句子（正向声称），逐条给报错文案用
  */
-function positiveMeasuredLineClaims(text) {
+function positiveMeasuredLineClaims(text, { scopeBreak = NEGATION_SCOPE_BREAK } = {}) {
   return String(text ?? "")
     .split(SENTENCE_BOUNDARY)
     .map((sentence) => sentence.trim())
@@ -214,7 +331,7 @@ function positiveMeasuredLineClaims(text) {
       if (!measured) return false;
       // ② 硬规则（与否定无关，先于否定启发式）：写了行数就是声称，否定词管不着。
       if (NUMBER_THEN_LINES.test(sentence.slice(measured.index))) return true;
-      if (negationGoverned(sentence.slice(0, measured.index))) return false;
+      if (negationGoverned(sentence.slice(0, measured.index), { scopeBreak })) return false;
       return MEASURED_THEN_LINES.test(sentence.slice(measured.index));
     });
 }
@@ -222,10 +339,14 @@ function positiveMeasuredLineClaims(text) {
 /**
  * #628 从描述里删掉的**正向声称原文**（逐字取自改动前的描述，即 `f80d48ca~1:src/tools/file-tools.js`）。
  * ①面：接回描述必须被 `positiveMeasuredLineClaims` 抓到；抓不到就说明形状写坏了 / 永真。
- * 前两条是**逐字取自改动前描述**的历史正向声称；后八条是假设样本，专门铉住「否定词必须真的统治
- * `measured`」（六条，其中**三条不带数字的**才给 `NEGATION_SCOPE_BREAK` 的词表承重，一条一个词）、「白名单只认
- * 逐字」与「写了行数就是声称（`NUMBER_THEN_LINES` 那条与否定无关的硬规则）」这三步（旧写法把它们全放过
- * 了——没有它们，`NEGATION_SCOPE_BREAK`、`NEGATION_MAX_DISTANCE` 与那条硬规则就是没人踩的代码）。
+ * 前两条是**逐字取自改动前描述**的历史正向声称；后五条是假设样本，分别铉住「否定词必须真的统治
+ * `measured`」（三条，**都带数字**）、「白名单只认逐字」与「写了行数就是声称（`NUMBER_THEN_LINES` 那条与
+ * 否定无关的硬规则）」这三步（旧写法把它们全放过了——没有它们，`NEGATION_MAX_DISTANCE` 与那条硬规则就是
+ * 没人踩的代码）。
+ *
+ * ⚠ 给 `NEGATION_SCOPE_BREAK` **词表**承重的样本不在这里，在 `NEGATION_SCOPE_BREAK_SAMPLES`（一个 token
+ *   一条、**全部不带数字**，配「有它必须被抓 / 摘掉它必须放过」两条断言）。本表那三条同族样本都写着
+ *   「数字 + lines」⇒ 在第 ② 步就被硬规则抽走，走不到断点词分支 ⇒ 它们只验硬规则，不验断点词。
  */
 const READ_DESC_MEASURED_LINE_LEGACIES = [
   "Measured that way on this repo's own `.js` sources under `src/`, `bin/` and `examples/` at the default "
@@ -243,25 +364,11 @@ const READ_DESC_MEASURED_LINE_LEGACIES = [
   "The cap is not a table but measured on our tree: 86,000 lines.",
   "Nothing here is a table; measured on our tree: 151,000 lines.",
   "The cap is not a table, however, measured on our tree: 86,000 lines.",
-  // ↓ 第四条同族样本，但它**故意不带数字**——这是 `NEGATION_SCOPE_BREAK` 的词表（`however` 那个分支）
-  //   目前**唯一**的承重样本：`measured` 之后有 `lines` ⇒ 踩到 `MEASURED_THEN_LINES` 形状；没有数字 ⇒ 第 ② 步
-  //   硬规则 `NUMBER_THEN_LINES` 不触发，判定才真的落到第 ③ 步：`not` 在前、`however` 打断它的作用域 ⇒
-  //   不算统治 ⇒ 必须按正向声称被抓。
-  //   ⚠ 为什么这里**不能**写「86,000 lines」（上面三条都带）：硬规则跑在否定启发式**之前**，一旦句里出现
-  //   「数字 + lines」它就直接判红，第 ③ 步的断点词分支根本不参与判定 ⇒ 那个分支又变回没人验的代码
-  //   （上一轮实测：把 `however` 从 `NEGATION_SCOPE_BREAK` 里摘掉，测试仍 61/61 全绿）。判据是：摘掉
-  //   `however` 后这条必须从「被抓」变成「放过」——这才是真覆盖，其余三条只验硬规则，不验断点词。
-  "The cap is not a table, however, measured against the lines of our tree.",
-  // ↓ 同族的另外两条无数字样本，与上面那条同一条理由：`measured` 之后有 `lines` ⇒ 踩到形状；没有数字
-  //   ⇒ 第 ② 步硬规则不触发，判定才真的落到第 ③ 步的**断点词分支**。它们与 `however` 那条的区别只在
-  //   **断点词是哪一个**：这条靠 `but` 打断 `not` 的作用域，下一条靠 `;` 打断 `Nothing` 的作用域。
-  // ⚠⚠ 这两条分别是 `NEGATION_SCOPE_BREAK` 里 `but` 分支与 `;` 分支**目前唯一**的承重样本：
-  //   **不许带数字**（一写「数字 + lines」就被第 ② 步硬规则先截获，断点词分支又变回没人验的代码），
-  //   **不许删**（删掉任何一条，那个断点词就退回没人验的代码——#628 独立验收实测：摘掉 `but` 或 `;`
-  //   之后测试仍 61/61 全绿，就是这个洞）。判据同 `however` 那条：摘掉对应的词，这条必须从
-  //   「被抓」翻成「放过」。
-  "The cap is not a table but measured against the lines of our tree.",
-  "Nothing here is a table; measured against the lines of our tree.",
+  // ↓ 同族那三条**不带数字**的样本（原来钉 `however` / `but` / `;` 各一条）已搬进
+  //   `NEGATION_SCOPE_BREAK_SAMPLES`：那张表一个 token 一条（十个 token 全有），并多了「把该 token 从词表里
+  //   摘掉后这条必须不再被抓」那条承重断言 ⇒ 留在本表只是重复。它们在这里的使命（「不带数字 ⇒ 判定真的
+  //   落到第 ③ 步的断点词分支」）现在由那张表逐 token 完成；上面三条带数字的同族样本**不担当**那个职责
+  //   （它们先被 `NUMBER_THEN_LINES` 抽走），它们是「旧写法会把它们放过」的历史反向证，一条不许删。
   // ↓ 白名单不是逃生门（逐字命中才放行）：这句是政策句 1 的**近似变体**——前 43 字符与它逐字相同
   //   （"No line capacity is quoted here as a number"），只在 `measured` **之前**插了一个断点词 `, however,`
   //   （顺带把否定统治距离从恰好 40 推到 41），再把尾巴换成带 `lines` 的数 ⇒ 不再逐字命中白名单，
@@ -778,13 +885,41 @@ export function fileToolsContract(label, { createFileTools }) {
         return at !== null && NUMBER_THEN_LINES.test(sentence.slice(at.index));
       }).length === 0,
       "否定面样本里混进了「measured 之后写着数字 + 行」的那类（按硬规则它就是正向声称，该搬去 LEGACIES）");
+    // ④ 断点词表 ↔ 样本 双向对账 + 逐 token 的承重证明（#628 第三轮：这里以前是打地鼠——
+    //   `however`/`but`/`;` 补了样本，`yet`/`although`/`:`/`though`/`while`/两个破折号摘掉都还是绿的）。
+    //   token 清单**从 `NEGATION_SCOPE_BREAK.source` 解析**（`negationScopeBreakTokens`），不手抄第二份清单
+    //   ——抄一份就是第二本账，两本账分家正是本单要堵的病。
+    const { words: scopeBreakWords, chars: scopeBreakChars } = negationScopeBreakTokens();
+    const scopeBreakTokens = [...scopeBreakWords, ...scopeBreakChars];
+    const sampleTokens = NEGATION_SCOPE_BREAK_SAMPLES.map(([token]) => token);
+    assert.deepEqual([...new Set(sampleTokens)].sort(), [...new Set(scopeBreakTokens)].sort(),
+      "断点词表与样本表必须一一对应：词表里加了 token 不配样本 ⇒ 那个 token 就是没人验的代码（样本里多出一条 ⇒ "
+        + `它验的是词表里已不存在的分支）。词表=${JSON.stringify(scopeBreakTokens)} 样本=${JSON.stringify(sampleTokens)}`);
+    assert.ok(scopeBreakTokens.length >= 2,
+      `断点词表只剩 ${scopeBreakTokens.length} 个 token：上面那条对账退化成两个单元素数组相等（④ 变空跑）`);
+    for (const [token, sample] of NEGATION_SCOPE_BREAK_SAMPLES) {
+      // 前提：样本不许带数字（一带就被第 ② 步硬规则 `NUMBER_THEN_LINES` 先截获，判定走不到断点词分支）。
+      assert.equal(/\d/u.test(sample), false,
+        `样本里不许带数字（会被 NUMBER_THEN_LINES 先截获，该 token 又变回没人验）：${sample}`);
+      // 有它 ⇒ 被抓。
+      assert.ok(positiveMeasuredLineClaims(sample).length > 0,
+        `带 token ${JSON.stringify(token)} 的样本必须被抓成正向声称（否则它根本没在验断点词表）：${sample}`);
+      // 摘掉它 ⇒ 不再被抓（承重证明：逐 token 的人工变异，现在跑在测试里）。
+      const weakened = scopeBreakWithout(token);
+      // 变异本身也要成立：原词表认得这个 token、削弱版必须不再认得（否则「摘掉了」只是我以为）。
+      assert.ok(NEGATION_SCOPE_BREAK.test(`x ${token} y`) && !weakened.test(`x ${token} y`),
+        `削弱版必须真的把 token ${JSON.stringify(token)} 摘掉了：原 ${NEGATION_SCOPE_BREAK.source} vs 削弱 ${weakened.source}`);
+      assert.equal(positiveMeasuredLineClaims(sample, { scopeBreak: weakened }).length, 0,
+        `把 token ${JSON.stringify(token)} 从词表里摘掉后这条样本必须**不再**被抓——否则该 token 不承重：${sample}`);
+    }
     // ③ 两面样本不许被清空：清空后上面两个循环就是空循环（看起来在验，其实什么都没验）。
-    //   下限按现量钉：正向 10（两条逐字历史声称 + 六条「否定未真的统治」+ 一条「白名单只认逐字」
+    //   下限按现量钉：正向 7（两条逐字历史声称 + 三条带数字的「否定未真的统治」+ 一条「白名单只认逐字」
     //   + 一条「写着行数就与否定无关」）、否定 4。
-    //   ⚠ 那「六条否定未统治」里只有**不带数字的三条**给 `NEGATION_SCOPE_BREAK` 的词表承重，一条钉一个词
-    //   （`however` / `but` / `;`）；带数字的三条先被硬规则抓走，走不到断点词那一步。所以这六条一条都不能删。
-    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 10 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
-      "反向证的两面样本不够（正向 ≥10、否定 ≥4）：那两面退化成空循环（判据没人验）");
+    //   ⚠ 正向面从 10 降到 7：三条**不带数字**的同族样本已逐字搬进 `NEGATION_SCOPE_BREAK_SAMPLES`，并由上面
+    //   ④ 那组「词表 ↔ 样本双向对账 + 逐 token 摘除必须放过」接手承重（那张表十 token 全有 ⇒ 覆盖只多不少）。
+    //   剩下这三条带数字的先被 `NUMBER_THEN_LINES` 抽走，只验硬规则不验断点词，也是一条不许删的历史反向证。
+    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 7 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
+      "反向证的两面样本不够（正向 ≥7、否定 ≥4）：那两面退化成空循环（判据没人验）");
     // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);
