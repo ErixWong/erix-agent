@@ -1051,6 +1051,20 @@ export const FILE_TOOL_DEFINITIONS = [
     name: "readFile",
     // 额度事实只活在这一段文字里：模型看不到实现，只能靠它决定一次要多少（issue 261013 R3）。
     // 只写无状态的静态事实（默认值/单位换算），不引入「首次读某文件才提示」这类跨调用状态。
+    // ★ 2026-11-17 issue #628：**这一段去数字化了**——下面那些「本仓实测」的档位数字（fewest /
+    //   median / most、两个 CJK 锚点、#267 的三档 token 样本、本仓 `.js` 文件数）**整组删掉**，
+    //   不是漏改，也不要因为它们变红就把数字塞回来。裁决原文在 issue #628 的最后一条评论。
+    //   病根（#271 的样本选择 + #267 的自指锚点）：这些数是从**本仓源码统计**出来的，于是
+    //   「给 `src/loop/budget.js` 加 29 行中文注释」这种与 readFile 毫无关系的改动，会逼着改一句
+    //   **模型可见**的文案（#609 实测：样本中位 6,056 → 6,007，描述声称 6,157 越过 ±2% ⇒ 红）；
+    //   而 #267 的密实档锚点是**本文件自己** ⇒ 改这段注释会改掉它自己声称的数（自指）。
+    //   换样本只是把漂移源挪个地方，所以这里只留**不会漂的机制事实**：`max_bytes` 默认 262144
+    //   = 256 KiB、预算按 UTF-8 字节计、换算式（`wc -c` ÷ `wc -l`）、`offset`/`limit` 语义、marker 续读；
+    //   token 那一档改成**由 `src/tokens.js` 的 `estimateTokens()` 公式推出**的区间（现算：ASCII
+    //   3.0434 B/token ⇒ 256 KiB ≈ 86,134 token；纯汉字 1.7391 B/token ⇒ ≈ 150,733 token），
+    //   估算器改了而文案没跟，由 `test/tools/file-tools.test.js` 那两条稳定判据当场咬红：
+    //   ① 描述里不许再出现仓内实测数字（数字白名单 + 禁用形状），② token 区间必须等于估算器
+    //   现算的区间（双向）。下面第十七刷往上的历史注**保留**（它们是历史，不是现状）。
     // issue #267：token 那三个档是**复测值**，不是估的——口径 `estimateTokens(前 200 行)`，样本写死在
     // `test/tools/file-tools.test.js`：190（`src/text/label.js`，稀疏短行）/ 2,493（`bin/sessions.js`，
     // 工单样本的中位）/ 4,773（**本文件**，密中文注释 = CJK 密度上限，也是全包 83 个 `src/`+`bin/`+`examples/`
@@ -1170,27 +1184,24 @@ export const FILE_TOOL_DEFINITIONS = [
     //   同位数跟着刷；**判据一个没动**：±2% / ±1% 常量、`measureReadLineCapacity`、83 条写死样本、
     //   `assertTierTight` 全部一字未动——本刷只是复测 + 同步声称；让中位不随样本成员漂移的结构性修法是 #628）。
     description: "Read a text file by line range. "
-      + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
+      + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` "
+      + "continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
-      + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
-      + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
-      + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
-      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,850 lines "
-      + "(68.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,850 lines), "
-      + "median 6,007 (43.6), most 9,407 (27.9). "
-      + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
-      + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
-      + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,384 and "
-      + "this tool's own source fits 4,531. "
-      + "Nothing outside this repo "
-      + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
-      + "far more than a single `limit` will ask for, so it is rarely what stops you. "
-      + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
-      + "~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: ~190 tokens where lines "
-      + "are short and sparse, ~2,500 on typical source, and ~4,750 where lines are wide, comments are dense or the text "
-      + "is CJK \u2014 budget the tail, not the typical case. "
-      + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) rather than "
-      + "conservatively paging 200 lines at a time. Whatever is withheld is reported by a marker that carries the exact `offset` to continue from.",
+      + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) \u2014 the budget is counted in BYTES, "
+      + "so how many lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count "
+      + "(e.g. `wc -c` ÷ `wc -l`) and fold that for the file in hand, instead of assuming a line count. "
+      + "No line capacity is quoted here as a number measured from this repo: this codebase is not your tree, and "
+      + "any such figure goes stale the moment someone edits an unrelated file. Wide lines cut the count "
+      + "proportionally and CJK cuts hardest (3 UTF-8 bytes per character). "
+      + "Token budget, derived from the engine's own estimator (~3.5 characters per token for non-CJK, ~1.5 for "
+      + "CJK, \u00d71.15 margin) rather than measured from any file here: tokens \u2248 bytes ÷ 3.04 for ASCII source and "
+      + "\u2248 bytes ÷ 1.74 for text that is nothing but Chinese characters \u2014 so a call that fills the whole 256KB cap "
+      + "costs ~86,000 tokens of ASCII up to ~151,000 tokens of pure Chinese characters, and a call that fills a "
+      + "tenth of the cap costs a tenth of that. It is a heuristic estimate, not a real tokenizer. "
+      + "Either way the byte cap is far more than a single `limit` will ask for, so it is rarely what stops you. "
+      + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) "
+      + "rather than conservatively paging 200 lines at a time. Whatever is withheld is reported by a marker that "
+      + "carries the exact `offset` to continue from.",
     inputSchema: {
       type: "object",
       properties: {
