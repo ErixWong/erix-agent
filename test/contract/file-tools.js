@@ -192,7 +192,9 @@ function negationGoverned(prefix) {
  *
  * 旧版的松处（已修）：只看「`measured` 之前有没有否定词」，于是 "the cap is **not** a table **but**
  * measured on our tree: 86,000 lines" 被放过——`not` 管的是 "a table"，却把 `measured` 一起赦免了。
- * 这正是 `NEGATION_SCOPE_BREAK` 存在的理由，三条这样的样本在 `READ_DESC_MEASURED_LINE_LEGACIES` 里钉住它。
+ * 这正是 `NEGATION_SCOPE_BREAK` 存在的理由，四条这样的样本在 `READ_DESC_MEASURED_LINE_LEGACIES` 里钉住它。
+ * ⚠ 但其中**只有那条不带数字的**真正给「断点词表」承重：另外三条都写着「数字 + lines」⇒ 在第 ② 步就
+ *   被与否定无关的硬规则抓走，根本走不到第 ③ 步（于是把 `however` 从词表里摘掉，测试照样全绿）。
  *
  * @param {string} text readFile 面向模型的描述
  * @returns {string[]} 命中的句子（正向声称），逐条给报错文案用
@@ -216,10 +218,10 @@ function positiveMeasuredLineClaims(text) {
 /**
  * #628 从描述里删掉的**正向声称原文**（逐字取自改动前的描述，即 `f80d48ca~1:src/tools/file-tools.js`）。
  * ①面：接回描述必须被 `positiveMeasuredLineClaims` 抓到；抓不到就说明形状写坏了 / 永真。
- * 前两条是**逐字取自改动前描述**的历史正向声称；后五条是假设样本，专门铉住「否定词必须真的统治
- * `measured`」、「白名单只认逐字」与「写了行数就是声称（`NUMBER_THEN_LINES` 那条与否定无关的硬规则）」
- * 这三步（旧写法把它们全放过了——没有它们，`NEGATION_SCOPE_BREAK`、`NEGATION_MAX_DISTANCE` 与那条硬规则
- * 就是没人踩的代码）。
+ * 前两条是**逐字取自改动前描述**的历史正向声称；后六条是假设样本，专门铉住「否定词必须真的统治
+ * `measured`」（四条，其中**不带数字的那一条**才是给 `NEGATION_SCOPE_BREAK` 的词表承重的）、「白名单只认
+ * 逐字」与「写了行数就是声称（`NUMBER_THEN_LINES` 那条与否定无关的硬规则）」这三步（旧写法把它们全放过
+ * 了——没有它们，`NEGATION_SCOPE_BREAK`、`NEGATION_MAX_DISTANCE` 与那条硬规则就是没人踩的代码）。
  */
 const READ_DESC_MEASURED_LINE_LEGACIES = [
   "Measured that way on this repo's own `.js` sources under `src/`, `bin/` and `examples/` at the default "
@@ -237,6 +239,15 @@ const READ_DESC_MEASURED_LINE_LEGACIES = [
   "The cap is not a table but measured on our tree: 86,000 lines.",
   "Nothing here is a table; measured on our tree: 151,000 lines.",
   "The cap is not a table, however, measured on our tree: 86,000 lines.",
+  // ↓ 第四条同族样本，但它**故意不带数字**——这是 `NEGATION_SCOPE_BREAK` 的词表（`however` 那个分支）
+  //   目前**唯一**的承重样本：`measured` 之后有 `lines` ⇒ 踩到 `MEASURED_THEN_LINES` 形状；没有数字 ⇒ 第 ② 步
+  //   硬规则 `NUMBER_THEN_LINES` 不触发，判定才真的落到第 ③ 步：`not` 在前、`however` 打断它的作用域 ⇒
+  //   不算统治 ⇒ 必须按正向声称被抓。
+  //   ⚠ 为什么这里**不能**写「86,000 lines」（上面三条都带）：硬规则跑在否定启发式**之前**，一旦句里出现
+  //   「数字 + lines」它就直接判红，第 ③ 步的断点词分支根本不参与判定 ⇒ 那个分支又变回没人验的代码
+  //   （上一轮实测：把 `however` 从 `NEGATION_SCOPE_BREAK` 里摘掉，测试仍 61/61 全绿）。判据是：摘掉
+  //   `however` 后这条必须从「被抓」变成「放过」——这才是真覆盖，其余三条只验硬规则，不验断点词。
+  "The cap is not a table, however, measured against the lines of our tree.",
   // ↓ 白名单不是逃生门（逐字命中才放行）：这句是政策句 1 的**近似变体**——前 43 字符与它逐字相同
   //   （"No line capacity is quoted here as a number"），只在 `measured` **之前**插了一个断点词 `, however,`
   //   （顺带把否定统治距离从恰好 40 推到 41），再把尾巴换成带 `lines` 的数 ⇒ 不再逐字命中白名单，
@@ -754,10 +765,12 @@ export function fileToolsContract(label, { createFileTools }) {
       }).length === 0,
       "否定面样本里混进了「measured 之后写着数字 + 行」的那类（按硬规则它就是正向声称，该搬去 LEGACIES）");
     // ③ 两面样本不许被清空：清空后上面两个循环就是空循环（看起来在验，其实什么都没验）。
-    //   下限按现量钉：正向 7（两条逐字历史声称 + 三条「否定未真的统治」+ 一条「白名单只认逐字」
+    //   下限按现量钉：正向 8（两条逐字历史声称 + 四条「否定未真的统治」+ 一条「白名单只认逐字」
     //   + 一条「写着行数就与否定无关」）、否定 4。
-    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 7 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
-      "反向证的两面样本不够（正向 ≥7、否定 ≥4）：那两面退化成空循环（判据没人验）");
+    //   ⚠ 那「四条否定未统治」里只有**不带数字的那条**给 `NEGATION_SCOPE_BREAK` 的词表承重（带数字的三条
+    //   先被硬规则抓走，走不到断点词那一步），所以这四条一条都不能删。
+    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 8 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
+      "反向证的两面样本不够（正向 ≥8、否定 ≥4）：那两面退化成空循环（判据没人验）");
     // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);
