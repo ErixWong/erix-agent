@@ -15,18 +15,21 @@
   `<invoke` and `chatcmpl-tool-`, each 0 hits in three host dev libraries), matching the host
   rule for rule: case-insensitive substring, `stripCode` first so a marker quoted inside a
   fenced code block or `inline code` is not a hit, and a bare pattern only counts if it is ≥ 12 chars
-  and contains `-`. On a hit the success path gains `result.finalTextShape`
+  and contains `-`. On a hit every non-throwing `finish()` path gains `result.finalTextShape`
   = `{ textualizedToolCall: true, marker }` (absence is the negative answer — it is never
-  `false`) and one `final_text_textualized_tool_call` event per run (tier `fact`: it is the
+  `false`) and one `final_text_textualized_tool_call` event per terminal — a resume re-run is
+  a new terminal and emits one again (tier `fact`: it is the
   only durable copy of the verdict; `runId` is written only when the host passed one). **No
   terminal semantics moved** — `termination.reason` stays `end_turn`, and `rounds` / `usage` /
   `verification` are byte-identical to a run that did not hit (refusing to finalize such a text
   is fix B, a separate ticket). The marker set is exported from the package root so the host can
   delete its own copy: two sources of truth were the forbidden outcome of that ticket, and the
   host copy only covered the top-level run's envelope, never a `delegate` child's `resultText`.
-  (`test/loop-final-text-shape-862.test.js`, nine cells: real sample end-to-end, all five
+  (`test/loop-final-text-shape-862.test.js`, twelve cells: real sample end-to-end, all five
   markers, fence/inline near-miss set, key-absence + key-set equality, terminal-identity,
-  runId key rule, one-shot incl. resume, marker-set/tier equality.)
+  runId key rule, mid-round-not-judged incl. resume, marker-set/tier equality, the one-shot flag
+  pinned by two direct `finish()` calls, a `max_rounds_cap` terminal (proves the key is not
+  `end_turn`-only), and a `failed` terminal carrying neither the key nor the event.)
 - **引擎现在认得出「终稿其实是一段被文本化的工具调用」，并且会把这件事说出来（issue #862，
   修法 A）。** 有些上游/网关把 tool call 编进了 `content`，于是最后一轮看起来就是「无
   `tool_use` + `end_turn` + 正文非空」，run 被判 `completed`，而它交付的是 `<｜｜DSML｜｜ calls>`
@@ -34,17 +37,20 @@
   （`DEFAULT_TOOLCALL_MARKERS`：三条来自宿主 dev 库真样本 —— `<｜｜DSML｜｜`、`<tool_call`、
   `<｜Function` —— 加两条**零实证**的预防性覆盖 `<invoke` 与 `chatcmpl-tool-`，后者在宿主三处
   dev 库里各 0 命中），匹配规则与宿主逐条一致：大小写不敏感子串、先跑 `stripCode`（围栏代码块与行内码里
-  引用的标记不算命中）、不含 `<` 的裸串必须长度 ≥ 12 且带 `-`。命中时成功路径多一个
+  引用的标记不算命中）、不含 `<` 的裸串必须长度 ≥ 12 且带 `-`。命中时每条非抛错的
+  `finish()` 路径都多一个
   `result.finalTextShape` = `{ textualizedToolCall: true, marker }`（**缺席就是否定答案**，它
-  绝不是 `false`），并每 run 发一条 `final_text_textualized_tool_call`（档位 `fact`：它是这个
+  绝不是 `false`），并每次**终局**发一条 `final_text_textualized_tool_call`（resume 重跑是
+  新的终局、会再发一条；档位 `fact`：它是这个
   判定唯一的 durable 副本；`runId` 只在宿主传了时才写键）。**终态语义一格都没动** ——
   `termination.reason` 仍是 `end_turn`，`rounds` / `usage` / `verification` 与没命中的那一发
   逐字节同形（把这种正文挡在终局门外是修法 B，单开一单）。特征集从包根出口，宿主因此能删掉
   自己那份拷贝：两个真相源是那张票写死的禁止项，而宿主那份只覆盖顶层 run 的终局信封，
   `delegate` 子 run 的 `resultText` 一个标记都不带。
-  （`test/loop-final-text-shape-862.test.js` 九格：真样本端到端、五条特征逐个、围栏/行内码
-  近邻词不误伤集、键缺席 + 键集合对账、终态同值、`runId` 写键规则、one-shot（含 resume）、
-  特征集与分级对账。）
+  （`test/loop-final-text-shape-862.test.js` 十二格：真样本端到端、五条特征逐个、围栏/行内码
+  近邻词不误伤集、键缺席 + 键集合对账、终态同值、`runId` 写键规则、**中途轮不判**（含 resume）、
+  特征集与分级对账、one-shot 旗标（对同一 ctx 直调两次 `finish` 咬住）、`max_rounds_cap` 终局
+  （证明该键不只 `end_turn`）、`failed` 终局既无该键也无该事件。）
 - **The CHANGELOG coverage gate's own wiring check no longer borrows a documentation step as
   its position landmark (issue #855).** Criterion ⑧ of
   `node scripts/changelog-coverage-check.mjs --self-test` located the blocking step between

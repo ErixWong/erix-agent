@@ -7,7 +7,7 @@
 // 本包此前对这类标记**零判据**（`grep -rn 'DSML' src/` 全空），宿主自己那份拷贝只覆盖顶层
 // run 的终局信封 ⇒ `delegate` 子 run 一个标记都不带。
 //
-// 格子对账（十一格，编号与下面 test() 一致）：
+// 格子对账（十二格，编号与下面 test() 一致）：
 //   ① / ②：命中面 —— 真样本端到端、五条特征逐个、优先级 = 清单顺序、大小写不敏感；
 //   ③ / ④：不误伤 —— ``` 围栏与行内码里的字面量不算命中，`offset` / `offer` / `chatcmpl`
 //          / 空正文 / 正常中文总结不算命中，以及**裸串特征的长度下限**这条宿主守卫；
@@ -23,7 +23,9 @@
 //      ⇒ 只发一条（主循环里 `finish` 永远只 `return` 一次，旗标今天走不到第二次；这一格直接
 //      造两次终局把旗标咬住，证明它不是死代码）；
 //   ⑪：判据住在 `makeResult` ⇒ **不只 `end_turn`** —— 非抛错的 `max_rounds_cap` 终局同样带
-//      `finalTextShape`、同样发一条（钉住「不只 end_turn」）。
+//      `finalTextShape`、同样发一条（钉住「不只 end_turn」）；
+//   ⑫：`failed` 终局（走 `fail()`）即使 `finalText` 含标记也**既无该键也无该事件** —— 钉住
+//      判据没被搬进 `fail()`（否则有人改判据时这不会红）。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -293,4 +295,33 @@ test("⑪ max_rounds_cap 终局（非 end_turn）⇒ 同样带 finalTextShape、
   assert.equal(result.finalTextShape.marker, "<｜Function", "最后一轮正文里的标记要命中");
   const shapeEvents = events.filter((event) => event.type === SHAPE_EVENT);
   assert.equal(shapeEvents.length, 1, "max_rounds_cap 同样发一条告警（钉住「不只 end_turn」）");
+});
+
+// ⑫ 抛错路径（failed）不进 `makeResult` ⇒ 既无 `finalTextShape` 键、也不发事件。评审 #5：
+// 若有人把判据搬进 `fail()`，九格不会红——这一格钉住它。provider 抛错前先走一发带标记的
+// 工具轮，让 `finalText` 真含标记（否则这一格是空的，搬进 `fail()` 也测不出来）。
+test("⑫ failed 终局（provider 抛错）：finalText 含标记但既无 finalTextShape 键、也不发事件", async () => {
+  const events = [];
+  let error;
+  try {
+    await runDirect({
+      provider: createFakeProvider([
+        toolTurn(REAL_DSML_FINAL),
+        { throw: new Error("provider exploded") },
+      ]),
+      seed: "把活干了",
+      store: createMemoryTranscriptStore(),
+      executeTool: async () => "ok",
+      config: { run: { runId: "fail-862", maxRounds: 4, completion: false } },
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+    });
+  } catch (thrown) {
+    error = thrown;
+  }
+  assert.ok(error, "provider 抛错必须以错误收口");
+  assert.equal(error.termination.reason, "failed");
+  assert.ok(String(error.finalText).includes("<｜｜DSML｜｜"), "finalText 必须真含标记（否则本格是空的）");
+  assert.equal("finalTextShape" in error, false, "failed 走 fail()，不带 finalTextShape 键");
+  assert.equal(events.filter((event) => event.type === SHAPE_EVENT).length, 0,
+    "failed 不发 final_text_textualized_tool_call");
 });
