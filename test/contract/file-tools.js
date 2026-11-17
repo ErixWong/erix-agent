@@ -84,6 +84,9 @@ const NEGATION_BEFORE_MEASURED = /\b(?:no|not|never|nothing|nor|rather than|inst
  * "a table"）。见到任何一个 ⇒ 该否定词作废，这句按正向声称处理。
  */
 const NEGATION_SCOPE_BREAK = /\b(?:but|yet|however|although|though|while)\b|[:;\u2014\u2013]/u;
+// ⚠ 这张表目前只有三个分支真的承重（`but` / `;` / `however`），各自的承重样本是
+//   `READ_DESC_MEASURED_LINE_LEGACIES` 末尾那**三条不带数字**的（带数字的会在第 ② 步硬规则就被抓走，
+//   走不到这里 ⇒ 摘词也不会红）。其余分支（`yet`/`although`/`though`/`while`/`:`/两个破折号）**没有**承重样本。
 /**
  * 否定词与 `measured` 的最大距离（去掉两端空白后计）：隔得太远就是两句不相关的话，不算统治。
  *
@@ -192,9 +195,10 @@ function negationGoverned(prefix) {
  *
  * 旧版的松处（已修）：只看「`measured` 之前有没有否定词」，于是 "the cap is **not** a table **but**
  * measured on our tree: 86,000 lines" 被放过——`not` 管的是 "a table"，却把 `measured` 一起赦免了。
- * 这正是 `NEGATION_SCOPE_BREAK` 存在的理由，四条这样的样本在 `READ_DESC_MEASURED_LINE_LEGACIES` 里钉住它。
- * ⚠ 但其中**只有那条不带数字的**真正给「断点词表」承重：另外三条都写着「数字 + lines」⇒ 在第 ② 步就
- *   被与否定无关的硬规则抓走，根本走不到第 ③ 步（于是把 `however` 从词表里摘掉，测试照样全绿）。
+ * 这正是 `NEGATION_SCOPE_BREAK` 存在的理由，六条这样的样本在 `READ_DESC_MEASURED_LINE_LEGACIES` 里钉住它。
+ * ⚠ 但其中**只有那三条不带数字的**真正给「断点词表」承重（各自钉住一个词：`however` / `but` / `;`）：
+ *   另外三条都写着「数字 + lines」⇒ 在第 ② 步就被与否定无关的硬规则抓走，根本走不到第 ③ 步
+ *   （于是把 `but` 或 `;` 从词表里摘掉，测试照样全绿——实测于 #628 独立验收）。
  *
  * @param {string} text readFile 面向模型的描述
  * @returns {string[]} 命中的句子（正向声称），逐条给报错文案用
@@ -218,8 +222,8 @@ function positiveMeasuredLineClaims(text) {
 /**
  * #628 从描述里删掉的**正向声称原文**（逐字取自改动前的描述，即 `f80d48ca~1:src/tools/file-tools.js`）。
  * ①面：接回描述必须被 `positiveMeasuredLineClaims` 抓到；抓不到就说明形状写坏了 / 永真。
- * 前两条是**逐字取自改动前描述**的历史正向声称；后六条是假设样本，专门铉住「否定词必须真的统治
- * `measured`」（四条，其中**不带数字的那一条**才是给 `NEGATION_SCOPE_BREAK` 的词表承重的）、「白名单只认
+ * 前两条是**逐字取自改动前描述**的历史正向声称；后八条是假设样本，专门铉住「否定词必须真的统治
+ * `measured`」（六条，其中**三条不带数字的**才给 `NEGATION_SCOPE_BREAK` 的词表承重，一条一个词）、「白名单只认
  * 逐字」与「写了行数就是声称（`NUMBER_THEN_LINES` 那条与否定无关的硬规则）」这三步（旧写法把它们全放过
  * 了——没有它们，`NEGATION_SCOPE_BREAK`、`NEGATION_MAX_DISTANCE` 与那条硬规则就是没人踩的代码）。
  */
@@ -248,6 +252,16 @@ const READ_DESC_MEASURED_LINE_LEGACIES = [
   //   （上一轮实测：把 `however` 从 `NEGATION_SCOPE_BREAK` 里摘掉，测试仍 61/61 全绿）。判据是：摘掉
   //   `however` 后这条必须从「被抓」变成「放过」——这才是真覆盖，其余三条只验硬规则，不验断点词。
   "The cap is not a table, however, measured against the lines of our tree.",
+  // ↓ 同族的另外两条无数字样本，与上面那条同一条理由：`measured` 之后有 `lines` ⇒ 踩到形状；没有数字
+  //   ⇒ 第 ② 步硬规则不触发，判定才真的落到第 ③ 步的**断点词分支**。它们与 `however` 那条的区别只在
+  //   **断点词是哪一个**：这条靠 `but` 打断 `not` 的作用域，下一条靠 `;` 打断 `Nothing` 的作用域。
+  // ⚠⚠ 这两条分别是 `NEGATION_SCOPE_BREAK` 里 `but` 分支与 `;` 分支**目前唯一**的承重样本：
+  //   **不许带数字**（一写「数字 + lines」就被第 ② 步硬规则先截获，断点词分支又变回没人验的代码），
+  //   **不许删**（删掉任何一条，那个断点词就退回没人验的代码——#628 独立验收实测：摘掉 `but` 或 `;`
+  //   之后测试仍 61/61 全绿，就是这个洞）。判据同 `however` 那条：摘掉对应的词，这条必须从
+  //   「被抓」翻成「放过」。
+  "The cap is not a table but measured against the lines of our tree.",
+  "Nothing here is a table; measured against the lines of our tree.",
   // ↓ 白名单不是逃生门（逐字命中才放行）：这句是政策句 1 的**近似变体**——前 43 字符与它逐字相同
   //   （"No line capacity is quoted here as a number"），只在 `measured` **之前**插了一个断点词 `, however,`
   //   （顺带把否定统治距离从恰好 40 推到 41），再把尾巴换成带 `lines` 的数 ⇒ 不再逐字命中白名单，
@@ -765,12 +779,12 @@ export function fileToolsContract(label, { createFileTools }) {
       }).length === 0,
       "否定面样本里混进了「measured 之后写着数字 + 行」的那类（按硬规则它就是正向声称，该搬去 LEGACIES）");
     // ③ 两面样本不许被清空：清空后上面两个循环就是空循环（看起来在验，其实什么都没验）。
-    //   下限按现量钉：正向 8（两条逐字历史声称 + 四条「否定未真的统治」+ 一条「白名单只认逐字」
+    //   下限按现量钉：正向 10（两条逐字历史声称 + 六条「否定未真的统治」+ 一条「白名单只认逐字」
     //   + 一条「写着行数就与否定无关」）、否定 4。
-    //   ⚠ 那「四条否定未统治」里只有**不带数字的那条**给 `NEGATION_SCOPE_BREAK` 的词表承重（带数字的三条
-    //   先被硬规则抓走，走不到断点词那一步），所以这四条一条都不能删。
-    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 8 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
-      "反向证的两面样本不够（正向 ≥8、否定 ≥4）：那两面退化成空循环（判据没人验）");
+    //   ⚠ 那「六条否定未统治」里只有**不带数字的三条**给 `NEGATION_SCOPE_BREAK` 的词表承重，一条钉一个词
+    //   （`however` / `but` / `;`）；带数字的三条先被硬规则抓走，走不到断点词那一步。所以这六条一条都不能删。
+    assert.ok(READ_DESC_MEASURED_LINE_LEGACIES.length >= 10 && READ_DESC_NEGATED_MEASURE_SENTENCES.length >= 4,
+      "反向证的两面样本不够（正向 ≥10、否定 ≥4）：那两面退化成空循环（判据没人验）");
     // 描述里对模型说的话不得与实现相反：parseIntEnv 对越界/非法是**退回默认**，不是钳边。
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /default 262144/u);
     assert.match(readFileTool.inputSchema.properties.max_bytes.description, /NOT clamped/u);
