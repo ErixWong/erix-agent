@@ -77,6 +77,7 @@ async function runScenario(name) {
   });
   return {
     result,
+    provider,
     roundEnds: events.filter((event) => event?.type === "round_end"),
   };
 }
@@ -151,6 +152,8 @@ test("判据 1：跑满预算的 run，注入轮的 round_end 带 runStateInject
     // 「绝不写 false」说的是**整键**，子键是完整的通道真相）。
     assert.equal(inject.persist, false);
     assert.equal(inject.request, true);
+    // issue #872：本场景注入轮无续写 ⇒ 本轮只注入一次，injections 必须为 1。
+    assert.equal(inject.injections, 1, "单次注入轮 ⇒ injections=1");
   }
 });
 
@@ -206,7 +209,8 @@ test("判据 4：注入通道 A（persist，真折叠轮）与通道 B（request
     request: true,
     persist: false,
     remainingRounds: 4,
-  }, "TTL armed 走通道 B：request=true、低预算门关、无持久挂载");
+    injections: 1,
+  }, "TTL armed 走通道 B：request=true、低预算门关、无持久挂载、单次注入");
 
   // TTL 触发 ≠ 折叠轮（形状事实）：该场景 compactionStats 里没有任何整轮折叠，
   // 所以 persist 恒 false 不是「没跑到 A」，而是本场景结构上不存在 A。

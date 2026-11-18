@@ -193,6 +193,8 @@ import {
   ensureToolCallKeyOnBlock,
 } from "../tool-fact.js";
 import { restoreResume } from "./resume-manager.js";
+// issue #872（阻断修复）：同一轮内两次注入观测的合并器（纯函数，见模块头注释）。
+import { mergeRoundRunStateInject } from "./round-run-state-inject.js";
 import {
   collectLoopCapabilitiesMissing,
   validateTranscriptStore,
@@ -4856,15 +4858,21 @@ export async function runToolLoop(options) {
     // 才追加请求视图尾部（通道 B），避免同一轮同时产生两个 run-state 块。
     if (persistInject || requestInject) {
       runLoopState.runStateVersion += 1;
-      // issue #872（纯加法观测面）：把「本轮最终注入了、走的哪条通道」当轮存进观测格，
+      // issue #872（纯加法观测面）：把「本轮注入了、走的哪条通道」当轮存进观测格，
       //   供同轮圈底的 `round_end` 拼 `runStateInject` 键。只记录——上面三个判据表达式与
       //   下面两条旗标写入一个字都没动，注入行为不变（本单硬约束）。
-      runLoopState.roundRunStateInject = {
-        lowBudget: isLowBudget,
-        request: requestInject,
-        persist: persistInject,
-        remainingRounds,
-      };
+      //   用 `mergeRoundRunStateInject` 而非直接赋值：一轮内 `compactBeforeRound` 可能被调两次
+      //   （轮首 + `max_tokens` 续写），直接赋值会让第二次覆盖第一次、`round_end` 漏报本轮实际
+      //   用过的通道。合并后布尔三键是「本轮用过的并集」、`injections` 是本轮注入次数。
+      runLoopState.roundRunStateInject = mergeRoundRunStateInject(
+        runLoopState.roundRunStateInject,
+        {
+          lowBudget: isLowBudget,
+          request: requestInject,
+          persist: persistInject,
+          remainingRounds,
+        },
+      );
       if (requestInject && runLoopState.ttlInjectArmed) {
         // TTL 首折和低预算门各只消费一次，避免每轮改写破坏前缀缓存。
         runLoopState.ttlInjectArmed = false;
