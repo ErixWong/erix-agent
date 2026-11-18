@@ -31,7 +31,7 @@ function msgShape(messages) {
 
 // issue #872 验收（假绿修复）：判据 3 的对照面从 `msgShape`（只有角色 + 块类型，注入**正文**变了也
 // 不红）扩到**实际 provider 请求体**。以下 `blockDigest` / `requestDigest` 与捕获脚本
-// `/tmp/capture-872.mjs` 里的定义**逐字一致**（期望值就是在 base 上用同两个函数量出来的，两边必须同一把尺）：
+// `fixtures/capture-loop-runstate-inject-872.mjs`（已提交进仓，开头硬校验 worktree SHA）里的定义**逐字一致**（期望值就是在 base 上用同两个函数量出来的，两边必须同一把尺）：
 //   · 文本块取**全文**（注入正文变 ⇒ 摘要变 ⇒ 红）；
 //   · 工具块取 name + 入参 JSON；tool_result 取 toolUseId + 正文；
 //   · 不取 model/temperature 等与注入无关的字段，只看 provider 真正看到的消息序列。
@@ -143,9 +143,10 @@ async function runContinuation() {
 }
 
 // 判据 3 的请求体摘要期望值：逐字取自 base worktree 2ad95dfa 现跑现取（非手搜）。
-// 取法：`git worktree add /tmp/base-872 2ad95dfa`，用本文件场景的**等位脚本**
-// `/tmp/capture-872.mjs`（已把上面的 `blockDigest`/`requestDigest` 逐字搬进去）在 base 上实跑
-// `provider.requests` 并序列化成稳定摘要，写入 `test/fixtures/loop-runstate-inject-request-872.json`。
+// 取法：用仓内提交的**等位捕获脚本** `fixtures/capture-loop-runstate-inject-872.mjs`（已把上面的
+// `blockDigest`/`requestDigest` 逐字搬进去）在 base 上实跑 `provider.requests` 并序列化成稳定摘要，
+// 写入 `test/fixtures/loop-runstate-inject-request-872.json`（脚本开头硬校验 `git rev-parse HEAD`==2ad95dfa
+// 且工作树干净，否则非 0 退出；重新生成方法见 fixture `_meta.regenerate`）。
 // base 无 `runStateInject` 事件键（那是本支才加的观测），但**请求体里的注入正文行为早于该观测**，
 // 所以 base 的请求体就是 HEAD 应有的请求体（已实测 HEAD 5/5 场景与 base 逐字相等）。
 const REQUEST_FIXTURE = JSON.parse(readFileSync(
@@ -270,23 +271,28 @@ test("判据 3 反向证：注入正文改一个字 / 请求里少一条注入�
   // 基准：未改坏的期望与真实摘要逐字相等（否则下面两格的红没有参照系）。
   assert.deepEqual(real, expected, "基准：真实请求体 == base fixture（改坏之前必须等）");
 
-  // 反向证一：把某条注入文本块的正文改一个字 ⇒ 必须红（证明判据 3 看的是**正文**不是形状）。
+  // 反向证一：定位 **run-state 注入正文块**再改它——注入块正文里有引擎渲染的特征行
+  // `run=… v=… r=…/… left=… low=…`（见 src/run-state.js renderRunState），据此 find 到那块，
+  // 只改它一个字符 ⇒ 必须红。这才咬住「注入正文变了必须红」（旧版改第一个非空文本块，命中的是
+  // seed「scan it」，根本没碰到注入正文）。**找不到该块 ⇒ 这格反向证无效 ⇒ 必须红，绝不静默跳过。**
+  const RUN_STATE_SIGNATURE = /run=\S* v=\d+ r=\d+\/\d+ left=\d+ low=\d/;
   const tamperedText = JSON.parse(JSON.stringify(expected));
-  let textBlockPoked = false;
+  let injectionPoked = false;
   for (const req of tamperedText) {
     for (const msg of req.messages) {
       for (const block of msg.content) {
-        if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
-          block.text = `${block.text}X`;
-          textBlockPoked = true;
+        if (block.type === "text" && typeof block.text === "string" && RUN_STATE_SIGNATURE.test(block.text)) {
+          // 只改第一个命中的注入块，且只改一个字符：把版本数字 `v=<数字>` 挪一格。
+          block.text = block.text.replace(/(v=)(\d)/, (_m, prefix, digit) => `${prefix}${digit === "9" ? "8" : String(Number(digit) + 1)}`);
+          injectionPoked = true;
           break;
         }
       }
-      if (textBlockPoked) break;
+      if (injectionPoked) break;
     }
-    if (textBlockPoked) break;
+    if (injectionPoked) break;
   }
-  assert.equal(textBlockPoked, true, "夹具里必须至少有一个非空文本块才能做这个反向证");
+  assert.equal(injectionPoked, true, "夹具里必须有一个含 run-state 特征行的注入正文块，否则这格反向证无效");
   assert.notDeepEqual(real, tamperedText, "注入正文改一个字 ⇒ 请求体摘要必须红");
 
   // 反向证二：删掉一条**多块消息**里的一块（模拟少一条注入块）⇒ 必须红。
