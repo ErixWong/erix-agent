@@ -40,6 +40,8 @@ import { StringDecoder } from "node:string_decoder";
 import path from "node:path";
 
 import { throwIfAborted } from "../loop/abort.js";
+// issue #867：readFile 返回末尾的 token 估值行**只用**估算器，不改它（口径见 `readTokenEstimateLine`）。
+import { estimateTokens } from "../tokens.js";
 
 // 搜索类工具的单文件读取上限（超过即跳过并计入排除账）。
 export const MAX_FILE_BYTES = 1024 * 1024;
@@ -339,7 +341,7 @@ function recordDirectorySkip(account, category, name) {
  *
  * @param {"skipped"|"noMatch"|"searchTruncated"|"treeEntryCap"|"treeDepthCap"
  *   |"readBytesCap"|"readMoreLines"|"readNotScanned"|"readLineTruncated"
- *   |"readParamAdjusted"|"readEof"|"editDiffTruncated"} kind
+ *   |"readParamAdjusted"|"readEof"|"editDiffTruncated"|"readTokenCap"} kind
  * @param {Record<string, unknown>} [values] 语义值（计数、上限、offset）
  * @returns {string}
  */
@@ -425,6 +427,12 @@ export function toolMarker(kind, values = {}) {
       //   两条 marker 的先后顺序就是这里的职责顺序，别合并成一条模糊承诺。
       const total = values.total === undefined ? "" : `，共 ${values.total} 行`;
       return `[本次返回已达 max_bytes=${formatSize(values.maxBytes)} 上限${total}；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
+    }
+    case "readTokenCap": {
+      // issue #867 里程碑 2：被 `max_estimated_tokens` 裁掉整行时的出口。
+      // 三件事必须同时在：① 点名本参数（模型才知道是哪个上限拦的，以及下回调哪个）；
+      // ② 自报是**估值**（不许长得像精确计数）；③ 给出可执行的续读 offset（与字节那条同口径）。
+      return `[已达 max_estimated_tokens=${values.maxTokens} 上限（引擎启发式估值，非真实 tokenizer）：本次返回到第 ${values.lines} 行；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
     }
     case "readMoreLines":
       // 行窗口没读满就报总数与续读 offset（#196 R1.1）：两个数都是本次调用的真值
@@ -990,6 +998,7 @@ function normalizeIntegerWithReport(value, fallback, name) {
 
 function fileReadMarkers(window, {
   start, count, maxBytes, displayPath, parameterNotes = [], parameterFacts = [], unifiedParamErrors = false,
+  tokenCap,
 }) {
   const markers = [];
   // 参数被改写时报一句（issue #358 同族）：只说本次真值与重传方式，不改任何语义。
@@ -1003,10 +1012,15 @@ function fileReadMarkers(window, {
     }
   }
   const nextOffset = start + window.selected.length;
+  // issue #867 里程碑 2：token 预算裁掉了整行 ⇒ 那条「还有更多行」的 marker 由它接管
+  // （两条都说「还能继续读」会让模型以为被截了两次，且它们的 offset 语义一样）。
+  const tokenDropped = tokenCap !== undefined && tokenCap.dropped > 0;
   if (window.contentCapped) {
     markers.push(toolMarker("readBytesCap", { maxBytes, total: window.totalLines, offset: nextOffset }));
   } else if (window.totalLines !== undefined) {
-    if (start + count < window.totalLines) {
+    if (tokenDropped) {
+      // 交给下面的 readTokenCap
+    } else if (start + count < window.totalLines) {
       markers.push(toolMarker("readMoreLines", {
         total: window.totalLines,
         offset: start + count,
@@ -1027,6 +1041,13 @@ function fileReadMarkers(window, {
       offset: nextOffset,
     }));
   }
+  if (tokenDropped) {
+    markers.push(toolMarker("readTokenCap", {
+      maxTokens: tokenCap.maxTokens,
+      lines: window.selected.length,
+      offset: nextOffset,
+    }));
+  }
   if (window.lineTruncated) {
     // 超宽行的出口必须带**本次调用**的真值（路径 + 行号 + 该行 offset），否则模型无从续读（#196 R1.2）。
     const lines = window.truncatedLines ?? [];
@@ -1043,6 +1064,102 @@ function fileReadMarkers(window, {
 }
 
 // ---------------------------------------------------------------------------
+// readFile 返回末尾的 token 估值行（issue #867 里程碑 1）
+//
+// 只做一件事：把「本次返回有多少 token」以**估值**的口径告诉模型。本切片**不动**任何读取语义
+// （`FILE_READ_MAX_BYTES_DEFAULT`、`offset` / `limit`、`readLineWindow` 的分块与续读一字未改），
+// 也不动估算器本体（`src/tokens.js` 只导入）。
+// ---------------------------------------------------------------------------
+
+/** 估值行的外壳：那两句字面就是「这行是估值」的标注，测试拿它做存在性判据（反向证）。 */
+const READ_TOKEN_ESTIMATE_PREFIX = "[本次返回约 ";
+const READ_TOKEN_ESTIMATE_SUFFIX = " token（引擎启发式估值，非真实 tokenizer）]";
+
+/**
+ * 千分位逗号分组（`12400` → `12,400`）。
+ *
+ * 为什么不用 `Number#toLocaleString()`：它跟 **locale** 走（`en-US` 给 `12,400`、`de-DE` 给
+ * `12.400`、`fr-FR` 给 `12 400`），于是同一个返回文本会随 CI 机器的 ICU 默认语言变字面——而
+ * 这一行是要被测试**逐字**对账的。这里按 3 位一组硬切，任何环境下输出都同一个字符串。
+ *
+ * @param {number} value 非负整数（估值本身向上取整，不会是负数或小数；负号只是防御）
+ * @returns {string}
+ */
+function formatGroupedInteger(value) {
+  const grouped = String(Math.trunc(Math.abs(value))).replace(/\B(?=(?:\d{3})+(?!\d))/gu, ",");
+  return value < 0 ? `-${grouped}` : grouped;
+}
+
+/**
+ * 组装估值行，口径是**写死的**（改它就改掉了测试断言的东西）：
+ *
+ * 数的是**除这一行自己以外**的完整返回文本——正文行（含行号与换行）+ 全部 marker，就是
+ * `readFile` 里 `parts.join("\n")` 那个串。不把估值行自己算进去的理由是**自指**：加上这一行，
+ * 数就变大；数变大又改变这一行的长度（数字多一位 ⇒ 字节多一），再算又要变——没有不动点，
+ * 于是「报出的数」永远不等于「返回文本的 token 数」。这和 #628 从描述里删掉「本文件自己的容量」
+ * 那个锚点是同一种病。所以口径固定成「不含估值行」，`test/tools/file-tools.test.js` 按这个口径
+ * 断言**逐字相等**（`报出的数 === estimateTokens(剥掉估值行的文本)`），不是「差不多」。
+ *
+ * @param {string} body 不含估值行的完整返回文本
+ * @returns {string}
+ */
+function readTokenEstimateLine(body) {
+  return `${READ_TOKEN_ESTIMATE_PREFIX}${formatGroupedInteger(estimateTokens(body))}${READ_TOKEN_ESTIMATE_SUFFIX}`;
+}
+
+// ---------------------------------------------------------------------------
+// `max_estimated_tokens`（issue #867 里程碑 2）：把已选行按 token 预算**后置**裁一遍。
+//
+// 为什么是后置裁剪，而不是把记账塞进 `readLineWindow` 的块循环：那个循环里住着 #506 的四条
+// 不变量（分片续读零丢失 / 不劈坏多字节字符 / 超宽行有出口 / 不超字节），在它中间插一个
+// 「累计 token」的分支就等于把那四条一起改写一遍。这里**只对已经选好的整行做取舍**：
+// `readLineWindow` 一行不改 ⇒ 那四条按构造保持；token 预算只是**第二道闸**，与字节上限
+// 取更小的那个（字节仍是硬边界）。
+//
+// 切点落在**行边界**（整行取舍）⇒ 天然不会劈坏多字节字符，不需要另造一套码点切分。
+// ---------------------------------------------------------------------------
+
+/** `max_estimated_tokens` 的下限：再小就等于「什么都读不到」，那不该是一个合法请求。 */
+const FILE_READ_MAX_TOKENS_MIN = 256;
+
+/**
+ * 预算里给 marker 预留的估算量（**保守上界**）。
+ *
+ * marker 文本本身取决于裁剪结果（裁到哪一行 ⇒ marker 里写哪个 offset ⇒ marker 多长），是个循环
+ * 依赖。所以这里不求解，只留一个足够大的上界：宁可少给一行，也不许让「正文 + marker」越过上限。
+ * `readTokenCap` 那段文案在本仓估算器下约 60–70 token，200 是它的两倍多。
+ */
+const READ_TOKEN_MARKER_RESERVE_TOKENS = 200;
+
+/**
+ * 把 `selected` 按 token 预算裁成前缀（整行取舍），返回裁后数组与被丢掉的行数。
+ *
+ * 用**二分**而不是逐行累加：估算器是逐字符启发式（`ceil` 在最后一步），逐行累加会与「整段文本
+ * 估一次」有偏差；而每加一行就 `join` 一次是 O(n²)。二分只在**整段前缀**上调用估算器（约
+ * log₂n 次），既与「整段估」口径一致，又不重复实现估算公式。
+ *
+ * 单调性：前缀越长字符越多 ⇒ 估算值不减，所以二分成立。
+ *
+ * @param {string[]} selected 已格式化的行（含 `行号: ` 前缀）
+ * @param {number | undefined} maxTokens 上限；`undefined` = 不设上限（行为与里程碑 1 完全一致）
+ * @returns {{ selected: string[], dropped: number }}
+ */
+function trimSelectedToTokenBudget(selected, maxTokens) {
+  if (maxTokens === undefined) return { selected, dropped: 0 };
+  const budget = Math.max(0, maxTokens - READ_TOKEN_MARKER_RESERVE_TOKENS);
+  const estimateOf = (count) => (count === 0 ? 0 : estimateTokens(selected.slice(0, count).join("\n")));
+  if (estimateOf(selected.length) <= budget) return { selected, dropped: 0 };
+  let feasible = 0; // 已知可行（0 行恒可行）
+  let infeasible = selected.length; // 已知不可行（上面判过）
+  while (infeasible - feasible > 1) {
+    const middle = Math.floor((feasible + infeasible) / 2);
+    if (estimateOf(middle) <= budget) feasible = middle;
+    else infeasible = middle;
+  }
+  return { selected: selected.slice(0, feasible), dropped: selected.length - feasible };
+}
+
+// ---------------------------------------------------------------------------
 // 工具 schema（工具名与既有字段保持不变，零迁移；新参数一律 snake_case）
 // ---------------------------------------------------------------------------
 
@@ -1051,6 +1168,20 @@ export const FILE_TOOL_DEFINITIONS = [
     name: "readFile",
     // 额度事实只活在这一段文字里：模型看不到实现，只能靠它决定一次要多少（issue 261013 R3）。
     // 只写无状态的静态事实（默认值/单位换算），不引入「首次读某文件才提示」这类跨调用状态。
+    // ★ 2026-11-17 issue #628：**这一段去数字化了**——下面那些「本仓实测」的档位数字（fewest /
+    //   median / most、两个 CJK 锚点、#267 的三档 token 样本、本仓 `.js` 文件数）**整组删掉**，
+    //   不是漏改，也不要因为它们变红就把数字塞回来。裁决原文在 issue #628 的最后一条评论。
+    //   病根（#271 的样本选择 + #267 的自指锚点）：这些数是从**本仓源码统计**出来的，于是
+    //   「给 `src/loop/budget.js` 加 29 行中文注释」这种与 readFile 毫无关系的改动，会逼着改一句
+    //   **模型可见**的文案（#609 实测：样本中位 6,056 → 6,007，描述声称 6,157 越过 ±2% ⇒ 红）；
+    //   而 #267 的密实档锚点是**本文件自己** ⇒ 改这段注释会改掉它自己声称的数（自指）。
+    //   换样本只是把漂移源挪个地方，所以这里只留**不会漂的机制事实**：`max_bytes` 默认 262144
+    //   = 256 KiB、预算按 UTF-8 字节计、换算式（`wc -c` ÷ `wc -l`）、`offset`/`limit` 语义、marker 续读；
+    //   token 那一档改成**由 `src/tokens.js` 的 `estimateTokens()` 公式推出**的区间（现算：ASCII
+    //   3.0434 B/token ⇒ 256 KiB ≈ 86,134 token；纯汉字 1.7391 B/token ⇒ ≈ 150,733 token），
+    //   估算器改了而文案没跟，由 `test/tools/file-tools.test.js` 那两条稳定判据当场咬红：
+    //   ① 描述里不许再出现仓内实测数字（数字白名单 + 禁用形状），② token 区间必须等于估算器
+    //   现算的区间（双向）。下面第十七刷往上的历史注**保留**（它们是历史，不是现状）。
     // issue #267：token 那三个档是**复测值**，不是估的——口径 `estimateTokens(前 200 行)`，样本写死在
     // `test/tools/file-tools.test.js`：190（`src/text/label.js`，稀疏短行）/ 2,493（`bin/sessions.js`，
     // 工单样本的中位）/ 4,773（**本文件**，密中文注释 = CJK 密度上限，也是全包 83 个 `src/`+`bin/`+`examples/`
@@ -1170,27 +1301,34 @@ export const FILE_TOOL_DEFINITIONS = [
     //   同位数跟着刷；**判据一个没动**：±2% / ±1% 常量、`measureReadLineCapacity`、83 条写死样本、
     //   `assertTierTight` 全部一字未动——本刷只是复测 + 同步声称；让中位不随样本成员漂移的结构性修法是 #628）。
     description: "Read a text file by line range. "
-      + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
+      + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` "
+      + "continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
-      + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
-      + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
-      + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
-      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,850 lines "
-      + "(68.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,850 lines), "
-      + "median 6,007 (43.6), most 9,407 (27.9). "
-      + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
-      + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
-      + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,384 and "
-      + "this tool's own source fits 4,531. "
-      + "Nothing outside this repo "
-      + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
-      + "far more than a single `limit` will ask for, so it is rarely what stops you. "
-      + "Token budget of the default window, measured with the engine estimator (~3.5 characters per token for non-CJK, "
-      + "~1.5 for CJK, \u00d71.15 margin) on the first 200 lines of real source files shipped here: ~190 tokens where lines "
-      + "are short and sparse, ~2,500 on typical source, and ~4,750 where lines are wide, comments are dense or the text "
-      + "is CJK \u2014 budget the tail, not the typical case. "
-      + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) rather than "
-      + "conservatively paging 200 lines at a time. Whatever is withheld is reported by a marker that carries the exact `offset` to continue from.",
+      + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) \u2014 the budget is counted in BYTES, "
+      + "so how many lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count "
+      + "(e.g. `wc -c` ÷ `wc -l`) and fold that for the file in hand, instead of assuming a line count. "
+      + "No line capacity is quoted here as a number measured from this repo: this codebase is not your tree, and "
+      + "any such figure goes stale the moment someone edits an unrelated file. Wide lines cut the count "
+      + "proportionally and CJK cuts hardest (3 UTF-8 bytes per character). "
+      + "Token budget, derived from the engine's own estimator (~3.5 characters per token for non-CJK, ~1.5 for "
+      + "CJK, \u00d71.15 margin) rather than measured from any file here: tokens \u2248 bytes ÷ 3.04 for ASCII source and "
+      + "\u2248 bytes ÷ 1.74 for text that is nothing but Chinese characters \u2014 so a call that fills the whole 256KB cap "
+      + "costs ~86,000 tokens of ASCII up to ~151,000 tokens of pure Chinese characters, and a call that fills a "
+      + "tenth of the cap costs a tenth of that. It is a heuristic estimate, not a real tokenizer. "
+      + "Either way the byte cap is far more than a single `limit` will ask for, so it is rarely what stops you. "
+      + "Estimate the budget first and ask for it **in one call** \u2014 when unsure take more (e.g. `limit=1000`) "
+      + "rather than conservatively paging 200 lines at a time. Whatever is withheld is reported by a marker that "
+      + "carries the exact `offset` to continue from. "
+      // issue #867：返回末尾多一行**估值** token 数，模型得知道它在那里、以及它是什么口径。
+      // 只提机制（位置 + 估值身份 + 不含自己），不提任何仓内实测数字（#628 那一整类刚删掉）。
+      + "Every result ends with one final line carrying an **estimated** token count for the text above it \u2014 the "
+      + "same engine heuristic, not a real tokenizer, and the figure deliberately excludes that line's own length, "
+      + "so read it as what this call roughly cost you, never as a completeness claim. "
+      // issue #867 里程碑 2：可选的 token 上限。只说机制（两个闸取更小者、停下给续读 offset），
+      // 不写任何仓内实测数字（#628 那一类不许回来）。
+      + "Pass `max_estimated_tokens` to cap this call by estimated tokens instead of bytes: both caps stay in force and "
+      + "the smaller one wins, and when the token cap is what stopped the read the result names it and gives the `offset` "
+      + "to continue from.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1206,6 +1344,14 @@ export const FILE_TOOL_DEFINITIONS = [
         max_bytes: {
           type: "integer",
           description: "Maximum UTF-8 bytes returned per call (default 262144 = 256KB). Values outside 1024-4194304, or non-integers, are NOT clamped to the bounds \u2014 they are ignored and the default is used.",
+        },
+        max_estimated_tokens: {
+          type: "integer",
+          description: "Optional cap on the estimated token size of this call's result (no default: omit it and no token cap applies). "
+            + "It is the engine's own character-class heuristic, NOT a real tokenizer, so treat it as an order-of-magnitude budget. "
+            + "`max_bytes` still applies: both limits are enforced and the smaller one wins. When this cap stops the read, "
+            + "the result says so and carries the exact `offset` to continue from, so nothing is lost \u2014 it is only paged. "
+            + "Non-integers are ignored; values below 256 are raised to 256.",
         },
       },
       required: ["path"],
@@ -1654,6 +1800,35 @@ export function createFileTools({
       detail: maxBytesNote,
       next: "重传 readFile 并传整数 max_bytes",
     });
+    // issue #867 里程碑 2：可选的 **token** 上限。不传 = 不设上限（行为与里程碑 1 逐字相同）。
+    // 静默回落是 #358 / #375 反复咬的那条病根（参数被改了而模型看不见），所以无效值 / 低于下限
+    // 都走**现有**的参数校正通道报一句，不新开通道。
+    const maxTokensRequested = input?.max_estimated_tokens;
+    const maxTokensAbsent = maxTokensRequested === undefined || maxTokensRequested === null || maxTokensRequested === "";
+    const maxTokensNumber = maxTokensAbsent ? Number.NaN : Number(maxTokensRequested);
+    const maxTokensNote = (() => {
+      if (maxTokensAbsent) return null;
+      if (!Number.isFinite(maxTokensNumber) || Math.trunc(maxTokensNumber) !== maxTokensNumber) {
+        return `max_estimated_tokens=${JSON.stringify(maxTokensRequested)} 不是可用整数，已忽略（不设 token 上限）`;
+      }
+      if (maxTokensNumber < FILE_READ_MAX_TOKENS_MIN) {
+        return `max_estimated_tokens=${maxTokensNumber} 小于下限，已按 ${FILE_READ_MAX_TOKENS_MIN} 处理`;
+      }
+      return null;
+    })();
+    const maxTokens = (() => {
+      if (maxTokensAbsent) return undefined;
+      if (!Number.isFinite(maxTokensNumber) || Math.trunc(maxTokensNumber) !== maxTokensNumber) return undefined;
+      return Math.max(FILE_READ_MAX_TOKENS_MIN, maxTokensNumber);
+    })();
+    const maxTokensFacts = maxTokensNote === null ? null : paramErrorFacts({
+      tool: "readFile",
+      field: "max_estimated_tokens",
+      expected: "整数",
+      value: maxTokensRequested,
+      detail: maxTokensNote,
+      next: "重传 readFile 并传整数 max_estimated_tokens",
+    });
     const target = resolveToolPath(root, filePath);
     if (!canRead(target)) return readDenied(target);
 
@@ -1673,17 +1848,26 @@ export function createFileTools({
     }
 
     const window = readLineWindow(target, { start, count, maxBytes });
-    const parts = [...window.selected];
-    parts.push(...fileReadMarkers(window, {
+    // issue #867 里程碑 2：字节路径跑完之后，再按 token 预算后置裁一遍（两道闸取更小者）。
+    const trimmed = trimSelectedToTokenBudget(window.selected, maxTokens);
+    const view = trimmed.dropped > 0 ? { ...window, selected: trimmed.selected } : window;
+    const parts = [...view.selected];
+    parts.push(...fileReadMarkers(view, {
       start,
       count,
       maxBytes,
       displayPath: displayName(target),
-      parameterNotes: [startReport.note, countReport.note, maxBytesNote].filter(Boolean),
-      parameterFacts: [startReport.facts, countReport.facts, maxBytesFacts].filter(Boolean),
+      parameterNotes: [startReport.note, countReport.note, maxBytesNote, maxTokensNote].filter(Boolean),
+      parameterFacts: [startReport.facts, countReport.facts, maxBytesFacts, maxTokensFacts].filter(Boolean),
       unifiedParamErrors,
+      tokenCap: maxTokens === undefined ? undefined : { maxTokens, dropped: trimmed.dropped },
     }));
-    return parts.join("\n");
+    // issue #867：最后一行挂一个**估值** token 数（口径与自指的理由见 `readTokenEstimateLine`）。
+    // 除这一行外输出一字不动：行内容、行号、marker 文本与顺序全部原样（由固定夹具逐字节钉着）。
+    // 空正文不插前置空行（「空文件」本来返回空串，别另造一行空白）。
+    const body = parts.join("\n");
+    const estimate = readTokenEstimateLine(body);
+    return body === "" ? estimate : `${body}\n${estimate}`;
   };
   /**
    * 搜索的**唯一**实现体（issue #195 R1）：`searchText` 与它的两个薄别名 `rg`/`grep` 共跑这一份代码。

@@ -5402,7 +5402,15 @@ Defaults a host must know about, because they change what the model sees
 - `readFile` is bounded: one call returns at most `max_bytes` UTF-8 bytes
   (default `262144`, overridable through `ERIX_FILE_READ_MAX_BYTES`, clamped to
   1024–4194304) and scans lines block-by-block with early stop instead of
-  reading the whole file into memory;
+  reading the whole file into memory; the byte budget covers the line window and
+  the markers — `readFile` then appends one final line carrying an **estimated**
+  token count for the text above it (`[本次返回约 N token（引擎启发式估值，非真实 tokenizer）]`,
+  issue #867), so a capped call's total result may exceed `max_bytes` by that one line.
+  `readFile` also accepts an optional `max_estimated_tokens` (no default: omit it and no token cap
+  applies): it caps the same result by the engine's own **estimated** tokens, the byte cap stays in
+  force, and **the smaller of the two wins**. When the token cap is what stopped the read, the result
+  carries a marker naming that parameter and the exact `offset` to continue from, so nothing is lost
+  — it is only paged;
 - every truncation marker ends with an executable next step carrying **this call's**
   values (the `readFile` `offset` to continue from, the truncated line's number and
   file path, or the search continuation `offset`), and it may only name `readFile`
