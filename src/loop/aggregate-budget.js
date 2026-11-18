@@ -38,6 +38,17 @@ export const AGGREGATE_FRAMING_TOKENS = 8;
 /** 失败结果被 stub 化时保留的关键错误片段上限（字符）。 */
 export const AGGREGATE_ERROR_SNIPPET_CHARS = 200;
 
+/**
+ * 「不要为补全输出重跑有副作用的命令」那一句（模型可见文本的**唯一措辞之家**）。
+ *
+ * issue #609：这句原先只长在聚合桩里，而单条截断（`truncateTextToBudget`）是第三种「内容丢失」
+ * 位点 —— 抄一份到那边就等于养两套口径，必然过期。所以把它抽成常量，两侧共用；
+ * `aggregateStubText()` 的输出因此**逐字不变**（只是拼法换了）。
+ */
+export const NO_RERUN_SIDE_EFFECT_CLAUSE =
+  "若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；"
+  + "改用只读方式复核。";
+
 const UNRECOVERABLE_REASONS = Object.freeze({
   invalid_content: "输出内容不是可归档的文本",
 });
@@ -106,8 +117,7 @@ export function aggregateStubText({ round, length, errorSnippet: snippet, retrie
   return `[本轮工具输出已超单轮聚合预算：完整输出已由引擎归档（第 ${round} 轮，共 ${length} 字符）。${failed}`
     + `后续需要该值：${hint.clause}；`
     + "若未记录且无法确定性重算，请省略对应 findings 声明，不要猜测；"
-    + "若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；"
-    + "改用只读方式复核。]";
+    + NO_RERUN_SIDE_EFFECT_CLAUSE + "]";
 }
 
 /**

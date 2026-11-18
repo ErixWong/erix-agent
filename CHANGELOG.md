@@ -51,6 +51,61 @@
   近邻词不误伤集、键缺席 + 键集合对账、终态同值、`runId` 写键规则、**中途轮不判**（含 resume）、
   特征集与分级对账、one-shot 旗标（对同一 ctx 直调两次 `finish` 咬住）、`max_rounds_cap` 终局
   （证明该键不只 `end_turn`）、`failed` 终局既无该键也无该事件。）
+- **A single over-budget piece of content is no longer cut silently (issue #609).** The three ways
+  this library loses content differed in honesty: a pruned field keeps its heading and says
+  `[已修剪]` (`prunedFieldText`, issue #469), a removed message leaves a `stubFor` stub, and
+  `truncateTextToBudget()` returned a **bare slice** — the model worked on half a tool result
+  without knowing it had been cut. The tail marker **leads with the verdict**: the judgement word
+  `截断` occupies the first two code points and the numbers (original code-point count and
+  estimated tokens, kept characters and tokens, tokens dropped) follow behind — ordering is the
+  judgement, because a budget too small for the marker returns only a *prefix* of it, and a prefix
+  carries nothing but what sits at the front. The continuation instruction names
+  **capabilities, never tools** (file-reading *tools of that kind* with `offset`/`limit`;
+  `head`/`tail`/`sed` for command output, which are shell commands rather than tool names;
+  notes only as a conditional clause — this layer has neither the assembled tool surface nor the
+  note ledger, so per the #746 discipline it must not name a tool, `note_*` included), and
+  the “do not re-run a side-effecting command just to complete the output” clause — the latter is
+  now the shared `NO_RERUN_SIDE_EFFECT_CLAUSE` that the aggregate stub quotes too (one wording,
+  not two that expire). **The marker itself costs budget:** the binary search runs on
+  `budgetTokens − TRUNCATION_MARKER_RESERVE_TOKENS`, and when a budget is too small to hold even
+  the marker, the whole string (marker included) goes through the same code-point-safe search
+  again, so what comes back is a prefix **of the marker** and still spells `截断` for every budget
+  of 4 tokens or more (2–3 tokens keep only the leading `截`; the rung below that is **not** a
+  physical floor — one Han character costs 2 tokens but `…` costs 1, so 1 token gets a visible
+  `…` and only budget 0 comes back empty: no positive budget hands the model empty content, and
+  a test names both cells out loud rather than leaving a silent branch), and
+  `estimateTokens(returned) <= budgetTokens` always holds — the #846 “one
+  protected message over budget” family does not come back. Content that is **not** truncated
+  comes back byte-for-byte unchanged, and the marker is deterministic (same input ⇒ the same
+  string, so run snapshot / resume comparison survives). Sixteen cells in
+  `test/loop-budget-truncation-marker-609.test.js` pin it: the reverse proof that cutting on the
+  full budget and pasting the marker afterwards really does overflow, the extreme-budget ladder
+  above, the boundary where an `[已修剪]` field is itself over budget (never “neither a complete
+  `[已修剪]` nor a truncation marker”), and a lock on the four wording points — verdict, number
+  format, continuation keywords, no-re-run clause — plus the order between them. (PR #—)
+- **单个超预算的内容不再被静默剪掉（issue #609）。** 本仓三种「内容丢失」在诚实度上本来不齐：
+  字段被修剪会留标题并写 `[已修剪]`（`prunedFieldText`，issue #469），整条消息被删会留
+  `stubFor` 桩，而 `truncateTextToBudget()` 以前返回**裸 slice** ⇒ 模型拿着半截工具结果在干活，
+  却不知道自己被砍了。现在尾部标记**结论先行**：判据词「截断」占住前两个码点，数字（原文码点数
+  与估算 token、保留的字符与 token、被砍掉多少 token）排在后面 —— 顺序本身就是判据，因为预算装
+  不下整条标记时返回值只是它的**前缀**，而前缀只带得走开头的东西。续读指引**只说能力、不点工具名**
+  （「文件读取类工具」按 `offset`/`limit` 分段读回；命令输出用 `head`/`tail`/`sed` —— 那是 shell
+  命令不是工具名；笔记只给条件式 —— 这一层既拿不到装配后的工具面也拿不到笔记账本，按
+  #746 的口径不许点名工具，`note_*` 也在内），以及「不要为补全输出重跑有副作用的命令」那一句 —— 后者已
+  抽成 `NO_RERUN_SIDE_EFFECT_CLAUSE`，聚合超限桩引用同一个常量（一份措辞，不是两套必然过期）。
+  **标记本身占预算：** 二分跑在 `budgetTokens − TRUNCATION_MARKER_RESERVE_TOKENS` 上；预算小到连
+  标记都装不下时，整段（含标记）再走一次同一条码点安全的二分 ⇒ 拿回来的是**标记自己的前缀**，
+  预算 ≥4 token 时仍然拼得出「截断」（2～3 token 只剩首字「截」；再往下一格**不是**物理下限：一个
+  汉字值 2 token，但 `…` 只值 1 token ⇒ 预算 1 拿到的是可见的 `…`，只有预算 0 才是空串 —— 任何
+  正预算都不会把「空内容」交给模型，两格都有用例具名写着，不是静默分支），且
+  `estimateTokens(返回值) <= budgetTokens` 恒成立 —— #846「单条受保护消息超预算」那一族不会被
+  引回来。**没被截断**的内容逐字原样返回，标记也是确定性的（同输入同输出，run snapshot /
+  resume 的逐字比对仍成立）。`test/loop-budget-truncation-marker-609.test.js` 十六格钉住：反向证
+  「拿整条预算截完再贴标记确实会超预算」、上面那条极小预算的退化阶梯、`[已修剪]` 字段自身超预算的
+  边界（不许「既没有完整 `[已修剪]`、也没有截断标记」），以及把四个措辞要点 —— 结论词、数字格式、
+  续读关键词、别重跑副作用 —— 连同它们之间的先后顺序一起锁住。（PR #—）
+- **Changed (issue #609, with #271 / #453 / #537 / #730): the `readFile` median tier moved 6,157 → 6,007, because the fixed sample's median element itself changed hands — `src/loop/budget.js` is now the element sitting at the median, replacing `src/loop/error-ledger.js` (byte-for-byte unchanged this round).** Re-measured with the test's own `measureReadLineCapacity` / `CJK_CHAR` on this tree (the harness `/tmp/609-linecap-census.mjs` extracts those functions, the sample list and the role table out of `test/tools/file-tools.test.js` and `eval`s them, rather than transcribing a second copy of the metric — the lesson of #714, which wrote an anchor by hand and got it wrong): `src/loop/budget.js` 22,481 → **23,998** B / 521 → **550** lines ⇒ 43.1497 → **43.6327** bytes per line ⇒ **6,007** lines at the default 262,144-byte budget, and that file is sample element **42/83**, so with an odd-length sample it **is** the median (6,056 → **6,007**). The cause is #609's own commentary on the `TRUNCATION_OMISSION_MARK` cell, not a defect in `readFile`; the file the anchor was pinned to measured **6,157, byte-identical to the record**, and what reddened was `medianClaim` against the sample median (2.50% past ±2%). The two ±2% bands still intersected (`[6,034, 6,127]`) but **contained no measured value** — neither the sample median nor the pinned file's own measurement — so the role was **handed to the file actually at the median** (#730 / #769 R3 precedent) rather than picking an invented midpoint out of the intersection the way #493 once did. Both description edits are **same-digit-count replacements** (`median 6,157 (42.6)` → `median 6,007 (43.6)`), so they are byte-neutral for `src/tools/file-tools.js`; what did move that file is the history note above the description (133,104 → **135,358** B / 2,324 → **2,340** lines ⇒ own capacity 4,577 → **4,531**), so `this tool's own source fits` moved with it, the precedent #537 set, re-measured twice to convergence rather than guessed. **Nothing was relaxed to make this pass**: the ±2% / ±1% constants, `measureReadLineCapacity`, the 83 hardcoded sample paths and `assertTierTight` are untouched, no case was deleted or skipped, `fewest` / `densest` / `most` were re-measured and are byte-identical to their records, and after the sync both median assertions hold at **0.00%**. The structural fix — making the median stop drifting with sample membership and with one file's comment width — is **issue #628** and is deliberately not smuggled into this re-measurement.（PR #—）
+- **变更（issue #609，同 #271 / #453 / #537 / #730）：`readFile` 的中位档从 6,157 → 6,007，原因是写死样本的**中位元素自己换了人**——现任是 `src/loop/budget.js`（它就坐在中位上），离任是 `src/loop/error-ledger.js`（本轮逐字未动）。** 数字全部由测试自己的 `measureReadLineCapacity` / `CJK_CHAR` 在这棵树现算（夹具 `/tmp/609-linecap-census.mjs` 把那两个度量函数、样本清单与角色表从 `test/tools/file-tools.test.js` 里**原样抽出来 eval**，不另抄一份口径 —— #714 手写数把锚点写歪的教训）：`src/loop/budget.js` 22,481 → **23,998** 字节 / 521 → **550** 行 ⇒ 均行字节 43.1497 → **43.6327** ⇒ 默认 262,144 字节额度下装 **6,007** 行，而它是写死样本的第 **42/83** 个 —— 奇数长度的样本里它**就是**中位（样本中位 6,056 → **6,007**）。成因是 #609 给 `TRUNCATION_OMISSION_MARK` 那一格写的中文注释，不是 `readFile` 坏了；被钉的那个文件实测 **6,157，与记录逐字相同**，红的是「声称的中位 vs 样本中位」那一条（越过 ±2% 达 **2.50%**）。两条 ±2% 的带**仍有交集**（`[6,034, 6,127]`），但**里面没有任何一个实测值**（既不是样本中位，也不是被钉文件自己的实测）⇒ 按 #730 / #769 R3 先例把角色**交给当时真在中位的那一个**，而不像 #493 那样在交集里挑一个发明出来的中间数。描述两处改动都是**同位数替换**（`median 6,157 (42.6)` → `median 6,007 (43.6)`）⇒ 对 `src/tools/file-tools.js` 字节中性；真正挪动它的是描述上方那条历史注（133,104 → **135,358** 字节 / 2,324 → **2,340** 行 ⇒ 自身容量 4,577 → **4,531**），所以 `this tool's own source fits` 跟着刷（#537 立的先例），连测两次逐字相同才收，不是猜的。**判据一条都没放宽**：±2% / ±1% 常量、`measureReadLineCapacity`、83 条写死样本、`assertTierTight` 一字未动，没删例也没 skip，`fewest` / `densest` / `most` 当场复测与记录**逐字相同**，刷完之后两条 median 断言都是 **0.00%**。结构性修法 —— 让中位不再随样本成员与单个文件的注释宽度漂移 —— 是 **issue #628**，本单不顺手把口径换掉。（PR #—）
 - **The CHANGELOG coverage gate's own wiring check no longer borrows a documentation step as
   its position landmark (issue #855).** Criterion ⑧ of
   `node scripts/changelog-coverage-check.mjs --self-test` located the blocking step between
