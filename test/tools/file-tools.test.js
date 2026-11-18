@@ -1058,4 +1058,101 @@ test("估值行永远存在且是最后一行（#867 反向证落点：实现里
   });
 });
 
+// ---------------------------------------------------------------------------
+// issue #867（里程碑 2）：`max_estimated_tokens` —— token 上限是**第二道闸**，字节仍是硬边界。
+//
+// 架构裁决（不是实现细节）：token 记账**没有**进 `readLineWindow` 的块循环，而是对已选好的整行
+// **后置裁剪**。所以 #506 的四条不变量（分片续读零丢失 / 不劈坏多字节字符 / 超宽行有出口 /
+// 不超字节）按构造保持；本组用例要证明的是「第二道闸真的会截」以及「截了之后能无重无漏地续读」。
+// ---------------------------------------------------------------------------
+
+/** CJK 密样本：汉字每字 3 字节、估算 1.5 token/字 ⇒ 字节还没到顶，token 先到顶。 */
+const CJK_DENSE_ROWS = Array.from(
+  { length: 300 },
+  (_, index) => `第${index + 1}行：这一行是中文内容，用来把估算 token 数推上去，而字节数还远没到上限`,
+);
+
+test("max_estimated_tokens 先截住：预算成立、marker 点名本参数并给出续读 offset（#867 里程碑 2）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "cjk.txt"), `${CJK_DENSE_ROWS.join("\n")}\n`, "utf8");
+    const { executeTool } = createFileTools({ cwd });
+    const maxTokens = 800;
+    const output = String(await executeTool("readFile", { path: "cjk.txt", limit: 300, max_estimated_tokens: maxTokens }));
+    const body = withoutTokenEstimate(output);
+    // ① 预算真的成立：正文 + marker（不含末尾估值行）的估算值不超过上限。
+    assert.ok(estimateTokens(body) <= maxTokens,
+      `返回正文（含 marker）估算 ${estimateTokens(body)} 超过 max_estimated_tokens=${maxTokens}：预算没成立`);
+    // ② 必须报，且点名本参数 + 说明是估值。
+    assert.match(body, new RegExp(`\\[已达 max_estimated_tokens=${maxTokens} 上限（引擎启发式估值，非真实 tokenizer）`, "u"),
+      `被 token 上限截住却没报（模型会以为读完了）：${body.slice(-160)}`);
+    // ③ marker 给的 offset 必须等于「本次返回的行数」——offset 语义是 0-based 行号，续读从下一行起。
+    const returnedLines = body.split("\n").filter((line) => /^\d+: /u.test(line)).length;
+    assert.match(body, new RegExp(`readFile 传 offset=${returnedLines} 继续`, "u"),
+      `marker 的续读 offset 与本次返回行数（${returnedLines}）对不上 ⇒ 续读会重读或漏读`);
+    assert.ok(returnedLines > 0 && returnedLines < CJK_DENSE_ROWS.length, `夹具没被截：返回了 ${returnedLines} 行`);
+  });
+});
+
+test("max_estimated_tokens 与 max_bytes 取更小者：字节先截住时走的是 readBytesCap（#867 里程碑 2）", async () => {
+  await withDirectory(async (cwd) => {
+    const rows = Array.from({ length: 40 }, (_, index) => `row-${index} ${"y".repeat(20)}`);
+    await writeFile(join(cwd, "big.txt"), `${rows.join("\n")}\n`, "utf8");
+    const { executeTool } = createFileTools({ cwd });
+    // 字节给得很小、token 给得极大 ⇒ 拦住它的必须是字节那条。
+    const output = String(await executeTool("readFile", { path: "big.txt", max_bytes: 1_024, max_estimated_tokens: 1_000_000 }));
+    const body = withoutTokenEstimate(output);
+    assert.match(body, /\[本次返回已达 max_bytes=1KB 上限/u, `字节上限没生效：${body.slice(-160)}`);
+    assert.doesNotMatch(body, /max_estimated_tokens=/u,
+      "字节先截住时不该再报 token 上限（两道闸都报会让模型以为被截了两次）");
+  });
+});
+
+test("不传 max_estimated_tokens 时行为与里程碑 1 逐字相同（#867 里程碑 2）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "rows.txt"), `${Array.from({ length: 12 }, (_, index) => `row ${index}`).join("\n")}\n`, "utf8");
+    const { executeTool } = createFileTools({ cwd });
+    const withoutParam = String(await executeTool("readFile", { path: "rows.txt", limit: 5 }));
+    // 传一个「足够大」的上限：不该改变任何字节（除了不出现新 marker）。
+    const withHugeParam = String(await executeTool("readFile", { path: "rows.txt", limit: 5, max_estimated_tokens: 10_000_000 }));
+    assert.equal(withHugeParam, withoutParam, "给了足够大的 token 上限却改变了返回文本（应该逐字相同）");
+    assert.doesNotMatch(withoutParam, /max_estimated_tokens=/u, "不传参数时不该出现 token 上限 marker");
+  });
+});
+
+test("token 上限截断后按 marker 续读：不重不漏（#867 里程碑 2，照 #506 的判据写法跑在新路径上）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "cjk.txt"), `${CJK_DENSE_ROWS.join("\n")}\n`, "utf8");
+    const { executeTool } = createFileTools({ cwd });
+    const maxTokens = 800;
+    const first = withoutTokenEstimate(String(await executeTool("readFile", {
+      path: "cjk.txt", limit: 300, max_estimated_tokens: maxTokens,
+    })));
+    const offset = Number(/readFile 传 offset=(\d+) 继续/u.exec(first)?.[1]);
+    assert.ok(Number.isInteger(offset) && offset > 0, `marker 里没取到续读 offset：${first.slice(-160)}`);
+    const second = withoutTokenEstimate(String(await executeTool("readFile", { path: "cjk.txt", offset, limit: 300 })));
+    const whole = withoutTokenEstimate(String(await executeTool("readFile", { path: "cjk.txt", limit: 300 })));
+    // 只比**正文行**：marker 不是内容（一次读完那次没有 token marker，续读那次有续读 marker，
+    // 把 marker 也算进「拼起来」就成了两条不同的话在比）。#506 的判据比的也是正文。
+    const contentOf = (text) => text.split("\n").filter((line) => /^\d+: /u.test(line)).join("\n");
+    assert.equal(`${contentOf(first)}\n${contentOf(second)}`, contentOf(whole),
+      "两次续读的正文拼起来与一次读完不逐字相同 ⇒ 重读或漏读了（#506 的判据在新路径上失效）");
+    // 多字节字符不许被劈坏：整段里不许出现替换字符。
+    assert.equal(/\uFFFD/u.test(`${first}\n${second}`), false, "续读拼起来的文本里出现了 U+FFFD ⇒ 劈坏了多字节字符");
+  });
+});
+
+test("max_estimated_tokens 的无效值走现有参数校正通道，不许静默忽略（#867 里程碑 2 / #358 / #375）", async () => {
+  await withDirectory(async (cwd) => {
+    await writeFile(join(cwd, "rows.txt"), `${Array.from({ length: 12 }, (_, index) => `row ${index}`).join("\n")}\n`, "utf8");
+    const { executeTool } = createFileTools({ cwd });
+    const output = withoutTokenEstimate(String(await executeTool("readFile", { path: "rows.txt", limit: 2, max_estimated_tokens: "abc" })));
+    assert.match(output, /\[参数校正：max_estimated_tokens="abc" 不是可用整数，已忽略（不设 token 上限）；下一步：重传 readFile 并传整数 max_estimated_tokens\]/u,
+      `无效的 max_estimated_tokens 被静默忽略（模型无从得知它没生效）：${output.slice(-200)}`);
+    // 低于下限要报「已按下限处理」，而不是悄悄照原值用。
+    const tiny = withoutTokenEstimate(String(await executeTool("readFile", { path: "rows.txt", limit: 2, max_estimated_tokens: 10 })));
+    assert.match(tiny, /\[参数校正：max_estimated_tokens=10 小于下限，已按 256 处理；下一步：重传 readFile 并传整数 max_estimated_tokens\]/u,
+      `低于下限的值没有报出来：${tiny.slice(-200)}`);
+  });
+});
+
 

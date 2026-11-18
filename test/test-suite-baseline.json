@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3847,
+    "tests": 3852,
     "fail": 0,
     "maxSkipped": 18
   },
@@ -1512,6 +1512,21 @@
       "skipped": 13,
       "todo": 0,
       "why": "**tests 3843 → 3847（净 +4）**：`test/tools/file-tools.test.js` 加四格，钉 issue #867 里程碑 1（readFile 返回末尾的 token 估值行）：① 逐字对账（`报出的数 === estimateTokens(剥掉估值行的返回文本)`，相等而不是 ±2%）；② 确定性（同一输入连调两次逐字相同，不跟 locale / 不跟实例）；③ 其余输出一字不动（对基点 `6e3ba30e` 的固定夹具逐字节比正文与 marker）；④ 反向证（估值行必须存在且是最后一行）。**覆盖没有净丢**：`test/contract/file-tools.js` 的 readFile 字面量断言改成「剥掉估值行再比」，判据强度不变（它钉的是正文与 marker，本来就是这一行的上一段）；`test/codewrite.test.js` / `test/tools.test.js` / `test/tools/param-error-375.test.js` 三处同样的「取最后一行」假设跟着剥。反向证实跑（主 agent）：把报数改成固定值 ⇒ 2 格红；删掉估值行 ⇒ 4 格红；把估值行挪到最前 ⇒ 9 格红。skipped 13 与本环境历史读数一致。"
+    },
+    {
+      "date": "2026-11-17",
+      "env": "本地开发机（wt-867 独立 worktree）",
+      "node": "v22",
+      "commit": "未提交（feat-261117-11-readfile-max-est-tokens 工作区）",
+      "branch": "feat-261117-11-readfile-max-est-tokens",
+      "mainSha": "49502905",
+      "mergeBase": "49502905",
+      "tests": 3852,
+      "pass": 3839,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "why": "**tests 3847 → 3852（净 +5）**：`test/tools/file-tools.test.js` 加五格，钉 issue #867 里程碑 2（`max_estimated_tokens`）：① token 先截住（CJK 密样本，预算成立 + marker 点名参数 + 续读 offset 等于本次返回行数）；② 字节先截住时走 `readBytesCap`、不报 token marker（两道闸不叠报）；③ 不传参数时与里程碑 1 **逐字相同**；④ 截断后按 marker 续读**不重不漏**（只比正文行，marker 不是内容）+ 无 U+FFFD；⑤ 无效值/低于下限走**现有**参数校正通道报一句（#358/#375 的静默回落病根）。**架构上 token 记账没有进 `readLineWindow`**（后置裁剪，整行取舍）⇒ #506 的四条不变量按构造保持，`test/read-file-slices*` 一字未改。反向证实跑（主 agent）：删掉裁剪 ⇒ 2 格红；裁剪永远不丢行 ⇒ 2 格红；没丢行也报 token marker ⇒ 2 格红。skipped 13 与本环境历史读数一致。"
     }
   ]
 }
