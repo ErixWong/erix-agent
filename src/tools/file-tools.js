@@ -341,7 +341,7 @@ function recordDirectorySkip(account, category, name) {
  *
  * @param {"skipped"|"noMatch"|"searchTruncated"|"treeEntryCap"|"treeDepthCap"
  *   |"readBytesCap"|"readMoreLines"|"readNotScanned"|"readLineTruncated"
- *   |"readParamAdjusted"|"readEof"|"editDiffTruncated"} kind
+ *   |"readParamAdjusted"|"readEof"|"editDiffTruncated"|"readTokenCap"} kind
  * @param {Record<string, unknown>} [values] 语义值（计数、上限、offset）
  * @returns {string}
  */
@@ -427,6 +427,12 @@ export function toolMarker(kind, values = {}) {
       //   两条 marker 的先后顺序就是这里的职责顺序，别合并成一条模糊承诺。
       const total = values.total === undefined ? "" : `，共 ${values.total} 行`;
       return `[本次返回已达 max_bytes=${formatSize(values.maxBytes)} 上限${total}；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
+    }
+    case "readTokenCap": {
+      // issue #867 里程碑 2：被 `max_estimated_tokens` 裁掉整行时的出口。
+      // 三件事必须同时在：① 点名本参数（模型才知道是哪个上限拦的，以及下回调哪个）；
+      // ② 自报是**估值**（不许长得像精确计数）；③ 给出可执行的续读 offset（与字节那条同口径）。
+      return `[已达 max_estimated_tokens=${values.maxTokens} 上限（引擎启发式估值，非真实 tokenizer）：本次返回到第 ${values.lines} 行；${NEXT_STEP_CLAUSE}readFile 传 offset=${values.offset} 继续]`;
     }
     case "readMoreLines":
       // 行窗口没读满就报总数与续读 offset（#196 R1.1）：两个数都是本次调用的真值
@@ -992,6 +998,7 @@ function normalizeIntegerWithReport(value, fallback, name) {
 
 function fileReadMarkers(window, {
   start, count, maxBytes, displayPath, parameterNotes = [], parameterFacts = [], unifiedParamErrors = false,
+  tokenCap,
 }) {
   const markers = [];
   // 参数被改写时报一句（issue #358 同族）：只说本次真值与重传方式，不改任何语义。
@@ -1005,10 +1012,15 @@ function fileReadMarkers(window, {
     }
   }
   const nextOffset = start + window.selected.length;
+  // issue #867 里程碑 2：token 预算裁掉了整行 ⇒ 那条「还有更多行」的 marker 由它接管
+  // （两条都说「还能继续读」会让模型以为被截了两次，且它们的 offset 语义一样）。
+  const tokenDropped = tokenCap !== undefined && tokenCap.dropped > 0;
   if (window.contentCapped) {
     markers.push(toolMarker("readBytesCap", { maxBytes, total: window.totalLines, offset: nextOffset }));
   } else if (window.totalLines !== undefined) {
-    if (start + count < window.totalLines) {
+    if (tokenDropped) {
+      // 交给下面的 readTokenCap
+    } else if (start + count < window.totalLines) {
       markers.push(toolMarker("readMoreLines", {
         total: window.totalLines,
         offset: start + count,
@@ -1026,6 +1038,13 @@ function fileReadMarkers(window, {
     markers.push(toolMarker("readNotScanned", {
       size: window.size,
       maxBytes,
+      offset: nextOffset,
+    }));
+  }
+  if (tokenDropped) {
+    markers.push(toolMarker("readTokenCap", {
+      maxTokens: tokenCap.maxTokens,
+      lines: window.selected.length,
       offset: nextOffset,
     }));
   }
@@ -1086,6 +1105,58 @@ function formatGroupedInteger(value) {
  */
 function readTokenEstimateLine(body) {
   return `${READ_TOKEN_ESTIMATE_PREFIX}${formatGroupedInteger(estimateTokens(body))}${READ_TOKEN_ESTIMATE_SUFFIX}`;
+}
+
+// ---------------------------------------------------------------------------
+// `max_estimated_tokens`（issue #867 里程碑 2）：把已选行按 token 预算**后置**裁一遍。
+//
+// 为什么是后置裁剪，而不是把记账塞进 `readLineWindow` 的块循环：那个循环里住着 #506 的四条
+// 不变量（分片续读零丢失 / 不劈坏多字节字符 / 超宽行有出口 / 不超字节），在它中间插一个
+// 「累计 token」的分支就等于把那四条一起改写一遍。这里**只对已经选好的整行做取舍**：
+// `readLineWindow` 一行不改 ⇒ 那四条按构造保持；token 预算只是**第二道闸**，与字节上限
+// 取更小的那个（字节仍是硬边界）。
+//
+// 切点落在**行边界**（整行取舍）⇒ 天然不会劈坏多字节字符，不需要另造一套码点切分。
+// ---------------------------------------------------------------------------
+
+/** `max_estimated_tokens` 的下限：再小就等于「什么都读不到」，那不该是一个合法请求。 */
+const FILE_READ_MAX_TOKENS_MIN = 256;
+
+/**
+ * 预算里给 marker 预留的估算量（**保守上界**）。
+ *
+ * marker 文本本身取决于裁剪结果（裁到哪一行 ⇒ marker 里写哪个 offset ⇒ marker 多长），是个循环
+ * 依赖。所以这里不求解，只留一个足够大的上界：宁可少给一行，也不许让「正文 + marker」越过上限。
+ * `readTokenCap` 那段文案在本仓估算器下约 60–70 token，200 是它的两倍多。
+ */
+const READ_TOKEN_MARKER_RESERVE_TOKENS = 200;
+
+/**
+ * 把 `selected` 按 token 预算裁成前缀（整行取舍），返回裁后数组与被丢掉的行数。
+ *
+ * 用**二分**而不是逐行累加：估算器是逐字符启发式（`ceil` 在最后一步），逐行累加会与「整段文本
+ * 估一次」有偏差；而每加一行就 `join` 一次是 O(n²)。二分只在**整段前缀**上调用估算器（约
+ * log₂n 次），既与「整段估」口径一致，又不重复实现估算公式。
+ *
+ * 单调性：前缀越长字符越多 ⇒ 估算值不减，所以二分成立。
+ *
+ * @param {string[]} selected 已格式化的行（含 `行号: ` 前缀）
+ * @param {number | undefined} maxTokens 上限；`undefined` = 不设上限（行为与里程碑 1 完全一致）
+ * @returns {{ selected: string[], dropped: number }}
+ */
+function trimSelectedToTokenBudget(selected, maxTokens) {
+  if (maxTokens === undefined) return { selected, dropped: 0 };
+  const budget = Math.max(0, maxTokens - READ_TOKEN_MARKER_RESERVE_TOKENS);
+  const estimateOf = (count) => (count === 0 ? 0 : estimateTokens(selected.slice(0, count).join("\n")));
+  if (estimateOf(selected.length) <= budget) return { selected, dropped: 0 };
+  let feasible = 0; // 已知可行（0 行恒可行）
+  let infeasible = selected.length; // 已知不可行（上面判过）
+  while (infeasible - feasible > 1) {
+    const middle = Math.floor((feasible + infeasible) / 2);
+    if (estimateOf(middle) <= budget) feasible = middle;
+    else infeasible = middle;
+  }
+  return { selected: selected.slice(0, feasible), dropped: selected.length - feasible };
 }
 
 // ---------------------------------------------------------------------------
@@ -1252,7 +1323,12 @@ export const FILE_TOOL_DEFINITIONS = [
       // 只提机制（位置 + 估值身份 + 不含自己），不提任何仓内实测数字（#628 那一整类刚删掉）。
       + "Every result ends with one final line carrying an **estimated** token count for the text above it \u2014 the "
       + "same engine heuristic, not a real tokenizer, and the figure deliberately excludes that line's own length, "
-      + "so read it as what this call roughly cost you, never as a completeness claim.",
+      + "so read it as what this call roughly cost you, never as a completeness claim. "
+      // issue #867 里程碑 2：可选的 token 上限。只说机制（两个闸取更小者、停下给续读 offset），
+      // 不写任何仓内实测数字（#628 那一类不许回来）。
+      + "Pass `max_estimated_tokens` to cap this call by estimated tokens instead of bytes: both caps stay in force and "
+      + "the smaller one wins, and when the token cap is what stopped the read the result names it and gives the `offset` "
+      + "to continue from.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1268,6 +1344,14 @@ export const FILE_TOOL_DEFINITIONS = [
         max_bytes: {
           type: "integer",
           description: "Maximum UTF-8 bytes returned per call (default 262144 = 256KB). Values outside 1024-4194304, or non-integers, are NOT clamped to the bounds \u2014 they are ignored and the default is used.",
+        },
+        max_estimated_tokens: {
+          type: "integer",
+          description: "Optional cap on the estimated token size of this call's result (no default: omit it and no token cap applies). "
+            + "It is the engine's own character-class heuristic, NOT a real tokenizer, so treat it as an order-of-magnitude budget. "
+            + "`max_bytes` still applies: both limits are enforced and the smaller one wins. When this cap stops the read, "
+            + "the result says so and carries the exact `offset` to continue from, so nothing is lost \u2014 it is only paged. "
+            + "Non-integers are ignored; values below 256 are raised to 256.",
         },
       },
       required: ["path"],
@@ -1716,6 +1800,35 @@ export function createFileTools({
       detail: maxBytesNote,
       next: "重传 readFile 并传整数 max_bytes",
     });
+    // issue #867 里程碑 2：可选的 **token** 上限。不传 = 不设上限（行为与里程碑 1 逐字相同）。
+    // 静默回落是 #358 / #375 反复咬的那条病根（参数被改了而模型看不见），所以无效值 / 低于下限
+    // 都走**现有**的参数校正通道报一句，不新开通道。
+    const maxTokensRequested = input?.max_estimated_tokens;
+    const maxTokensAbsent = maxTokensRequested === undefined || maxTokensRequested === null || maxTokensRequested === "";
+    const maxTokensNumber = maxTokensAbsent ? Number.NaN : Number(maxTokensRequested);
+    const maxTokensNote = (() => {
+      if (maxTokensAbsent) return null;
+      if (!Number.isFinite(maxTokensNumber) || Math.trunc(maxTokensNumber) !== maxTokensNumber) {
+        return `max_estimated_tokens=${JSON.stringify(maxTokensRequested)} 不是可用整数，已忽略（不设 token 上限）`;
+      }
+      if (maxTokensNumber < FILE_READ_MAX_TOKENS_MIN) {
+        return `max_estimated_tokens=${maxTokensNumber} 小于下限，已按 ${FILE_READ_MAX_TOKENS_MIN} 处理`;
+      }
+      return null;
+    })();
+    const maxTokens = (() => {
+      if (maxTokensAbsent) return undefined;
+      if (!Number.isFinite(maxTokensNumber) || Math.trunc(maxTokensNumber) !== maxTokensNumber) return undefined;
+      return Math.max(FILE_READ_MAX_TOKENS_MIN, maxTokensNumber);
+    })();
+    const maxTokensFacts = maxTokensNote === null ? null : paramErrorFacts({
+      tool: "readFile",
+      field: "max_estimated_tokens",
+      expected: "整数",
+      value: maxTokensRequested,
+      detail: maxTokensNote,
+      next: "重传 readFile 并传整数 max_estimated_tokens",
+    });
     const target = resolveToolPath(root, filePath);
     if (!canRead(target)) return readDenied(target);
 
@@ -1735,15 +1848,19 @@ export function createFileTools({
     }
 
     const window = readLineWindow(target, { start, count, maxBytes });
-    const parts = [...window.selected];
-    parts.push(...fileReadMarkers(window, {
+    // issue #867 里程碑 2：字节路径跑完之后，再按 token 预算后置裁一遍（两道闸取更小者）。
+    const trimmed = trimSelectedToTokenBudget(window.selected, maxTokens);
+    const view = trimmed.dropped > 0 ? { ...window, selected: trimmed.selected } : window;
+    const parts = [...view.selected];
+    parts.push(...fileReadMarkers(view, {
       start,
       count,
       maxBytes,
       displayPath: displayName(target),
-      parameterNotes: [startReport.note, countReport.note, maxBytesNote].filter(Boolean),
-      parameterFacts: [startReport.facts, countReport.facts, maxBytesFacts].filter(Boolean),
+      parameterNotes: [startReport.note, countReport.note, maxBytesNote, maxTokensNote].filter(Boolean),
+      parameterFacts: [startReport.facts, countReport.facts, maxBytesFacts, maxTokensFacts].filter(Boolean),
       unifiedParamErrors,
+      tokenCap: maxTokens === undefined ? undefined : { maxTokens, dropped: trimmed.dropped },
     }));
     // issue #867：最后一行挂一个**估值** token 数（口径与自指的理由见 `readTokenEstimateLine`）。
     // 除这一行外输出一字不动：行内容、行号、marker 文本与顺序全部原样（由固定夹具逐字节钉着）。
