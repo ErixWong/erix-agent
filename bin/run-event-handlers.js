@@ -72,6 +72,25 @@ export function formatResumeStubNotice(event) {
 }
 
 /**
+ * 终稿正文里出现**被文本化的工具调用**（#862）时的一行 stderr 提示。
+ * 措辞中性：**这不是失败**——终态（`termination.reason` / 退出码）不因它变，
+ * 只是提醒宿主「工具调用可能没真正执行 ⇒ 交付物可能没生成」。与
+ * `formatResumeStubNotice` 同一形状（命中⇒一行，否则 null），同一通道（stderr）。
+ *
+ * @param {*} event
+ * @returns {string|null}
+ */
+export function formatTextualizedToolCallLine(event) {
+  if (event?.type !== "final_text_textualized_tool_call") return null;
+  const marker = typeof event.marker === "string" && event.marker.trim() !== ""
+    ? event.marker.trim()
+    : "未知标记";
+  const roundText = Number.isSafeInteger(event?.round) ? `（第 ${event.round} 轮）` : "";
+  return `[erix] 终局正文里出现了被文本化的工具调用标记 ${marker}${roundText}：`
+    + "这不是失败，但工具调用可能没真正执行、交付物可能没生成，建议核对现场。";
+}
+
+/**
  * Shared run event handling for chat and REPL: judge-log recording, stderr notices, and idle touches.
  *
  * @param {object} [options]
@@ -142,6 +161,8 @@ export function createRunEventHandlers({
     }
     const stubNotice = formatResumeStubNotice(event);
     if (stubNotice !== null) emitStderr(stubNotice);
+    const textualizedLine = formatTextualizedToolCallLine(event);
+    if (textualizedLine !== null) emitStderr(textualizedLine);
   };
   return { appendJudgeLogRecord, onEvent };
 }
