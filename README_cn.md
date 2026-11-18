@@ -163,6 +163,7 @@ src/
     judge-record.js                judge 记录关联字段（模型标识、run 级 outcome 汇总）
     event-tiers.js                 `LoopEvent` / `onEvent` 每一个类型与那三个流式片段名的保留档位（`fact` / `stream` / `derived`；诊断错误通道那批记录不在表内）与宿主清理判据（issue #743；只读侧——一个发射点都没动）
     state-view.js                  活引用状态视图工厂（按显式字段清单生成；#246 已接线两个消费者：runSnapshotContext 的 run-state 转发面、providerContext 的状态转发面；`messages` 仍手写）
+    round-run-state-inject.js      同轮 run-state 注入观测的纯合并器，供 `round_end.runStateInject` 加法键（issue #872；布尔通道是本轮的并集，不是最后一次）
   providers/
     anthropic.js                   Anthropic provider 与流式处理
     errors.js                       provider 错误与分类

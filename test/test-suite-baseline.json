@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3870,
+    "tests": 3877,
     "fail": 0,
     "maxSkipped": 18
   },
@@ -24,6 +24,22 @@
       "todo": 0,
       "cancelled": 0,
       "why": "**登记值抬到 3870 = TEST-SUMMARY-HINT 现报数（非在旧值 3866 上做加法）**：issue #872 新增 `test/loop-runstate-inject-872.test.js` 四格（判据 1-4：注入轮键在场/老路径键集合对账/base 树行为 fixture 对照/通道 A+B 各有真格），`round_end` 只加一个观测键 `runStateInject`，`src/loop/orchestrator.js` 注入行为零改动。本分支树上重跑 `npm test` 现测 `tests 3870 / pass 3857 / fail 0 / skipped 13`（日志 /tmp/g-test.log），经 `npm run check:test-summary -- --log /tmp/g-test.log` 同一份日志复核 VERDICT ok，HINT 报「可抬到 3870」。`test/mutation-samples.md` 派生列由 `node scripts/mutation-sample-check.mjs --sync` 在本分支树上重算；`test/compat-pin-inventory.md` 附表新行由 `node scripts/flat-count-inventory.mjs . --sync` 补（新测试文件 2 点搭台写点：`completion`×1 / `stallDetection`×1，能力面写点 0 ⇒ 不进主表、无需人手分类）。skipped 13 = 本环境不动该维。"
+    },
+    {
+      "date": "2026-11-18",
+      "env": "本地开发机（npm test 默认环境，真实模型闸门关闭）",
+      "node": "v22",
+      "commit": "feat-261118-01 分支树（阻断修复 97925450 + 假绿修复 c8196627 之后的工作区）",
+      "branch": "feat-261118-01-low-budget-inject-observability",
+      "mainSha": "2ad95dfa",
+      "mergeBase": "2ad95dfa",
+      "tests": 3877,
+      "pass": 3864,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "**登记值抬到 3877 = TEST-SUMMARY-HINT 现报数**（在旧登记值 3870 上 +7）。这是 #872 PR #874 验收两条问题的修复：【阻断】同一轮内第二次注入会直接赋值覆盖观测格 ⇒ 新增纯函数 `src/loop/round-run-state-inject.js` 的 `mergeRoundRunStateInject`，注入决策点改为合并（三键 OR + `injections`），新增单测文件 `test/loop-runstate-inject-merge-872.test.js` 5 格（undefined+A⇒injections 1 / A+B OR 且 injections 2 / 同通道两次布尔不变 injections 2 / 三次累加 / 两侧都 undefined 抛）。【假绿】判据 3 原来只比 `msgShape`（注入正文变了也绿）⇒ 扩到实际 provider 请求体稳定摘要（base 2ad95dfa worktree 现跑现取 fixture 逐字对照），原 1 格判据拆为判据3 + 反向证（改一个字/删一条注入块必红） + `max_tokens` 续写真格（同轮 `injections===2`）共 3 格 ⇒ 判据层 +2。合计 +5+2=+7。`round_end` 拼键与圈顶复位不变（缺席=没注入），注入行为（阈值/内容/轮次/两条 one-shot 门）零改动。本分支树上重跑 `npm test` 现测 `tests 3877 / pass 3864 / fail 0 / skipped 13`，经 `npm run check:test-summary -- --log <本次日志>` 同一份日志复核 VERDICT ok，HINT 报「可抬到 3877」。连带：新模块入 README/README_cn 模块地图；契约中英 cell-axes 表的 orchestrator.js 引行随 +2/+8 行位移重锚（3367→3369/3370→3372/3371→3373/6107→6115，由 `scripts/cell-axes-anchors.mjs` 的 `anchorHitLines` 现算）。`test/compat-pin-inventory.md` 附表行与 `test/mutation-samples.md` 派生列各自 `--sync` 重算。skipped 13 = 本环境不动该维。"
     },
         {
             "date": "2026-11-18",
