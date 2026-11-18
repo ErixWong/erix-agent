@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -26,6 +27,30 @@ const midToolOutput = "payload: ".padEnd(1500, "x");
 
 function msgShape(messages) {
   return messages.map((m) => `${m.role}:${Array.isArray(m.content) ? m.content.map((b) => b?.type ?? typeof b).join("+") : typeof m.content}`);
+}
+
+// issue #872 验收（假绿修复）：判据 3 的对照面从 `msgShape`（只有角色 + 块类型，注入**正文**变了也
+// 不红）扩到**实际 provider 请求体**。以下 `blockDigest` / `requestDigest` 与捕获脚本
+// `/tmp/capture-872.mjs` 里的定义**逐字一致**（期望值就是在 base 上用同两个函数量出来的，两边必须同一把尺）：
+//   · 文本块取**全文**（注入正文变 ⇒ 摘要变 ⇒ 红）；
+//   · 工具块取 name + 入参 JSON；tool_result 取 toolUseId + 正文；
+//   · 不取 model/temperature 等与注入无关的字段，只看 provider 真正看到的消息序列。
+function blockDigest(block) {
+  if (!block || typeof block !== "object") return { raw: typeof block };
+  if (block.type === "text") return { type: "text", text: block.text };
+  if (block.type === "tool_use") return { type: "tool_use", name: block.name, input: JSON.stringify(block.input ?? null) };
+  if (block.type === "tool_result") {
+    return { type: "tool_result", toolUseId: block.tool_use_id ?? block.toolUseId, content: typeof block.content === "string" ? block.content : JSON.stringify(block.content) };
+  }
+  return { type: block.type };
+}
+function requestDigest(requests) {
+  return requests.map((req) => ({
+    messages: (req.messages ?? []).map((m) => ({
+      role: m.role,
+      content: Array.isArray(m.content) ? m.content.map(blockDigest) : [{ type: "text", text: String(m.content ?? "") }],
+    })),
+  }));
 }
 
 // 四个场景是判据 3 的**对照 fixture**：base（改动前）与 HEAD（改动后）各跑一遍同一条
@@ -81,6 +106,52 @@ async function runScenario(name) {
     roundEnds: events.filter((event) => event?.type === "round_end"),
   };
 }
+
+// issue #872（续写真格）：round_start 与 `max_tokens` 续写各注入一次的场景。
+// 构造（base→HEAD 同脚本实测稳定，round 3 的 round_end 带 `injections: 2`）：
+//   · round1/round2 各一发 `tool_use`（budgetTokens=400 ⇒ 每轮真折叠，攒出可折窗口）；
+//   · round3：round_start 的 `compactBeforeRound` 折叠→通道 A 注入（注入 1）；provider 返
+//     `max_tokens` + **大文本（无 tool_use）**⇒尾部不 pending ⇒ 续写分支里 `estimateMessageTokens
+//     > budgetTokens` 使第二次 `compactBeforeRound` 触发、再折叠→注入 2；续写响应 `end_turn` 收口。
+// 关键：带 `tool_use` 的 `max_tokens` 会走 `compaction_deferred`（不折叠）→不会二次注入；
+// 必须用无 tool_use 的 max_tokens 文本才能走到续写里的 `compactBeforeRound`。
+const contBigText = "truncated reasoning: ".padEnd(2200, "y");
+async function runContinuation() {
+  const provider = createFakeProvider([
+    { content: [{ type: "tool_use", id: "c-1", name: "scan", input: { path: "f1.js" } }], stopReason: "tool_use" },
+    { content: [{ type: "tool_use", id: "c-2", name: "scan", input: { path: "f2.js" } }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: contBigText }], stopReason: "max_tokens" },
+    { content: [{ type: "text", text: "final" }], stopReason: "end_turn" },
+  ]);
+  const events = [];
+  const result = await runDirect({
+    provider,
+    seed: "scan it",
+    executeTool: async () => midToolOutput,
+    maxRounds: 8,
+    stallDetection: false,
+    completion: false,
+    config: { folding: { context: { budgetTokens: 400 } } },
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+  });
+  return {
+    result,
+    provider,
+    events,
+    roundEnds: events.filter((event) => event?.type === "round_end"),
+  };
+}
+
+// 判据 3 的请求体摘要期望值：逐字取自 base worktree 2ad95dfa 现跑现取（非手搜）。
+// 取法：`git worktree add /tmp/base-872 2ad95dfa`，用本文件场景的**等位脚本**
+// `/tmp/capture-872.mjs`（已把上面的 `blockDigest`/`requestDigest` 逐字搬进去）在 base 上实跑
+// `provider.requests` 并序列化成稳定摘要，写入 `test/fixtures/loop-runstate-inject-request-872.json`。
+// base 无 `runStateInject` 事件键（那是本支才加的观测），但**请求体里的注入正文行为早于该观测**，
+// 所以 base 的请求体就是 HEAD 应有的请求体（已实测 HEAD 5/5 场景与 base 逐字相等）。
+const REQUEST_FIXTURE = JSON.parse(readFileSync(
+  new URL("./fixtures/loop-runstate-inject-request-872.json", import.meta.url),
+  "utf8",
+));
 
 // 判据 3 的期望值：逐字来自 base 2ad95dfa（改动前）同脚本实测。
 const BASE_BEHAVIOR = {
@@ -169,15 +240,94 @@ test("判据 2：预算宽松的 run，round_end 一律没有 runStateInject 键
   }
 });
 
-test("判据 3：同一条 fake provider 脚本，改动前后产出相同的 rounds / termination.reason / 消息序列（fixture 对照）", async () => {
+test("判据 3：同一条 fake provider 脚本，改动前后产出相同的 rounds / termination.reason / 消息序列 / **实际 provider 请求体**（fixture 对照，含续写场景）", async () => {
+  // 两层对照「注入行为未变」：
+  //   ① rounds / termination.reason / msgShape（粗粒度，快）；
+  //   ② **实际 provider 请求体**的稳定摘要（细粒度）：文本块取全文，注入**正文**变就红；
+  //     与 base 2ad95dfa 现跑现取的 fixture 逐字比。之前的判据只到 ①（`msgShape`），注入正文
+  //     变了也绿 ⇒ 假绿；② 就是堵住这个洞的。第 5 个场景是续写轮，同样纳入请求体对照。
   for (const name of Object.keys(BASE_BEHAVIOR)) {
-    const { result } = await runScenario(name);
+    const { result, provider } = await runScenario(name);
     const expected = BASE_BEHAVIOR[name];
     assert.equal(result.rounds, expected.rounds, `${name}: rounds 变了 ⇒ 注入行为被动了`);
     assert.equal(result.termination.reason, expected.reason, `${name}: termination.reason 变了`);
     assert.deepEqual(msgShape(result.messages ?? []), expected.messages,
       `${name}: 消息序列变了（注入内容/时机改动都会在这里红）`);
+    assert.deepEqual(requestDigest(provider.requests), REQUEST_FIXTURE[name],
+      `${name}: provider 请求体变了（注入正文变 / 少一条注入块都会在这里红）`);
   }
+  const cont = await runContinuation();
+  assert.deepEqual(requestDigest(cont.provider.requests), REQUEST_FIXTURE.continuation,
+    "continuation: 续写轮的 provider 请求体同样受检（注入正文变就红）");
+});
+
+// issue #872（假绿修复的反向证）：把期望值改坏必须红——用同一把 `requestDigest` 量出的
+// 真实摘要当基准，只在**期望侧**做改动（不动实现），断言对照必然不等。
+test("判据 3 反向证：注入正文改一个字 / 请求里少一条注入块 ⇒ 请求体摘要必须不等（红）", async () => {
+  const { provider } = await runScenario("low-budget");
+  const real = requestDigest(provider.requests);
+  const expected = JSON.parse(JSON.stringify(REQUEST_FIXTURE["low-budget"]));
+  // 基准：未改坏的期望与真实摘要逐字相等（否则下面两格的红没有参照系）。
+  assert.deepEqual(real, expected, "基准：真实请求体 == base fixture（改坏之前必须等）");
+
+  // 反向证一：把某条注入文本块的正文改一个字 ⇒ 必须红（证明判据 3 看的是**正文**不是形状）。
+  const tamperedText = JSON.parse(JSON.stringify(expected));
+  let textBlockPoked = false;
+  for (const req of tamperedText) {
+    for (const msg of req.messages) {
+      for (const block of msg.content) {
+        if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
+          block.text = `${block.text}X`;
+          textBlockPoked = true;
+          break;
+        }
+      }
+      if (textBlockPoked) break;
+    }
+    if (textBlockPoked) break;
+  }
+  assert.equal(textBlockPoked, true, "夹具里必须至少有一个非空文本块才能做这个反向证");
+  assert.notDeepEqual(real, tamperedText, "注入正文改一个字 ⇒ 请求体摘要必须红");
+
+  // 反向证二：删掉一条**多块消息**里的一块（模拟少一条注入块）⇒ 必须红。
+  // 用 persist-fold：它的注入走通道 A，持久挂到摘要块上 ⇒ 有一条 `user: text+text+text` 的多块消息，
+  // 删其中一块就是「注入正文从请求里掉了一块」的直接模型。
+  const pfProvider = (await runScenario("persist-fold")).provider;
+  const pfReal = requestDigest(pfProvider.requests);
+  const pfExpected = JSON.parse(JSON.stringify(REQUEST_FIXTURE["persist-fold"]));
+  assert.deepEqual(pfReal, pfExpected, "基准：persist-fold 真实请求体 == base fixture");
+  const tamperedDrop = JSON.parse(JSON.stringify(pfExpected));
+  // 找一条含 >=2 块的消息，删掉其中一块。
+  let blockDropped = false;
+  for (const req of tamperedDrop) {
+    for (const msg of req.messages) {
+      if (Array.isArray(msg.content) && msg.content.length >= 2) {
+        msg.content = msg.content.slice(1);
+        blockDropped = true;
+        break;
+      }
+    }
+    if (blockDropped) break;
+  }
+  assert.equal(blockDropped, true, "persist-fold 夹具里必须至少有一条含 >=2 块的消息才能做这个反向证");
+  assert.notDeepEqual(pfReal, tamperedDrop, "少一条块（注入块）⇒ 请求体摘要必须红");
+});
+
+// issue #872（续写真格）：同一轮 round_start + `max_tokens` 续写各注入一次 ⇒ round_end 报 injections=2。
+test("续写真格：同一轮 round_start 与 max_tokens 续写各注入一次 ⇒ round_end.runStateInject.injections === 2", async () => {
+  const { roundEnds, events } = await runContinuation();
+  // 该轮确实走了续写里的 compactBeforeRound（而不是被 pending tool_use 推迟）。
+  assert.equal(events.filter((e) => e?.type === "compaction_deferred").length, 0,
+    "续写轮不得走 compaction_deferred（走了就不会二次注入，真格失真）");
+  const double = roundEnds.filter((e) => "runStateInject" in e && e.runStateInject.injections === 2);
+  assert.equal(double.length, 1, "必须恰有一轮在同一轮内注入两次");
+  const inject = double[0].runStateInject;
+  assert.equal(inject.persist, true, "两次注入都走通道 A（真折叠）⇒ persist=true");
+  assert.equal(inject.request, false, "低预算门未开⇒ request=false");
+  assert.equal(inject.lowBudget, false, "本场景预算宽松（maxRounds=8、round 3）⇒ lowBudget=false");
+  // 同轮两次注入的 remainingRounds 恒定（注入不新增预算也不改已用轮数）。
+  assert.equal(inject.remainingRounds, 8 - double[0].round,
+    "remainingRounds 与 maxRounds - round 对得上");
 });
 
 test("判据 4：注入通道 A（persist，真折叠轮）与通道 B（request，低预算与 TTL armed 两条 armed 来源）各有真格跑到", async () => {
