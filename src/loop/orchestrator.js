@@ -193,6 +193,8 @@ import {
   ensureToolCallKeyOnBlock,
 } from "../tool-fact.js";
 import { restoreResume } from "./resume-manager.js";
+// issue #872（阻断修复）：同一轮内两次注入观测的合并器（纯函数，见模块头注释）。
+import { mergeRoundRunStateInject } from "./round-run-state-inject.js";
 import {
   collectLoopCapabilitiesMissing,
   validateTranscriptStore,
@@ -495,6 +497,7 @@ function mergeFoldedRoundRanges(first, second) {
  * @property {boolean} [partialOutputAvailable] Whether captured output was included in the interrupted result.
  * @property {string} [finalText] Text accumulated at round end.
  * @property {string} [stopReason] Canonical provider stop reason.
+ * @property {{lowBudget: boolean, request: boolean, persist: boolean, remainingRounds: number, injections: number}} [runStateInject] issue #872（additive）：`round_end` 专用——本轮**真的**发生了 run-state 注入时出现；**缺席 = 没注入**（绝不写 `false`，与 `finalTextFallback` / `finalTextShape` 同口径），其余事件不写该键。子键：`lowBudget` = 本轮是否处于低预算门（`remainingRounds <= 2`）；`request` = 是否走通道 B（请求视图尾部追加）；`persist` = 是否走通道 A（持久挂到摘要块）；`remainingRounds` = 当时的剩余轮数；`injections` = 本轮注入次数（同一轮内二次注入被 `mergeRoundRunStateInject` 合并后为 2，见 src/loop/round-run-state-inject.js）。
  * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
  * @property {string} [reason] `continuity_injection_skipped`（issue #595）、`compaction_deferred`
  *   与 `user_turn_guard_unrecoverable`（issue #296，取值 `"empty_view"` / `"no_user_turn"` /
@@ -1086,7 +1089,7 @@ export async function runToolLoop(options) {
   // 已初始化不改变可观察行为；其余声明（含 `emitEvent` 在 `notifyModelMetadataMissing` 下方
   // 这个次序）一行没动。
   // 【C resume 尾队列】`resumePendingTools` / `resumeTailMessages` 与 `resumeTranscriptStart`。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeUnledgeredToolResults: any[], resumeTailMessages: any[], resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeUnledgeredToolResults: any[], resumeTailMessages: any[], resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, roundRunStateInject: { lowBudget: boolean, request: boolean, persist: boolean, remainingRounds: number, injections: number }|undefined, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -1139,6 +1142,14 @@ export async function runToolLoop(options) {
     ttlInjectArmed: false,
     ttlInjectConsumed: false,
     lowBudgetInjectFired: false,
+    // issue #872（新格，纯观测面）：**本轮**是否真的发生了 run-state 注入、走的哪条通道。
+    //   写者只有注入决策点（`persistInject || requestInject` 为真的那一轮、`compactBeforeRound`
+    //   内写一次），读者只有 `round_end` 发射点；圈顶随 `roundStopReason` 一族复位为
+    //   `undefined`（缺席 = 本轮没注入 ⇒ `round_end` 不写 `runStateInject` 键，绝不写 `false`，
+    //   与 #476 `finalTextFallback` / #862 `finalTextShape` 同一条口径）。初值 `undefined`
+    //   逐字是「还没进过任何一轮」；它**不参与任何判定**——本格只为观测面存在，注入行为
+    //   （阈值、内容、轮次）逐字不动，与上面三格的「各只消费一次」门无耦合。
+    roundRunStateInject: undefined,
     // issue #862（新格）：本 run 是否已经发过那条 `final_text_textualized_tool_call`
     //   告警。**one-shot 旗标**，与上面三格同族（本次进程的现场，不是跨 resume 的
     //   持久判据）：它只被 `termination.js` 的终局面读写一次，而 resume 之后本来就会
@@ -4847,6 +4858,21 @@ export async function runToolLoop(options) {
     // 才追加请求视图尾部（通道 B），避免同一轮同时产生两个 run-state 块。
     if (persistInject || requestInject) {
       runLoopState.runStateVersion += 1;
+      // issue #872（纯加法观测面）：把「本轮注入了、走的哪条通道」当轮存进观测格，
+      //   供同轮圈底的 `round_end` 拼 `runStateInject` 键。只记录——上面三个判据表达式与
+      //   下面两条旗标写入一个字都没动，注入行为不变（本单硬约束）。
+      //   用 `mergeRoundRunStateInject` 而非直接赋值：一轮内 `compactBeforeRound` 可能被调两次
+      //   （轮首 + `max_tokens` 续写），直接赋值会让第二次覆盖第一次、`round_end` 漏报本轮实际
+      //   用过的通道。合并后布尔三键是「本轮用过的并集」、`injections` 是本轮注入次数。
+      runLoopState.roundRunStateInject = mergeRoundRunStateInject(
+        runLoopState.roundRunStateInject,
+        {
+          lowBudget: isLowBudget,
+          request: requestInject,
+          persist: persistInject,
+          remainingRounds,
+        },
+      );
       if (requestInject && runLoopState.ttlInjectArmed) {
         // TTL 首折和低预算门各只消费一次，避免每轮改写破坏前缀缓存。
         runLoopState.ttlInjectArmed = false;
@@ -5412,6 +5438,9 @@ export async function runToolLoop(options) {
     runLoopState.interceptJudgeDecision = undefined;
     runLoopState.roundEventDeltas = [];
     runLoopState.roundStopReason = undefined;
+    // issue #872：本轮注入观测格圈顶复位（与 `roundStopReason` 同族同点）——复位后若本轮
+    // 注入决策没写它，`round_end` 就没有 `runStateInject` 键（缺席 = 没注入）。
+    runLoopState.roundRunStateInject = undefined;
     let stallSuspicion = false;
     let stallSignature = null;
     let lastSignatureThisRound = null;
@@ -6202,6 +6231,12 @@ export async function runToolLoop(options) {
       finalText: runLoopState.finalText,
       stopReason: runLoopState.roundStopReason,
       usage: { ...runLoopState.usage },
+      // issue #872（纯加法）：本轮**真的**发生了 run-state 注入才出现；缺席 = 没注入
+      // （绝不写 `false`，与 #476 `finalTextFallback` / #862 `finalTextShape` 同口径）。
+      // 四个既有键（round/finalText/stopReason/usage）一字未动（#835 绊线）。
+      ...(runLoopState.roundRunStateInject === undefined
+        ? {}
+        : { runStateInject: { ...runLoopState.roundRunStateInject } }),
     });
     if (action.kind === "nudge") {
       const continuationMessage = {

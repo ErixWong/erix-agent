@@ -5,6 +5,56 @@
 
 ### Changed
 
+- **Whether a run-state injection really happened is now recorded on the round itself
+  (issue #872, #862 fix C — observability only).** `round_end` gains one additive key
+  `runStateInject` = `{ lowBudget, request, persist, remainingRounds, injections }`, present **only on
+  rounds that really injected** — absence is the negative answer, the key is never written as
+  `false` (same convention as #476 `finalTextFallback` / #862 `finalTextShape`). `lowBudget` =
+  the round was inside the low-budget gate (`remainingRounds <= 2`) at some injection; `request` =
+  channel B ran at least once this round (run-state block appended to the request-view tail);
+  `persist` = channel A ran at least once this round (run-state block persisted onto the summary
+  block); `remainingRounds` = rounds left at that moment (constant within a round); `injections` =
+  how many run-state injections happened this round (1 or 2). ⚠ **A round may inject more than
+  once** (`compactBeforeRound` runs both at round start and inside a `max_tokens` continuation, and
+  each may inject), so the three booleans are the **union of channels used during the round, not
+  the last injection** — the second injection no longer overwrites the first.
+  The four existing payload keys stay byte-identical (the #835 tripwire), and **no injection
+  behavior moved** — threshold, content and round count are untouched; the key only records the
+  decision the engine already made that round. This is what makes the #862 field question
+  "was the leaking round exactly an injecting round" readable from the ledger without
+  re-running instrumentation. (`test/loop-runstate-inject-872.test.js` plus its merge-function
+  sibling `test/loop-runstate-inject-merge-872.test.js`: a budget-exhausting run pins `lowBudget: true`
+  and `remainingRounds === maxRounds - round` and `injections === 1` on the one-shot injecting round;
+  a lenient-budget run asserts key absence plus key-set equality with the pre-change event; the
+  before-vs-after comparison now checks the **actual provider request body** (text blocks verbatim,
+  captured from the base tree as a fixture) so a changed injection body goes red, with two reverse
+  proofs — poke a text block by one character / drop one injected block, both must go red — and a
+  `max_tokens` continuation case proves `injections === 2` in a single round (round-start inject plus
+  a continuation inject); the pure `mergeRoundRunStateInject` is unit-tested (undefined+A ⇒
+  injections 1; A+B OR; same-channel twice; three-increment); and both injection channels are really
+  exercised — A via per-round whole-round folds (`folding.context.budgetTokens`), B via both the
+  low-budget gate and the TTL-armed first fold.)
+- **引擎现在把「本轮是否真的发生了 run-state 注入」记进轮记录（issue #872，#862 修法 C——
+  纯观测面）。** `round_end` 新增**一个**加法键 `runStateInject` = `{ lowBudget, request,
+  persist, remainingRounds, injections }`，**只在真的注入了的轮出现**——缺席就是否定答案，绝不写
+  `false`（与 #476 `finalTextFallback` / #862 `finalTextShape` 同一条口径）。`lowBudget` =
+  本轮某次注入时处于低预算门（`remainingRounds <= 2`）；`request` = 本轮至少走过一次通道 B（run-state
+  块追加到请求视图尾部）；`persist` = 本轮至少走过一次通道 A（run-state 块持久挂到摘要块）；
+  `remainingRounds` = 当时的剩余轮数（同轮恒定）；`injections` = 本轮发生了几次 run-state 注入（1 或 2）。
+  ⚠ **同一轮可能注入不止一次**（`compactBeforeRound` 会在轮首与 `max_tokens` 续写里各被调一次，两处都可能
+  注入），所以三个布尔是「**本轮用过的通道的并集，不是最后一次**」——第二次注入不再覆盖第一次。
+  既有四个 payload 键逐字不动（#835 绊线），且**注入行为一个都没改**——阈值、内容、轮次、两条
+  one-shot 门原样，该键只记录引擎当轮已经做出的注入决定。于是 #862 现场那个问题
+  「泄漏轮是不是恰好就是注入轮」从此在事后账本里直接可读，不必再插桩重跑。
+  （`test/loop-runstate-inject-872.test.js` 与它的纯函数姊妹 `test/loop-runstate-inject-merge-872.test.js`：
+  跑满预算的 run 钉住 one-shot 注入轮的 `lowBudget: true`、`remainingRounds === maxRounds - round` 与
+  `injections === 1`；预算宽松的 run 钉键缺席与键集合和改动前逐字相等；改动前后对照现在查**实际
+  provider 请求体**（文本块取全文，从 base 树现跑现取当 fixture）⇒ 注入正文变就红，配两条反向证（改一个
+  字 / 删一条注入块，都必须红）；一个 `max_tokens` 续写真格钉住同轮 `injections === 2`（轮首注入 +
+  续写注入）；纯函数 `mergeRoundRunStateInject` 有单测（undefined+A⇒injections 1；A+B OR；同通道两次；
+  三次累加）；两条注入通道各有真格——A 用逐轮整轮折叠（`folding.context.budgetTokens`），B 用低预算门
+  与 TTL 首折 armed 两个来源。）
+
 - **The engine now recognizes a final text that is really a textualized tool call, and says
   so (issue #862, fix A).** Some upstreams/gateways encode the tool call into `content`, so the
   last round looks like "no `tool_use` + `end_turn` + non-empty text" and the run was judged

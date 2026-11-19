@@ -1867,10 +1867,10 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 <!-- erix:snapshot-cell-axes:begin -->
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3358` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
-| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3361` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
-| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3361` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6086` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3362`、`src/loop/orchestrator.js:6086` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3369` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
+| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3372` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
+| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3372` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
+| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6115` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3373`、`src/loop/orchestrator.js:6115` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = 该格不双写，没有权威源/交接条件可谈。
@@ -5151,7 +5151,7 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 | `tool_result` | `fact` | 不可删 | 上面那个事实的克隆。它在 `RoundRecord` 存在**之前**就发出，而 `content` 被契约明文排除在事件↔记录等式之外（折叠可能重写记录那一份），所以这条事件可能是折叠前唯一的副本。 |
 | `tool_replay_decision_required` | `fact` | 不可删 | 「问」本身。除了它没有别处记下这次询问，而宿主的答复要能 join 得上。 |
 | `round_start` | `fact` | 不可删 | 轮边界。 |
-| `round_end` | `fact` | 不可删 | 轮边界，也是逐轮台账那一行。**payload 是契约，不是实现细节**（issue #835）：`round`（数字）、`finalText`（字符串，该轮**完整**累计正文；该轮没有正文时是 `""`）、`stopReason`（字符串，provider 自己的拼写）、`usage`（对象，与 `usage` 事件同形）。宿主把 `finalText` 当「已完成轮次的 durable 正文」读；它是账本消息行所承载**同一事实的事件面**，因此**不许删、不许改名、不许挪进轮记录、不许在文件布局迁移里顺手瘦身**（见 #827 的退役工作）。要删它属于破坏性变更，必须配升级指南，不能算「瘦身」。 |
+| `round_end` | `fact` | 不可删 | 轮边界，也是逐轮台账那一行。**payload 是契约，不是实现细节**（issue #835）：`round`（数字）、`finalText`（字符串，该轮**完整**累计正文；该轮没有正文时是 `""`）、`stopReason`（字符串，provider 自己的拼写）、`usage`（对象，与 `usage` 事件同形）。宿主把 `finalText` 当「已完成轮次的 durable 正文」读；它是账本消息行所承载**同一事实的事件面**，因此**不许删、不许改名、不许挪进轮记录、不许在文件布局迁移里顺手瘦身**（见 #827 的退役工作）。要删它属于破坏性变更，必须配升级指南，不能算「瘦身」。issue #872 起**加法新增**：`runStateInject`（对象）**只在「本轮真的发生了 run-state 注入」时出现**——缺席就是否定答案，**绝不写 `false`**（与 #476 `finalTextFallback` / #862 `finalTextShape` 同一条口径）。子键：`lowBudget`（布尔，本轮某次注入时处于低预算门 `remainingRounds <= 2`）、`request`（布尔，本轮至少走过一次通道 B：run-state 块追加到请求视图尾部）、`persist`（布尔，本轮至少走过一次通道 A：run-state 块持久挂到摘要块）、`remainingRounds`（数字，当时的剩余轮数）、`injections`（数字，**本轮**发生了几次 run-state 注入，1 或 2——未来更多也对）。⚠ **同一轮可能注入不止一次**：`compactBeforeRound` 会在轮首与 `max_tokens` 续写里各被调一次，两处都可能注入。所以三个布尔是「**本轮用过的通道的并集，不是最后一次**」（一轮若轮首走 B、续写走 A，就同时报 `request` 与 `persist` 为 true，且 `injections: 2`）。`remainingRounds` 同轮恒定（`effectiveMaxRounds - budgetRounds`；注入既不新增轮次预算、也不改已用轮数），故直接取该轮的值即可。它存在的目的：让 #862 的复现者一眼看出「泄漏轮是不是恰好就是注入轮」；它只记录引擎当轮已经做出的注入决定——注入行为（阈值、内容、轮次、两条 one-shot 门）一个都不改。 |
 | `usage` | `fact` | 不可删 | 「逐轮台账 vs 引擎开销」那份读数依赖的账目行。 |
 | `attempt` | `fact` | 不可删 | 每一个重试 attempt 一条。删了就没人知道「这是第几次试出来的」，重试次数也一并丢了。 |
 | `compaction` | `fact` | 不可删 | 「这一轮真的压了一下」就是那个事实。 |
