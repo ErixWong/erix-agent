@@ -37,8 +37,10 @@
   key is absent. Measured before/after (fake provider + judge pinned at `done:true / 0.85`, five
   runs per scenario, `scripts/probe-865-stopgate-comparison.mjs`, `origin/main` against HEAD): the
   leak-only scenario went from mean 2 rounds / 0 nudges to mean 3 rounds / 5 nudges while its
-  `judge_done` rate stayed 1 (the quota design above), the "leak, then really deliver" scenario
-  went from "final text was still the markers" in **5/5** runs to **0/5**, and the
+  `judge_done` rate stayed 1 (the quota design above), the "leak, then deliver" scenario — the delivery round is
+  **scripted by the fixture**, so what the table shows is that the run now *reaches* it, not
+  that a real model was talked into delivering — went from "final text was still the markers"
+  in **5/5** runs to **0/5**, and the
   normal-delivery scenario moved in no cell at all. Pinned by
   `test/judge-deliverable-textualized-865.test.js` (7 cells: each of the five markers lands in the
   new cell; a leak-only round reports `hasDeliverable: false`, `textualizedBlocks >= 1` and a
@@ -73,7 +75,8 @@
   评审提示词与拦停文案都**逐字相同**。前后对照实测（fake provider + 评审恒判 `done:true / 0.85`，
   每组 5 个 run，`scripts/probe-865-stopgate-comparison.mjs`，`origin/main` 对 HEAD）：纯泄漏那组
   从「均 2 轮 / 0 次 nudge」变成「均 3 轮 / 5 次 nudge」，而它的 `judge_done` 率仍是 1（就是上面
-  那个配额设计）；「先泄漏、被推回后真交付」那组从「终稿仍是标记 **5/5**」变成 **0/5**；正常交付
+  那个配额设计）；「先泄漏、后交付」那组（**交付轮是 fixture 预设的**，所以表里证明的是「run 现在走得到那一轮」，
+  不是「真模型被说服了」）从「终稿仍是标记 **5/5**」变成 **0/5**；正常交付
   那一组一格未动。钉子：`test/judge-deliverable-textualized-865.test.js`（7 格：五条特征逐个落进新格；
   纯泄漏轮报 `hasDeliverable: false`、`textualizedBlocks >= 1`、`latestDeliverable` 里不含标记；
   围栏与行内码引用的格子——按名钉 `marker_in_fence`——配「抹掉围栏必命中」的反向锚，免这一格恒真；
