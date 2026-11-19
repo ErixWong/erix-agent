@@ -1,6 +1,11 @@
 import { extractL0Facts } from "./l0.js";
 import { estimateTokens } from "../tokens.js";
 import { parseModelJson } from "../text/parse-model-json.js";
+// issue #865（#862 修法 B）：「这块正文是不是被文本化的工具调用」的**判据只有一份**，住在
+// `src/loop/final-text-shape.js`（#862 修法 A 落的形状识别，宿主与引擎共用同一份特征集）。
+// 这里**只复用**它的 `textualizedToolCallField`：judge.js 里不写第二套特征、不写第二份 `stripCode`
+// ——两个真相源是 #862 写死的禁止项（换个上游编码就会漏一遍）。
+import { textualizedToolCallField } from "../loop/final-text-shape.js";
 
 const MAX_COMMAND_LENGTH = 40;
 
@@ -328,21 +333,57 @@ function resultContentText(content) {
 //
 // 修法不是再造第三套分类：下面两个常量 + `deliverableKindOfBlock` 就是渲染器那两个分支的**同一份**
 // 判据（渲染器改标签、停门改理由，都读这里），停门只把它当成判据的**输入**。
+//
+// issue #865（#862 修法 B）在这**同一处**分类上扩了一格：`textualized_tool_call`。这条轴现在问的是
+// 「这段文本算不算被声明为交付物」，而「上游把 tool call 编进 `content`」那一堆标记**不算**——于是
+// 它自然撑不起停门，`orchestrator.js` 的 `action.kind === "stop"` 分支一个字都没改（那里加 if 就是
+// 第四套分类，正是 #473 刚填平的坑）。特征判据**复用** `src/loop/final-text-shape.js`（#862 修法 A）。
 
 /** `reasoning` 块在 judge 输入里的标签（渲染器与停门共用同一份字面量）。 */
 export const REASONING_NOT_EVIDENCE_LABEL = "内部自述，不可作为事实依据";
 
-/** 一个内容块在「交付物 / 自述 / 其它」这条轴上的分类。
+/**
+ * 「被文本化的工具调用」这类正文在 judge 输入里的标签（issue #865，渲染器与 nudge 文案共用）。
+ *
+ * ⚠ 措辞是**中性**的，这是判据的一部分：这类正文**不是失败**（引擎不因此判 `failed`，也不改
+ * `termination.reason` 的词汇表），**也不是结论**（它不是交付物，撑不起 `judge_done` 的停门）。
+ * 写成「泄漏 / 坏了 / 未交付」会把「别拿它当完成证据」这个**分类**结论升格成**终态**结论——
+ * #862 的「不做」那一节明令不许反解标记，也不许新造终态。
+ */
+export const TEXTUALIZED_TOOL_CALL_LABEL = "被文本化的工具调用，不是交付物也不是结论";
+
+/** 一段正文是不是「被文本化的工具调用」（上游把 tool call 编进 `content` 的那一类形态）。
+ *
+ * 判据**逐字**走 `textualizedToolCallField`（含它内部的 `stripCode`：``` 围栏与 `行内代码` 先剥掉），
+ * 所以「正文在代码里**引用**这个标记」（本仓的台账与文档就是这么写的）仍然算正常交付物。
+ *
+ * @param {any} text 块正文（非字符串 / 空白 ⇒ 不是这类形态）
+ * @returns {boolean}
+ */
+function isTextualizedToolCallText(text) {
+  return textualizedToolCallField(text).finalTextShape !== undefined;
+}
+
+/** 一个内容块在「交付物 / 自述 / 文本化工具调用 / 其它」这条轴上的分类。
  *
  *  `deliverable_text` = 该轮**交付物**（渲染器把它标成 `### assistant` 并强制保留最新一条）；
  *  `reasoning` = 内部自述（渲染器把它标成「不可作为事实依据」）；
+ *  `textualized_tool_call` = 正文是**被文本化的工具调用**（issue #865）——渲染器给它中性标签
+ *    {@link TEXTUALIZED_TOOL_CALL_LABEL}，它**既不是交付物也不是自述**，也**不算**「最新一条交付物」；
  *  `other` = 工具调用/结果、图片、原始块——它们既不是交付物也不是自述。
  *
+ * ⚠ 这条轴**只有这一处**分类实现：渲染器（`renderConversation`）、机器事实（`roundDeliverableFacts`）
+ * 与 `judge_done` 的停门（`judgeDoneBlocker`）都读它。第四种值是 #865 加的那一格，别在停门处再写 if。
+ *
  *  @param {any} block
- *  @returns {"deliverable_text"|"reasoning"|"other"}
+ *  @returns {"deliverable_text"|"reasoning"|"textualized_tool_call"|"other"}
  */
 export function deliverableKindOfBlock(block) {
-  if (block?.type === "text") return "deliverable_text";
+  if (block?.type === "text") {
+    // 命中的那一格放在 `deliverable_text` **之前**判：#865 的主张正是「这类文本不算交付物」，
+    // 先落到 `deliverable_text` 再在下游排除，就等于把同一个判断摊到两处（#473 的病根）。
+    return isTextualizedToolCallText(block.text) ? "textualized_tool_call" : "deliverable_text";
+  }
   if (block?.type === "reasoning") return "reasoning";
   return "other";
 }
@@ -474,6 +515,15 @@ export function renderConversation(messages, { maxTokens = JUDGE_CONVERSATION_TO
         text = `### ${role}\n${body}`;
         if (role === "user" && firstUserText < 0) firstUserText = sections.length;
         else if (role === "assistant") latestAssistantText = sections.length;
+      } else if (kind === "textualized_tool_call") {
+        // issue #865：这类正文**照样渲染**（评审要看得见它，否则无从知道为何没交付），但：
+        //   · 标签是中性的（{@link TEXTUALIZED_TOOL_CALL_LABEL}）——它不是失败，也不是结论；
+        //   · **不进** mandatory 集（既不占「第一条 user 正文 = 任务」，也不占「最新一条 assistant
+        //     正文 = 交付物」）——预算紧时它可以被省略，而真交付物永远留下。
+        // 口径与 `roundDeliverableFacts` 里那一格同源（同一个 `deliverableKindOfBlock`）。
+        const body = String(block?.text ?? block?.content ?? "").trim();
+        if (body === "") continue;
+        text = `### ${role}（${TEXTUALIZED_TOOL_CALL_LABEL}）\n${body}`;
       } else if (kind === "reasoning") {
         const body = String(block?.text ?? block?.content ?? "").trim();
         if (body === "") continue;
