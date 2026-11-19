@@ -275,7 +275,10 @@ test("判据 3 反向证：注入正文改一个字 / 请求里少一条注入�
   // `run=… v=… r=…/… left=… low=…`（见 src/run-state.js renderRunState），据此 find 到那块，
   // 只改它一个字符 ⇒ 必须红。这才咬住「注入正文变了必须红」（旧版改第一个非空文本块，命中的是
   // seed「scan it」，根本没碰到注入正文）。**找不到该块 ⇒ 这格反向证无效 ⇒ 必须红，绝不静默跳过。**
-  const RUN_STATE_SIGNATURE = /run=\S* v=\d+ r=\d+\/\d+ left=\d+ low=\d/;
+  // 正则**锤在块首**（`[run state deterministic v1]` 是 `src/run-state.js` 渲染器的头一行）：
+  // 不锤首的话，任何恰好写了 `run=… left=… low=…` 格式的普通正文都会被当注入块（复审三轮指出），
+  // 反向证就可能改错对象而误过。
+  const RUN_STATE_SIGNATURE = /^\[run state deterministic v1\]\nrun=\S* v=\d+ r=\d+\/\d+ left=\d+ low=\d/;
   const tamperedText = JSON.parse(JSON.stringify(expected));
   let injectionPoked = false;
   for (const req of tamperedText) {
