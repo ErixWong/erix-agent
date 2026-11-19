@@ -558,6 +558,22 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - `async:true` 时，派工这次工具调用自己的 `signal` **不接**到后台 run（它在 `execute()` 返回时就失效了）；
   后台 run 的取消通道是 `action:"cancel"`。
 - `executionMode: "sequential"` 不变：一个**同步** `erix_run` 在跑时，`action:"status"` 会排在它后面。
+- **pi-web 会在空闲后回收会话，而后台 run 从会话角度「不算 running」（issue #875，三件事逐字写清）**：
+  1. **回收机制**：pi-web 在**一个 Node 进程里跑 N 个会话**，空闲 `PI_WEB_IDLE_TIMEOUT_MS`（默认 10 分钟）
+     就回收，判据是 `isRunning() || hasActiveProvider({sessionId, sessionFile})`。后台 `erix_run` 从会话
+     角度看**不算 running**（派工那次工具调用早就返回了），所以不申报就必然被回收 —— 终局通知只能记
+     `delivery:"orphaned"`，要等用户下次点开会话（`session_start` → `requeueOrphaned`）才补投一次
+     （盘上实测迟到 44 分钟 / 867 分钟）。
+  2. **本扩展现在申报活性**（`erix-run-liveness.js` 向宿主的 `globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")]`
+     注册一条 provider）：名下还有 `queued` / `running` 的 job、**或**还有没投出去的投递重试
+     （`job.notifyRetry`，5/10/30 秒那段窗口）、**或**唤醒还欠着一轮（`isPending()`）时，宿主不会把它
+     当空闲回收；三者都不成立才放行。lease 在 `session_start` 建、在 `session_shutdown` **不分 reason**
+     一律放（含 `reload`，与句柄表那条「reload 不摘」的口径**故意相反**，理由见 `erix-run.ts` 那里的注释）。
+     registry 缺席（pi CLI / 老版本 pi-web）时整条通道降级成今天的行为，不抛、不造表。
+  3. **残余（本刀没修的）**：`session_shutdown` 事件**不携带会话 id**，所以做不了事件级归属（lease 只能
+     绑在 factory 那一次注册上，比句柄表的 `sessionId` 键弱一档）；`exec` **不消费 abort signal**，
+     所以「看门狗写了 `aborted`」≠「底层命令已停」（见上面「取消与超时」）—— 申报活性只保证「会话还活着、
+     通知投得出去」，它不会让一个已死的宿主进程复活。
 
 ### 不阻塞实测（真扩展 + 真模型 + 真 relay）
 
