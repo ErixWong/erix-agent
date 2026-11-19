@@ -5,6 +5,85 @@
 
 ### Changed
 
+- **A textualized tool call is no longer a deliverable, so it no longer grants the `judge_done`
+  stop (issue #865, #862 fix B).** **Whose judgement changed: the round judge's stop gate** — a
+  host that runs with `reflection.roundJudge` on can now see one extra round on a run whose judged
+  round contains nothing but a textualized tool call. Some upstreams/gateways encode the tool call
+  *into* `content`, so that round legitimately looks like "no `tool_use` + `end_turn` + non-empty
+  text"; issue #862 fix A made the engine *recognize* such a final text (`result.finalTextShape`)
+  but deliberately left the verdict alone, so the stop gate kept accepting marker soup as the proof
+  that the task was done — the run went green having delivered nothing. This fix widens the
+  classification issue #473 already had instead of adding a second gate:
+  `deliverableKindOfBlock` (`src/reflection/judge.js`) now answers "is this text *declared as a
+  deliverable*" with a fourth cell, `textualized_tool_call`, and `roundDeliverableFacts` keeps
+  those blocks out of `deliverableBlocks` / `deliverableChars` / `latestDeliverable` while counting
+  them in the **additive** key `textualizedBlocks` (assistant blocks only, which is what makes
+  `deliverableBlocks + textualizedBlocks` equal the pre-#865 `deliverableBlocks` — the
+  machine-checkable form of "reclassified, never deleted"). `judgeDoneBlocker` gained **no**
+  branch: it still reads `hasDeliverable`, so a round whose only assistant text is markers takes
+  the existing "no deliverable text" path — **one nudge first** (its text names the block count
+  and the label, because "you wrote nothing" would send the model the wrong way), and only after
+  the `JUDGE_DONE_GAP_NUDGE_LIMIT` quota is spent does that round reach `judge_done`. **Releasing
+  the verdict after the quota is the designed outcome**, not a hole: an unlimited downgrade burns
+  every remaining round on one criterion. `renderConversation` still renders the block, under the
+  neutral label `TEXTUALIZED_TOOL_CALL_LABEL` (neither a failure nor a conclusion; no new
+  `termination.reason` value, no new terminal state). **Unchanged**, also by demand: the marker
+  test is `textualizedToolCallField` (`src/loop/final-text-shape.js`) verbatim including its
+  `stripCode`, so a marker quoted inside a fenced code block or `inline code` stays an ordinary
+  deliverable and still stops the run on the spot; a `user` block of that shape still occupies the
+  "first user text = the task" slot; plain `end_turn` finalization, the `termination.reason`
+  vocabulary, `rounds` / `usage` / `verification` and `result.finalTextShape` are untouched; the
+  judge prompt and the blocker's wording stay byte-identical whenever the new count is zero or the
+  key is absent. Measured before/after (fake provider + judge pinned at `done:true / 0.85`, five
+  runs per scenario, `scripts/probe-865-stopgate-comparison.mjs`, `origin/main` against HEAD): the
+  leak-only scenario went from mean 2 rounds / 0 nudges to mean 3 rounds / 5 nudges while its
+  `judge_done` rate stayed 1 (the quota design above), the "leak, then deliver" scenario — the delivery round is
+  **scripted by the fixture**, so what the table shows is that the run now *reaches* it, not
+  that a real model was talked into delivering — went from "final text was still the markers"
+  in **5/5** runs to **0/5**, and the
+  normal-delivery scenario moved in no cell at all. Pinned by
+  `test/judge-deliverable-textualized-865.test.js` (7 cells: each of the five markers lands in the
+  new cell; a leak-only round reports `hasDeliverable: false`, `textualizedBlocks >= 1` and a
+  `latestDeliverable` with no markers in it; the fence / `inline code` quote cells — `marker_in_fence`
+  by name — with a reverse anchor that strips the fences so the cell cannot be vacuous; ten
+  non-matching message sequences reconciled key-by-key and value-by-value against `origin/main`
+  fixtures, with a reverse anchor that rejects a fixture copied from the changed tree; and the two
+  renderer mandatory-slot cells) plus `test/loop-judge-done-textualized-865.test.js` (3 cells: the
+  nudge really fires and names the label, the quota exhausts into `judge_done`, and the quoted
+  control group does not move).
+- **被文本化的工具调用不再是交付物，因此它也不再授予 `judge_done` 的停机许可（issue #865，
+  #862 修法 B）。** **判定变了的是谁：本轮评审的那道停门**——开着 `reflection.roundJudge` 的宿主，
+  在被评的那轮只有一段被文本化工具调用时可能多看到一轮。有些上游/网关把 tool call 编进了
+  `content`，那一轮看上去真的就是「无 `tool_use` + `end_turn` + 正文非空」；issue #862 修法 A 让
+  引擎**认得出**这种终稿（`result.finalTextShape`）但按票面故意不动判定，于是停门继续拿一堆标记
+  当「目标已完成」的证据——run 绿着，却什么都没交。本单不新增第二道门，而是把 issue #473 已有的
+  那条分类轴扩一格：`deliverableKindOfBlock`（`src/reflection/judge.js`）现在用第四格
+  `textualized_tool_call` 回答「这段文本算不算被声明为交付物」，`roundDeliverableFacts` 把这类块
+  挡在 `deliverableBlocks` / `deliverableChars` / `latestDeliverable` 之外，只在**加法键**
+  `textualizedBlocks` 里数它（只数 assistant，于是 `deliverableBlocks + textualizedBlocks` 恒等于
+  #865 之前的 `deliverableBlocks`——「只改分类、不误删」的机器可检形式）。`judgeDoneBlocker` **没有
+  新增分支**：它读的还是 `hasDeliverable`，所以「本轮唯一的正文是一堆标记」现在走已有的「没有交付物
+  正文」那一格——**先吃一次 nudge**（文案报出段数与标签，只说「你没写正文」会把模型指错方向），
+  `JUDGE_DONE_GAP_NUDGE_LIMIT` 配额用尽后该轮才真地 `judge_done`。**配额用完就放行是设计好的
+  结局**，不是漏洞：不设限的降级会把剩下的轮次全烧在同一判据上。`renderConversation` **照样渲染**
+  这类块，用中性标签 `TEXTUALIZED_TOOL_CALL_LABEL`（既不是失败也不是结论；**没新增**
+  `termination.reason` 取值，也没新增终态）。**没动的**同样是票面要求：判据**逐字**走
+  `textualizedToolCallField`（`src/loop/final-text-shape.js`），连它的 `stripCode` 一起走，所以在
+  围栏代码块或行内码里**引用**的标记仍是正常交付物、仍当场停机；角色是 `user` 的这类块**照旧**占
+  「第一条 user 正文 = 任务」那个名额；普通 `end_turn` 的终局、`termination.reason` 的词汇表、
+  `rounds` / `usage` / `verification` 与 `result.finalTextShape` 一个都没动；新计数为 0 或该键缺席时，
+  评审提示词与拦停文案都**逐字相同**。前后对照实测（fake provider + 评审恒判 `done:true / 0.85`，
+  每组 5 个 run，`scripts/probe-865-stopgate-comparison.mjs`，`origin/main` 对 HEAD）：纯泄漏那组
+  从「均 2 轮 / 0 次 nudge」变成「均 3 轮 / 5 次 nudge」，而它的 `judge_done` 率仍是 1（就是上面
+  那个配额设计）；「先泄漏、后交付」那组（**交付轮是 fixture 预设的**，所以表里证明的是「run 现在走得到那一轮」，
+  不是「真模型被说服了」）从「终稿仍是标记 **5/5**」变成 **0/5**；正常交付
+  那一组一格未动。钉子：`test/judge-deliverable-textualized-865.test.js`（7 格：五条特征逐个落进新格；
+  纯泄漏轮报 `hasDeliverable: false`、`textualizedBlocks >= 1`、`latestDeliverable` 里不含标记；
+  围栏与行内码引用的格子——按名钉 `marker_in_fence`——配「抹掉围栏必命中」的反向锚，免这一格恒真；
+  十条不命中的消息序列与 `origin/main` 的 fixture 逐键逐值对账，配「fixture 不许是改动后抄件」的
+  反向锚；以及渲染器两个 mandatory 名额格）与 `test/loop-judge-done-textualized-865.test.js`
+  （3 格：nudge 真的发出且点名标签、配额用尽后落到 `judge_done`、围栏引用那一组对照纹丝不动）。
+
 - **Whether a run-state injection really happened is now recorded on the round itself
   (issue #872, #862 fix C — observability only).** `round_end` gains one additive key
   `runStateInject` = `{ lowBudget, request, persist, remainingRounds, injections }`, present **only on

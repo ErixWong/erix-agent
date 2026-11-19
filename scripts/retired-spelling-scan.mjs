@@ -482,7 +482,10 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // **有意新增**的一处（文件名是字面量，改写成模糊说法会让宿主对不上真文件名），所以抬钉子而
   // 不是躲它——口径同上面 #714 / #729 / #730 那几条：数取自扫描器当时在这棵树上报的 `uses=589`。
   // #843: remeasured after the CN runState carrier wording change (prior pin 590; current uses 591).
-  "docs/host-consumer-contract_cn.md": 591,
+  // 591 → 592（issue #865 / #862 修法 B，本支现测）：CN 新增「文本化工具调用不算交付物」那一段，
+  // 新增正文里一处同名异义命中（扫描器在这棵树上现报 `verdict=SUSPECT(raised)  pin=591  uses=592`）。
+  // 口径同上面 #714 / #729 / #730 / #753 / #769：改文案 ⇒ 现测 ⇒ 重钉，不反推、不躲它。
+  "docs/host-consumer-contract_cn.md": 592,
   // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
   // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
   // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名

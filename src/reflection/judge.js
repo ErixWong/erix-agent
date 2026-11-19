@@ -1,6 +1,11 @@
 import { extractL0Facts } from "./l0.js";
 import { estimateTokens } from "../tokens.js";
 import { parseModelJson } from "../text/parse-model-json.js";
+// issue #865（#862 修法 B）：「这块正文是不是被文本化的工具调用」的**判据只有一份**，住在
+// `src/loop/final-text-shape.js`（#862 修法 A 落的形状识别，宿主与引擎共用同一份特征集）。
+// 这里**只复用**它的 `textualizedToolCallField`：judge.js 里不写第二套特征、不写第二份 `stripCode`
+// ——两个真相源是 #862 写死的禁止项（换个上游编码就会漏一遍）。
+import { textualizedToolCallField } from "../loop/final-text-shape.js";
 
 const MAX_COMMAND_LENGTH = 40;
 
@@ -328,21 +333,57 @@ function resultContentText(content) {
 //
 // 修法不是再造第三套分类：下面两个常量 + `deliverableKindOfBlock` 就是渲染器那两个分支的**同一份**
 // 判据（渲染器改标签、停门改理由，都读这里），停门只把它当成判据的**输入**。
+//
+// issue #865（#862 修法 B）在这**同一处**分类上扩了一格：`textualized_tool_call`。这条轴现在问的是
+// 「这段文本算不算被声明为交付物」，而「上游把 tool call 编进 `content`」那一堆标记**不算**——于是
+// 它自然撑不起停门，`orchestrator.js` 的 `action.kind === "stop"` 分支一个字都没改（那里加 if 就是
+// 第四套分类，正是 #473 刚填平的坑）。特征判据**复用** `src/loop/final-text-shape.js`（#862 修法 A）。
 
 /** `reasoning` 块在 judge 输入里的标签（渲染器与停门共用同一份字面量）。 */
 export const REASONING_NOT_EVIDENCE_LABEL = "内部自述，不可作为事实依据";
 
-/** 一个内容块在「交付物 / 自述 / 其它」这条轴上的分类。
+/**
+ * 「被文本化的工具调用」这类正文在 judge 输入里的标签（issue #865，渲染器与 nudge 文案共用）。
+ *
+ * ⚠ 措辞是**中性**的，这是判据的一部分：这类正文**不是失败**（引擎不因此判 `failed`，也不改
+ * `termination.reason` 的词汇表），**也不是结论**（它不是交付物，撑不起 `judge_done` 的停门）。
+ * 写成「泄漏 / 坏了 / 未交付」会把「别拿它当完成证据」这个**分类**结论升格成**终态**结论——
+ * #862 的「不做」那一节明令不许反解标记，也不许新造终态。
+ */
+export const TEXTUALIZED_TOOL_CALL_LABEL = "被文本化的工具调用，不是交付物也不是结论";
+
+/** 一段正文是不是「被文本化的工具调用」（上游把 tool call 编进 `content` 的那一类形态）。
+ *
+ * 判据**逐字**走 `textualizedToolCallField`（含它内部的 `stripCode`：``` 围栏与 `行内代码` 先剥掉），
+ * 所以「正文在代码里**引用**这个标记」（本仓的台账与文档就是这么写的）仍然算正常交付物。
+ *
+ * @param {any} text 块正文（非字符串 / 空白 ⇒ 不是这类形态）
+ * @returns {boolean}
+ */
+function isTextualizedToolCallText(text) {
+  return textualizedToolCallField(text).finalTextShape !== undefined;
+}
+
+/** 一个内容块在「交付物 / 自述 / 文本化工具调用 / 其它」这条轴上的分类。
  *
  *  `deliverable_text` = 该轮**交付物**（渲染器把它标成 `### assistant` 并强制保留最新一条）；
  *  `reasoning` = 内部自述（渲染器把它标成「不可作为事实依据」）；
+ *  `textualized_tool_call` = 正文是**被文本化的工具调用**（issue #865）——渲染器给它中性标签
+ *    {@link TEXTUALIZED_TOOL_CALL_LABEL}，它**既不是交付物也不是自述**，也**不算**「最新一条交付物」；
  *  `other` = 工具调用/结果、图片、原始块——它们既不是交付物也不是自述。
  *
+ * ⚠ 这条轴**只有这一处**分类实现：渲染器（`renderConversation`）、机器事实（`roundDeliverableFacts`）
+ * 与 `judge_done` 的停门（`judgeDoneBlocker`）都读它。第四种值是 #865 加的那一格，别在停门处再写 if。
+ *
  *  @param {any} block
- *  @returns {"deliverable_text"|"reasoning"|"other"}
+ *  @returns {"deliverable_text"|"reasoning"|"textualized_tool_call"|"other"}
  */
 export function deliverableKindOfBlock(block) {
-  if (block?.type === "text") return "deliverable_text";
+  if (block?.type === "text") {
+    // 命中的那一格放在 `deliverable_text` **之前**判：#865 的主张正是「这类文本不算交付物」，
+    // 先落到 `deliverable_text` 再在下游排除，就等于把同一个判断摊到两处（#473 的病根）。
+    return isTextualizedToolCallText(block.text) ? "textualized_tool_call" : "deliverable_text";
+  }
   if (block?.type === "reasoning") return "reasoning";
   return "other";
 }
@@ -352,15 +393,23 @@ export function deliverableKindOfBlock(block) {
  *
  * 口径与 `renderConversation` **逐条同源**（同一个 `deliverableKindOfBlock`、同样跳过空白块）：
  *   · `deliverableBlocks` / `deliverableChars` 只数 **assistant** 的 `text` 块（user 的正文是任务
- *     与引擎控制文本，不是该轮的交付物）；
- *   · `latestDeliverable` 就是渲染器「始终保留最新一条 assistant 文本」的那一条（去空白后的原值）；
- *   · `reasoningBlocks` / `reasoningChars` 数 `reasoning` 块——它们是**输入**，不是证据。
+ *     与引擎控制文本，不是该轮的交付物），**且排除**被文本化的工具调用（issue #865）；
+ *   · `latestDeliverable` 就是渲染器「始终保留最新一条 assistant 文本」的那一条（去空白后的原值），
+ *     同样**排除**那一格（所以「唯一正文是泄漏」时它是 `""`）；
+ *   · `reasoningBlocks` / `reasoningChars` 数 `reasoning` 块——它们是**输入**，不是证据；
+ *   · `textualizedBlocks`（issue #865 的**加法键**）数被排除的那几段，与 `deliverableBlocks` 同一
+ *     角色口径（只数 assistant）。于是恒等式 `deliverableBlocks + textualizedBlocks === #865 之前的
+ *     deliverableBlocks` 成立——这条恒等式是「不误杀、只改分类」的机器可检形式。
+ *
+ *  `hasDeliverable` 就是 `deliverableBlocks > 0`，**现在**在「本轮唯一的正文就是泄漏」时为 `false`
+ *  ——这就是 `judge_done` 停门读的那一格，#865 的全部行为变更都在这一格里（停门自己没新增分支）。
  *
  *  @param {object[]} messages
  *  @param {number} [roundStart] 本轮起点（`messages` 的下标）
  *  @returns {{
  *   deliverableBlocks:number, deliverableChars:number, latestDeliverable:string,
  *   reasoningBlocks:number, reasoningChars:number, hasDeliverable:boolean,
+ *   textualizedBlocks:number,
  * }}
  */
 export function roundDeliverableFacts(messages, roundStart = 0) {
@@ -371,6 +420,7 @@ export function roundDeliverableFacts(messages, roundStart = 0) {
   let deliverableChars = 0;
   let reasoningBlocks = 0;
   let reasoningChars = 0;
+  let textualizedBlocks = 0;
   let latestDeliverable = "";
   for (const message of selected) {
     const role = String(message?.role ?? "");
@@ -383,6 +433,11 @@ export function roundDeliverableFacts(messages, roundStart = 0) {
         deliverableBlocks += 1;
         deliverableChars += Array.from(body).length;
         latestDeliverable = body;
+      } else if (kind === "textualized_tool_call") {
+        // issue #865：这一格**不进** `deliverableBlocks` / `deliverableChars` / `latestDeliverable`，
+        // 所以它撑不起 `judge_done`。只数 assistant（与 `deliverableBlocks` 同口径）。
+        if (role !== "assistant") continue;
+        textualizedBlocks += 1;
       } else if (kind === "reasoning") {
         reasoningBlocks += 1;
         reasoningChars += Array.from(body).length;
@@ -396,6 +451,7 @@ export function roundDeliverableFacts(messages, roundStart = 0) {
     reasoningBlocks,
     reasoningChars,
     hasDeliverable: deliverableBlocks > 0,
+    textualizedBlocks,
   };
 }
 
@@ -405,6 +461,8 @@ export function roundDeliverableFacts(messages, roundStart = 0) {
  * 三类的落点（工单要求「自述 / 自承缺项 / 还需要再跑一步」都必须能落到 `done=false`）：
  *   1. **自述**（`no_deliverable_text`）：本轮 assistant 的 `text` 块为 0 ⇒ 评审能读到的只有
  *      `reasoning`，而渲染器对它的口径是「不可作为事实依据」⇒ 本轮没有交付物 ⇒ 不是完成证据。
+ *      issue #865 之后，「唯一的正文是被文本化的工具调用」也落在**同一格**里（它不计入
+ *      `deliverableBlocks`，所以 `hasDeliverable` 本来就是 `false`）。
  *   2. **自承缺项**（`self_reported_incomplete`）：模型自己的收尾信封 `done:false`（wrapup 协议
  *      开着时才存在）。它只能**否决**、不能**授予**——「模型自报不算证据」单向成立，所以这里只读
  *      `=== false` 那一格（`done:true` 不许顶替评审）。
@@ -414,16 +472,29 @@ export function roundDeliverableFacts(messages, roundStart = 0) {
  *
  * 返回 `null` = 不拦（评审的 `done:true` 照旧生效）。
  *
- * @param {{facts?: {hasDeliverable:boolean, deliverableBlocks:number, reasoningBlocks:number}|null,
+ * issue #865 在这一格上**没有新增分支**：它读的还是 `facts.hasDeliverable`，只是那一格的**输入**
+ * 变了（被文本化的工具调用不再计入 `deliverableBlocks`）。`detail` 会点名有几段这种正文，
+ * 因为那句 `detail` 就是回去碰模型的那条 nudge——只说「没有正文」会把它指错方向（它写了字，
+ * 只是写的是上游编码的标记）。
+ *
+ * @param {{facts?: {hasDeliverable:boolean, deliverableBlocks:number, reasoningBlocks:number,
+ *   textualizedBlocks?:number}|null,
  *   selfReport?: {done?:boolean}|null}} input
  * @returns {{code:string, detail:string}|null}
  */
 export function judgeDoneBlocker({ facts, selfReport } = {}) {
   if (facts !== null && facts !== undefined && facts.hasDeliverable !== true) {
+    // 加法键：旧调用方传进来的 `facts` 没有 `textualizedBlocks` ⇒ `?? 0` ⇒ 文案与 #473 今天逐字相同。
+    const textualized = Number(facts.textualizedBlocks ?? 0);
     return {
       code: "no_deliverable_text",
       detail: `本轮没有交付物正文（assistant 正文块 0 个；内部自述 ${facts.reasoningBlocks ?? 0} 块按`
-        + `「${REASONING_NOT_EVIDENCE_LABEL}」口径不能作为完成证据）`,
+        + `「${REASONING_NOT_EVIDENCE_LABEL}」口径不能作为完成证据`
+        + (textualized > 0
+          ? `；另有 ${textualized} 段「${TEXTUALIZED_TOOL_CALL_LABEL}」——上游把工具调用写进了正文，`
+            + "它不计入交付物"
+          : "")
+        + "）",
     };
   }
   if (selfReport !== null && selfReport !== undefined && selfReport.done === false) {
@@ -474,6 +545,18 @@ export function renderConversation(messages, { maxTokens = JUDGE_CONVERSATION_TO
         text = `### ${role}\n${body}`;
         if (role === "user" && firstUserText < 0) firstUserText = sections.length;
         else if (role === "assistant") latestAssistantText = sections.length;
+      } else if (kind === "textualized_tool_call") {
+        // issue #865：这类正文**照样渲染**（评审要看得见它，否则无从知道为何没交付），但：
+        //   · 标签是中性的（{@link TEXTUALIZED_TOOL_CALL_LABEL}）——它不是失败，也不是结论；
+        //   · **不再占**「最新一条 assistant 正文 = 交付物」那个 mandatory 名额——预算紧时它可以被
+        //     省略，而真交付物永远留下（这才是「不算最新一条交付物」在渲染器侧的全部含义）。
+        // user 侧那一格**照旧**占「第一条 user 正文 = 任务」的名额：任务正文里裸写一个 `<invoke`
+        // （要求处理这种标记的任务）与本单要拦的那件事无关，把它从 mandatory 里摸掉是误伤。
+        // 口径与 `roundDeliverableFacts` 里那一格同源（同一个 `deliverableKindOfBlock`）。
+        const body = String(block?.text ?? block?.content ?? "").trim();
+        if (body === "") continue;
+        text = `### ${role}（${TEXTUALIZED_TOOL_CALL_LABEL}）\n${body}`;
+        if (role === "user" && firstUserText < 0) firstUserText = sections.length;
       } else if (kind === "reasoning") {
         const body = String(block?.text ?? block?.content ?? "").trim();
         if (body === "") continue;
@@ -581,15 +664,28 @@ export function buildJudgePrompt(
   // 变成判据）。现在把机器分类直接摆在前面：`text` 块数 / `reasoning` 块数，并给出绑定规则。
   // 口径只可能来自 `roundDeliverableFacts`（与渲染器同一个 `deliverableKindOfBlock`），这里不重算。
   const deliverableFacts = facts?.roundDeliverable;
+  // issue #865：「被文本化的工具调用」也摆进机器事实，但**只在命中时**多这一段（计数 0 ⇒ 一个字节
+  // 都不多），于是未命中的 run 递给评审的提示词与今天**逐字相同**——本单的行为变更只落在命中的 run。
+  const textualizedBlocks = Number(deliverableFacts?.textualizedBlocks ?? 0);
+  const textualizedClause = deliverableFacts !== null
+    && deliverableFacts !== undefined
+    && textualizedBlocks > 0
+    ? `被文本化的工具调用 ${textualizedBlocks} 段（「${TEXTUALIZED_TOOL_CALL_LABEL}」，不计入交付物）；`
+    : "";
   const deliverableLine = deliverableFacts === null || deliverableFacts === undefined
     ? ""
-    : `本轮交付物分类（引擎机器事实，与渲染器同一套分类）：assistant 正文块 ${Number(deliverableFacts.deliverableBlocks ?? 0)} 个 / ${Number(deliverableFacts.deliverableChars ?? 0)} 字符；内部自述（reasoning）${Number(deliverableFacts.reasoningBlocks ?? 0)} 个 / ${Number(deliverableFacts.reasoningChars ?? 0)} 字符；本轮 stop_reason：${String(facts?.roundStopReason ?? "未知")}。\n`;
+    : `本轮交付物分类（引擎机器事实，与渲染器同一套分类）：assistant 正文块 ${Number(deliverableFacts.deliverableBlocks ?? 0)} 个 / ${Number(deliverableFacts.deliverableChars ?? 0)} 字符；内部自述（reasoning）${Number(deliverableFacts.reasoningBlocks ?? 0)} 个 / ${Number(deliverableFacts.reasoningChars ?? 0)} 字符；${textualizedClause}本轮 stop_reason：${String(facts?.roundStopReason ?? "未知")}。\n`;
   const deliverableRule = deliverableLine === ""
     ? ""
     : `交付物硬规则（与上面的机器分类绑定）：
 - assistant 正文块为 0 ⇒ 本轮**没有交付物**：内部自述按渲染器口径「${REASONING_NOT_EVIDENCE_LABEL}」，done 必须为 false。
 - 本轮正文若只是自述进度、自承缺项（承认还有东西没写/没做）、或声明还需要再跑一步，done 必须为 false。
-`;
+`
+    // 计数 0 时这行是空串 ⇒ 不命中的 run 拿到的提示词与今天**逐字相同**（连行尾换行都不多一个）。
+    + (textualizedClause
+      ? "- 被文本化的工具调用（上游把本应发出的工具调用写成了正文里的标记）**不是交付物，也不是失败**："
+        + "它不能把 done 举成 true；本轮若只有它，done 必须为 false。\n"
+      : "");
   return `【每轮 Judge】你是交付评审者，独立判断任务是否完成。不要执行工具，不要相信模型自报。
 
 任务目标：${Array.from(String(taskBrief ?? "")).slice(0, 2000).join("") || "（未提供）"}
