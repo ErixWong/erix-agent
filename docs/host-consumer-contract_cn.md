@@ -2962,7 +2962,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `continuity_injection_skipped` 事件 | `onEvent`，续接块每有一轮没能落位发一条 | **additive（issue #568）。** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }`——这一轮的请求里没有注入续接块（例如 `reason: "pending_tool_use"`：在那个位置插入会破坏 `tool_use`/`tool_result` 配对）。跳过是上报出来的，而不是拿机械文本顶上去。 |
 | `user_turn_guard_unrecoverable` 事件 | `onEvent`，每个退到守卫最后一格的请求视图一条（也就是每次 provider attempt 一条） | **additive（issue #296）。** `{ type: "user_turn_guard_unrecoverable", runId?, parentRunId?, round, channel: "chat" \| "chatStream", reason: "empty_view" \| "no_user_turn" \| "invalid_view", detail: string }`——请求视图的 user 轮不变量退完了所有退让格：`ensureUserTurnView` (`src/loop/request-user-view.js`) 在请求视图里找不到可用的 user 轮，**并且**未折叠的源视图里也没有可回补的 user 轮，于是这个请求**原样发出**——引擎既不伪造一条 user 轮，也不抛错。要求 user query 的上游会回 `400`；本事件在**那个请求发出之前**就到，因此它是「失败」与「原因」之间的 join 键（#296 之前这一格被滤掉，对外完全无痕）。`reason` 是子原因：`empty_view`（视图空了）、`no_user_turn`（非空但没有真 user 轮——纯 `tool_result` 载体不算）、`invalid_view`（有 user 轮但 `tool_use`/`tool_result` 配对非法）。`detail` 首句是宿主可直接断言的固定原文。另外两个守卫动作（`preserved_latest_user_turn` / `abandoned_fold`）照旧落进 `compactionStats.userTurnGuard`、永不发本事件；本事件**刻意不写进** `compactionStats`——它可能在一轮**完全没有压缩**时触发，写进去会让「这一轮到底有没有折叠」不可判读。 |
 | `host_steer_injected` 事件 | `onEvent`，轮边界注入成功一次一条 | **additive（issue #753 C1）。** `{ type: "host_steer_injected", runId?, parentRunId?, round: number, chars: number }`——`capabilities.hooks.nextUserTurn` 回了非空字符串，引擎把它当成**轮边界**上的一条真 `role: "user"` 轮追加：在 `throwIfAborted(signal)` 之后、轮切片（`const roundStart = messages.length`）开窗之前。这个位置就是契约本身：注入那条落进**下一轮**的轮记录，因此不需要另开一行 `:control:`，resume 后也当作普通 user 轮读得到（`store.load()` 读得到正文；账本行是带 `seq` 的 `kind: "message"`，不是 `:control:` 行）。`round` 是被问的那个轮边界（正文由紧接着开启的那一轮消费，那一轮的 `round_start` 带的是 `round + 1`）；`chars` 是注入文本的长度。档位 `fact`——见事件分级表。静默回绝是设计：`null` / `undefined` ⇒ 无事件、无行、账本逐字不变；抛错或返回非字符串记进 `diagnostics.steer.rejected`，并走 `reportObserverError(..., { channel: "nextUserTurn" })`，口径同 `finalGuard` 校验失败——**绝不**改终局。 |
-| `finalTextShape` 结果键 + `final_text_textualized_tool_call` 事件 | 每一条**非抛错的 `finish()` 路径**上的 `result.finalTextShape`——凡经 `finish()` 收尾的终局都带：`end_turn` *以及* `max_rounds_cap` / `final_guard_unverified` / `no_tool` / `stall` 同样带键、同样发事件（`test/loop-final-text-shape-862.test.js` 钉住了 `max_rounds_cap`）；`failed` / `aborted` 走 `fail()` / 中止，既无该键也无该事件；`onEvent` 每次终局至多一条（resume 重跑是新的终局，会再发一条） | **additive（issue #862，修法 A）。** 有些上游/网关把 tool call 编进了 `content`，引擎最后一轮看到的就是「无 `tool_use` + `end_turn` + 正文非空」，于是被判 `completed`，而它交付的其实是一次**被文本化的调用**。**终稿正文**命中共享特征集时 `result.finalTextShape` = `{ textualizedToolCall: true, marker: string }`；**缺席就是未命中** —— 这个键绝不写成 `false`，与 `finalTextFallback` 同一条「没事实就没键」的口径。`marker` 是命中的那条特征**原文**（按清单顺序取第一条 = 优先级）。配套事件带 `{ type: "final_text_textualized_tool_call", runId?, round, marker }`。**两者都不改任何终态语义**：`termination.reason` 仍是 `end_turn`，`rounds` / `usage` / `verification` 一个字节都不动（把这种正文挡在终局门外是修法 B，单开一单）。特征集以 `DEFAULT_TOOLCALL_MARKERS` 出口 （`src/loop/final-text-shape.js`，包根再导出一份），正是为了让宿主删掉**自己那份特征集与匹配口径** —— 两个真相源是那张票写死的禁止项。宿主**必须留下的**：`parseToolCallMarkers`（env 解析期那道形状闸）与 `TEXTUALIZED_MARKER_MAX_CHARS` 上界截断 —— kit 版两者都无对应（没有 env 面、没有 120 字符上界，且 `detectTextualizedToolCall` 返回 `string|null` 而不是宿主那个 `{ hit, marker, chars }`）。匹配前先跑 `stripCode`，所以 **围栏代码块或行内码里**引用的标记**不算命中**。 |
+| `finalTextShape` 结果键 + `final_text_textualized_tool_call` 事件 | 每一条**非抛错的 `finish()` 路径**上的 `result.finalTextShape`——凡经 `finish()` 收尾的终局都带：`end_turn` *以及* `max_rounds_cap` / `final_guard_unverified` / `no_tool` / `stall` 同样带键、同样发事件（`test/loop-final-text-shape-862.test.js` 钉住了 `max_rounds_cap`）；`failed` / `aborted` 走 `fail()` / 中止，既无该键也无该事件；`onEvent` 每次终局至多一条（resume 重跑是新的终局，会再发一条） | **additive（issue #862，修法 A）。** 有些上游/网关把 tool call 编进了 `content`，引擎最后一轮看到的就是「无 `tool_use` + `end_turn` + 正文非空」，于是被判 `completed`，而它交付的其实是一次**被文本化的调用**。**终稿正文**命中共享特征集时 `result.finalTextShape` = `{ textualizedToolCall: true, marker: string }`；**缺席就是未命中** —— 这个键绝不写成 `false`，与 `finalTextFallback` 同一条「没事实就没键」的口径。`marker` 是命中的那条特征**原文**（按清单顺序取第一条 = 优先级）。配套事件带 `{ type: "final_text_textualized_tool_call", runId?, round, marker }`。**两者都不改任何终态语义**：`termination.reason` 仍是 `end_turn`，`rounds` / `usage` / `verification` 一个字节都不动。（「把这种正文挡在终局门外」是修法 B，而修法 B 已以 issue #865 落地——它拒的是 **`judge_done` 那道停门**，不是终局：普通 `end_turn` 的 run 仍会把这段正文当终稿收下，所以 `termination.reason` 仍是 `end_turn`、本键的含义也不变。）特征集以 `DEFAULT_TOOLCALL_MARKERS` 出口 （`src/loop/final-text-shape.js`，包根再导出一份），正是为了让宿主删掉**自己那份特征集与匹配口径** —— 两个真相源是那张票写死的禁止项。宿主**必须留下的**：`parseToolCallMarkers`（env 解析期那道形状闸）与 `TEXTUALIZED_MARKER_MAX_CHARS` 上界截断 —— kit 版两者都无对应（没有 env 面、没有 120 字符上界，且 `detectTextualizedToolCall` 返回 `string|null` 而不是宿主那个 `{ hit, marker, chars }`）。匹配前先跑 `stripCode`，所以 **围栏代码块或行内码里**引用的标记**不算命中**。 |
 | `run_outcome` 事件 | `onEvent`，一次 run 恰好一条——judge 从未运行的 run 同样发 | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`。成功路径在持久化落地后发，抛错路径在 `fail()` 里发；去重门保证一个 run 恰好一条。`termination` / `verification` 是 `runToolLoop` 返回值（或 `fail()` 构造出的终局）的副本。 |
 
 **事件在本文档里住哪张表（issue #641）。** 上面那张表是**加法**事件表：只列本契约已经存在之后新增的事件，
@@ -3012,7 +3012,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `termination.reason` | 触发机制（file:line） | 在优先级链中的位置 | 宿主开关 | 推荐宿主动作 |
 |---|---|---|---|---|
 | `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js`）或兜底 stop `complete`（`src/reflection/governor.js`），均由 `terminationReasonForAction`（`src/loop/termination.js`）映射。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js` 的 end-turn 收尾块，内部调 `normalizeWrapupText`（`src/reflection/wrapup.js`））） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`callRoundJudge`（`src/loop/judge-runner.js`）） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
-| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`isEndTurn`（`src/loop/orchestrator.js`）），映射在 `terminationReasonForAction`（`src/loop/termination.js`）。**issue #473 起**还要求被判的那一轮产出了**交付物**（`text`）块，或模型自己的信封没有写 `done:false`——见上文轮内链条第 6 步 | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`DEFAULT_REFLECTION_MIN_ROUNDS`（`src/loop/reflection.js`）） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
+| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`isEndTurn`（`src/loop/orchestrator.js`）），映射在 `terminationReasonForAction`（`src/loop/termination.js`）。**issue #473 起**还要求被判的那一轮产出了**交付物**（`text`）块，或模型自己的信封没有写 `done:false`——见上文轮内链条第 6 步；**issue #865 起**，一段内容是被文本化的工具调用的 `text` 块**不算**这种交付物块 | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`DEFAULT_REFLECTION_MIN_ROUNDS`（`src/loop/reflection.js`）） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
 | `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`stallWindow`（`src/loop/orchestrator.js`））叠加 streak 累加（`stallStreak`（`src/loop/orchestrator.js`）），stop 在 `decideRoundAction`（`src/reflection/governor.js`），`STALL_STREAK_LIMIT` = 3（`src/reflection/governor.js`），映射在 `terminationReasonForAction`（`src/loop/termination.js`） | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死——这个排序就在 `decideRoundAction`（`src/reflection/governor.js`）里 | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
 | `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:118`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
@@ -3105,6 +3105,31 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    一条把「正文块为 0」绑到 `done:false` 的规则），于是模型侧结论与机器侧闸门读的是同一组事实；
    不传 `facts` 的调用方拿到的提示词与今天**逐字相同**。可观测面跟着真实决策走：被降级的那一轮
    `onJudge` 记录报的是 `action: "nudge"`，不再是「run 明明没停、记录却说停了」的 `judge_done`。
+   **issue #865（#862 修法 B）在这**一条分类轴上扩了第四格——它没有新增第四道门。**一段正文是
+   **被文本化的工具调用**（上游把这次调用编进了 `content`，所以那一轮看上去真的就是「无
+   `tool_use` + `end_turn` + 正文非空」）的 `text` 块，现在归 `textualized_tool_call` 而不是
+   `deliverable_text`，而 `roundDeliverableFacts`（`src/reflection/judge.js`）把它挡在
+   `deliverableBlocks` / `deliverableChars` / `latestDeliverable` 之外，只在**新增的加法键**
+   `textualizedBlocks` 里数它（只数 assistant——与 `deliverableBlocks` 同一条角色口径，于是
+   `deliverableBlocks + textualizedBlocks` 恒等于 #865 之前的 `deliverableBlocks`）。停门本身**没有
+   新增分支**：`judgeDoneBlocker`（`src/reflection/judge.js`）读的还是 `hasDeliverable` 那一格，所以
+   「本轮唯一的正文是一堆标记」现在落上面的（a）类——**先吃一次 nudge；配额用完之后该轮才真地
+   `judge_done`**。用完就放行是**故意**的（不设限的降级会把剩下的轮次全烧在同一判据上），而那条
+   nudge 会报出段数与标签，因为只说「你没写正文」会把模型指错方向——它写了字，只是写的不是交付物。
+   `renderConversation`（`src/reflection/judge.js`）**照样渲染**这类块，用的是中性标签
+   `TEXTUALIZED_TOOL_CALL_LABEL`（`src/reflection/judge.js`）：评审要看得见它，否则无从知道为什么
+   没交付，而这个标签既不报失败也不报结论（**没新增** `termination.reason` 取值，也没新增终态）。
+   **没动的那一半**才是宿主需要重新学的事：角色是 `user` 的这类块**照旧**占「第一条 user 正文 =
+   任务」那个名额（任务正文里裸写一个 `<invoke` 是合法的），而在围栏代码块或行内码里**引用**的标记
+   根本不算命中——判据**逐字**走 `textualizedToolCallField`（`src/loop/final-text-shape.js`），
+   连它的 `stripCode` 一起走；而普通的 `end_turn` 终局也一点没动，所以 `termination.reason` /
+   `rounds` / `usage` / `verification` 与 `result.finalTextShape`（修法 A）的形状都在原处。
+   可观测面与提示词也按同一条口径保持纯加法：计数不为 0 时评审提示词才多那一段，而 `facts` 入参是
+   #865 之前形状的调用方，拿到的 `judgeDoneBlocker` 文案与 #473 **逐字相同**。
+   前后对照实测（fake provider + fake judge 恒判 `done:true / 0.85`，每组 5 个 run，
+   `scripts/probe-865-stopgate-comparison.mjs` 在两棵树上各跑一遍）：终稿泄漏那一轮从「均 2 轮 /
+   0 次 nudge」变成「均 3 轮 / 5 次 nudge」，而之后真的补出交付的那组从「终稿仍是标记 5/5」变成 0/5，
+   正常交付那一组一格未动。
 7. **停止后验证**——stop reason 定下来后，可能多一次强制收尾的 provider 调用。
    资格是**一个状态、不是 reason 白名单**（issue #475）：三条不可续跑的 reason
    （`max_rounds_cap` / `stall` / `continuation_exhausted`）沿用下面更严的截断判据，
@@ -3139,7 +3164,8 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    `unverified`）；它也不写进 `messages` / 账本 —— 那两处保持模型真正产出的那份。
    第三种「终稿不是一个结论」的形态只**上报不改写**（issue #862）：终稿正文命中共享的
    「文本化工具调用」特征集时，`result.finalTextShape` = `{ textualizedToolCall: true, marker }`
-   —— run 仍然以 `end_turn` 收场，因为「这种正文不许终局」是另一个决定（修法 B）。
+   —— run 仍然以 `end_turn` 收场，因为「这种正文不许终局」从来不是本键的决定（issue #865 从它手里
+   拿走的是**停机许可**，不是终局：见轮内链条第 6 步）。
    键**缺席就是否定答案**，它不会是 `false`。
 8. **`fail()` 分类**——任何时刻抛错都会用 `aborted`（信号已置）或 `failed` /
    `persistence_failed` 替换掉上面全部（`fail`（`src/loop/orchestrator.js`））。
