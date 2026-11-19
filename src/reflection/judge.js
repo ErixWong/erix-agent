@@ -548,12 +548,15 @@ export function renderConversation(messages, { maxTokens = JUDGE_CONVERSATION_TO
       } else if (kind === "textualized_tool_call") {
         // issue #865：这类正文**照样渲染**（评审要看得见它，否则无从知道为何没交付），但：
         //   · 标签是中性的（{@link TEXTUALIZED_TOOL_CALL_LABEL}）——它不是失败，也不是结论；
-        //   · **不进** mandatory 集（既不占「第一条 user 正文 = 任务」，也不占「最新一条 assistant
-        //     正文 = 交付物」）——预算紧时它可以被省略，而真交付物永远留下。
+        //   · **不再占**「最新一条 assistant 正文 = 交付物」那个 mandatory 名额——预算紧时它可以被
+        //     省略，而真交付物永远留下（这才是「不算最新一条交付物」在渲染器侧的全部含义）。
+        // user 侧那一格**照旧**占「第一条 user 正文 = 任务」的名额：任务正文里裸写一个 `<invoke`
+        // （要求处理这种标记的任务）与本单要拦的那件事无关，把它从 mandatory 里摸掉是误伤。
         // 口径与 `roundDeliverableFacts` 里那一格同源（同一个 `deliverableKindOfBlock`）。
         const body = String(block?.text ?? block?.content ?? "").trim();
         if (body === "") continue;
         text = `### ${role}（${TEXTUALIZED_TOOL_CALL_LABEL}）\n${body}`;
+        if (role === "user" && firstUserText < 0) firstUserText = sections.length;
       } else if (kind === "reasoning") {
         const body = String(block?.text ?? block?.content ?? "").trim();
         if (body === "") continue;
