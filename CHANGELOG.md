@@ -344,7 +344,11 @@
   `name`; `validateProvider` only does `assertNonEmptyString`, that regex is a `HOLDER_PATTERN`
   elsewhere). The reference is now the host's code: the capture script copies
   `lib/session-liveness.ts` **verbatim** into
-  `test/fixtures/pi-web-session-liveness-e533d9b3.ts` (verified with `cmp`) and refuses to capture
+  `fixtures/pi-web-session-liveness-e533d9b3.ts` (verified with `cmp`; it lives in the **root**
+  `fixtures/`, not under `test/` — bare `node --test` collects every file under `test/` as a test
+  file, measured `ok 119 - test/fixtures/pi-web-session-liveness-e533d9b3.ts`, exactly the class
+  `test/static-guards.test.js`'s "no support files under `test/`" rule exists to stop) and refuses
+  to capture
   unless the host checkout's `rev-parse HEAD` equals the pinned
   `e533d9b3975f8a74b378d5007c92fdf4d15d3fba` **and** `status --porcelain` is empty **and** the file
   is readable — all three reverse-proved (missing checkout / wrong HEAD / dirty tree / missing file
@@ -379,10 +383,9 @@
   absent there while that registry carries a `list()` method this point lacks; what was verified
   identical across the two is exactly the three things this repository depends on (`version === 1`,
   `register(provider)` returning an idempotent `release`, `hasActiveProvider` matching by
-  `sessionId ∪ sessionFile` and answering true when a provider throws). And the fixture `.ts` lives
-  under `test/`, which bare `node --test` collects as a test file (measured on a minimal tree), so
-  the suite summary moves by the 9 cells **plus** one trivially-passing file — the registered
-  baseline is raised by the reviewer, not here.
+  `sessionId ∪ sessionFile` and answering true when a provider throws). The fixture `.ts` was moved
+  out of `test/` into the root `fixtures/` for that reason, so the suite summary moves by the nine
+  cells and nothing else — the registered baseline is raised by the reviewer, not here.
 - **fix(extension)：pi-web 的活性契约现在拿宿主自己的源码判，不再拿手抄的假 registry 判（
   `test/examples/pi-web-liveness-contract.test.js`、`fixtures/capture-pi-web-liveness-875.mjs`；
   issue #875）。** 变的是**参照物**，不是行为 —— `examples/pi-extension/erix-run-liveness.js` 与
@@ -391,7 +394,10 @@
   一次（工单以为宿主对 provider `name` 跑 `^[A-Za-z0-9_-]{1,64}$`，实际 `validateProvider` 只做
   `assertNonEmptyString`，那条正则是宿主另一处的 `HOLDER_PATTERN`）。现在参照物就是宿主的代码：
   捕获脚本把 `lib/session-liveness.ts` **逐字**拷成
-  `test/fixtures/pi-web-session-liveness-e533d9b3.ts`（`cmp` 与源零差异），且只在宿主检出的
+  `fixtures/pi-web-session-liveness-e533d9b3.ts`（`cmp` 与源零差异；它住在**根 `fixtures/`**，不在
+  `test/` 下 —— 裸 `node --test` 会把 `test/` 下每一个文件当一个测试文件收，实测拓到过
+  `ok 119 - test/fixtures/pi-web-session-liveness-e533d9b3.ts`，而 `test/static-guards.test.js` 那条
+  「test/ 下不放会被收集执行的支撑文件」要挡的正是这一类），且只在宿主检出的
   `rev-parse HEAD` **等于**钉死的 `e533d9b3975f8a74b378d5007c92fdf4d15d3fba`、`status --porcelain`
   **为空**、源文件可读这三条全过时才写盘 —— 三条都做过反向证（检出不存在 / HEAD 不是捕获点 / 脏树 /
   源文件缺失，各自 exit 1 并点名原因）。同名 `.json` 的 `_meta` 记的是**实测**的 `rev-parse` 与
@@ -418,8 +424,8 @@
   「选中页租约」（`SESSION_LIVENESS_LEASE_TTL_MS`）在 0.13.0 里**不存在**，而那边的 registry 上多一个
   本捕获点没有的 `list()`；两版逐条对得上、而本仓真正依赖的就那三件事（`version === 1`、
   `register(provider)` 返回幂等的 `release`、`hasActiveProvider` 按 `sessionId ∪ sessionFile` 匹配且
-  provider 抛错时答 true）。另：fixture 那份 `.ts` 住在 `test/` 下，裸 `node --test` 会把它当一个
-  测试文件收集（最小树上实测），所汇总数字除了 9 格外还多一个恒过的文件 —— 登记的测试基线由
+  provider 抛错时答 true）。另：fixture 那份 `.ts` 已从 `test/` 搬到**根 `fixtures/`**（原因就是上面
+  那个白跑的恒过文件），所以汇总数字只动 9 格、不再附送一个文件 —— 登记的测试基线由
   评审者抬，不在本刀里改。
 
 - **The Chinese cold layer was missing the concurrent-judgment ban the English side got

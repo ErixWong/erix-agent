@@ -8,10 +8,13 @@
 // `HOLDER_PATTERN`）。两边错在一起时，那张表和我们的模块会一起绿。
 //
 // 本文件的判据形状因此换了：**参照物是宿主自己的源码**
-// （`test/fixtures/pi-web-session-liveness-e533d9b3.ts` = `pi-web:lib/session-liveness.ts` 在
+// （`fixtures/pi-web-session-liveness-e533d9b3.ts` = `pi-web:lib/session-liveness.ts` 在
 // `e533d9b3` 的**逐字拷贝**，捕获点与 sha256 记在同名 `.json` 的 `_meta` 里，由
 // `fixtures/capture-pi-web-liveness-875.mjs` 现采现算）。那份文件**零 import**，本机的
 // type-stripping（`process.features.typescript === "strip"`）能直接 `import()` 它。
+// 产物住在**根 `fixtures/`**而不是 `test/fixtures/`：裸 `node --test` 会把 `test/` 下每个文件当一个
+// 测试文件收（实测 `ok 119 - test/fixtures/pi-web-session-liveness-e533d9b3.ts`），那是一格白跑的恒过
+// 文件，也正是 `test/static-guards.test.js`「test/ 下不放会被收集执行的支撑文件」那条规矩要挡的那一类。
 //
 // ⚠ **这里没有假 registry，也不许再造一个**：宿主的 `getRegistry()` 在**模块顶层**跑，
 // `import()` 那一刻它自己把注册表挂到 `globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")]`。
@@ -35,10 +38,10 @@ import {
   sessionHasLiveWork,
 } from "../../examples/pi-extension/erix-run-liveness.js";
 
-/** 宿主的真模块（逐字拷贝的 fixture）。 */
-const FIXTURE_TS = new URL("../fixtures/pi-web-session-liveness-e533d9b3.ts", import.meta.url);
+/** 宿主的真模块（逐字拷贝的 fixture；住在根 `fixtures/`，不进 `test/` —— 见上面那段理由）。 */
+const FIXTURE_TS = new URL("../../fixtures/pi-web-session-liveness-e533d9b3.ts", import.meta.url);
 /** 它的捕获点元数据。 */
-const META_JSON = new URL("../fixtures/pi-web-session-liveness-e533d9b3.json", import.meta.url);
+const META_JSON = new URL("../../fixtures/pi-web-session-liveness-e533d9b3.json", import.meta.url);
 
 /**
  * 运行时能不能直载 `.ts`。**只允许这一种 skip 理由**（不许拿"环境不便"当理由把契约关掉）：
