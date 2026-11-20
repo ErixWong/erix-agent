@@ -701,7 +701,10 @@ export default function (pi: ExtensionAPI) {
     // issue #800 判据 5：再叠一层**实例归属**——同一个 `sessionId` 已被新实例接管时，本实例是迟到的那个，
     // 那些 job 的定时器已不归它清。必须递上**自己那个** `sessionHandle`，runtime 才比得出「不属于它」；
     // 不递 = 比不出来 ⇒ 只能照旧清掉（所以接线本身就是判据，`erix-run-async.test.js` 有一格守它）。
-    asyncRuntime().shutdown(sessionId, sessionHandle);
+    // issue #875 S2：`reason` 必须在**调 shutdown 之前**取到 —— 定时器怎么清取决于它
+    // （`reload` 一根都不清、其余只清投递重试；看门狗一律归 run）。
+    const reason = (event as { reason?: string })?.reason;
+    asyncRuntime().shutdown(sessionId, sessionHandle, reason);
     // issue #875：lease **不分 reason 一律放**（含 `reload`）—— 这一条与句柄表的口径**故意相反**。
     // 理由：宿主按 `Symbol(name)` 键登记 provider，旧实例不放就永久漏一条 `isActive` 闭包，
     // 而那条闭包捕获的 `ctx` 已经失效、宿主侧 `isActive` 抛错后是 **fail-safe 保留会话**
@@ -709,7 +712,6 @@ export default function (pi: ExtensionAPI) {
     // 空窗期由 `session_start` 立刻补上（`/reload` 是会话内命令，宿主不换会话对象）。
     liveness?.release();
     liveness = undefined;
-    const reason = (event as { reason?: string })?.reason;
     sessionHandle.sessionShutdown(reason);
     // #654：会话真的走了就把句柄摘掉 —— 之后那个会话的 job 结算时按 owner 查不到句柄，
     // 记 `delivery:"orphaned"`（而不是投进一个已经不存在的会话）。
