@@ -1990,11 +1990,13 @@ test("#875 S2 格1（主判据）：/reload 一根都不摘 ⇒ 那一档投递�
   const retryHandle = job.notifyRetry;
 
   // `/reload`：会话**没走** —— 新实例会以同一个 `sessionId` 重新登记句柄 ⇒ 一根都不许摘。
-  assert.equal(runtime.shutdown(owner, handle, "reload"), false,
-    "reload 无可清的 ⇒ false（旧实现在这里返回 true：它把那一档重试摘了）");
+  const reloadCleared = runtime.shutdown(owner, handle, "reload");
+  // 红位顺序是载荷：反向证 1（去掉 `reason !== "reload"` 守卫）必须红在「那一档还在」这一条上，
+  // 而不是红在返回值上（返回值只是那一件事的副产物）。
   assert.equal(job.notifyRetry, retryHandle, "reload 不许摘投递重试（摘掉 = 那条终局永久静默）");
-  assert.equal(job.watchdog, undefined, "看门狗的状态不因 reload 改变（它归 run，这里早已由 settle 收口）");
   assert.deepEqual(clock.pendingDelays(), [NOTIFY_RETRY_DELAYS_MS[0]], "那一档仍挂在时钟上");
+  assert.equal(reloadCleared, false, "reload 无可清的 ⇒ false（旧实现在这里返回 true：它摘了那一档）");
+  assert.equal(job.watchdog, undefined, "看门狗的状态不因 reload 改变（它归 run，这里早已由 settle 收口）");
 
   // 「不摘」换来的必须是**真的投出去了**，不是单纯「没清」。
   assert.equal(clock.tick(), true, "那一档还在 ⇒ 推得动");
