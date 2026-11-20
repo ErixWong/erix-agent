@@ -6,7 +6,7 @@
 // `delivery:"orphaned"`，要等用户下次点开会话才补投（盘上实测迟到 44 分钟 / 867 分钟）。
 //
 // 这一格面（全离线，不碰 pi、不碰网络）：
-//   · 注册面的**形状**（1-7 条）——假 registry **照抄宿主 0.13.0 的校验与簿记口径**（见下面
+//   · 注册面的**形状**（1-7 条）——假 registry **照抄宿主 0.13.0 的校验与簿记口径**（宿主只校非空，本层另加更严的 `name` 字面；见下面
 //     `createFakeHostRegistry` 的逐字对照），不许放宽：两边错在一起就是自证；
 //   · `sessionHasLiveWork` 的**判据**（8-11 条）——含复核 C 条（已结算但还有投递重试待投的那段窗口）。
 //
@@ -28,12 +28,12 @@ import {
 const REGISTRY_SYMBOL = Symbol.for(PI_WEB_LIVENESS_REGISTRY_KEY);
 
 /**
- * 假 registry：**逐条照抄 pi-web 0.13.0 `lib/session-liveness.ts` 的口径**（放宽任何一条，本层就是自证）。
+ * 假 registry：**逐条照抄 pi-web 0.13.0 `pi-web:lib/session-liveness.ts` 的口径**（放宽任何一条，本层就是自证）。
  *
  * | 宿主原文 | 这里 |
  * |---|---|
  * | `validateProvider`：provider 必须是对象 | 同 |
- * | provider `name` 必须匹配 `^[A-Za-z0-9_-]{1,64}$` | 同（本层先挡一遍，格 5 钉的就是「本层挡了、没劳驾宿主」） |
+ * | `assertNonEmptyString(name)` —— **只校非空**，不校字面 | 同；另加本层**自己**的 `^[A-Za-z0-9_-]{1,64}$` 先挡一遍（比宿主严，格 5 钉的就是「本层挡了、没劳驾宿主」）。宿主里那条正则是另一处的 `HOLDER_PATTERN`，不是 provider 名校验 |
  * | `assertNonEmptyString(sessionId)` | 同 |
  * | `sessionFile !== undefined` 时才校验，且必须非空 | 同 ⇒ 空串必须**抛**（所以本层宁可不带这个键） |
  * | `typeof isActive !== "function"` ⇒ 抛 | 同 |

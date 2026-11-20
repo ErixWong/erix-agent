@@ -48,8 +48,9 @@ export function resolvePiWebLivenessRegistry(globalObject = globalThis) {
 export function registerSessionLiveness(options = {}) {
   const noop = Object.freeze({ registered: false, release: () => {} });
   const { sessionId, sessionFile, isActive, name = LIVENESS_PROVIDER_NAME, globalObject } = options;
-  // 宿主对这三格都会抛（`name` 正则、`sessionId` 非空、`isActive` 是函数）⇒ 本层先挡，
-  // 不拿「宿主抛异常」当降级路径（那会把异常打给用户）。
+  // 宿主 `register` 会对这几格抛（`name` / `sessionId` / `sessionFile` 非空、`isActive` 是函数）⇒ 本层先挡，
+  // 不拿「宿主抛异常」当降级路径（那会把异常打给用户）。`name` 的正则校验是**本层自己加的**（比宿主更严：
+  // 宿主只校非空；`^[A-Za-z0-9_-]{1,64}$` 在宿主里是另一处的 `HOLDER_PATTERN`，不是 provider 名校验）。
   if (typeof sessionId !== "string" || sessionId === "") return noop;
   if (typeof isActive !== "function") return noop;
   if (!PROVIDER_NAME_PATTERN.test(name)) return noop;

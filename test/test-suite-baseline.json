@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3888,
+    "tests": 3905,
     "fail": 0,
     "maxSkipped": 18
   },
@@ -1591,6 +1591,22 @@
       "skipped": 13,
       "todo": 0,
       "why": "**tests 3847 → 3852（净 +5）**：`test/tools/file-tools.test.js` 加五格，钉 issue #867 里程碑 2（`max_estimated_tokens`）：① token 先截住（CJK 密样本，预算成立 + marker 点名参数 + 续读 offset 等于本次返回行数）；② 字节先截住时走 `readBytesCap`、不报 token marker（两道闸不叠报）；③ 不传参数时与里程碑 1 **逐字相同**；④ 截断后按 marker 续读**不重不漏**（只比正文行，marker 不是内容）+ 无 U+FFFD；⑤ 无效值/低于下限走**现有**参数校正通道报一句（#358/#375 的静默回落病根）。**架构上 token 记账没有进 `readLineWindow`**（后置裁剪，整行取舍）⇒ #506 的四条不变量按构造保持，`test/read-file-slices*` 一字未改。反向证实跑（主 agent）：删掉裁剪 ⇒ 2 格红；裁剪永远不丢行 ⇒ 2 格红；没丢行也报 token marker ⇒ 2 格红。skipped 13 与本环境历史读数一致。"
-    }
-  ]
+        },
+        {
+            "date": "2026-11-19",
+            "env": "本地开发机（fix-261119-01-pi-web-liveness 工作树，真实模型闸门关闭）",
+            "node": "v22.23.2",
+            "commit": "未提交（#875 S1：会话活性申报）",
+            "branch": "fix-261119-01-pi-web-liveness",
+            "mainSha": "5a8be185",
+            "mergeBase": "5a8be185",
+            "tests": 3905,
+            "pass": 3892,
+            "fail": 0,
+            "skipped": 13,
+            "todo": 0,
+            "cancelled": 0,
+            "why": "**tests 3888 → 3905（净 +17）**：issue #875 S1 新增两个文件面。`test/examples/erix-run-liveness.test.js`（新，11 格）钉纯逻辑面：假 registry 照抄宿主 `pi-web:lib/session-liveness.ts` 的校验与 `Symbol(name)` 簿记（宿主 `validateProvider` 对 `name` **只校非空**；本层另加更严的 `^[A-Za-z0-9_-]{1,64}$` 字面）、`release` 幂等且绑单次注册、registry 缺席/版本不符/坏参数/宿主抛异常四种降级、空 `sessionFile` 不许递、`sessionHasLiveWork` 的 `notifyRetry` 窗口与多会话隔离；`test/examples/erix-run-async.test.js` 末尾 #875 那一节 3 格钉接线面（`session_start` 注册、A 有活 B 不活、`session_shutdown` 不分 reason 一律放）。中间读数 `fail=3` 已在本片修掉，记下来是因为它证明判据有牙：那 3 格全由 `examples/pi-extension/README.md` 一处无前缀外仓路径（`lib/session-liveness.ts`）引起（`docs-drift-check` 报 `paths` 漂移 ⇒ `docs-anchor-ratchet` 的 T-b1a 与 `version-state-probe-703` 的 A 格连带红），改成 `pi-web:lib/session-liveness.ts` 并在 `EXTERNAL_REPO_PREFIXES` 登记 `pi-web` 后转绿 —— **没有改任何断言、没有加 skip**。skipped 13 = 本环境不动该维。"
+        }
+    ]
 }
