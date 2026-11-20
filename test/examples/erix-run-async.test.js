@@ -1944,6 +1944,176 @@ test("#800 判据5（接线）：真 session_shutdown 会递上自己那个句�
   }
 });
 
+// ---------------------------------------------------------------------------
+// issue #875 第二刀（S2）：定时器的归属是 **run / 投递**，不是**会话**。
+//
+// 两条已证实的缺陷（本单主判据，三格一一对应）：
+//   1. `shutdown()` 的签名里没有 `reason`，而 `erix-run.ts` 是先调它**再**读 `reason` ⇒ `/reload` 也走
+//      `clearJobTimers` ⇒ `job.notifyRetry` 被清；而 `requeueOrphaned` 的筛选只认 `orphaned` ⇒ 一条
+//      `delivery:"failed"` 且还有重试预算的 job，在新会话回来时**没人接**（永久静默）。
+//   2. 看门狗被会话摘掉 ⇒ run 卡死时没有任何路径再写终局，`status.json` 永远停在 `running`；
+//      #875 第一刀（会话活性 lease）之后这更重：`isActive()` 会因那条 job 恒真 ⇒ 会话永不被回收。
+//
+// 三格都跑**假时钟**（`clock.tick()` 推的是真代码路径），并且都断言「不摘 / 保留」换来的**后果**
+// （通知真的投出去了、终局真的落盘了），不是只断言「字段还在」。
+// ---------------------------------------------------------------------------
+
+test("#875 S2 格1（主判据）：/reload 一根都不摘 ⇒ 那一档投递重试真的投出去了（不是「单纯没清」）", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-875-s2-reload-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  const owner = "875-s2-reload";
+  const handle = { deliver: () => true };
+  sessionHandles.set(owner, handle);
+  let attempts = 0;
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-875-s2-reload-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    // 首次投不出去（#659 第 4 格那个 `/reload` 窗口的形状），之后由重新登记的句柄投出去
+    notify: () => {
+      attempts += 1;
+      return attempts === 1 ? { delivery: "failed", error: "reload 窗口：旧 ctx 已失效" } : "sent";
+    },
+  });
+  const { handle: started } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: owner });
+  const job = runtime.registry.get(started.runId);
+  await waitUntil(() => job.status === "completed", { label: "#875 S2 格1 settle" });
+  assert.equal(jobView(job).delivery, "failed", "首次投不出去就是 failed");
+  assert.notEqual(job.notifyRetry, undefined, "投失败必须排上下一档（这一格的前提）");
+  assert.equal(job.watchdog, undefined, "settle 已清看门狗（这一格的前提）");
+  const retryHandle = job.notifyRetry;
+
+  // `/reload`：会话**没走** —— 新实例会以同一个 `sessionId` 重新登记句柄 ⇒ 一根都不许摘。
+  assert.equal(runtime.shutdown(owner, handle, "reload"), false,
+    "reload 无可清的 ⇒ false（旧实现在这里返回 true：它把那一档重试摘了）");
+  assert.equal(job.notifyRetry, retryHandle, "reload 不许摘投递重试（摘掉 = 那条终局永久静默）");
+  assert.equal(job.watchdog, undefined, "看门狗的状态不因 reload 改变（它归 run，这里早已由 settle 收口）");
+  assert.deepEqual(clock.pendingDelays(), [NOTIFY_RETRY_DELAYS_MS[0]], "那一档仍挂在时钟上");
+
+  // 「不摘」换来的必须是**真的投出去了**，不是单纯「没清」。
+  assert.equal(clock.tick(), true, "那一档还在 ⇒ 推得动");
+  assert.equal(jobView(job).delivery, "sent", "新句柄接住了那一档 ⇒ 通知真的投出去（#875 复核 H1 的静默没了）");
+  assert.equal(attempts, 2, "首次 + 一档 = 2 次，投成就不排剩下的档");
+  assert.deepEqual(clock.pendingDelays(), [], "投成之后撤掉余下的档");
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: started.runId }), "utf8"));
+  assert.equal(disk.delivery, "sent", "盘上也要跟着变 sent（同一条投递链，不是两处拼装）");
+  sessionHandles.delete(owner);
+});
+
+test("#875 S2 格2（主判据）：quit 只摘投递重试 ⇒ 看门狗留着、到点仍把 aborted 写进 status.json", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-875-s2-quit-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  const owner = "875-s2-quit";
+  const handle = { deliver: () => true };
+  sessionHandles.set(owner, handle);
+  const failing = new Set();
+  const gated = gatedJob();
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-875-s2-quit-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    // 永不 settle：看门狗是那条 run **唯一**会写出终局的路径（摘掉就永远停在 running）。
+    runJob: gated.job,
+    notify: (job) => (failing.has(job.runId) ? { delivery: "failed", error: "宿主在拒" } : "sent"),
+  });
+  const params = { task: "t", cwd: sessionDir, sessionDir, async: true, timeoutMs: core.MIN_TIMEOUT_MS };
+  const running = runtime.start(params, { sessionId: owner });
+  const jobRunning = runtime.registry.get(running.handle.runId);
+  // 同一会话再来一条**已结算**的 job，并让它首次投失败 ⇒ 它手里挂着一档待投的投递重试。
+  // 用它是为了钉「quit 该摘的那一根**真的**被摘了」—— 否则「quit 没摘看门狗」可以靠
+  // 「这条 job 本来就没东西可摘」蒙过去（空集恒真）。
+  const settled = runtime.start(params, { sessionId: owner });
+  const jobSettled = runtime.registry.get(settled.handle.runId);
+  failing.add(jobSettled.runId);
+  runtime.settle(jobSettled, { ...P_OK });
+  assert.equal(jobView(jobSettled).delivery, "failed", "前置：这条已结算的 job 首次投递失败");
+  assert.notEqual(jobSettled.notifyRetry, undefined, "前置：它手里有一档待投的重试");
+  assert.notEqual(jobRunning.watchdog, undefined, "前置：在跑那条的看门狗必须在");
+
+  assert.equal(runtime.shutdown(owner, handle, "quit"), true, "quit 要真的清掉点东西（本会话名下那档投递重试）");
+  // 归属是 **run**：quit 也摸不到看门狗（反向证 2 必须红在这一条上）。
+  assert.notEqual(jobRunning.watchdog, undefined,
+    "看门狗归 run：owner 的 quit 也不摘（摘了就再也没有任何路径写终局 ⇒ status.json 永远 running）");
+  assert.equal(jobSettled.notifyRetry, undefined, "投递重试归投递：quit 把它摘掉（别修成「谁也清不掉」）");
+  assert.deepEqual(clock.pendingDelays(), [core.MIN_TIMEOUT_MS], "只剩那根看门狗");
+
+  // 留着不是搁着：到点它仍要写终局，**并且落盘**（内存字段不算，盘上是查询侧唯一残留）。
+  assert.equal(clock.tick(), true, "看门狗到点");
+  assert.equal(jobRunning.status, "aborted", "会话走了之后 run 的超时终局仍然发生");
+  assert.equal(jobRunning.timedOut, true);
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: running.handle.runId }), "utf8"));
+  assert.equal(disk.status, "aborted", "status.json 不许停在 running（假事实比「没醒」更糟）");
+  assert.equal(disk.timeout, true, "盘上要读得到「是超时终局」");
+  assert.equal(jobView(jobRunning).delivery, "sent", "终局仍按 owner 现在那个句柄投出去");
+  sessionHandles.delete(owner);
+});
+
+test("#875 S2 格3（主判据）：requeueOrphaned 现在也收 delivery:\"failed\"（且仍受「只补一次」上界）", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-875-s2-requeue-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  const owner = "875-s2-requeue";
+  sessionHandles.set(owner, { deliver: () => true });
+  const attempts = new Map();
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-875-s2-requeue-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    notify: (job) => {
+      const n = (attempts.get(job.runId) ?? 0) + 1;
+      attempts.set(job.runId, n);
+      // recoverable：只有首次失败（补投要能投成）；stuck：一直失败（用来说「上界」而不是「已 sent」）
+      if (n === 1 || job.runId === stuckRunId) return { delivery: "failed", error: "宿主在拒" };
+      return "sent";
+    },
+  });
+  const params = { task: "t", cwd: sessionDir, sessionDir, async: true };
+  const stuck = runtime.start(params, { sessionId: owner });
+  const stuckRunId = stuck.handle.runId;
+  const recoverable = runtime.start(params, { sessionId: owner });
+  for (const id of [stuckRunId, recoverable.handle.runId]) {
+    await waitUntil(() => runtime.registry.get(id).status === "completed", { label: `#875 S2 格3 settle ${id}` });
+  }
+  const jobStuck = runtime.registry.get(stuckRunId);
+  const jobRecoverable = runtime.registry.get(recoverable.handle.runId);
+  assert.equal(jobView(jobStuck).delivery, "failed", "前置：两条都是 failed（旧筛选根本不收它们）");
+  assert.equal(jobView(jobRecoverable).delivery, "failed");
+
+  // ① 筛选扩到 `orphaned ∪ failed` ⇒ 新会话回来时**有人接**（旧实现返回空数组 ⇒ 这里必红）。
+  const first = runtime.requeueOrphaned(owner);
+  assert.deepEqual([...first].sort(), [stuckRunId, recoverable.handle.runId].sort(),
+    "failed 也要收：两条的 runId 都要出现在补投返回值里");
+  assert.equal(jobView(jobRecoverable).delivery, "sent", "补投走同一条投递链 ⇒ 真的投出去了");
+  assert.equal(jobView(jobStuck).delivery, "failed", "补不成也不粉饰（仍 failed，回到 #659 的有界重试链）");
+  assert.equal(jobView(jobStuck).orphanRecoveries, 1, "计数覆盖 orphaned ∪ failed（字段名与口径都是既有的）");
+  assert.equal(jobView(jobRecoverable).orphanRecoveries, 1);
+
+  // ② 上界不变：同一条 job 不补第二次（`stuck` 那条**仍是 failed** ⇒ 这一条只可能是 `orphanRecoveries` 挡的）。
+  const second = runtime.requeueOrphaned(owner);
+  assert.deepEqual(second, [], "只补一次：扩了筛选也没开第二个重试循环");
+  assert.equal((attempts.get(stuckRunId) ?? 0), 2, "首次 + 一次补投 = 2 次，没有第三次");
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: recoverable.handle.runId }), "utf8"));
+  assert.equal(disk.delivery, "sent", "盘上也是 sent");
+  assert.equal(disk.orphanRecoveries, 1);
+  sessionHandles.delete(owner);
+});
+
 test("#659 第2格：agent_end / session_start 发现 pending 且从未起轮 ⇒ 补排一次 steer（isPending 的生产消费者）", async () => {
   const env = await offlineRunEnv();
   const sessionHandles = jobsApi.globalSessionHandleRegistry();
