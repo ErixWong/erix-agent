@@ -851,8 +851,8 @@ export function createAsyncRuntime(options = {}) {
    * job 持有的**全部**定时器一起清（#658 / #659 第 1 格：**同一份生命周期**）。
    *
    * 现在一个 job 上有两根定时器：run 级看门狗（`job.watchdog`，超时终局）与完成投递的有界重试
-   * （`job.notifyRetry`）。`settle` / 看门狗到点 / `action:"cancel"` 三处**都走这里**，
-   * 所以「新加一根定时器忘了清」在结构上只剩一处可能出错（而不是三份清理各漏一次）。
+   * （`job.notifyRetry`）。**只有 `settle` 与 `action:"cancel"` 两处走这里**（看门狗到点那条路径自己把
+   * `job.watchdog` 置空，不经过本函数），所以「新加一根定时器忘了清」在结构上只剩一处可能出错。
    *
    * ⚠ issue #875 S2：`shutdown` **不再走这里** —— 那两根定时器的**归属**不同（看门狗归 run、投递重试归
    * 投递），会话事件按 `reason` 分流，见 `clearJobWatchdog` / `clearNotifyRetry` 与 `shutdown` 的注释。
@@ -1348,7 +1348,7 @@ export function createAsyncRuntime(options = {}) {
    *
    * ⚠ issue #875 S2：**这里不再清「这一份 job 生命周期上的全部定时器」**。那两根定时器**不同属**：
    * 看门狗**归 run**（只有 settle / 到点 / cancel 能摘），投递重试**归投递**（`reload` 不摘）。
-   * 口径按下面的 `reason` 分流；`clearJobTimers` 只剩 settle / 到点 / cancel 三处在用。
+   * 口径按下面的 `reason` 分流；`clearJobTimers` 只剩 `settle` / `action:"cancel"` 两处在用。
    *
    * **没有归属的 job（`ownerSessionId === undefined`，即 `delivery:"no-owner"` 那一族）不归任何会话**，
    * 所以本函数**不清它们**（传空/缺 owner 时直接返回 false）：摘掉不属于自己的定时器不是清理，是破坏。
