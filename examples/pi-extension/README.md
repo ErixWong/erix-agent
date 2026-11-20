@@ -21,7 +21,7 @@
 | `index.ts` | 目录形态的入口（pi 把「含 `index.ts` 的子目录」当成一条扩展加载） |
 | `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线）；**#797 的 H1–H6** 是「证据面 = 存活窗口 ∪ 账本」的宿主格（预置折叠前取证行 ⇒ `verified`；**同一棵 fixture 只关掉账本回落 ⇒ 重新红**；账本 0 命中 ⇒ `not_in_ledger`；无折叠行 / 读失败 ⇒ 逐字回到今天；默认关 ⇒ 一条读口也不建） |
 | `erix-run-final-guard.test.mjs` | **#314：谓词层单测**（四段存在性 / 基点溯源 / 比值提醒 / 成本计数 / `summarizeFinalGuard`）；**#797 的 P1–P6** 钉证据面回落：只在账本里 ⇒ `accept` 并记 `source:"ledger"` / `round` / `survivesLastCompaction`，两处都找不到 ⇒ `notInLedger`，账本不完整 ⇒ **不许下 0 命中的结论**，`ledger` 不给 ⇒ 判定与返回形状逐字照今天 |
-| `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死）；**#654 七条**按会话隔离投递句柄与投递可观测性；**#658** 一条钉 `shutdown` 按会话归属收口（A 的 `session_shutdown` 不摘 B 的看门狗，B 到点仍写 `aborted`）；**#659** 八条钉有界重试（假时钟推三档）/ `isPending()` 的补偿回路（`agent_end` 与 `session_start`）/ `sent` 的上界 / reload 窗口内的失败事实 / `no-owner` 的根因 / 顶层 `resume` 坐标 |
+| `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死）；**#654 七条**按会话隔离投递句柄与投递可观测性；**#658/#875** 一条钉 `shutdown` 按会话归属收口**且看门狗归 run**（A 的 `session_shutdown` 不动 B 的任何定时器，A 自己的看门狗连 `quit` 也不摘 ⇒ 到点仍写 `aborted`）；**#875 S2 三格**（主判据）钉定时器归属：`reload` 一根都不摘**且那一档真的投成 `sent`**、`quit` 只摘投递重试**且留下的看门狗真的把 `aborted` 写进 `status.json`**、`requeueOrphaned` 现在也收 `failed` **且仍受「只补一次」上界**；**#659** 八条钉有界重试（假时钟推三档）/ `isPending()` 的补偿回路（`agent_end` 与 `session_start`）/ `sent` 的上界 / reload 窗口内的失败事实 / `no-owner` 的根因 / 顶层 `resume` 坐标 |
 | `../../test/examples/erix-run-liveness.test.js` | **#875 会话活性申报单测**（全离线）：假 registry **照抄宿主 0.13.0 `pi-web:lib/session-liveness.ts` 的校验与簿记口径**（`name` / `sessionId` / `sessionFile` 非空、`isActive` 是函数，任一不满足就抛；provider 按 `Symbol(name)` 键；`release` 幂等），并**额外**按本层自己更严的 `name` 字面（`^[A-Za-z0-9_-]{1,64}$`）挡一遍 —— 宿主 `register` **只校非空**，那条正则在宿主里是另一处的 `HOLDER_PATTERN`，不是 provider 名校验；14 格钉住「正常注册 / 幂等释放 / 迟到的释放动不了后来者的 lease / registry 缺席不造表 / `version !== 1` 当它不存在 / 坏参数不劳驾宿主 / 宿主抛异常不降级成异常 / 空 `sessionFile` 不许递 / `notifyRetry` 那段窗口也算活 / 多会话隔离」 |
 | `../../test/examples/pi-web-liveness-contract.test.js` | **#875 契约测试：拿宿主的真代码当参照**（上一单的假 registry 是**手抄宿主口径**写的，它证的是「我抄对了」而不是「宿主真按这个判」——两边错在一起就是自证）。参照物是 `fixtures/pi-web-session-liveness-e533d9b3.ts`（住在**根 `fixtures/`**，不在 `test/fixtures/`：裸 `node --test` 会把 `test/` 下每个文件当一个测试文件白跑一格，而那正是静态守卫「test/ 下不放会被收集执行的支撑文件」要挡的那一类）：宿主 `pi-web:lib/session-liveness.ts` 在 `e533d9b3` 的**逐字拷贝**（一个字节未改），捕获点与 sha256 记在同名 `.json` 的 `_meta` 里，由 `fixtures/capture-pi-web-liveness-875.mjs` 现采（硬校验宿主 HEAD == 捕获点、工作树干净、源可读）——那份 `.ts` 零 import，宿主的 `getRegistry()` 在**模块顶层**跑，`import()` 那一刻它自己把注册表挂上 `globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")]`，所以这里**没有假 registry**、也不在 `beforeEach` 里删那个键（删了宿主不会重建）；9 格钉住「fixture 字节 == 登记的 sha256、我们抄的注册表键 == 宿主导出的常量、我们的读口认的就是那张真表 / 真注册 / 我们的 `sessionHasLiveWork` 被宿主真实现消费且随 job 状态转假 / `notifyRetry` 那段窗口也算活 / `release` 生效且幂等 / 多会话隔离 / `sessionFile` 匹配维度真递到了宿主 / 坏参数被前置校验挡在门外（先现场证明宿主 `validateProvider` 对空 `sessionId` / 非函数 `isActive` 真会 `throw`；另配一个**不往宿主任何东西里写**的判别器 —— 宿主对 `name` 只校非空（带空格的 provider 名它照收），而 `^[A-Za-z0-9_-]{1,64}$` 是本层自己加的，所以这一格能红只可能是本层那道 name 校验挂了；配合法 `name` 的对照组，以及拿宿主自己导出的注册口量出来的「宿主确实接受带空格的 provider 名」）/ 宿主 `isActive` 抛错时 fail-safe 保留会话（并要它确实记了那条日志）」——**文件级 skip 闸**：运行时缺 type-stripping 时整文件只注册**一条** skip（不是 9 条，否则会把整套顶穿登记的 skip 上限），支持时 9 格全跑、`# skipped 0`（两个读数都是实测） |
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
@@ -330,7 +330,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | 档位 | **5s / 10s / 30s 三档**（`[5_000, 10_000, 30_000]`） |
 | 重试上限 | **3 次**（连同首次共 4 次投递尝试；最迟在终局后 45s 收口） |
 | 每次重投重算什么 | `isIdle()`（投递口每次重新问父会话忙不忙）**与** `ownerSessionId` 的句柄（`/reload` 后新实例登记的句柄能接住） |
-| 定时器归谁 | **job**（`job.notifyRetry`），与 run 级看门狗共用 `clearJobTimers`；`settle` / 看门狗到点 / `cancel` / `session_shutdown` 四处一起清。**不在 factory 里起定时器** |
+| 定时器归谁 | **投递**（`job.notifyRetry`）。清理函数已与看门狗拆开（`clearNotifyRetry` / `clearJobWatchdog`，`clearJobTimers` 只是两者的合集）：`settle` / 看门狗到点 / `cancel` 三处两根一起清；`session_shutdown` 只看归属匹配与否、并按 `reason` 分流（`reload` 不摘，`quit` / `dispose` 只摘这一根）—— **issue #875 S2：它不再与看门狗同一条命**。**不在 factory 里起定时器** |
 | 什么时候停 | 投成（`sent`）⇒ 剩下的档撤掉；三档用尽 ⇒ 停手，`delivery` 保持 `failed` |
 
 `status.json` 上的 `notifyRetries` 是「已经排出去过几档」的历史事实（不是「还能重几次」的承诺）。
@@ -408,13 +408,17 @@ pi --extension ./examples/pi-extension/erix-run.ts
    调用方自己那个句柄时才删。不匹配 ⇒ **保留**（不拿 `delete` 抹别人的登记）并计数。
 2. **owner 回来补投一次**（`requeueOrphaned(ownerSessionId)`，由 `session_start` 在重新登记句柄后调）：
    `orphaned` 只是「投递那一刻句柄查不到」，它**不会自己变好**——`session_start` 不重放旧 job。
-   现在它会把该 owner 名下 `delivery === "orphaned"` 且**从未补投过**的 job 补投一次：走的是同一条
+   现在它会把该 owner 名下 `delivery === "orphaned"` **或 `delivery === "failed"`**（后者是 issue #875 S2
+   扩的：`/reload` 窗口里投不出去那一档在旧实现里会被 `shutdown` 清掉定时器，而 `failed` 不在这个筛选里
+   ⇒ 新会话回来后没人接）且**从未补投过**的 job 补投一次：走的是同一条
    `notifyThenPersist` 链（#659 的去重注册表一道不少 ⇒ **同一个 `runId` 不双投**），所以 `delivery` 从
-   `orphaned` 变 `sent`、`deliveryNote` 按结构化事实整句重算（`sent` 不贴噪音），不是手抹文案。
-   只补一次：补投又没成时回到上面那条有界重试链，不在这里开第二个循环。
-3. **迟到实例不得清别人的定时器**（`shutdown(ownerSessionId, sessionHandle)`）：表里这个 owner 现在是
+   `orphaned` / `failed` 变 `sent`、`deliveryNote` 按结构化事实整句重算（`sent` 不贴噪音），不是手抹文案。
+   只补一次：补投又没成时回到上面那条有界重试链，不在这里开第二个循环（`orphanRecoveries` 现在计的是
+   `orphaned ∪ failed` 两种恢复尝试的**合计**次数，字段名与上界都没变）。
+3. **迟到实例不得清别人的定时器**（`shutdown(ownerSessionId, sessionHandle, reason)`）：表里这个 owner 现在是
    **别人**的句柄 ⇒ 会话还活着，那些 job 的看门狗与投递重试定时器一个都不清（它们是那些 run 唯一
-   会写终局的路径；被摘掉的症状就是 `status.json` 永远停在 `running`）。归属匹配时照旧 #658 清自己会话名下的。
+   会写终局的路径；被摘掉的症状就是 `status.json` 永远停在 `running`）。归属匹配时按下面的「定时器归属」
+   分流：看门狗不摸，`reload` 一个都不摘，其余只摘投递重试。
 
 这三个机制的计数**恒在场**（没发生过是 `0`，不是缺键），三处 `jobView` 都读得到（`action:"status"` /
 `action:"result"` / `status.json` 是同一份投影）：
@@ -422,7 +426,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | 字段 | 读法 |
 |---|---|
 | `handleReleaseRefusals` | 这个 job 的 **owner 会话**名下，有几次「摘句柄」被归属校验挡下来。`0` 与 `N>0` 分开的正是「owner 真的走了」与「有个旧扩展实例迟到了，但它没摸掉活的登记」 |
-| `orphanRecoveries` / `orphanRecoveredAt` | 这条 job 被判 `orphaned` 之后被**补投**过几次 / 什么时候。与 `delivery:"sent"` 同时成立 ⇒ 这一条是**补回来的**（中间确实静默过一段），不是「一次就投成」 |
+| `orphanRecoveries` / `orphanRecoveredAt` | 这条 job 被判 `orphaned` **或 `failed`**（后者自 issue #875 S2）之后被**补投**过几次 / 什么时候。与 `delivery:"sent"` 同时成立 ⇒ 这一条是**补回来的**（中间确实静默过一段），不是「一次就投成」 |
 | `shutdownTimerSkips` | 有几次迟到实例的 `session_shutdown` 想清这条 job 的定时器、被归属挡下。它是「为什么这条 job 的看门狗还活着」的直接答案 |
 
 ⚠ 三个计数都是**当时那一刻**的事实：它们只在 `jobView` 生成时从真值源（句柄注册表 / runtime）抄过来，
@@ -518,20 +522,33 @@ pi --extension ./examples/pi-extension/erix-run.ts
 即使内层 run **连 abort 都不理**，看门狗也会到点把盘上状态推到 `aborted` 并发一次通知；之后内层真终局
 到了仍会**覆盖落盘**（四件套以引擎为准）但**不再二次投递**。
 
-### 5b. `session_shutdown` 按会话归属收口（issue #658）
+### 5b. `session_shutdown` 按会话归属收口（issue #658）+ 定时器归属（issue #875 S2）
 
-`shutdown(ownerSessionId)` 只清 `job.ownerSessionId === ownerSessionId` 的 job，清的是**这一份 job
-生命周期上的全部定时器**（run 级看门狗 + 投递重试，两者共一个 `clearJobTimers`）。
+`shutdown(ownerSessionId, sessionHandle, reason)` 只碰 `job.ownerSessionId === ownerSessionId` 的 job。
+
+⚠ **它不再清「这一份 job 生命周期上的全部定时器」（#875 S2 改的）** —— 那两根定时器**不同属**，
+清理函数也已拆成 `clearJobWatchdog` / `clearNotifyRetry`（`clearJobTimers` 只是两者的合集，语义逐字未动，
+现在只剩 `settle` / 看门狗到点 / `action:"cancel"` 三处在用）：
+
+| 定时器 | 归谁 | 谁能摘 |
+|---|---|---|
+| `job.watchdog`（run 级看门狗） | **run** | 只有 `settle` / 到点 / `action:"cancel"`。`session_shutdown` **不分 reason 一律不摸**：会话走了 run 可能还在跑，摘掉就再也没有任何路径写终局 ⇒ `status.json` 永远停在 `running`；#875 第一刀之后这更重（卡在 `running` ⇒ `isActive()` 恒真 ⇒ 会话永不被回收） |
+| `job.notifyRetry`（投递重试） | **投递** | `settle` / 到点 / `cancel` / `session_shutdown`。**但 `reason === "reload"` 不摘**：会话还在，新实例会以同一个 `sessionId` 重新登记句柄，那一档到点仍能投出去；`quit` / `dispose` 摘掉，之后由 `requeueOrphaned`（现在也收 `failed`）在下一次 `session_start` 补投 |
+
+`reason` 是 `shutdown` 的**第三个参数**，而 `erix-run.ts` 在**调它之前**就取好了 `reason`（旧实现先调
+`shutdown`、后读 `reason` ⇒ `reload` 也走「全清」那条路，就是「`/reload` 把通知重试清掉而恢复回路
+只补 `orphaned` ⇒ 一条 `failed` 的 job 永久静默」那半个成因）。
 
 修前是两个坑叠在一起：`shutdown()` 挂在**进程级 runtime 单例**上、带一个**永不复位的 `shutDown` 开关**，
-而且清的是 `registry.list()`（**全进程所有 job**，不分会话）。于是任一会话按一次 `/new` · `/resume` ·
+而且碰的是 `registry.list()`（**全进程所有 job**，不分会话）。于是任一会话按一次 `/new` · `/resume` ·
 `/reload` · 退出，就一次性摘掉**全进程所有在跑 run** 的超时看门狗——那些 run 的真超时既不写 `aborted`
 也不投递，`status.json` 永久停在 `running`（假事实）。
 
 | 事项 | 处置 |
 |---|---|
-| 一次性 `shutDown` 开关 | **去掉**。清自己会话的定时器本来就幂等（第二次没东西可清 ⇒ 返回 `false`），不需要开关防重入 |
-| 没有 `ownerSessionId` 的 job（`delivery:"no-owner"` 那一族） | **不归任何会话 ⇒ 不清**（传空/缺 owner 直接返回 `false`）。它们的定时器只由自己的 `settle` / 看门狗到点 / `action:"cancel"` 收口 |
+| 一次性 `shutDown` 开关 | **去掉**。清自己会话名下的东西本来就幂等（第二次没东西可清 ⇒ 返回 `false`），不需要开关防重入 |
+| 返回值的记账 | 「本次是否**真清掉了**投递重试」。`reload` 永远 `false`；在跑的 run（手里只有看门狗）也是 `false`——`false` 不等于「本函数什么都没做」，它是「没有归属于会话的那一根」 |
+| 没有 `ownerSessionId` 的 job（`delivery:"no-owner"` 那一族） | **不归任何会话 ⇒ 不碰**（传空/缺 owner 直接返回 `false`）。它们的定时器只由自己的 `settle` / 看门狗到点 / `action:"cancel"` 收口 |
 | 在跑的 run | **仍然不 abort**（同进程的 run 归进程活着这件事管；抹掉别人的活不是清理） |
 
 ### 5c. 续跑坐标也在 `status.json` 的**顶层**（issue #659 第 6 格）
@@ -556,6 +573,12 @@ pi --extension ./examples/pi-extension/erix-run.ts
   但只要带了 `sessionDir`，`status.json` 就在盘上，之后可以用 `resume:<那个 status.json 路径>`
   从账本接着跑（#207 R2，见下面「续跑 resume」）——**手动**续跑，不是自动重连。
 - 内存注册表**不跨进程重启**；要跨 `/reload` 可查就必须传 `sessionDir`。
+- **定时器归 run / 投递，不归会话（issue #875 S2，与上面 §5b 同一条口径）**：`session_shutdown` 摸不到
+  run 级看门狗 —— **会话走了 run 仍在跑（同进程）⇒ 到点仍写 `aborted` 并落盘**，`status.json` 不再停在
+  `running`；投递重试在 `reason === "reload"` 时**整体保留**（新实例以同一个 `sessionId` 重新登记句柄后，
+  那一档到点仍能把终局投出去），其余 reason（`quit` / `dispose`）摘掉，之后由 `requeueOrphaned` 在下次
+  `session_start` 补投 —— 那个筛选现在**也收 `delivery:"failed"`**（旧实现只收 `orphaned`，而 `/reload`
+  窗口里那一档投不出去记的恰好是 `failed` ⇒ 两边都不接 ⇒ 永久静默）。
 - `async:true` 时，派工这次工具调用自己的 `signal` **不接**到后台 run（它在 `execute()` 返回时就失效了）；
   后台 run 的取消通道是 `action:"cancel"`。
 - `executionMode: "sequential"` 不变：一个**同步** `erix_run` 在跑时，`action:"status"` 会排在它后面。
