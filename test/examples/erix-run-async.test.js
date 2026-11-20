@@ -1963,9 +1963,11 @@ test("#875 S2 格1（主判据）：/reload 一根都不摘 ⇒ 那一档投递�
   const sessionDir = await tempDir("erix-run-875-s2-reload-");
   const sessionHandles = jobsApi.createSessionHandleRegistry();
   const owner = "875-s2-reload";
-  const handle = { deliver: () => true };
-  sessionHandles.set(owner, handle);
+  const handleOld = { deliver: () => true, which: "old-instance" };
+  const handleNew = { deliver: () => true, which: "new-instance" };
+  sessionHandles.set(owner, handleOld);
   let attempts = 0;
+  const deliveredTo = [];
   const runtime = createAsyncRuntime({
     home: await tempDir("erix-run-875-s2-reload-home-"),
     registry: createAsyncJobRegistry(),
@@ -1976,8 +1978,10 @@ test("#875 S2 格1（主判据）：/reload 一根都不摘 ⇒ 那一档投递�
     clearTimeout: clock.clearTimeout,
     runJob: async () => ({ ...P_OK }),
     // 首次投不出去（#659 第 4 格那个 `/reload` 窗口的形状），之后由重新登记的句柄投出去
-    notify: () => {
+    notify: (job, content, options) => {
       attempts += 1;
+      deliveredTo.push(options?.session);
+      // 首次投不出去（#659 第 4 格那个 `/reload` 窗口的形状：旧实例的 ctx 已失效）
       return attempts === 1 ? { delivery: "failed", error: "reload 窗口：旧 ctx 已失效" } : "sent";
     },
   });
@@ -1990,7 +1994,7 @@ test("#875 S2 格1（主判据）：/reload 一根都不摘 ⇒ 那一档投递�
   const retryHandle = job.notifyRetry;
 
   // `/reload`：会话**没走** —— 新实例会以同一个 `sessionId` 重新登记句柄 ⇒ 一根都不许摘。
-  const reloadCleared = runtime.shutdown(owner, handle, "reload");
+  const reloadCleared = runtime.shutdown(owner, handleOld, "reload");
   // 红位顺序是载荷：反向证 1（去掉 `reason !== "reload"` 守卫）必须红在「那一档还在」这一条上，
   // 而不是红在返回值上（返回值只是那一件事的副产物）。
   assert.equal(job.notifyRetry, retryHandle, "reload 不许摘投递重试（摘掉 = 那条终局永久静默）");
@@ -1998,9 +2002,13 @@ test("#875 S2 格1（主判据）：/reload 一根都不摘 ⇒ 那一档投递�
   assert.equal(reloadCleared, false, "reload 无可清的 ⇒ false（旧实现在这里返回 true：它摘了那一档）");
   assert.equal(job.watchdog, undefined, "看门狗的状态不因 reload 改变（它归 run，这里早已由 settle 收口）");
 
-  // 「不摘」换来的必须是**真的投出去了**，不是单纯「没清」。
+  // 「不摘」换来的必须是**真的投出去了**，而且必须落在**新实例**那个句柄上（这正是 `/reload` 的形状：
+  // 旧实例把登记放掉、新实例以同一个 `sessionId` 重新登记，那一档是**事后**才到点的）。
+  assert.equal(sessionHandles.release(owner, handleOld).released, true, "前置：旧实例的登记放掉了");
+  sessionHandles.set(owner, handleNew);
   assert.equal(clock.tick(), true, "那一档还在 ⇒ 推得动");
   assert.equal(jobView(job).delivery, "sent", "新句柄接住了那一档 ⇒ 通知真的投出去（#875 复核 H1 的静默没了）");
+  assert.equal(deliveredTo[1], handleNew, "那一档投的是**重新登记后**那个句柄（不是旧实例那个）");
   assert.equal(attempts, 2, "首次 + 一档 = 2 次，投成就不排剩下的档");
   assert.deepEqual(clock.pendingDelays(), [], "投成之后撤掉余下的档");
   const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: started.runId }), "utf8"));
