@@ -65,6 +65,7 @@ import {
   formatSyncResult,
 } from "./erix-run-format.js";
 import { createParentWake } from "./erix-run-parent-wake.js";
+import { registerSessionLiveness, sessionHasLiveWork } from "./erix-run-liveness.js";
 
 /** 进度窗口保留的行数（onUpdate 的 partial 结果整体替换上一次显示）。 */
 const PROGRESS_WINDOW = 12;
@@ -505,6 +506,8 @@ export interface SessionDeliveryHandle {
   agentStarted(): void;
   /** #659 第 2 格：补偿回路（`session_start` / `agent_end` 里调），返回是否真补排了 steer。 */
   rearmIfUnstarted(): boolean;
+  /** issue #875：唤醒还欠着一轮（`isPending()` 的生产消费者，宿主活性判据的一半）。 */
+  isWakePending(): boolean;
   sessionShutdown(reason?: string): void;
 }
 
@@ -533,6 +536,20 @@ function sessionIdOf(ctx: ExtensionContext | undefined): { sessionId?: string, e
     return typeof id === "string" && id !== "" ? { sessionId: id } : {};
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * issue #875：会话文件的**安全读口**。`session_shutdown` / 换会话之后旧 `ctx` 的每个访问器都会抛
+ * 失效上下文原文（`dist/core/extensions/runner.js` 的 `invalidate()` 文案），而这里只是给宿主多一个
+ * 匹配维度（宿主按 `sessionId ∪ sessionFile` 找 provider）—— 拿不到就算了，**绝不许让注册路径抛**。
+ */
+function sessionFileOf(ctx: ExtensionContext | undefined): string | undefined {
+  try {
+    const file = ctx?.sessionManager?.getSessionFile?.();
+    return typeof file === "string" && file !== "" ? file : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -598,6 +615,9 @@ export default function (pi: ExtensionAPI) {
   // 宿主每调一次 factory 就得到一对新的，闭包捕获的是**自己那个会话的** `pi`。
   let wake: ReturnType<typeof createParentWake> | undefined;
   let sessionId: string | undefined;
+  // issue #875：本会话的**会话活性 lease**。宿主（pi-web）靠它决定「空闲了能不能回收这个会话」。
+  // 只绑在这一次注册上（`release` 自带 sessionId）⇒ 迟到事件放不掉后来者的 lease。
+  let liveness: { registered: boolean, release: () => void } | undefined;
 
   /** 本会话的投递句柄：`deliver` 只会用本实例的 `pi` / 唤醒器。 */
   const sessionHandle: SessionDeliveryHandle = {
@@ -613,6 +633,8 @@ export default function (pi: ExtensionAPI) {
     },
     agentStarted() { wake?.agentStarted(); },
     rearmIfUnstarted() { return wake?.rearmIfUnstarted() ?? false; },
+    /** issue #875：唤醒还欠着一轮（`isPending()` 的生产消费者，宿主活性判据的一半）。 */
+    isWakePending() { return wake?.isPending() ?? false; },
     sessionShutdown(reason) { wake?.sessionShutdown(reason); },
   };
 
@@ -628,9 +650,24 @@ export default function (pi: ExtensionAPI) {
     // 否则它指向一个已经不属于它的会话 id。
     // issue #800 判据 1：**带归属校验**地摘（`release` 只在表里这一条就是本实例的句柄时才删）。
     // 不匹配 = 这个 id 已被另一个实例接管 ⇒ 保留，不拿 `delete` 去抹别人的登记。
+    // issue #875：先放掉上一条 lease（同一个 factory 实例换会话时它绑的是**旧** id），再按新 id 注册。
+    // 顺序不能反：新 lease 建好之后再放旧的，等于把刚建好的那条放掉。
+    liveness?.release();
+    liveness = undefined;
     if (previous !== undefined && previous !== sessionId) globalSessionHandleRegistry().release(previous, sessionHandle);
     // 登记到进程级**按会话键**的句柄表：别的会话（以及 /reload 之后的新实例）投递时按 owner 查到它。
     if (sessionId !== undefined) globalSessionHandleRegistry().set(sessionId, sessionHandle);
+    // issue #875：向宿主申报「本会话还有在飞的活」。判据 = 还有 active job ∪ 还有待投递的重试
+    // ∪ 唤醒还欠着一轮；三者都不成立才允许宿主把它当空闲回收。
+    if (sessionId !== undefined) {
+      const owner = sessionId;
+      const jobs = asyncRuntime().jobs;
+      liveness = registerSessionLiveness({
+        sessionId: owner,
+        sessionFile: sessionFileOf(ctx),
+        isActive: () => sessionHasLiveWork(jobs, owner) || sessionHandle.isWakePending(),
+      });
+    }
     asyncRuntime();
     // issue #800 判据 3（恢复回路）：上面那个 `set` 可能就是「同一个 `sessionId` 的**再登记**」（`/reload`，
     // 或旧实例迟到的 quit 把活实例的登记抹了之后 owner 又回来）。那些旧 run 的终局已经停在
@@ -665,6 +702,13 @@ export default function (pi: ExtensionAPI) {
     // 那些 job 的定时器已不归它清。必须递上**自己那个** `sessionHandle`，runtime 才比得出「不属于它」；
     // 不递 = 比不出来 ⇒ 只能照旧清掉（所以接线本身就是判据，`erix-run-async.test.js` 有一格守它）。
     asyncRuntime().shutdown(sessionId, sessionHandle);
+    // issue #875：lease **不分 reason 一律放**（含 `reload`）—— 这一条与句柄表的口径**故意相反**。
+    // 理由：宿主按 `Symbol(name)` 键登记 provider，旧实例不放就永久漏一条 `isActive` 闭包，
+    // 而那条闭包捕获的 `ctx` 已经失效、宿主侧 `isActive` 抛错后是 **fail-safe 保留会话**
+    // ⇒ 这个会话从此永不被回收（内存泄漏）。句柄表能留是因为它按 `sessionId` 覆盖写，lease 不能。
+    // 空窗期由 `session_start` 立刻补上（`/reload` 是会话内命令，宿主不换会话对象）。
+    liveness?.release();
+    liveness = undefined;
     const reason = (event as { reason?: string })?.reason;
     sessionHandle.sessionShutdown(reason);
     // #654：会话真的走了就把句柄摘掉 —— 之后那个会话的 job 结算时按 owner 查不到句柄，

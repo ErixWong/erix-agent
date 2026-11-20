@@ -2327,3 +2327,212 @@ test("#670 第1格：根因正文里含 `delivery:` ⇒ 四档（首次 + 三档
   const lines = deliveryLines(textOf(formatAsyncResult(runtime.act({ action: "result", runId }))));
   assert.deepEqual(lines, [note], "文本面也只许有这一句，且与视图逐字同源（同一处拼装）");
 });
+
+// ---------------------------------------------------------------------------
+// issue #875（S1）：向 pi-web 申报会话活性 —— **接线面**
+//
+// `test/examples/erix-run-liveness.test.js` 钉的是 `erix-run-liveness.js` 自己的形状（假 registry、
+// 降级路径、`sessionHasLiveWork` 的判据）。这一节钉的是 `erix-run.ts` 的**接线**：
+//   · `session_start` 有没有真的去注册（拆掉 `liveness = registerSessionLiveness({...})` ⇒ 接线1 红）；
+//   · `isActive` 有没有真的读那张进程级 job 表、并按会话筛（接线2）；
+//   · `session_shutdown` 有没有真的放掉、且**不分 reason**（拆掉 `liveness?.release()` ⇒ 接线3 红）。
+// 拿的是真 factory + 真 handler（`loadExtensionModule` / `startSession` / `fakeCtx` 都是本文件原有的，
+// 不重写装载器），所以「接线本身」是判据，不是模块单测的复述。
+//
+// ⚠ 假 registry 必须在 `startSession` **之前**挂上（注册发生在 `session_start` 那一刻），
+//   并且每格 `finally` 删掉那个 `Symbol.for` 键 —— 否则这张假表会漏给同进程的其它测试文件。
+// ---------------------------------------------------------------------------
+
+/**
+ * 宿主那张表的键。**故意写字面而不是 import 生产码的常量**：生产码把键改一个字，
+ * 就等于另开一张表（宿主读不到我们），这一节的格子必须当场红，而不是跟着改一起绿。
+ */
+const LIVENESS_KEY = Symbol.for("@agegr/pi-web/session-liveness/v1");
+const LIVENESS_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * 接线面用的假 registry：校验与簿记口径**逐条照抄 pi-web 0.13.0 `lib/session-liveness.ts`**
+ * （完整对照表见 `test/examples/erix-run-liveness.test.js` 的 `createFakeHostRegistry`；两份是同一个口径，
+ * 各文件自带一份是为了测试文件之间不互相 import）。
+ * @returns {{registry:object, rows:()=>object[], rowFor:(sessionId:string)=>object|undefined}}
+ */
+function createLivenessHost() {
+  /** @type {Map<symbol, object>} */
+  const providers = new Map();
+  const registry = {
+    version: 1,
+    register(provider) {
+      if (!provider || typeof provider !== "object") throw new Error("Session liveness provider must be an object");
+      if (typeof provider.name !== "string" || !LIVENESS_NAME_PATTERN.test(provider.name)) {
+        throw new Error("Session liveness provider name must match ^[A-Za-z0-9_-]{1,64}$");
+      }
+      if (typeof provider.sessionId !== "string" || provider.sessionId.trim().length === 0) {
+        throw new Error("Session liveness provider sessionId must be a non-empty string");
+      }
+      if (provider.sessionFile !== undefined
+        && (typeof provider.sessionFile !== "string" || provider.sessionFile.trim().length === 0)) {
+        throw new Error("Session liveness provider sessionFile must be a non-empty string");
+      }
+      if (typeof provider.isActive !== "function") throw new Error("Session liveness provider isActive must be a function");
+      const token = Symbol(provider.name);
+      providers.set(token, provider);
+      let disposed = false;
+      return () => {
+        if (disposed) return;
+        disposed = true;
+        providers.delete(token);
+      };
+    },
+    hasActiveProvider(session) {
+      const identities = new Set([session.sessionId, session.sessionFile].filter((value) => Boolean(value)));
+      for (const provider of providers.values()) {
+        if (!identities.has(provider.sessionId) && (!provider.sessionFile || !identities.has(provider.sessionFile))) continue;
+        try {
+          const active = provider.isActive();
+          if (typeof active !== "boolean") throw new Error("isActive() must return a boolean");
+          if (active) return true;
+        } catch {
+          return true;   // 宿主原文：provider 抛错 ⇒ fail-safe 保留会话
+        }
+      }
+      return false;
+    },
+    list: () => [...providers.values()],
+  };
+  return {
+    registry,
+    rows: () => registry.list(),
+    rowFor: (sessionId) => registry.list().find((row) => row.sessionId === sessionId),
+  };
+}
+
+/** 把假表挂到 globalThis（`startSession` 之前），返回还原函数。 */
+function installLivenessHost() {
+  const had = LIVENESS_KEY in globalThis;
+  const before = globalThis[LIVENESS_KEY];
+  const host = createLivenessHost();
+  globalThis[LIVENESS_KEY] = host.registry;
+  return { host, uninstall: () => { if (had) globalThis[LIVENESS_KEY] = before; else delete globalThis[LIVENESS_KEY]; } };
+}
+
+test("#875 接线1：装了宿主之后 session_start 就注册上 lease（name:\"erix-run\"、sessionId:\"875-A\"），此时没有在飞的 job ⇒ isActive() 为 false", async () => {
+  const { host, uninstall } = installLivenessHost();
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionA = "875-A";
+  let a;
+  try {
+    const extension = await loadExtensionModule();
+    a = startSession(extension, { sessionId: sessionA });
+    const rows = host.rows();
+    assert.equal(rows.length, 1, `宿主表里必须恰好一条 erix-run 的 lease，实测 ${JSON.stringify(rows.map((row) => `${row.name}/${row.sessionId}`))}`);
+    assert.equal(rows[0].name, "erix-run", "provider 名字面（拆掉注册接线这一条就红）");
+    assert.equal(rows[0].sessionId, sessionA, "绑的是派工会话那个 id，不是「最后一个启动的会话」");
+    assert.equal(rows[0].isActive(), false, "刚开完会话、没有在飞的 job ⇒ 必须报 false（谎报活性 = 这个会话永不回收）");
+    assert.equal(host.registry.hasActiveProvider({ sessionId: sessionA }), false,
+      "宿主的空闲回收判据按同一口径问出 false（这条 lease 现在挡不住回收）");
+  } finally {
+    a?.handlers.get("session_shutdown")?.({ reason: "quit" });
+    uninstall();
+    sessionHandles.delete(sessionA);
+  }
+});
+
+test("#875 接线2：A 派一条永不 settle 的 job ⇒ A 的 isActive() 转 true；同时新开的空会话 B 仍是 false（判据按会话，不按进程）", async () => {
+  const { host, uninstall } = installLivenessHost();
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionA = "875-A";
+  const sessionB = "875-B";
+  const sessionDir = await tempDir("erix-run-875-wire-");
+  const gated = gatedJob();
+  // **同一张进程级 job 表**：`erix-run.ts` 的 runtime 用的就是 `globalAsyncJobRegistry()`，
+  // 这里拿同一个注册表建一个注入过 `runJob` 的 runtime，于是那条 job 是**真 job**（真 `start()`、
+  // 真 `status:"running"`、真定时器），而扩展的 `isActive` 闭包读到的正是同一张 `jobs` Map。
+  const registry = jobsApi.globalAsyncJobRegistry();
+  const before = [...registry.jobs.keys()];
+  const jobRuntime = createAsyncRuntime({
+    home: await tempDir("erix-run-875-wire-home-"),
+    registry,
+    sendRegistry: createCompletionSendRegistry(),
+    // 永不 settle：`isActive` 只能从「还在 ACTIVE_JOB_STATUSES 里」这件事判断（不是从终局判断）
+    runJob: gated.job,
+    notify: () => "sent",
+  });
+  let a;
+  let b;
+  try {
+    const extension = await loadExtensionModule();
+    a = startSession(extension, { sessionId: sessionA });
+    const rowA = host.rowFor(sessionA);
+    assert.notEqual(rowA, undefined, "前置：A 的 lease 必须在表里");
+    assert.equal(rowA.isActive(), false, "派工之前不许谎报活性");
+
+    const started = jobRuntime.start(
+      { task: "t", cwd: sessionDir, sessionDir, async: true, timeoutMs: core.MIN_TIMEOUT_MS },
+      { sessionId: sessionA },
+    );
+    const job = registry.get(started.handle.runId);
+    assert.ok(["queued", "running"].includes(job.status), `前置：job 必须真的在飞，实测 ${job?.status}`);
+    assert.equal(rowA.isActive(), true,
+      "A 名下有在飞的 job ⇒ isActive 必须转 true（这就是替它挡下宿主空闲回收的那一句）");
+
+    // B 在 A 有活的时候才开：进程里有活，但**不是 B 的活**
+    b = startSession(extension, { sessionId: sessionB });
+    const rowB = host.rowFor(sessionB);
+    assert.notEqual(rowB, undefined, "每个会话各一条 lease（不许共用一条）");
+    assert.equal(rowB.isActive(), false,
+      "B 是空会话：拿「进程里有活」当判据 ⇒ N 个会话全都永不回收（本格钉的就是这个）");
+    assert.equal(rowA.isActive(), true, "A 那条不受 B 的存在影响");
+    assert.equal(host.registry.hasActiveProvider({ sessionId: sessionB }), false,
+      "宿主去回收 B 时，这一条 lease 不许把它算成有活");
+    assert.equal(host.registry.hasActiveProvider({ sessionId: sessionA }), true,
+      "宿主去回收 A 时必须问出「有活」⇒ 不回收（这就是本单要修的那件事）");
+  } finally {
+    // 收口：先放 lease（证明摘 lease 与清 job 是两件事），再清 job 与句柄
+    a?.handlers.get("session_shutdown")?.({ reason: "quit" });
+    b?.handlers.get("session_shutdown")?.({ reason: "quit" });
+    uninstall();
+    jobRuntime.shutdown(sessionA);
+    gated.release();
+    for (const runId of [...registry.jobs.keys()]) {
+      if (!before.includes(runId) && registry.get(runId)?.ownerSessionId === sessionA) registry.delete(runId);
+    }
+    sessionHandles.delete(sessionA);
+    sessionHandles.delete(sessionB);
+  }
+});
+
+test("#875 接线3：session_shutdown 不分 reason 一律放 lease —— reload 与 quit 各一次之后表里都查不到，且重复调用不抛", async () => {
+  const { host, uninstall } = installLivenessHost();
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionC = "875-C";
+  const sessionD = "875-D";
+  let c;
+  let d;
+  try {
+    const extension = await loadExtensionModule();
+    c = startSession(extension, { sessionId: sessionC });
+    d = startSession(extension, { sessionId: sessionD });
+    assert.notEqual(host.rowFor(sessionC), undefined, "前置：C 的 lease 在表里（拆掉注册接线这里先红）");
+    assert.notEqual(host.rowFor(sessionD), undefined, "前置：D 的 lease 在表里");
+
+    // `reload` 也必须放：句柄表**故意**保留（避免假 orphaned 窗口），lease 不能保留 ——
+    // 宿主按 `Symbol(name)` 键存 provider，旧实例不放就永久漏一条捕获了失效 `ctx` 的 `isActive`，
+    // 而宿主侧 `isActive` 抛错是 fail-safe **保留会话** ⇒ 这个会话从此永不被回收。
+    c.handlers.get("session_shutdown")({ reason: "reload" });
+    assert.equal(host.rowFor(sessionC), undefined,
+      "reload 之后必须查不到 C 这一条（拆掉 session_shutdown 里的 liveness?.release() 就是这一条红）");
+    assert.notEqual(host.rowFor(sessionD), undefined, "C 走了不许把 D 的 lease 一起放掉（lease 绑单次注册）");
+
+    c.handlers.get("session_shutdown")({ reason: "quit" });
+    assert.equal(host.rowFor(sessionC), undefined, "quit 同样查不到（同一个实例再走一次也不许重新注册）");
+    assert.doesNotThrow(() => c.handlers.get("session_shutdown")({ reason: "quit" }), "重复调用必须安静");
+
+    d.handlers.get("session_shutdown")({ reason: "quit" });
+    assert.equal(host.rowFor(sessionD), undefined, "quit 也要放");
+    assert.deepEqual(host.rows(), [], "两个会话都走完 ⇒ 表里一条都不许剩（漏一条 = 那个会话永不回收）");
+  } finally {
+    uninstall();
+    sessionHandles.delete(sessionC);
+    sessionHandles.delete(sessionD);
+  }
+});

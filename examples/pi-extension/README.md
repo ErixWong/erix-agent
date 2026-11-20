@@ -17,10 +17,12 @@
 | `erix-run-jobs.js` | **异步执行层（issue #234）**：job 注册表 + `status.json` 落盘（tmp + rename 原子写，写失败开 `deps` 注入缝，#237 R4）+ 立即返回句柄 + `action` 面（`status`/`result`/`list`/`cancel`）+ run 级超时看门狗 + 完成投递去重注册表 + 唤醒策略。同样**不 import pi** |
 | `erix-run-final-guard.js` | **#314：终稿核验的谓词层**（零依赖：不 import `src/**`、不读配置、不碰网络）：四段存在性、**基点溯源**（#797 起：证据面 = **存活窗口 ∪ 本次 run 的账本**，见下文「证据面」）、比值提醒、成本计数 `tally`、`summarizeFinalGuard`（含证据面那段尾巴）。开关与透传在 `erix-run-core.js` |
 | `erix-run-parent-wake.js` | 唤醒父会话的双分支（idle 真触发 / 忙时追加 + `deliverAs:"steer"` 排队）+ `WAKE_PENDING_MS` pending 窗口 + `Symbol.for` WeakMap（`/reload` 不丢）。**逐分支对照** `pi-subagents` 的 `src/shared/parent-wake.js`（全文 46 行，分支结构一一对应，另多一个测试用的 `peekReservation`），**不 import pi** |
+| `erix-run-liveness.js` | **#875：向 pi-web 申报会话活性**（`globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")]`）——宿主按 `isRunning() \|\| hasActiveProvider({sessionId, sessionFile})` 决定空闲回收，后台 run 从会话角度**不算 running**，不申报就必然被回收（终局通知只能记 `delivery:"orphaned"`）。返回的 `release` **幂等**且**绑单次注册**（不读任何可变的会话 id ⇒ 迟到的事件放不掉后来者的 lease）；**registry 缺席时（pi CLI / 老版本 pi-web）降级为今天的行为**（`{registered:false, release:noop}`，不抛、不自己造表）。判据 = `ACTIVE_JOB_STATUSES` 里的 job ∪ 还有待投递重试的 job（`sessionHasLiveWork`），口径只有一份。**不 import pi**，`node --test` 可测 |
 | `index.ts` | 目录形态的入口（pi 把「含 `index.ts` 的子目录」当成一条扩展加载） |
 | `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线）；**#797 的 H1–H6** 是「证据面 = 存活窗口 ∪ 账本」的宿主格（预置折叠前取证行 ⇒ `verified`；**同一棵 fixture 只关掉账本回落 ⇒ 重新红**；账本 0 命中 ⇒ `not_in_ledger`；无折叠行 / 读失败 ⇒ 逐字回到今天；默认关 ⇒ 一条读口也不建） |
 | `erix-run-final-guard.test.mjs` | **#314：谓词层单测**（四段存在性 / 基点溯源 / 比值提醒 / 成本计数 / `summarizeFinalGuard`）；**#797 的 P1–P6** 钉证据面回落：只在账本里 ⇒ `accept` 并记 `source:"ledger"` / `round` / `survivesLastCompaction`，两处都找不到 ⇒ `notInLedger`，账本不完整 ⇒ **不许下 0 命中的结论**，`ledger` 不给 ⇒ 判定与返回形状逐字照今天 |
 | `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死）；**#654 七条**按会话隔离投递句柄与投递可观测性；**#658** 一条钉 `shutdown` 按会话归属收口（A 的 `session_shutdown` 不摘 B 的看门狗，B 到点仍写 `aborted`）；**#659** 八条钉有界重试（假时钟推三档）/ `isPending()` 的补偿回路（`agent_end` 与 `session_start`）/ `sent` 的上界 / reload 窗口内的失败事实 / `no-owner` 的根因 / 顶层 `resume` 坐标 |
+| `../../test/examples/erix-run-liveness.test.js` | **#875 会话活性申报单测**（全离线）：假 registry **照抄宿主 0.13.0 `pi-web:lib/session-liveness.ts` 的校验与簿记口径**（`name` / `sessionId` / `sessionFile` 非空、`isActive` 是函数，任一不满足就抛；provider 按 `Symbol(name)` 键；`release` 幂等），并**额外**按本层自己更严的 `name` 字面（`^[A-Za-z0-9_-]{1,64}$`）挡一遍 —— 宿主 `register` **只校非空**，那条正则在宿主里是另一处的 `HOLDER_PATTERN`，不是 provider 名校验；14 格钉住「正常注册 / 幂等释放 / 迟到的释放动不了后来者的 lease / registry 缺席不造表 / `version !== 1` 当它不存在 / 坏参数不劳驾宿主 / 宿主抛异常不降级成异常 / 空 `sessionFile` 不许递 / `notifyRetry` 那段窗口也算活 / 多会话隔离」 |
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
 | `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错；#237 之后还拿**真 `execute()`** 把每条返回路径的 `details` 序列化一遍 |
 | `../../test/examples/erix-run-resume.test.js` | **#207 R2 续跑单测**：第一次 run 停在 `max_rounds_cap` ⇒ 第二次从账本接着跑（历史 / 轮号 / 账本都不重置）、纯续跑不追加用户轮、三种坐标（transcript / `runId`+`sessionDir` / `status.json`）指到同一份账本、坐标不存在 / 空账本 / 坏 `status.json` 的明确报错、`bad_params` 形状校验、异步面「`status.json` 即续跑坐标 + job 沿用原 `runId`」 |
@@ -556,6 +558,22 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - `async:true` 时，派工这次工具调用自己的 `signal` **不接**到后台 run（它在 `execute()` 返回时就失效了）；
   后台 run 的取消通道是 `action:"cancel"`。
 - `executionMode: "sequential"` 不变：一个**同步** `erix_run` 在跑时，`action:"status"` 会排在它后面。
+- **pi-web 会在空闲后回收会话，而后台 run 从会话角度「不算 running」（issue #875，三件事逐字写清）**：
+  1. **回收机制**：pi-web 在**一个 Node 进程里跑 N 个会话**，空闲 `PI_WEB_IDLE_TIMEOUT_MS`（默认 10 分钟）
+     就回收，判据是 `isRunning() || hasActiveProvider({sessionId, sessionFile})`。后台 `erix_run` 从会话
+     角度看**不算 running**（派工那次工具调用早就返回了），所以不申报就必然被回收 —— 终局通知只能记
+     `delivery:"orphaned"`，要等用户下次点开会话（`session_start` → `requeueOrphaned`）才补投一次
+     （盘上实测迟到 44 分钟 / 867 分钟）。
+  2. **本扩展现在申报活性**（`erix-run-liveness.js` 向宿主的 `globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")]`
+     注册一条 provider）：名下还有 `queued` / `running` 的 job、**或**还有没投出去的投递重试
+     （`job.notifyRetry`，5/10/30 秒那段窗口）、**或**唤醒还欠着一轮（`isPending()`）时，宿主不会把它
+     当空闲回收；三者都不成立才放行。lease 在 `session_start` 建、在 `session_shutdown` **不分 reason**
+     一律放（含 `reload`，与句柄表那条「reload 不摘」的口径**故意相反**，理由见 `erix-run.ts` 那里的注释）。
+     registry 缺席（pi CLI / 老版本 pi-web）时整条通道降级成今天的行为，不抛、不造表。
+  3. **残余（本刀没修的）**：`session_shutdown` 事件**不携带会话 id**，所以做不了事件级归属（lease 只能
+     绑在 factory 那一次注册上，比句柄表的 `sessionId` 键弱一档）；`exec` **不消费 abort signal**，
+     所以「看门狗写了 `aborted`」≠「底层命令已停」（见上面「取消与超时」）—— 申报活性只保证「会话还活着、
+     通知投得出去」，它不会让一个已死的宿主进程复活。
 
 ### 不阻塞实测（真扩展 + 真模型 + 真 relay）
 

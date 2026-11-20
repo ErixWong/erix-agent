@@ -5035,6 +5035,7 @@ const EXTERNAL_REPO_PREFIXES = new Map([
   ["touwaka", "宿主 touwaka 仓：`docs/requirements{,_cn}.md` §1 的消费方画像写的就是它的代码位置（`lib/agent/`、`lib/context-organizer/`）"],
   ["app_container", "宿主 app_container 仓：同上 §1 的另一个消费方（`apps/worker/src/pi/` + `packages/context`）。该仓已与 erix-station 合并进后继项目 fde-workshop，旧检出仍在盘上、仍带活引用，所以这些路径今天仍可读；裸行号一侧的外仓根就地声明见 `BARE_LINE_EXEMPTIONS` 的 `apps/worker/` 两条"],
   ["pi-subagents", "上游 pi-subagents 仓：`examples/pi-extension/README.md` §6 与 `docs/research/2026-10-13-*` 的对照证据行号都在那个子模块里（本仓没有 `src/runs/`）"],
+  ["pi-web", "宿主 pi-web 仓：`examples/pi-extension/README.md` 的会话活性申报（issue #875）引的是它的 `lib/session-liveness.ts`（本仓没有 `lib/`），本仓 `examples/pi-extension/erix-run-liveness.js` 逐条对照的就是那份口径"],
 ]);
 /** 前缀形状：`<小写仓名>:<路径>`。**排除** `://`（URL / 自定义 scheme，`push()` 早已整段跳过，这里再兜一道）、
  *  排除冒号后紧跟空白或斜杠（`done: true`、`file://` 这类不是路径）。名字干限小写字母数字与 `-` `_`，
