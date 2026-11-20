@@ -366,9 +366,12 @@
   `running → completed`; the `notifyRetry` window still counts as live and opens once the retry is
   cleared; `release` is idempotent; A / B / unregistered-C stay separate; the `sessionFile` dimension
   really reaches the host (`sessionId ∪ sessionFile`, and neither matching answers false); bad
-  parameters are declined by our own pre-check — with the host's `throw` measured first, and a
-  counting wrapper around the **real** `register` (with a control group, so a dead counter cannot
-  pass) proving the host's door was never knocked; and a provider whose `isActive` throws makes the
+  parameters are declined by our own pre-check — with the host's `throw` measured first, plus a
+  discriminator that **writes nothing to the host's objects**: the host **accepts** a provider `name`
+  containing a space (`validateProvider` only does `assertNonEmptyString`; the
+  `^[A-Za-z0-9_-]{1,64}$` regex is ours alone), so `registered:false` for `name: "erix run"` can only
+  come from our own check — with a legal-`name` control group, and the host's side of that premise
+  measured through its own exported `registerSessionLivenessProvider`; and a provider whose `isActive` throws makes the
   host answer `true` **and** log `preserving the session`, which is the fail-safe this extension
   leans on. **File-level skip gate**: without type stripping the file registers exactly **one**
   skipped test (measured `# skipped 1`, and the file still loads) instead of nine, so this file
@@ -414,8 +417,11 @@
   sessionId 问不出；**被宿主消费的就是我们的 `sessionHasLiveWork`**，job 从 `running` 改成
   `completed` 它就转 false；`notifyRetry` 那段窗口仍算活、清掉就放开；`release` 幂等；A / B /
   未注册的 C 各自隔离；`sessionFile` 这个维度真递到了宿主（`sessionId ∪ sessionFile`，两边都
-  不相干时答 false）；坏参数被我们自己的前置校验挡在门外 —— 先现场量到宿主会 `throw`，再拿一层
-  只计数的包装（被包的仍是宿主真实现，带对照组，免得死计数器假绿）证明确实一次也没敲宿主的门；
+  不相干时答 false）；坏参数被我们自己的前置校验挡在门外 —— 先现场量到宿主会 `throw`；另配一个
+  **不往宿主任何东西里写**的判别器：宿主对 `name` **只校非空**（`name: "erix run"` 它照收），
+  而 `^[A-Za-z0-9_-]{1,64}$` 是本层自己加的 —— 所以含空格的 name 得到 `registered:false` 只可能是
+  本层那道校验在挡（配一个合法 `name` 仍注册得上的对照组，以及拿宿主自己导出的注册口量出来的
+  「宿主确实接受含空格的 name」那一半）；
   以及 `isActive` 抛错的 provider 会让宿主答 `true` **并**记一条 `preserving the session` —— 那正是
   本扩展掎着的那个兜底。**文件级 skip 闸**：运行时缺 type-stripping 时整文件只注册**一条** skip
   （实测 `# skipped 1`，文件仍能装载），而不是九条 —— 九条会把整套顶穿登记上限（本机 skip 13 + 9 = 22

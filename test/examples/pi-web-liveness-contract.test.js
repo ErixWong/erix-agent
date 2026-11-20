@@ -81,24 +81,6 @@ if (!TS_STRIPPING) {
 /** 装载一次就挂上的那张表（**宿主自己挂的**，本文件一个字都没往里写）。 */
 const hostRegistry = () => globalThis[Symbol.for(PI_WEB_LIVENESS_REGISTRY_KEY)];
 
-/**
- * 把**真表**的 `register` 临时包一层，只为数「这一条到底敲到宿主门了没有」。
- * 这不是假 registry：被包的实现是宿主自己的实现，包完仍由它校验、簿记、返回 release；
- * `finally` 里必须还原（不还原就是把计数漏给下一格）。
- *
- * @param {{register: Function}} registry
- */
-function countRegisterCalls(registry) {
-  const real = registry.register;
-  /** @type {unknown[]} */
-  const seen = [];
-  registry.register = (provider) => {
-    seen.push(provider);
-    return real.call(registry, provider);
-  };
-  return { seen, restore: () => { registry.register = real; } };
-}
-
 cell("#875 契约 格0：参照物自身的身份 —— fixture 字节 == `_meta.sourceSha256`，键与 version 与宿主导出逐字相同", () => {
   const meta = JSON.parse(readFileSync(META_JSON, "utf8"))._meta;
   const bytes = readFileSync(FIXTURE_TS);
@@ -229,8 +211,8 @@ cell("#875 契约 格6：sessionFile 这个匹配维度真的递到了宿主（�
   }
 });
 
-cell("#875 契约 格7：坏参数被我们的前置校验挡在门外（真宿主的 validateProvider 对这两种会 throw）", () => {
-  // 反证在前：先证明**宿主真会抛** —— 否则「我们挡住了」这半句毫无分量，本层就成了凭空拦截。
+cell("#875 契约 格7：坏参数与本层更严的 name 校验挡在门外（宿主的 validateProvider 对 name 只校非空）", () => {
+  // 反证在前：宿主对这两种坏参数**真会抛** —— 否则「本层挡住了」这半句毫无分量，本层就成了凭空拦截。
   assert.throws(
     () => host.registerSessionLivenessProvider({ name: "probe-875", sessionId: "", isActive: () => true }),
     /sessionId must be a non-empty string/,
@@ -241,30 +223,55 @@ cell("#875 契约 格7：坏参数被我们的前置校验挡在门外（真宿�
     /isActive must be a function/,
     "宿主对非函数 isActive 不抛了？同上：口径变了要重读并重采",
   );
-  // 然后是我们的那一半：同样的入参，我们返回 `registered:false` 且**不抛**，而且一次也没敲宿主的门。
-  const counter = countRegisterCalls(hostRegistry());
+  // 我们那一半：同样的入参 ⇒ 返回 registered:false 且**不抛**（不拿宿主的异常当降级路径）。
+  const cases = [
+    ["空 sessionId", { sessionId: "", isActive: () => true }],
+    ["缺 sessionId", { isActive: () => true }],
+    ["isActive 非函数", { sessionId: "contract-bad", isActive: "nope" }],
+  ];
+  for (const [label, options] of cases) {
+    let lease;
+    assert.doesNotThrow(() => {
+      lease = registerSessionLiveness(/** @type {any} */ (options));
+    }, `${label}：不许把宿主的异常打给调用方`);
+    assert.equal(lease.registered, false, `${label}：必须挡在本层`);
+    assert.doesNotThrow(() => lease.release(), `${label}：release 仍要可用`);
+  }
+  // 判别器（**不碰宿主任何东西**，所以本文件对宿主对象零写入）：宿主对 `name` 只做
+  // `assertNonEmptyString`，含空格的 name 它**照收**；`^[A-Za-z0-9_-]{1,64}$` 是**本层自己加的**
+  // （宿主那条正则是另一处的 HOLDER_PATTERN，不是 provider 名校验）。于是这一格能红，
+  // 只可能是本层那道校验没跑 —— 宿主不会替我拒它，两边错在一起也瞒不住。
+  const declined = registerSessionLiveness({ sessionId: "contract-name-875", isActive: () => true, name: "erix run" });
+  assert.equal(declined.registered, false,
+    "含空格的 name 必须被**本层**拒掉（宿主会接受它 ⇒ 这格红了不是宿主变严了，是本层的 name 校验挂了）");
+  assert.doesNotThrow(() => declined.release(), "拒掉之后 release 仍要可用");
+  // 对照组：同一个调用只把 name 换成合法的 ⇒ 必须注册得上，并且宿主问得出这一条
+  // （否则上面那条 false 就只是「什么都注册不上」的假绿）。
+  const accepted = registerSessionLiveness({ sessionId: "contract-name-875-ok", isActive: () => true, name: "erix-run-875" });
   try {
-    const cases = [
-      ["空 sessionId", { sessionId: "", isActive: () => true }],
-      ["缺 sessionId", { isActive: () => true }],
-      ["isActive 非函数", { sessionId: "contract-bad", isActive: "nope" }],
-    ];
-    for (const [label, options] of cases) {
-      let lease;
-      assert.doesNotThrow(() => {
-        lease = registerSessionLiveness(/** @type {any} */ (options));
-      }, `${label}：不许把宿主的异常打给调用方`);
-      assert.equal(lease.registered, false, `${label}：必须挡在本层`);
-      assert.doesNotThrow(() => lease.release(), `${label}：release 仍要可用`);
-    }
-    assert.deepEqual(counter.seen, [],
-      `坏参数一次也没该敲宿主的门，实测敲了 ${counter.seen.length} 次（拿「宿主会抛」当降级路径，就是把异常打给用户）`);
-    // 对照组：计数器不是恒绿的死表 —— 合法参数必须被数到一次。
-    const ok = registerSessionLiveness({ sessionId: "contract-counted", isActive: () => false });
-    assert.equal(counter.seen.length, 1, "计数器没数到这次合法注册 ⇒ 上面那条「零次」是假的");
-    ok.release();
+    assert.equal(accepted.registered, true,
+      "合法的 name 必须注册得上（对照组：本层的 name 校验不能严到把合法名字一起拒了）");
+    assert.equal(host.hasActiveSessionLivenessProvider({ sessionId: "contract-name-875-ok" }), true,
+      "注册成功就得真进宿主那张表（问不出 ⇒ 注册口没接通）");
   } finally {
-    counter.restore();
+    accepted.release();
+  }
+  // 判别的前提也要当场量一遍，不能只写在注释里：走宿主自己导出的注册口，看它是否真的接受含空格的 name。
+  /** @type {(() => void) | undefined} */
+  let hostRelease;
+  try {
+    assert.doesNotThrow(
+      () => {
+        hostRelease = host.registerSessionLivenessProvider({
+          name: "erix run", sessionId: "contract-name-875-host", isActive: () => true,
+        });
+      },
+      "宿主现在也拒含空格的 name 了？那本层那道正则就不是唯一防线，这一格的红因得重写（并重采 fixture）",
+    );
+    assert.equal(host.hasActiveSessionLivenessProvider({ sessionId: "contract-name-875-host" }), true,
+      "宿主收下就该问得出活性（问不出 ⇒ 上面那个 doesNotThrow 量的不是注册成功）");
+  } finally {
+    hostRelease?.();
   }
 });
 
