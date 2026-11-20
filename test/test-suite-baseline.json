@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3914,
+    "tests": 3917,
     "fail": 0,
     "maxSkipped": 18
   },
@@ -1623,6 +1623,22 @@
             "todo": 0,
             "cancelled": 0,
             "why": "**tests 3905 → 3914（净 +9）**：issue #875 补一张**契约测试** `test/examples/pi-web-liveness-contract.test.js`，参照物从「手抄宿主口径的假 registry」换成**宿主自己的源码**（`fixtures/pi-web-session-liveness-e533d9b3.ts` 是 `pi-web:lib/session-liveness.ts` 在 `e533d9b3` 的逐字拷贝，捕获脚本硬校验 HEAD==该 sha + 脏树即拒，`_meta.sourceSha256` 由产物现算）。九格：参照物身份（字节==sha256、键与 version 与宿主导出逐字相同）/ 真注册 / **核心格：我们的 `sessionHasLiveWork` 被宿主的真 `hasActiveProvider` 消费且随 job 状态由 true 转 false** / `notifyRetry` 窗口 / `release` 幂等 / 多会话隔离 / `sessionFile` 匹配维度 / 坏参数与本层更严的 `name` 校验挡在门外 / 宿主 `isActive` 抛错时 fail-safe 保留会话。**这个数只统计 9 格**：产物原先放在 `test/fixtures/` 下会被裸 `node --test` 当测试文件收进去白跑一格（实测 `ok 119`，`tests` 因此是 3915），已搬到根 `fixtures/` 消掉。skip 面按文件级闸处理（缺 type-stripping 时只贡献 **1** 条 skip 而不是 9 条，实测 `--no-experimental-strip-types` ⇒ `# skipped 1`），否则 13+9=22 会顶穿 `maxSkipped: 18` 造成误判红。skipped 13 = 本环境不动该维。"
+        },
+        {
+            "date": "2026-11-20",
+            "env": "本地开发机（fix-261119-03-timer-ownership 工作树，真实模型闸门关闭）",
+            "node": "v22.23.2",
+            "commit": "未提交（#875 S2：定时器归 run / 投递）",
+            "branch": "fix-261119-03-timer-ownership",
+            "mainSha": "b71e9737",
+            "mergeBase": "b71e9737",
+            "tests": 3917,
+            "pass": 3904,
+            "fail": 0,
+            "skipped": 13,
+            "todo": 0,
+            "cancelled": 0,
+            "why": "**tests 3914 → 3917（净 +3）**：issue #875 S2 在 `test/examples/erix-run-async.test.js` 加三格主判据 —— ①`/reload` 一根定时器都不摘，且那一档投递重试到点真的投成 `sent`（落在重新登记后的**新**句柄上，盘上 `status.json` 同步）；②`quit` 只摘投递重试，看门狗留着、到点仍把 `aborted` 写进 `status.json`（断言落盘不只断言字段）；③`requeueOrphaned` 现在也收 `delivery:\"failed\"`，且仍受「一条 job 只补一次」上界（第二次返回空数组）。同片还改了四处既有断言（`#658` 看门狗不再被摘、tick 由 1 次变 2 次；`#800` 的「归属匹配就照旧清」对照块；`#659` 两处注释）—— 那是**推翻既有判据**的那一半，反向证三条各自把对应格打红（去掉 `reason !== \"reload\" &&` ⇒ 格1 红；整块换回 `clearJobTimers` ⇒ 格2 红并连带 `#658`/`#800` 红；筛选改回只认 `orphaned` ⇒ 格3 红）。skipped 13 = 本环境不动该维。"
         }
     ]
 }
