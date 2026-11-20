@@ -22,6 +22,9 @@
 // `getRegistry()` 只在装载时跑一次），末尾也不需要清理。每格**自己注册自己释放**（`finally`），
 // 于是格与格之间不靠执行顺序成立。
 //
+// ⚠ skip 面是**文件级闸**：运行时不能直载 `.ts` 时本文件只注册**一条** skip（不是 9 条），
+// 支持时 9 格全跑、零 skip。下面 `cell()` 那段写的就是为什么要这样。
+//
 // 与 `erix-run-liveness.test.js` 的分工：那张表量的是**形状**（含 registry 缺席 / `version !== 1` /
 // 宿主抛异常这些**只能造**出来的现场）；本文件量的是**端到端**（我们的模块 × 宿主的真实现）。
 // 两张表都要在：只有本文件就盖不住降级路径，只有那张表就是自证。
@@ -49,12 +52,31 @@ const META_JSON = new URL("../../fixtures/pi-web-session-liveness-e533d9b3.json"
  * 那是**装载失败**而不是契约破裂，把它判红就是假红。CI 的 node 22 / 24 两侧都支持。
  */
 const TS_STRIPPING = Boolean(process.features.typescript);
-const SKIP = TS_STRIPPING
-  ? false
-  : `当前运行时 node ${process.version} 不支持 .ts 直载（CI 的 node 22/24 支持）`;
+const SKIP_REASON = `当前运行时 node ${process.version} 不支持 .ts 直载（CI 的 node 22/24 支持）`;
 
-/** 宿主的真模块：装载它的**副作用**就是那张表出现在 globalThis 上。不支持时是 null（格子全 skip）。 */
+/** 宿主的真模块：装载它的**副作用**就是那张表出现在 globalThis 上。 */
+/** @type {any} */
 const host = TS_STRIPPING ? await import(FIXTURE_TS.href) : null;
+
+/**
+ * **文件级闸**（为什么不是逐格 `{ skip }`）：缺 type-stripping 的环境里，9 格各自 skip 会凭空多出
+ * **9 条** skip。全量实测过：本机基线 skip = 13，登记上限 `maxSkipped: 18`，13 + 9 = 22 ⇒
+ * `check:test-summary` 报 `SKIPPED_OVER` —— 那不是掉了覆盖，却是一道靠环保险的门。
+ * 所以闸放在**文件级**，两条路径的读数都是实测的：
+ *   · 支持直载 ⇒ 注册下面全部 9 格，`# skipped 0`；
+ *   · 不支持 ⇒ **一格也不注册**，只注册**一条**带上面那句理由的 skip ⇒ `# skipped 1`。
+ * 注意这不是把契约“偷变成绿”：那一条仍然带着跳过理由挂在那里，而 `# fail` 两侧都是 0。
+ *
+ * @param {string} name 格名（一律带 `#875 契约` 前缀）
+ * @param {() => void} fn 格子本体
+ */
+const cell = (name, fn) => {
+  if (TS_STRIPPING) test(name, fn);
+};
+if (!TS_STRIPPING) {
+  test("#875 契约（整文件）：9 格需要直载 fixtures/pi-web-session-liveness-e533d9b3.ts",
+    { skip: SKIP_REASON }, () => {});
+}
 
 /** 装载一次就挂上的那张表（**宿主自己挂的**，本文件一个字都没往里写）。 */
 const hostRegistry = () => globalThis[Symbol.for(PI_WEB_LIVENESS_REGISTRY_KEY)];
@@ -77,7 +99,7 @@ function countRegisterCalls(registry) {
   return { seen, restore: () => { registry.register = real; } };
 }
 
-test("#875 契约 格0：参照物自身的身份 —— fixture 字节 == `_meta.sourceSha256`，键与 version 与宿主导出逐字相同", { skip: SKIP }, () => {
+cell("#875 契约 格0：参照物自身的身份 —— fixture 字节 == `_meta.sourceSha256`，键与 version 与宿主导出逐字相同", () => {
   const meta = JSON.parse(readFileSync(META_JSON, "utf8"))._meta;
   const bytes = readFileSync(FIXTURE_TS);
   const measured = createHash("sha256").update(bytes).digest("hex");
@@ -102,7 +124,7 @@ test("#875 契约 格0：参照物自身的身份 —— fixture 字节 == `_met
     "我们的读口没认宿挂在 globalThis 上的那张真表（认错了就等于永远注册不进宿主看得见的那张表）");
 });
 
-test("#875 契约 格1：真注册 —— 我们的模块注册得上，宿主自己问得出这一条", { skip: SKIP }, () => {
+cell("#875 契约 格1：真注册 —— 我们的模块注册得上，宿主自己问得出这一条", () => {
   const lease = registerSessionLiveness({ sessionId: "contract-A", isActive: () => true });
   try {
     assert.equal(lease.registered, true, "宿主的表在场、参数合法 ⇒ 必须注册得上（注册不上就是整条通道没接上）");
@@ -118,7 +140,7 @@ test("#875 契约 格1：真注册 —— 我们的模块注册得上，宿主�
     "release 之后宿主问不出活性（放不掉 lease 的会话永不回收）");
 });
 
-test("#875 契约 格2（核心）：我们的 sessionHasLiveWork 被宿主的真实现消费，并随 job 状态转假", { skip: SKIP }, () => {
+cell("#875 契约 格2（核心）：我们的 sessionHasLiveWork 被宿主的真实现消费，并随 job 状态转假", () => {
   /** 真 Map 当 job 表；`isActive` 是**我们的**判据（不是随手写的布尔）。 */
   const jobs = new Map([["r-875-2", { ownerSessionId: "contract-A", status: "running" }]]);
   const lease = registerSessionLiveness({
@@ -137,7 +159,7 @@ test("#875 契约 格2（核心）：我们的 sessionHasLiveWork 被宿主的�
   }
 });
 
-test("#875 契约 格3：notifyRetry 那段窗口宿主也算活（复核 C 条：run 跑完、通知还没投出去）", { skip: SKIP }, () => {
+cell("#875 契约 格3：notifyRetry 那段窗口宿主也算活（复核 C 条：run 跑完、通知还没投出去）", () => {
   const jobs = new Map([["r-875-3", { ownerSessionId: "contract-A", status: "completed", notifyRetry: {} }]]);
   const lease = registerSessionLiveness({
     sessionId: "contract-A",
@@ -156,7 +178,7 @@ test("#875 契约 格3：notifyRetry 那段窗口宿主也算活（复核 C 条�
   }
 });
 
-test("#875 契约 格4：release 生效且幂等 —— 释放后宿主问不出活性，再放一次不抛", { skip: SKIP }, () => {
+cell("#875 契约 格4：release 生效且幂等 —— 释放后宿主问不出活性，再放一次不抛", () => {
   const lease = registerSessionLiveness({ sessionId: "contract-release", isActive: () => true });
   assert.equal(lease.registered, true);
   assert.equal(host.hasActiveSessionLivenessProvider({ sessionId: "contract-release" }), true);
@@ -168,7 +190,7 @@ test("#875 契约 格4：release 生效且幂等 —— 释放后宿主问不出
     "重复释放不许把别家的 lease 一起放掉（放成 true 就是幂等开关失效）");
 });
 
-test("#875 契约 格5：多会话隔离 —— A 有活、B 注册了但无活，宿主各自答对", { skip: SKIP }, () => {
+cell("#875 契约 格5：多会话隔离 —— A 有活、B 注册了但无活，宿主各自答对", () => {
   const jobs = new Map([
     ["r-a", { ownerSessionId: "contract-A", status: "running" }],
     ["r-b", { ownerSessionId: "contract-B", status: "completed" }],
@@ -188,7 +210,7 @@ test("#875 契约 格5：多会话隔离 —— A 有活、B 注册了但无活�
   }
 });
 
-test("#875 契约 格6：sessionFile 这个匹配维度真的递到了宿主（宿主按 sessionId ∪ sessionFile 找）", { skip: SKIP }, () => {
+cell("#875 契约 格6：sessionFile 这个匹配维度真的递到了宿主（宿主按 sessionId ∪ sessionFile 找）", () => {
   const lease = registerSessionLiveness({
     sessionId: "contract-F",
     sessionFile: "/tmp/f-875.jsonl",
@@ -207,7 +229,7 @@ test("#875 契约 格6：sessionFile 这个匹配维度真的递到了宿主（�
   }
 });
 
-test("#875 契约 格7：坏参数被我们的前置校验挡在门外（真宿主的 validateProvider 对这两种会 throw）", { skip: SKIP }, () => {
+cell("#875 契约 格7：坏参数被我们的前置校验挡在门外（真宿主的 validateProvider 对这两种会 throw）", () => {
   // 反证在前：先证明**宿主真会抛** —— 否则「我们挡住了」这半句毫无分量，本层就成了凭空拦截。
   assert.throws(
     () => host.registerSessionLivenessProvider({ name: "probe-875", sessionId: "", isActive: () => true }),
@@ -246,7 +268,7 @@ test("#875 契约 格7：坏参数被我们的前置校验挡在门外（真宿�
   }
 });
 
-test("#875 契约 格8：宿主的 provider 抛错 ⇒ fail-safe 保留会话（我们依赖的兜底，钉住它真在）", { skip: SKIP }, () => {
+cell("#875 契约 格8：宿主的 provider 抛错 ⇒ fail-safe 保留会话（我们依赖的兜底，钉住它真在）", () => {
   const errors = [];
   const realError = console.error;
   console.error = (...args) => { errors.push(args.map((a) => String(a)).join(" ")); };

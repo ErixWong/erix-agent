@@ -370,8 +370,11 @@
   counting wrapper around the **real** `register` (with a control group, so a dead counter cannot
   pass) proving the host's door was never knocked; and a provider whose `isActive` throws makes the
   host answer `true` **and** log `preserving the session`, which is the fail-safe this extension
-  leans on. Cells skip for exactly one reason (a runtime without type stripping; measured with
-  `node --no-experimental-strip-types` ⇒ 9 skip, file still loads). Reverse proofs, both restored
+  leans on. **File-level skip gate**: without type stripping the file registers exactly **one**
+  skipped test (measured `# skipped 1`, and the file still loads) instead of nine, so this file
+  cannot push the suite over the registered `maxSkipped` (nine would: local skip 13 + 9 = 22 > the
+  registered 18 ⇒ `SKIPPED_OVER`); with type stripping it registers all nine cells and
+  `# skipped 0`. Reverse proofs, both restored
   with `git status --short` empty afterwards: replacing the registration in cell 1 with "no
   registration" reddens that cell (`false !== true`), and commenting out the `notifyRetry` line of
   `sessionHasLiveWork` reddens the contract cell **and** the older `#875 格9` together. Not touched:
@@ -414,8 +417,9 @@
   不相干时答 false）；坏参数被我们自己的前置校验挡在门外 —— 先现场量到宿主会 `throw`，再拿一层
   只计数的包装（被包的仍是宿主真实现，带对照组，免得死计数器假绿）证明确实一次也没敲宿主的门；
   以及 `isActive` 抛错的 provider 会让宿主答 `true` **并**记一条 `preserving the session` —— 那正是
-  本扩展掎着的那个兜底。skip 只有一条理由（运行时缺 type-stripping；`node
-  --no-experimental-strip-types` 实测 9 格全 skip、文件仍能装载）。两条反向证事后都还原了，`git
+  本扩展掎着的那个兜底。**文件级 skip 闸**：运行时缺 type-stripping 时整文件只注册**一条** skip
+  （实测 `# skipped 1`，文件仍能装载），而不是九条 —— 九条会把整套顶穿登记上限（本机 skip 13 + 9 = 22
+  > 登记的 18 ⇒ `SKIPPED_OVER`）；支持时 9 格全跑、`# skipped 0`。两条反向证事后都还原了，`git
   status --short` 为空：把格 1 的注册换成「不注册」⇒ 那格红（`false !== true`）；把
   `sessionHasLiveWork` 的 `notifyRetry` 那一行注释掉 ⇒ 契约那格与老表的 `#875 格9` 一起红。没动的：
   宿主检出（脚本只跑 `rev-parse` / `status` / `remote get-url` 并读那一个文件，事后那棵树仍然
