@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3905,
+    "tests": 3914,
     "fail": 0,
     "maxSkipped": 18
   },
@@ -1607,6 +1607,22 @@
             "todo": 0,
             "cancelled": 0,
             "why": "**tests 3888 → 3905（净 +17）**：issue #875 S1 新增两个文件面。`test/examples/erix-run-liveness.test.js`（新，11 格）钉纯逻辑面：假 registry 照抄宿主 `pi-web:lib/session-liveness.ts` 的校验与 `Symbol(name)` 簿记（宿主 `validateProvider` 对 `name` **只校非空**；本层另加更严的 `^[A-Za-z0-9_-]{1,64}$` 字面）、`release` 幂等且绑单次注册、registry 缺席/版本不符/坏参数/宿主抛异常四种降级、空 `sessionFile` 不许递、`sessionHasLiveWork` 的 `notifyRetry` 窗口与多会话隔离；`test/examples/erix-run-async.test.js` 末尾 #875 那一节 3 格钉接线面（`session_start` 注册、A 有活 B 不活、`session_shutdown` 不分 reason 一律放）。中间读数 `fail=3` 已在本片修掉，记下来是因为它证明判据有牙：那 3 格全由 `examples/pi-extension/README.md` 一处无前缀外仓路径（`lib/session-liveness.ts`）引起（`docs-drift-check` 报 `paths` 漂移 ⇒ `docs-anchor-ratchet` 的 T-b1a 与 `version-state-probe-703` 的 A 格连带红），改成 `pi-web:lib/session-liveness.ts` 并在 `EXTERNAL_REPO_PREFIXES` 登记 `pi-web` 后转绿 —— **没有改任何断言、没有加 skip**。skipped 13 = 本环境不动该维。"
+        },
+        {
+            "date": "2026-11-20",
+            "env": "本地开发机（fix-261119-02-pi-web-liveness-contract 工作树，真实模型闸门关闭）",
+            "node": "v22.23.2",
+            "commit": "未提交（#875 契约测试：拿宿主真源码当参照）",
+            "branch": "fix-261119-02-pi-web-liveness-contract",
+            "mainSha": "e337093b",
+            "mergeBase": "e337093b",
+            "tests": 3914,
+            "pass": 3901,
+            "fail": 0,
+            "skipped": 13,
+            "todo": 0,
+            "cancelled": 0,
+            "why": "**tests 3905 → 3914（净 +9）**：issue #875 补一张**契约测试** `test/examples/pi-web-liveness-contract.test.js`，参照物从「手抄宿主口径的假 registry」换成**宿主自己的源码**（`fixtures/pi-web-session-liveness-e533d9b3.ts` 是 `pi-web:lib/session-liveness.ts` 在 `e533d9b3` 的逐字拷贝，捕获脚本硬校验 HEAD==该 sha + 脏树即拒，`_meta.sourceSha256` 由产物现算）。九格：参照物身份（字节==sha256、键与 version 与宿主导出逐字相同）/ 真注册 / **核心格：我们的 `sessionHasLiveWork` 被宿主的真 `hasActiveProvider` 消费且随 job 状态由 true 转 false** / `notifyRetry` 窗口 / `release` 幂等 / 多会话隔离 / `sessionFile` 匹配维度 / 坏参数与本层更严的 `name` 校验挡在门外 / 宿主 `isActive` 抛错时 fail-safe 保留会话。**这个数只统计 9 格**：产物原先放在 `test/fixtures/` 下会被裸 `node --test` 当测试文件收进去白跑一格（实测 `ok 119`，`tests` 因此是 3915），已搬到根 `fixtures/` 消掉。skip 面按文件级闸处理（缺 type-stripping 时只贡献 **1** 条 skip 而不是 9 条，实测 `--no-experimental-strip-types` ⇒ `# skipped 1`），否则 13+9=22 会顶穿 `maxSkipped: 18` 造成误判红。skipped 13 = 本环境不动该维。"
         }
     ]
 }

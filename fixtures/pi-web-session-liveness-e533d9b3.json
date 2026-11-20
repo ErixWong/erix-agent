@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "sourceRepo": "https://github.com/agegr/pi-web.git",
+    "sourcePath": "lib/session-liveness.ts",
+    "baseSha": "e533d9b3975f8a74b378d5007c92fdf4d15d3fba",
+    "capturedAt": "2026-11-20T15:21:07.388Z",
+    "nodeVersion": "v22.23.2",
+    "sourceSha256": "d5426e9296803701d71b685de99246953ed381bf9f1a441bfdade63a5a714e64",
+    "regenerate": "node fixtures/capture-pi-web-liveness-875.mjs（产物落**根 fixtures/**，不在 test/ 下：那份 `.ts` 会被裸 node --test 当一个测试文件白跑一格；宿主检出不在默认位置时：PI_WEB_REPO=/path/to/pi-web node fixtures/capture-pi-web-liveness-875.mjs）；脚本硬校验宿主 HEAD==e533d9b3975f8a74b378d5007c92fdf4d15d3fba 且 git status --porcelain 为空，否则 exit 1。产物 .ts 必须逐字拷贝，一个字节都不许改。",
+    "note": "这份 .ts 是宿主**开发检出**（`pi-web:lib/session-liveness.ts`）的源码，不是线上安装的 @agegr/pi-web 0.13.0 里那份：本捕获点多一套 `SESSION_LIVENESS_LEASE_TTL_MS` 的「选中页租约」（`holdSessionLivenessLease` + `globalThis[Symbol.for(\"@agegr/pi-web/session-liveness-leases/v2\")]`）。已实测两版的差别（0.13.0 一侧读的是本机已装包的编译产物 `.next/server/chunks/6429.js`）：那套租约**不在** 0.13.0 里，而 0.13.0 的 registry 上另有一个本捕获点没有的 `list()` 方法 —— 两版是**分叉**，不是简单的谁新谁旧。**本仓依赖的三件事两版逐条一致**（这就是敢拿这份当参照的理由）：① 注册表键 `Symbol.for(\"@agegr/pi-web/session-liveness/v1\")` 且 `version === 1`；② `register(provider)` 返回**幂等**的 `release`（宿主侧 `disposed` 一次性开关）；③ `hasActiveProvider({sessionId, sessionFile})` 按 `sessionId ∪ sessionFile` 匹配、provider 的 `isActive` 抛错时 **fail-safe 返回 true**（保留会话）。捕获脚本对宿主检出**只读**（只跑 rev-parse / status / remote get-url 与读那一个文件）。"
+  }
+}
