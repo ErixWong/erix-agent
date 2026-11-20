@@ -851,13 +851,26 @@ export function createAsyncRuntime(options = {}) {
    * job 持有的**全部**定时器一起清（#658 / #659 第 1 格：**同一份生命周期**）。
    *
    * 现在一个 job 上有两根定时器：run 级看门狗（`job.watchdog`，超时终局）与完成投递的有界重试
-   * （`job.notifyRetry`）。`settle` / 看门狗到点 / `action:"cancel"` / `shutdown` 四处**都走这里**，
-   * 所以「新加一根定时器忘了清」在结构上只剩一处可能出错（而不是四份清理各漏一次）。
+   * （`job.notifyRetry`）。`settle` / 看门狗到点 / `action:"cancel"` 三处**都走这里**，
+   * 所以「新加一根定时器忘了清」在结构上只剩一处可能出错（而不是三份清理各漏一次）。
+   *
+   * ⚠ issue #875 S2：`shutdown` **不再走这里** —— 那两根定时器的**归属**不同（看门狗归 run、投递重试归
+   * 投递），会话事件按 `reason` 分流，见 `clearJobWatchdog` / `clearNotifyRetry` 与 `shutdown` 的注释。
    *
    * @param {object} job
    */
   const clearJobTimers = (job) => {
+    clearJobWatchdog(job);
+    clearNotifyRetry(job);
+  };
+
+  /** run 级看门狗：**归 run**，只有 settle / 到点 / cancel 能摘。`shutdown` 一律不摘（见 `shutdown` 的注释）。 */
+  const clearJobWatchdog = (job) => {
     if (job.watchdog !== undefined) { clearTimeoutFn(job.watchdog); job.watchdog = undefined; }
+  };
+
+  /** 完成投递的有界重试：**归投递**，`/reload` 不摘（新实例重新登记句柄后这一档还能投出去）。 */
+  const clearNotifyRetry = (job) => {
     if (job.notifyRetry !== undefined) { clearTimeoutFn(job.notifyRetry); job.notifyRetry = undefined; }
   };
 
@@ -995,18 +1008,22 @@ export function createAsyncRuntime(options = {}) {
   };
 
   /**
-   * owner 会话**重新登记**之后，把它名下曾被判 `orphaned` 的 job **补投一次**（issue #800 判据 3）。
+   * owner 会话**重新登记**之后，把它名下曾被判 `orphaned` **或 `failed`** 的 job **补投一次**
+   * （issue #800 判据 3；筛选范围由 issue #875 S2 扩到 `orphaned ∪ failed`）。
    *
    * 为什么需要这个回路：`orphaned` 不是「这条 run 没结局」，它只是「**投递那一刻** owner 的句柄查不到」。
    * 而句柄查不到的两种成因里有一种是**会好的**：会话只是换了扩展实例（`/reload`、或旧实例迟到的
    * `session_shutdown` 把活实例的登记抹了 —— 后者已由判据 1 挡下，但盘上**已有**的那些 orphaned job 不会
    * 自己变好）。再登记只发生在 `session_start`，而 `session_start` 不重放任何旧 job ⇒ 没有这个回路，
-   * owner 以同一个 `sessionId` 回来后那些 run 的终局就**永远停在 `orphaned`**（看门狗又早被清掉 ⇒
-   * `status.json` 连终局都没有，正是 issue 里那张图）。
+   * owner 以同一个 `sessionId` 回来后那些 run 的终局就**永远停在 `orphaned`**（旧实现里看门狗又被
+   * `shutdown` 顺手清掉 ⇒ `status.json` 连终局都没有，正是 issue 里那张图；#875 S2 之后看门狗归 run，
+   * 不再随会话被摘）。
    *
    * 三条界：
    * - **只补一次**（`orphanRecoveries > 0` 就跳过）：补投又没成时回到 #659 的有界重试链，
-   *   不在这里开第二个重试循环。
+   *   不在这里开第二个重试循环。⚠ issue #875 S2：`job.orphanRecoveries` 的口径现在是
+   *   「对 `orphaned ∪ failed` 两种恢复尝试的**合计**次数」（字段名不变，它仍是 `status.json` /
+   *   终局视图的既有面），上界仍是一条 job 一次。
    * - **只补自己 owner**（按 `job.ownerSessionId` 筛，口径同 #654/#658：不捐别人的会话）。
    * - **不双投**：走的就是 `notifyThenPersist` ⇒ `sendRegistry.claim(job.notifyKey ?? runId)` 那道闸一道不少：
    *   orphan 当时 `claim.settle(false)` 把去重位**放了回去**（#656），所以这里能重新领到；若真被别的
@@ -1023,7 +1040,9 @@ export function createAsyncRuntime(options = {}) {
     const recovered = [];
     for (const job of registry.list()) {
       if (job.ownerSessionId !== owner) continue;
-      if (job.delivery !== "orphaned") continue;
+      // `failed` 也要收：`/reload` 窗口里投不出去的那一档在旧实现里会被 shutdown 清掉定时器，
+      // 而 `failed` 不在这个筛选里 ⇒ 新会话回来后没人接（#875 复核 H1）。两种都还是「没投出去」。
+      if (job.delivery !== "orphaned" && job.delivery !== "failed") continue;
       if ((job.orphanRecoveries ?? 0) > 0) continue;
       // 计数在投递**之前**：补投又没成也不再来第二次（上面的那条界）。
       job.orphanRecoveries = (job.orphanRecoveries ?? 0) + 1;
@@ -1323,10 +1342,13 @@ export function createAsyncRuntime(options = {}) {
    * `/reload` · 退出，就一次性摘掉**全进程所有在跑 run** 的超时看门狗——那些 run 的真超时既不写 `aborted`
    * 也不投递，`status.json` 永远停在 `running`（假事实，比「没醒」更糟）。
    *
-   * 现在：只清 `job.ownerSessionId === ownerSessionId` 的 job（#654 已经把会话身份记在 job 上，判据现成），
-   * 而且清的是**这一份 job 生命周期上的全部定时器**（看门狗 + 投递重试，见 `clearJobTimers`）。
-   * 一次性开关去掉：清自己会话的定时器本来就幂等（第二次没有东西可清 ⇒ 返回 false），不需要开关防重入
+   * 现在：只碰 `job.ownerSessionId === ownerSessionId` 的 job（#654 已经把会话身份记在 job 上，判据现成）。
+   * 一次性开关去掉：清自己会话名下的东西本来就幂等（第二次没有东西可清 ⇒ 返回 false），不需要开关防重入
    * ——那个开关恰好就是「第一击之后再也不会清」的根源。
+   *
+   * ⚠ issue #875 S2：**这里不再清「这一份 job 生命周期上的全部定时器」**。那两根定时器**不同属**：
+   * 看门狗**归 run**（只有 settle / 到点 / cancel 能摘），投递重试**归投递**（`reload` 不摘）。
+   * 口径按下面的 `reason` 分流；`clearJobTimers` 只剩 settle / 到点 / cancel 三处在用。
    *
    * **没有归属的 job（`ownerSessionId === undefined`，即 `delivery:"no-owner"` 那一族）不归任何会话**，
    * 所以本函数**不清它们**（传空/缺 owner 时直接返回 false）：摘掉不属于自己的定时器不是清理，是破坏。
@@ -1337,10 +1359,18 @@ export function createAsyncRuntime(options = {}) {
    *
    * @param {string} [ownerSessionId] 触发 `session_shutdown` 的那个会话（#654 的 `sessionId`）
    * @param {object} [sessionHandle] **调用方自己那个**会话句柄（issue #800 判据 5）。递了才参与归属比较；
-   *   没递 = 调用方不认领归属，照旧 #658 清自己会话名下的 job（旧调用方不退）
-   * @returns {boolean} 这次是否真的清掉了东西（第二次调用 / 被归属挡下 ⇒ false）
+   *   没递 = 调用方不认领归属，照旧 #658 管自己会话名下的 job（旧调用方不退）
+   * @param {string} [reason] `session_shutdown` 的原因（issue #875 S2）。三条口径：
+   *   ① **看门狗一律不摘**（不分 reason）—— 它**归 run**：会话走了 run 可能还在跑，摘掉就没人再写终局，
+   *     `status.json` 永远停在 `running`；而 #875 第一刀之后这更重（卡在 running ⇒ `isActive()` 恒真
+   *     ⇒ 会话永不被回收）。
+   *   ② `reason === "reload"` ⇒ **一根都不摘**（含投递重试）：会话还在，新实例会以同一个 `sessionId`
+   *     重新登记句柄，那一档重试到点仍能投出去（摘掉就是 #875 复核 H1 的永久静默）。
+   *   ③ 其余 reason（`quit` / `dispose` / 未给）⇒ 只摘**投递重试**：owner 真走了，那一档投不出去会记
+   *     `orphaned` / `failed`，等下次 `session_start` 由 `requeueOrphaned` 补投（那一侧现在也收 `failed`）。
+   * @returns {boolean} 这次是否真的清掉了东西（第二次调用 / 被归属挡下 / `reload` ⇒ false）
    */
-  const shutdown = (ownerSessionId, sessionHandle) => {
+  const shutdown = (ownerSessionId, sessionHandle, reason) => {
     const owner = typeof ownerSessionId === "string" && ownerSessionId !== "" ? ownerSessionId : undefined;
     if (owner === undefined) return false;
     // 判据 5（issue #800）：迟到实例不得清**不属于它**的定时器。判据与判据 1 逐字同源：表里这一条
@@ -1360,8 +1390,16 @@ export function createAsyncRuntime(options = {}) {
         }
         continue;
       }
-      if (job.watchdog !== undefined || job.notifyRetry !== undefined) cleared += 1;
-      clearJobTimers(job);
+      // 记账口径不变：被**真清掉**才算一次（用于幂等断言）。
+      // 看门狗**一律不摘**（归 run）：会话走了 run 可能还在跑，摘了就没人写终局 ⇒ status.json 永远 running，
+      // 而且上一刀之后它还会让 isActive() 恒真、把会话钉死在内存里。
+      // 投递重试：`reload` 不摘（会话还在，新实例会以同一个 sessionId 重新登记句柄，那一档到点仍能投出去）；
+      // 其余 reason（quit / dispose）摘掉 —— owner 真走了，投递会记 orphaned，等下次 `session_start` 由
+      // `requeueOrphaned` 补投（那一侧现在也收 `failed`，见 `requeueOrphaned`）。
+      if (reason !== "reload" && job.notifyRetry !== undefined) {
+        clearNotifyRetry(job);
+        cleared += 1;
+      }
     }
     return cleared > 0;
   };

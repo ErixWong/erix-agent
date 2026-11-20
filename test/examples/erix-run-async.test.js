@@ -757,7 +757,7 @@ test("#234 机制3：唤醒策略 —— quiet 的成功完成不唤醒，失败
 // 机制 6：session_shutdown 幂等清理 + 落盘面的 artifacts 口径
 // ---------------------------------------------------------------------------
 
-test("#658：shutdown 按会话归属收口 —— A 的 session_shutdown 只清 A 的定时器（B 的看门狗还在，到点仍写 aborted），幂等", async () => {
+test("#658/#875：shutdown 按会话归属收口 —— A 的 session_shutdown 不动 B 的任何定时器；看门狗归 run，quit 也不摘", async () => {
   const clock = fakeClock();
   const sessionDir = await tempDir("erix-run-658-shutdown-");
   const sessionHandles = jobsApi.createSessionHandleRegistry();
@@ -783,19 +783,24 @@ test("#658：shutdown 按会话归属收口 —— A 的 session_shutdown 只清
   assert.notEqual(jobA.watchdog, undefined, "派工后定时器必须在");
   assert.notEqual(jobB.watchdog, undefined);
 
-  // 会话 A 走了：只清 A 的。修前这里清的是 `registry.list()`（全进程），B 会被一起摘掉。
-  assert.equal(runtime.shutdown("658-A"), true);
-  assert.equal(jobA.watchdog, undefined, "A 自己的看门狗要清掉");
+  // 会话 A 走了：只碰 A 的。修前这里碰的是 `registry.list()`（全进程），B 会被一起摘掉。
+  // issue #875 S2：这里返回 **false** —— 这两条 job 都挂在 `gatedJob()` 上（永不 settle）⇒ 手里没有
+  // 投递重试，而看门狗**归 run**（会话事件一律不摘）⇒ 本次无可清的。
+  assert.equal(runtime.shutdown("658-A"), false, "这两条 job 都没有投递重试 ⇒ 没有可清的（看门狗归 run）");
+  assert.notEqual(jobA.watchdog, undefined, "看门狗归 run：会话 quit 也不摘（摘了就没有任何路径再写终局）");
   assert.notEqual(jobB.watchdog, undefined,
     "B 的看门狗不能被 A 的 session_shutdown 摘掉（#658 修前这条必红：任一会话的 /new·/resume·/reload 都摘全进程）");
-  // 幂等：重复调用不重复清、不抛
-  assert.equal(runtime.shutdown("658-A"), false, "第二次调用没有东西可清（一次性开关换成按归属清之后，幂等靠「没东西可清」）");
+  // 幂等：重复调用不重复清、不抛（#875 S2 之后理由更强：本来就没东西可清）
+  assert.equal(runtime.shutdown("658-A"), false, "第二次仍是 false：本来就没东西可清（看门狗不归会话事件管）");
   assert.equal(runtime.shutdown("658-A"), false);
 
-  // 端到端事实：A 关掉之后，B 到点仍把终局写成 aborted 并落进 status.json
-  assert.equal(clock.tick(), true);
+  // 端到端事实：**两根**看门狗都还活着（A 的也没被摘）⇒ 到点各自把终局写成 aborted 并落进 status.json
+  assert.equal(clock.tick(), true, "A 的看门狗也还在（#875 S2：quit 不摘）");
+  assert.equal(jobA.status, "aborted", "A 自己的 run 到点也写了终局 —— 归 run，不归会话");
+  assert.equal(clock.tick(), true, "B 的看门狗同样到点");
   assert.equal(jobB.status, "aborted", "B 的超时终局还得发生（摘掉看门狗就不会有这一下）");
   assert.equal(jobB.timedOut, true);
+  assert.equal(clock.tick(), false, "只有两根 ⇒ 没有第三根定时器（会话事件一根也没摸掉）");
   const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: b.handle.runId }), "utf8"));
   assert.equal(disk.status, "aborted");
   assert.equal(disk.timeout, true, "盘上要读得到「是超时终局」，不能永远停在 running");
@@ -932,7 +937,8 @@ test("#659 第1格 / #658：重试定时器与看门狗是**同一份 job 生命
   assert.notEqual(job.notifyRetry, undefined);
   assert.equal(job.watchdog, undefined, "settle 已经把看门狗清了（同一个 `clearJobTimers`）");
 
-  // session_shutdown 必须把**新加的**这根定时器也清掉（两单合一的那条）
+  // session_shutdown 必须把**新加的**这根投递重试定时器也清掉（#875 S2：它归投递，quit 归它管；
+  // 看门狗归 run，本条 job 早已由 settle 清掉了）
   assert.equal(runtime.shutdown("659-life"), true);
   assert.equal(job.notifyRetry, undefined, "session_shutdown 要清投递重试定时器");
   assert.deepEqual(clock.pendingDelays(), [], "清完之后一根定时器都不剩");
@@ -1699,7 +1705,7 @@ test("#654 缺陷1 / #659 第4格：quit 摘句柄；reload 保留 —— 但 re
     // #659 第 1 格：这个窗口**有救回通道** —— 失败后已排下一档重投，由新实例重新登记的句柄接住。
     assert.notEqual(job.notifyRetry, undefined, "投失败必须排下一档重试（否则这个窗口永远静默）");
 
-    // #658 / #659 同一份清理：会话真的走了 ⇒ 这一档重试与看门狗一起被清（两单合一的那条）。
+    // 会话真的走了（quit）⇒ 投递重试摘掉（看门狗归 run，这一条 job 早已 settle 所以本来就没有）。
     reload.handlers.get("session_shutdown")({ reason: "quit" });
     assert.equal(job.notifyRetry, undefined, "session_shutdown 要清投递重试定时器");
     assert.equal(job.watchdog, undefined);
@@ -1884,12 +1890,13 @@ test("#800 判据5：同一个 sessionId 跨实例 ⇒ 旧实例迟到的 shutdo
   assert.equal(disk.status, "aborted");
   assert.equal(disk.timeout, true, "盘上要读得到「是超时终局」，不能永远停在 running");
 
-  // 对照：活实例自己走（归属**匹配**）⇒ 照旧 #658 清掉，别修成「谁也清不掉」。
+  // 对照：活实例自己走（归属**匹配**）⇒ 它该摘的那一根仍摘得掉，别修成「谁也清不掉」。
+  // #875 S2：这条 job 没有投递重试 ⇒ 本次**无可清的**（看门狗归 run，归属匹配的 quit 也不摸它）。
   const third = runtime.start(params, { sessionId: owner });
   const jobThird = runtime.registry.get(third.handle.runId);
   assert.notEqual(jobThird.watchdog, undefined);
-  assert.equal(runtime.shutdown(owner, handleB), true, "归属匹配时 quit 照常清自己会话名下的定时器");
-  assert.equal(jobThird.watchdog, undefined, "匹配的那次要真清掉");
+  assert.equal(runtime.shutdown(owner, handleB), false, "归属匹配、但这条 job 没有投递重试 ⇒ 没有可清的（看门狗归 run）");
+  assert.notEqual(jobThird.watchdog, undefined, "看门狗归 run：归属匹配的 quit 也不摸");
   assert.equal(jobView(jobThird).shutdownTimerSkips, 0, "匹配的清理事件不计数");
 });
 
