@@ -333,6 +333,94 @@
 
 - **fix(extension): a session with a background run in flight is no longer reaped as idle by pi-web (`erix_run`, `examples/pi-extension/`; issue #875).** The field shape: a detached run finished while nobody was looking, and its terminal summary reached the model **44 minutes** (second measured case: 867 minutes) late — only after a human reopened that session. The cause is not in this repository but in how we ignored it: pi-web runs N sessions in one Node process and reaps an idle one after `PI_WEB_IDLE_TIMEOUT_MS` (default 10 minutes) on the criterion `isRunning() || hasActiveProvider({sessionId, sessionFile})`, and a background `erix_run` is **not** `isRunning()` — the dispatching tool call returned long ago. The host ships a versioned contract for exactly this (`globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")]`), and the upstream `pi-subagents` already implements it; this repository never called it once. New `examples/pi-extension/erix-run-liveness.js` (zero `pi` import ⇒ `node --test` covers it) registers one provider per active session, mirroring the host's own validation (`name` pattern, non-empty `sessionId`/`sessionFile`, `isActive` a function) and declining **before** the host instead of using "the host throws" as the fallback path; it returns an **idempotent `release` bound to that one registration**, so a late event can never drop the successor's lease. `session_start` registers, `session_shutdown` releases **regardless of `reason` — `reload` included**: deliberately the opposite of the session-handle table's rule, because the host keys providers by `Symbol(name)` and a leaked `isActive` closure over a stale ctx fails *safe* into "preserve this session forever" (a leak, not a protection). The liveness predicate is `queued`/`running` jobs **∪** jobs whose completion notification still has a retry pending (that window is only 5/10/30 s, and it is exactly "the run finished, the notice did not land") **∪** an owed wake turn, filtered by the owner's own session id — never "the process has something running", which would make every session immortal. Registry absent (pi CLI, older pi-web) ⇒ `{registered:false, release:noop}`: no throw, no self-made table, behaviour identical to today. `sessionFile` is read behind a guard because every accessor of a stale ctx throws, and it is only a second matching dimension. **Unchanged**: `examples/pi-extension/erix-run-jobs.js` byte-for-byte (timer ownership, a `reason` on `shutdown`, `requeueOrphaned` accepting `failed` are the next cut) and `src/**` has zero changes. Pinned by `test/examples/erix-run-liveness.test.js` (14 cells over a fake registry that copies the host's validation and `Symbol(name)` bookkeeping verbatim, so both sides agreeing is not self-proof) plus three wiring cells at the end of `test/examples/erix-run-async.test.js` that load the real factory and drive the real `session_start` / `session_shutdown` handlers; both wiring cuts have their reverse proof (remove the registration ⇒ the host table stays empty; remove the release ⇒ the entry survives both a `reload` and a `quit`).
 - **fix(extension)：后台 run 在飞的会话不再被 pi-web 当空闲回收（`erix_run`，`examples/pi-extension/`；issue #875）。** 现场：一个后台 run 在无人的时候跑完，它的终稿 **44 分钟**（第二个实测样本 867 分钟）之后才到模型眼前 —— 而且只有等人重新点开那个会话才到。成因不在本仓，而在我们没用它：pi-web 在**一个 Node 进程里跑 N 个会话**，空闲 `PI_WEB_IDLE_TIMEOUT_MS`（默认 10 分钟）就回收，判据是 `isRunning() || hasActiveProvider({sessionId, sessionFile})`；而后台 `erix_run` **不算** `isRunning()`（派工那次工具调用早就返回了）。宿主为这件事给了版本化契约（`globalThis[Symbol.for("@agegr/pi-web/session-liveness/v1")]`），上游 `pi-subagents` 早已实现，本仓**一次都没调**。新增 `examples/pi-extension/erix-run-liveness.js`（不 import pi ⇒ `node --test` 可测），按会话注册一条 provider，**照抄宿主的校验口径**（`name` 正则、`sessionId`/`sessionFile` 非空、`isActive` 是函数），并且**在敲宿主门之前就先挡**，不拿「宿主会抛」当降级路径；返回的 `release` **幂等**且**绑这一次注册** ⇒ 迟到的事件放不掉后来者的 lease。`session_start` 注册，`session_shutdown` **不分 reason 一律放（含 `reload`）**：与句柄表那条「reload 不摘」的口径**故意相反** —— 宿主按 `Symbol(name)` 键存 provider，而旧实例漏下的那条 `isActive` 闭包捕获的 `ctx` 已失效，宿主侧报错后是 fail-safe **保留会话** ⇒ 那个会话从此永不被回收（是漏，不是保护）。活性判据 = `queued`/`running` 的 job **∪** 完成通知还有待投递重试的 job（这段窗口只有 5/10/30 秒，而它恰好就是「run 跑完了、通知没投出去」）**∪** 唤醒还欠着一轮，并且**按 owner 自己的会话 id 筛** —— 不是「进程里有活」（那会让所有会话永生）。registry 缺席（pi CLI / 老版本 pi-web）⇒ `{registered:false, release:noop}`：不抛、不自己造表，行为与今天逐字一致。`sessionFile` 的读口包了一层守卫（失效 ctx 的每个访问器都抛），而它只是宿主多一个匹配维度。**不变**：`examples/pi-extension/erix-run-jobs.js` 一个字节未动（定时器归属、给 `shutdown` 加 `reason`、`requeueOrphaned` 收 `failed` 是下一刀），`src/**` 零改动。钉住它的是 `test/examples/erix-run-liveness.test.js`（14 格，假 registry **逐字照抄**宿主的校验与 `Symbol(name)` 簿记，免得两边错在一起变成自证）与 `test/examples/erix-run-async.test.js` 末尾三格接线（真 factory + 真 `session_start` / `session_shutdown` handler），两刀都有反向证（拆掉注册 ⇒ 宿主表里空着；拆掉释放 ⇒ `reload` 与 `quit` 之后那一条还在）。
+- **fix(extension): the pi-web liveness contract is now judged against the host's own source,
+  not against a hand-transcribed fake (`test/examples/pi-web-liveness-contract.test.js`,
+  `fixtures/capture-pi-web-liveness-875.mjs`; issue #875).** What changed is the **reference**, not
+  the behaviour — `examples/pi-extension/erix-run-liveness.js` and `erix-run.ts` stay byte-for-byte
+  untouched. The previous cut proved "the transcription was faithful", not "the host really judges
+  this way": its fake registry was hand-copied from `pi-web:lib/session-liveness.ts`, so a
+  transcription error and a module error could agree and stay green — and that transcription had
+  already been wrong once (the ticket claimed the host runs `^[A-Za-z0-9_-]{1,64}$` on the provider
+  `name`; `validateProvider` only does `assertNonEmptyString`, that regex is a `HOLDER_PATTERN`
+  elsewhere). The reference is now the host's code: the capture script copies
+  `lib/session-liveness.ts` **verbatim** into
+  `test/fixtures/pi-web-session-liveness-e533d9b3.ts` (verified with `cmp`) and refuses to capture
+  unless the host checkout's `rev-parse HEAD` equals the pinned
+  `e533d9b3975f8a74b378d5007c92fdf4d15d3fba` **and** `status --porcelain` is empty **and** the file
+  is readable — all three reverse-proved (missing checkout / wrong HEAD / dirty tree / missing file
+  each exit 1 naming the reason). The sibling `.json` records the **measured** `rev-parse` and
+  `remote get-url origin`, the node version, and the sha256 of the **copied artifact**
+  (`d5426e9296803701d71b685de99246953ed381bf9f1a441bfdade63a5a714e64`). That source imports nothing,
+  so a runtime with type stripping (`process.features.typescript === "strip"`) can `import()` it
+  directly, and its module top level mounts the registry on `globalThis` itself — the contract file
+  therefore has **no fake registry**, deletes nothing in `beforeEach` (the host's `getRegistry()`
+  runs once at load), and drives 9 cells through the host's own `registerSessionLivenessProvider`
+  / `hasActiveSessionLivenessProvider`: the fixture bytes equal the registered sha256, our hand-copied
+  key equals the host's exported `SESSION_LIVENESS_REGISTRY_KEY`, and our resolver lands on that very
+  table; a real registration is answerable by the host while an unknown session id is not;
+  **`sessionHasLiveWork` is what the host consumes** and turns false when a job moves
+  `running → completed`; the `notifyRetry` window still counts as live and opens once the retry is
+  cleared; `release` is idempotent; A / B / unregistered-C stay separate; the `sessionFile` dimension
+  really reaches the host (`sessionId ∪ sessionFile`, and neither matching answers false); bad
+  parameters are declined by our own pre-check — with the host's `throw` measured first, and a
+  counting wrapper around the **real** `register` (with a control group, so a dead counter cannot
+  pass) proving the host's door was never knocked; and a provider whose `isActive` throws makes the
+  host answer `true` **and** log `preserving the session`, which is the fail-safe this extension
+  leans on. Cells skip for exactly one reason (a runtime without type stripping; measured with
+  `node --no-experimental-strip-types` ⇒ 9 skip, file still loads). Reverse proofs, both restored
+  with `git status --short` empty afterwards: replacing the registration in cell 1 with "no
+  registration" reddens that cell (`false !== true`), and commenting out the `notifyRetry` line of
+  `sessionHasLiveWork` reddens the contract cell **and** the older `#875 格9` together. Not touched:
+  the host checkout (the script only runs `rev-parse` / `status` / `remote get-url` and reads that
+  one file — `git status --porcelain` there is still empty). Open items, stated rather than smoothed
+  over: the captured tree is the host's **development** checkout and is **divergent** from the
+  installed 0.13.0, not simply newer — measured against the installed package's compiled
+  `.next/server/chunks/6429.js`, the 90 s selected-page lease (`SESSION_LIVENESS_LEASE_TTL_MS`) is
+  absent there while that registry carries a `list()` method this point lacks; what was verified
+  identical across the two is exactly the three things this repository depends on (`version === 1`,
+  `register(provider)` returning an idempotent `release`, `hasActiveProvider` matching by
+  `sessionId ∪ sessionFile` and answering true when a provider throws). And the fixture `.ts` lives
+  under `test/`, which bare `node --test` collects as a test file (measured on a minimal tree), so
+  the suite summary moves by the 9 cells **plus** one trivially-passing file — the registered
+  baseline is raised by the reviewer, not here.
+- **fix(extension)：pi-web 的活性契约现在拿宿主自己的源码判，不再拿手抄的假 registry 判（
+  `test/examples/pi-web-liveness-contract.test.js`、`fixtures/capture-pi-web-liveness-875.mjs`；
+  issue #875）。** 变的是**参照物**，不是行为 —— `examples/pi-extension/erix-run-liveness.js` 与
+  `erix-run.ts` 一个字节未动。上一单证的是「抄对了」，不是「宿主真按这个判」：那张假 registry 是我
+  从 `pi-web:lib/session-liveness.ts` 手抄出来的，拄错与写错可以方方相合一起绿 —— 而且它已经错过
+  一次（工单以为宿主对 provider `name` 跑 `^[A-Za-z0-9_-]{1,64}$`，实际 `validateProvider` 只做
+  `assertNonEmptyString`，那条正则是宿主另一处的 `HOLDER_PATTERN`）。现在参照物就是宿主的代码：
+  捕获脚本把 `lib/session-liveness.ts` **逐字**拷成
+  `test/fixtures/pi-web-session-liveness-e533d9b3.ts`（`cmp` 与源零差异），且只在宿主检出的
+  `rev-parse HEAD` **等于**钉死的 `e533d9b3975f8a74b378d5007c92fdf4d15d3fba`、`status --porcelain`
+  **为空**、源文件可读这三条全过时才写盘 —— 三条都做过反向证（检出不存在 / HEAD 不是捕获点 / 脏树 /
+  源文件缺失，各自 exit 1 并点名原因）。同名 `.json` 的 `_meta` 记的是**实测**的 `rev-parse` 与
+  `remote get-url origin`、node 版本，以及对**拷出来的产物**现算的 sha256
+  （`d5426e9296803701d71b685de99246953ed381bf9f1a441bfdade63a5a714e64`）。那份源码零 import，开着
+  type-stripping 的运行时（`process.features.typescript === "strip"`）能直接 `import()` 它，而它的
+  `getRegistry()` 在**模块顶层**跑 —— 所以契约文件里**根本没有假 registry**，也不在 `beforeEach` 里
+  删那个键（删了宿主不会重建），9 格全部拿宿主自己导出的 `registerSessionLivenessProvider` /
+  `hasActiveSessionLivenessProvider` 跑：fixture 字节 == 登记的 sha256、我们手抄的注册表键 ==
+  宿主导出的 `SESSION_LIVENESS_REGISTRY_KEY`、我们的读口认到的就是那张真表；真注册问得出、换一个
+  sessionId 问不出；**被宿主消费的就是我们的 `sessionHasLiveWork`**，job 从 `running` 改成
+  `completed` 它就转 false；`notifyRetry` 那段窗口仍算活、清掉就放开；`release` 幂等；A / B /
+  未注册的 C 各自隔离；`sessionFile` 这个维度真递到了宿主（`sessionId ∪ sessionFile`，两边都
+  不相干时答 false）；坏参数被我们自己的前置校验挡在门外 —— 先现场量到宿主会 `throw`，再拿一层
+  只计数的包装（被包的仍是宿主真实现，带对照组，免得死计数器假绿）证明确实一次也没敲宿主的门；
+  以及 `isActive` 抛错的 provider 会让宿主答 `true` **并**记一条 `preserving the session` —— 那正是
+  本扩展掎着的那个兜底。skip 只有一条理由（运行时缺 type-stripping；`node
+  --no-experimental-strip-types` 实测 9 格全 skip、文件仍能装载）。两条反向证事后都还原了，`git
+  status --short` 为空：把格 1 的注册换成「不注册」⇒ 那格红（`false !== true`）；把
+  `sessionHasLiveWork` 的 `notifyRetry` 那一行注释掉 ⇒ 契约那格与老表的 `#875 格9` 一起红。没动的：
+  宿主检出（脚本只跑 `rev-parse` / `status` / `remote get-url` 并读那一个文件，事后那棵树仍然
+  `status --porcelain` 为空）。**没验项如实写**：采的是宿主**开发检出**，与线上安装的 0.13.0 是
+  **分叉**而不是简单的新旧 —— 对着已装包的编译产物 `.next/server/chunks/6429.js` 量过：那 90 秒的
+  「选中页租约」（`SESSION_LIVENESS_LEASE_TTL_MS`）在 0.13.0 里**不存在**，而那边的 registry 上多一个
+  本捕获点没有的 `list()`；两版逐条对得上、而本仓真正依赖的就那三件事（`version === 1`、
+  `register(provider)` 返回幂等的 `release`、`hasActiveProvider` 按 `sessionId ∪ sessionFile` 匹配且
+  provider 抛错时答 true）。另：fixture 那份 `.ts` 住在 `test/` 下，裸 `node --test` 会把它当一个
+  测试文件收集（最小树上实测），所汇总数字除了 9 格外还多一个恒过的文件 —— 登记的测试基线由
+  评审者抬，不在本刀里改。
 
 - **The Chinese cold layer was missing the concurrent-judgment ban the English side got
   for issue #799.** `## gate-reproducibility` in `docs/maintenance/command-reference.md`
