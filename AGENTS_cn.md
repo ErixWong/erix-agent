@@ -134,7 +134,7 @@ npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → �
   `npm version <x.y.z> --no-git-tag-version`。
 - `package.json` 那一面：去掉 `private`、`repository.url` 用 `git+https://…` 形态、`files` 是一份很长的显式
   白名单（读 `package.json`，别抄）；用 `npm publish --dry-run` 看产物 ⇒
-  `docs/maintenance/command-reference_cn.md#publish-prerequisites` 与 `#npm-policy`。随包安装应列出 **92** 个
+  `docs/maintenance/command-reference_cn.md#publish-prerequisites` 与 `#npm-policy`。随包安装应列出 **93** 个
   `.d.ts`（`prepack` 生成，由 `npm run check:pack-links` 对账）。
 - **打 tag 之前有两步是人工的**（锚点只覆盖有人登记过的维度）：① 手工走一遍**默认值**、**数字**与**名称集合**
   这三类声称，范围是两份 README、两份 AGENTS 与两份契约文档；② 如果 `check:changelog` 打了 `unattributed` 提示，
