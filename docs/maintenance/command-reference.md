@@ -72,6 +72,19 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   The measurement log that used to sit in this parenthetical — every past reading, merge by merge, with the tree
   it came from — now lives in `docs/maintenance/symbol-anchor-ledger.md`. That file is history, not current state;
   nothing on this page restates it.
+  *`symbol-shape`* (issue #755) covers the two **other** ways a document writes a symbol coordinate, both of
+  which used to be invisible to `symbol-anchor`: **S2** `` `path`: `sym` and `sym` `` (file first, colon, one or more
+  backticked symbols — the #755 field shape was `src/loop/tool-result-ttl.js`: `stubFor` and `placeholderFor`,
+  neither of which exists in that file) and **S3** a single code span holding `path:sym`. Same declaration table as
+  `symbol-anchor` minus `X:` (object keys are *not* accepted here: S2/S3 are one notch stricter than S1, because the
+  colon form is what makes an object key look like a symbol). Path prefixes are an explicit registry
+  (`src/` `bin/` `scripts/` `test/` `examples/` `fixtures/`), and references into another repository
+  (`EXTERNAL_REPO_PREFIXES`) are not looked up. Prose that names a symbol **without** a file is deliberately out of
+  scope — there is nothing to check it against. Existing violations are pinned by `SYMBOL_EXISTENCE_BASELINE`, an
+  **only-down** ratchet with the same semantics as `check:types`: above it is red (the message names each
+  document:line, symbol and file), below it is green plus a "you may lower this" note, and `--verbose` lists every
+  remaining group so the baseline can actually be worked down. Three `--self-test` cases hold it: a fake S2 symbol is
+  red, the same position with two real exports is green, and an external-repo prefix is not looked up.
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
   **carries a line range** — `` `symbol` (`path:1517-1531`) `` — that range must **intersect that symbol's own ground
   truth in the referenced file** (`lo <= p <= hi`). Ground truth = every declaration site of the name (not only the
