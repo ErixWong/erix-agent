@@ -2785,7 +2785,11 @@ const SYMBOL_SHAPE_DIR_PREFIXES = Object.freeze(["src/", "bin/", "scripts/", "te
 const SYMBOL_SHAPE_NOT_A_DECLARATION = "对象键/类字段";
 
 /** 路径那一段（带目录前缀登记 + JS/TS 扩展名 + 可选行号尾巴 + 可选 `<仓名>:` 前缀）。 */
-const SYMBOL_SHAPE_PATH_SRC = `(?:\\./|\\.\\./)*(?:${SYMBOL_SHAPE_DIR_PREFIXES.map(esc).join("|")})[A-Za-z0-9_./-]+\\.(?:js|mjs|cjs|ts)`;
+// #755 阻断A：目录段的备选里加了 `[A-Za-z0-9_.-]+/`（任意「一个目录段 + /」）——原来只认登记前缀，于是
+// 「路径 + 冒号 + 符号」但目录没登记（`foo/bar.js`: `sym`）根本匹配不上、被静默忽略。加上这一备选后这类形状
+// 也能被抽成坐标，交给 `symbolShapeOccurrencesInText` 的 push 去分「登记 / 逃仓 / 未登记目录」三档。
+// 仍要求**至少一个斜杠目录段**（登记前缀或 `X/`），所以根级裸名 `foo.js` 不匹配，不给散文造噪声。
+const SYMBOL_SHAPE_PATH_SRC = `(?:\\./|\\.\\./)*(?:${SYMBOL_SHAPE_DIR_PREFIXES.map(esc).join("|")}|[A-Za-z0-9_.-]+/)[A-Za-z0-9_./-]+\\.(?:js|mjs|cjs|ts)`;
 const SYMBOL_SHAPE_REPO_SRC = "(?:([a-z][a-z0-9_-]{1,30}):)?";
 /** S2：`` `path`: `` / `` `path`： `` ——冒号在**反引号外面**，符号列举在冒号后面。 */
 const SYMBOL_SHAPE_S2_RE = new RegExp(
@@ -2805,13 +2809,22 @@ const SYMBOL_SHAPE_REF_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
  *  取首段而非末段：坐标指向文件里那个真符号本身；`.call`/`.bind` 这类原型成员人尽皆有，拿末段查会让
  *  `stubFor.call` 因 `call` 命中而假绿（#755 判据②：`noteWriteEvidence.call` 绿、`stubFor.call` 红）。 */
 const symbolShapeLookup = (sym) => sym.split(".")[0];
-/** #755 阻断②：判前先剥前导 `./`（以及 `../`）；剥完仍须落在登记前缀面内才算坐标（`../` 逃仓就不算）。 */
+/** #755 阻断②／阻断A：判前先剥前导 `./` 与 `../`。
+ *  #755 阻断A 的修法：**循环剥到底**，不再用旧的 `for (guard < 8)`——那会在 9 层以上的 `../` 前缀前停下，
+ *  留下没剥净的 `../` ⇒ 路径不再以登记前缀开头 ⇒ 被调用方当成「逃仓/非坐标」静默忽略、绕过检查（这正是
+ *  阻断A 的绕过口）。返回值改成一个对象 `{ path, up }`，`up` = 一路剥掉的 `../` 层数，供调用方判「逃仓」：
+ *   · `up >= 1` 且剥完仍不落在登记面内 ⇒ 这条 `../` 是往仓根**外面**爬的（如 `../outside/x.js`）⇒ 照旧**不算坐标**
+ *     （不查、不红；这条由自测里「`../outside/x.js`: `foo` ⇒ 必须不红」钉住）；
+ *   · `up === 0`（纯仓内相对路径，没有 `../`）剥完仍不在登记面内 ⇒ 是「**未登记的目录**」⇒ 调用方报红并点名首段，
+ *     **不许静默忽略**（`foo/bar.js`: `sym` 就得红并点名 `foo/`）。
+ *  深 `../` 但剥完仍落进登记面（如 9 层 `../` + `src/loop/x.js`）⇒ 仍是坐标，照查符号（查不到就红）。 */
 function symbolShapeNormalizePath(p) {
   let q = p;
-  for (let guard = 0; guard < 8 && (q.startsWith("./") || q.startsWith("../")); guard += 1) {
-    q = q.slice(q.startsWith("../") ? 3 : 2);
+  let up = 0;                                                       // 一路剥掉的 `../` 层数（逃仓判据要用）
+  while (q.startsWith("./") || q.startsWith("../")) {               // #755 阻断A：循环剥到底（旧写法 guard<8 会漏判 9 层以上）
+    if (q.startsWith("../")) { q = q.slice(3); up += 1; } else { q = q.slice(2); }
   }
-  return q;
+  return { path: q, up };
 }
 
 /** 从冒号右侧扫符号列举（最多 12 个，防呆）。返回符号名与它在行内的字符区间（自测定点变异要用）。 */
@@ -2841,11 +2854,19 @@ function symbolShapeOccurrencesInText(text, doc) {
   const found = [];
   let lineStart = 0;
   const push = (o, line, at) => {
-    const file = symbolShapeNormalizePath(o.file);              // #755 阻断②：先剥 ./ ../ 前缀再按登记前缀判
-    if (!SYMBOL_SHAPE_DIR_PREFIXES.some((p) => file.startsWith(p))) return;   // 剥完不在登记面内（`../` 逃仓）⇒ 不是坐标
-    if (file.endsWith(".d.ts")) return;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
-    const lookup = symbolShapeLookup(o.sym);         // #755 阻断②：点号链取首段（宿主符号）查声明（报错仍用原名 o.sym）
+    const norm = symbolShapeNormalizePath(o.file);      // #755 阻断A：循环剥到底，并记下 ../ 层数（返回 {path, up}）
+    const file = norm.path;
+    if (file.endsWith(".d.ts")) return;                 // 生成物声明文件不入库（#213），拿它当被引文件必然假红
+    const lookup = symbolShapeLookup(o.sym);            // #755 阻断②：点号链取首段（宿主符号）查声明（报错仍用原名 o.sym）
     if (SYMBOL_NOT_SYMBOL.has(o.sym) || SYMBOL_NOT_SYMBOL.has(lookup)) return;   // JavaScript 字面量不是符号（沿用既有名单）
+    const registered = SYMBOL_SHAPE_DIR_PREFIXES.some((p) => file.startsWith(p));
+    if (!registered) {
+      // #755 阻断A：剥到底仍不落在登记前缀面内，形状确实是「路径 + 冒号 + 符号」——**不许静默忽略**，分两档：
+      if (norm.up >= 1) return;                         // ① 带 `../` 往仓外爬 ⇒ 逃仓，照旧不算坐标（不查、不红；自测钉住）
+      const dir = file.includes("/") ? file.slice(0, file.indexOf("/") + 1) : file;   // ② 未登记的目录，点名首段（`foo/bar.js` ⇒ `foo/`）
+      found.push({ ...o, file, lookup, doc, line, unregisteredDir: dir, start: lineStart + at, end: lineStart + at + o.sym.length });
+      return;
+    }
     found.push({ ...o, file, lookup, doc, line, start: lineStart + at, end: lineStart + at + o.sym.length });
   };
   for (const [i, line] of text.split("\n").entries()) {
@@ -2945,6 +2966,7 @@ function collectSymbolShapeErrors() {
   const docs = refScanDocs();
   const occurrences = symbolShapeOccurrences(docs);
   const groups = new Map();      // `${doc}|${sym}|${file}` → 一处坐标 + 它的全部引用处（逐处点名）
+  const unregDirs = new Map();   // #755 阻断A：`${doc}|${dir}` → 指向未登记目录的坐标（另走一条红，不计入 miss 基线）
   let s2 = 0;
   let s3 = 0;
   let extSkipped = 0;
@@ -2959,6 +2981,13 @@ function collectSymbolShapeErrors() {
       continue;
     }
     const key = `${o.doc}|${o.sym}|${o.file}`;
+    if (o.unregisteredDir) {
+      // #755 阻断A：未登记目录的坐标不进 miss 分组（不进基线），单独归并后点名该目录。
+      const ukey = `${o.doc}|${o.unregisteredDir}`;
+      if (!unregDirs.has(ukey)) unregDirs.set(ukey, { doc: o.doc, line: o.line, dir: o.unregisteredDir, sym: o.sym, file: o.file, form: o.form, sites: [] });
+      unregDirs.get(ukey).sites.push(`${o.doc}:${o.line}`);
+      continue;
+    }
     if (!groups.has(key)) groups.set(key, { doc: o.doc, line: o.line, sym: o.sym, lookup: o.lookup ?? o.sym, file: o.file, form: o.form, sites: [] });
     groups.get(key).sites.push(`${o.doc}:${o.line}`);
   }
@@ -2988,6 +3017,14 @@ function collectSymbolShapeErrors() {
   for (const m of misses) {
     notes.push(`symbol-shape: miss ${m.sites.join(", ")} 引用 \`${m.sym}\`（\`${m.file}\`，${m.form}）—— ${m.why}`
       + `${m.near?.length ? `；相近的真实符号：${m.near.join(" / ")}` : ""}`);
+  }
+  // #755 阻断A：指向未登记目录的坐标——**不许静默忽略**，无条件报红并点名目录（不走基线棘轮：它是形状错，
+  // 不是符号存在性 miss，所以不影响 `measured`/`SYMBOL_EXISTENCE_BASELINE`）。
+  for (const d of unregDirs.values()) {
+    out.push(`symbol-shape: ${d.sites.join(", ")} 在 \`${d.file}\`: \`${d.sym}\`（${d.form}）里指向了一个**未登记的目录** \`${d.dir}\`——`
+      + `S2/S3 的目录前缀只登记了 ${SYMBOL_SHAPE_DIR_PREFIXES.join(" ")}，\`${d.dir}\` 不在其中。`
+      + "要么把路径改成仓里真正在登记面内的位置，要么把该目录登记进 `SYMBOL_SHAPE_DIR_PREFIXES`（并说明它为什么属于覆盖面）。"
+      + "（这一例要的是「点名未登记的目录规则」，不是「文档漂移/无法裁决」那类误报，也不是符号存在性 miss。）");
   }
   notes.push(`symbol-shape: 覆盖面 ${docs.length} 份文档里 S2（路径先行）${s2} 处 / S3（path:symbol）${s3} 处，`
     + `唯一 (文档,符号,文件) ${groups.size} 组；外仓前缀跳过 ${extSkipped} 处（未登记前缀 ${extUnknown} 处已红）；`
@@ -9602,6 +9639,41 @@ const SELF_TEST_CASES = [
     label: "#755 变异器空转证：靶子（S2/S3 里不存在的坐标）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
     overlay: { [CONTRACT_EN]: mutateSymbolShape("zzProbeNoSuchShapeSymbol", "src/loop/tool-result-ttl.js", "anything") },
     expectMutateMiss: true,
+  },
+
+  // —— #755 第三轮：阻断A（相对前缀剥到底 / 未登记目录报红 / 逃仓不算）与阻断B（参数解构只认真函数位）——
+  {
+    label: "#755 阻断A 判据1 深 `../`（9 层）剥到底后仍落登记面⇒必须红（旧 guard<8 会漏判）：`../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor`",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor` 是 9 层 ../ 前缀的坐标。") },
+    expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`/, /没有 `stubFor` 的声明/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 阻断A 判据2 未登记目录不许静默忽略：`foo/bar.js`: `zzUnregDirProbe`⇒必须红并点名未登记的目录 `foo/`",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`foo/bar.js`: `zzUnregDirProbe` 指向一个没登记的目录。") },
+    expect: [/未登记的目录/, /`foo\/`/, /zzUnregDirProbe/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 阻断A 判据3 `../` 逃仓不算坐标：`../outside/x.js`: `zzEscapeProbe`⇒symbol-shape 必须不判它（无「未登记的目录」、无引用该符号的红；paths 锚点那条「无法裁决」与本判据无关）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`../outside/x.js`: `zzEscapeProbe` 逃到仓外，不算坐标。") },
+    expect: [/无法裁决/],
+    reject: [/未登记的目录/, /`zzEscapeProbe`/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 阻断B 反向证：把 `if ({ zzProbeControlKeyword }) {}` 注进 tool-result-ttl.js ⇒ 控制语句头的 `({…})` 不是参数解构⇒引 `zzProbeControlKeyword` 必须红（修前被登记成声明⇒假绿）",
+    overlay: {
+      "src/loop/tool-result-ttl.js": (t) => `${t}\nif ({ zzProbeControlKeyword }) {}\n`,
+      [AGENTS_EN]: mentionInProse("自测探针（#755 阻断B）：`src/loop/tool-result-ttl.js`: `zzProbeControlKeyword` 只出现在 `if ({…}) {}` 里。"),
+    },
+    expect: [/引用 `zzProbeControlKeyword`（`src\/loop\/tool-result-ttl\.js`/, /没有 `zzProbeControlKeyword` 的声明/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 阻断B 放行证：真函数参数解构仍被认：`src/loop/budget.js`: `toolContext` 与 `expert`（`toolContextFor({…})` 的多行参数解构）⇒必须 0 错（收紧正则没误伤真声明）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断B）：`src/loop/budget.js`: `toolContext` 与 `expert` 是函数参数解构。") },
+    expectGreen: true,
   },
 
   // —— #299：注释与字符串里的同名**不算**声明（符号抽取只看代码面）——
