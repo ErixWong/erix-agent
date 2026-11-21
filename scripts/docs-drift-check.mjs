@@ -9624,9 +9624,12 @@ const SELF_TEST_CASES = [
     expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`，S2/, /没有 `stubFor` 的声明/],
     expectFiles: [AGENTS_EN],
   },
+  // 标签修正（#755 第三轮）：此例旧标签写「取末段」与实现/判据相反。正确是**取首段**（宿主符号）：
+  // 末段 `call` 在 `src/loop/tool-result-ttl.js` 里真有 `const call`（第 589 行）⇒ 按末段查会让
+  // `stubFor.call` 也命中 `call` ⇒ 假绿；只有取首段（`noteWriteEvidence` 第 148 行真有）才能既绿真声明、又红假声明。
   {
-    label: "#755 判据②a 点号符号取末段去查：`src/loop/tool-result-ttl.js`: `noteWriteEvidence.call` ⇒ 必须 0 错（`noteWriteEvidence` 真存在）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `noteWriteEvidence.call` 点号取末段就能查到。") },
+    label: "#755 判据②a 点号符号取首段去查：`src/loop/tool-result-ttl.js`: `noteWriteEvidence.call` ⇒ 必须 0 错（首段宿主 `noteWriteEvidence` 真存在）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `noteWriteEvidence.call` 点号取首段就能查到。") },
     expectGreen: true,
   },
   {
