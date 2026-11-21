@@ -64,8 +64,13 @@ const GLOB_CHARS = /[*?[\]{}]/;
 function tokenize(command) {
   /** @type {Token[]} */
   const tokens = [];
-  /** 行内尚未收尾的词。 */
-  let word = null;
+  /**
+   * 行内尚未收尾的词：`word` 是正在攒的词（`null` = 还没有词）。
+   * 初始化处用类型断言而不是 `@type` 注释：`startWord` / `flush` 闭包里的赋值 CFG 看不见，
+   * 注释声明会被控制流收窄钉死成字面量 `null`，每条 `word += …` 都成 TS2322；
+   * 声明处断言让收窄保持为 `string|null`（纯类型层，零运行时变化）。
+   */
+  let word = /** @type {string|null} */ (null);
   let wordQuoted = false;
   let wordExpansion = false;
   let wordStart = 0;
@@ -75,6 +80,7 @@ function tokenize(command) {
   let truncated = false;
   let i = 0;
 
+  /** @param {number} at 词收尾的位置（下标） */
   const flush = (at) => {
     if (word !== null) {
       tokens.push({ type: "word", value: word, quoted: wordQuoted, expansion: wordExpansion, start: wordStart, end: at });
@@ -83,6 +89,10 @@ function tokenize(command) {
       wordExpansion = false;
     }
   };
+  /**
+   * @param {string} value 控制符文本
+   * @param {number} at 起始位置（下标）
+   */
   const pushOp = (value, at) => {
     flush(at);
     tokens.push({ type: "op", value, start: at, end: at + value.length });
@@ -363,7 +373,13 @@ function tokenize(command) {
   return { tokens, truncated };
 }
 
-/** 把 fd 前缀（`2>` 里的 `2`）从词里摘掉：它紧贴着重定向符，不是操作数。 */
+/**
+ * 把 fd 前缀（`2>` 里的 `2`）从词里摘掉：它紧贴着重定向符，不是操作数。
+ *
+ * @param {Token} token
+ * @param {Token|undefined} next
+ * @returns {boolean}
+ */
 function isFileDescriptorPrefix(token, next) {
   return token.type === "word"
     && !token.quoted
@@ -373,7 +389,12 @@ function isFileDescriptorPrefix(token, next) {
     && next.start === token.end;
 }
 
-/** 按控制符切段：一段 = 一条简单命令。 */
+/**
+ * 按控制符切段：一段 = 一条简单命令。
+ *
+ * @param {Token[]} tokens
+ * @returns {Token[][]}
+ */
 function splitSegments(tokens) {
   /** @type {Token[][]} */
   const segments = [[]];
@@ -421,7 +442,12 @@ const SED_VALUE_OPTIONS = new Set(["-e", "--expression", "-f", "--file", "--deli
 /** `tee` 没有取值选项（`-a` 是开关）。 */
 const NO_VALUE_OPTIONS = new Set();
 
-/** 摘掉紧贴重定向符的 fd 前缀（`cmd 2>err.log` 里的 `2` 不是操作数）。 */
+/**
+ * 摘掉紧贴重定向符的 fd 前缀（`cmd 2>err.log` 里的 `2` 不是操作数）。
+ *
+ * @param {Token[]} tokens
+ * @returns {Token[]}
+ */
 function stripFdPrefixes(tokens) {
   /** @type {Token[]} */
   const cleaned = [];
@@ -452,6 +478,10 @@ export function parseExecCommandWrites(command, options = {}) {
   /** @type {{path:string, via:string}[]} */
   const targets = [];
   let hasWriteForm = false;
+  /**
+   * @param {Token} token
+   * @param {string} via 写形态（`EXEC_WRITE_VIA` 之一）
+   */
   const pushTarget = (token, via) => {
     hasWriteForm = true; // 目标解析不出来也要计数：那是「有写、我不全知道」（甲的计数面）
     const resolved = resolveTargetPath(token, resolveOptions);
@@ -499,9 +529,15 @@ export function parseExecCommandWrites(command, options = {}) {
   return { hasWriteForm, targets };
 }
 
-/** 段首的「命令词」：跳过 `VAR=value` 前置赋值与 `sudo`/`env` 这类包装词。 */
+/**
+ * 段首的「命令词」：跳过 `VAR=value` 前置赋值与 `sudo`/`env` 这类包装词。
+ *
+ * @param {Token[]} words 只收 word 词（调用方都先按 `type === "word"` 过滤过）
+ * @returns {Token|null}
+ */
 function commandWordOf(words) {
   for (const token of words) {
+    if (token.type !== "word") continue; // 收窄用（op 词没有 `quoted` 键）；调用方传的都是 word，此分支实际不发生
     if (token.quoted) return token; // 引号包起来的不是赋值
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.value)) continue;
     if (WRAPPER_WORDS.has(path.posix.basename(token.value))) continue;
@@ -516,6 +552,7 @@ function commandWordOf(words) {
  * @param {Token[]} words
  * @param {Token|null} commandToken
  * @param {Set<string>} valueOptions 需要吃掉下一个词的选项
+ * @returns {Token[]}
  */
 function operandsAfter(words, commandToken, valueOptions) {
   if (commandToken === null) return [];
@@ -528,7 +565,7 @@ function operandsAfter(words, commandToken, valueOptions) {
       expectValue = false;
       continue;
     }
-    if (token.quoted) {
+    if (token.type === "word" && token.quoted) {
       operands.push(token);
       continue;
     }
@@ -548,18 +585,28 @@ function operandsAfter(words, commandToken, valueOptions) {
  *
  * 短选项串里的 `i` 一律算就地改（`sed -ni 's/x/y/' f` 是真的在改 `f`）；长选项只认精确的
  * `--in-place`，否则 `--version` 这种词里也带 `i`。
+ *
+ * @param {Token[]} words
+ * @returns {boolean}
  */
 function hasInPlaceOption(words) {
   return words.some((token) => {
-    if (token.quoted || !token.value.startsWith("-")) return false;
+    // `token.type !== "word"` 是收窄（op 词没有 `quoted` 键）；op 值也不匹配下面任何模式，判定不变。
+    if (token.type !== "word" || token.quoted || !token.value.startsWith("-")) return false;
     if (token.value.startsWith("--")) return token.value === "--in-place" || token.value.startsWith("--in-place=");
     return /^-[A-Za-z]*i[A-Za-z]*(\.|=|$)/.test(token.value);
   });
 }
 
-/** `-e SCRIPT` / `--expression SCRIPT`：有它时非选项参数**全**是文件。 */
+/**
+ * `-e SCRIPT` / `--expression SCRIPT`：有它时非选项参数**全**是文件。
+ *
+ * @param {Token[]} words
+ * @returns {boolean}
+ */
 function hasExpressionOption(words) {
-  return words.some((token) => !token.quoted && (token.value === "-e" || token.value === "--expression"));
+  // 收窄用（op 词没有 `quoted` 键）；op 值永远不等于 `-e` / `--expression`，判定不变。
+  return words.some((token) => token.type === "word" && !token.quoted && (token.value === "-e" || token.value === "--expression"));
 }
 
 /**
