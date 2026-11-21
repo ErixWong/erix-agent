@@ -51,6 +51,9 @@ const ADDITIVE_PAYLOAD_KEYS = [
   "filesWrittenTruncated",
   "fileWrites",
   "fileWritesTruncated",
+  "fileWritesBlind", // 只有「跑过 exec 且台账为空」时出现（#386 之后的粗旗）
+  "execWriteCount", // issue #711：只有「出现写形态的 exec 命令数 > 0」时出现
+  "fileWritesBlindToExec", // issue #711：只有「有写形态而台账里没有 exec 来源条目」时出现
   "toolStats",
   "toolStatsTruncated",
   "taskBrief",

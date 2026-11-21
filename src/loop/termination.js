@@ -1,6 +1,7 @@
 import { markStablePrefix } from "./provider-runner.js";
 import { answerPendingTailToolUses } from "./pending-tool-result.js";
 import { runDeliverables } from "./deliverables.js";
+import { EXEC_TOOL_NAME } from "./exec-writes.js";
 import { tryParseWrapupJson } from "../reflection/wrapup.js";
 import { validateMessages } from "../messages/rounds.js";
 import { cloneState } from "./budget.js";
@@ -220,6 +221,10 @@ function plainFileWrites(fileWrites, limit) {
       path: String(entry.path ?? ""),
       round: Number.isFinite(entry.round) ? entry.round : null,
       tool: typeof entry.tool === "string" ? entry.tool : "",
+      // issue #711 乙：第四个键只在 **exec 来源**条目上出现（`heredoc` / `redirect` / `tee` / `sed-i`）。
+      // 写工具条目**不写**这个键：#386 的纪律是「探不到就不写」，不是补一个 `""`，
+      // 而且写工具条目的形状已被既有用例逐字钉住（不得回改）。
+      ...(typeof entry.via === "string" && entry.via !== "" ? { via: entry.via } : {}),
     });
   }
   const kept = rows.slice(Math.max(0, rows.length - limit));
@@ -252,6 +257,12 @@ function plainSelfReport(raw, findings, limit) {
     summaryTruncated: summary.truncated,
     outputTruncated: output.truncated,
   };
+}
+
+/** 台账里有没有**任何** `exec` 来源条目（#711 `fileWritesBlindToExec` 判据的后半边）。 */
+function hasExecSourcedWrite(fileWrites) {
+  return Array.isArray(fileWrites)
+    && fileWrites.some((entry) => entry !== null && typeof entry === "object" && entry.tool === EXEC_TOOL_NAME);
 }
 
 /**
@@ -293,6 +304,16 @@ export function buildFinalGuardPayload(ctx, reason, detail, attempt) {
     if (writes.truncated) payload.fileWritesTruncated = true;
   }
   if (isFileWritesBlind(ctx.toolStats, ctx.fileWrites)) payload.fileWritesBlind = true;
+  // issue #711：exec 写形态的两面（**计数面**与**盲区面**），都是加法键，探不到就不写。
+  //   - `execWriteCount`：出现写形态（heredoc / `>` / `>>` / `tee` / `sed -i`）的 exec **命令条数**，
+  //     解析不出目标也算 —— 它说的是「这里有写、我不全知道」，不是「我写了几次文件」。
+  //   - `fileWritesBlindToExec`：上面数出来 > 0，而台账里**一条 exec 来源条目都没有**
+  //     ⇒ 台账对 exec 是瞎的，宿主别把「台账没东西」读成「没写文件」。
+  // 与 #386 的 `fileWritesBlind` 并存不合并：那条是「台账完全空 + 跑过 exec」的粗旗，
+  // 这条是「读过命令内容」的细旗（见 `isFileWritesBlind` 的分工注释）。裁决一字未动。
+  const execWriteCount = Number.isSafeInteger(ctx.execWriteCount) && ctx.execWriteCount > 0 ? ctx.execWriteCount : 0;
+  if (execWriteCount > 0) payload.execWriteCount = execWriteCount;
+  if (execWriteCount > 0 && !hasExecSourcedWrite(ctx.fileWrites)) payload.fileWritesBlindToExec = true;
   const stats = plainToolStats(ctx.toolStats, FINAL_GUARD_PAYLOAD_LIMITS.toolStats);
   if (stats !== null) {
     payload.toolStats = stats.stats;
@@ -871,9 +892,22 @@ export const FORCED_FINAL_FALLBACK_TEXT =
   + " conclusion to report. This text is an engine-generated placeholder, not model output, and must"
   + " not be treated as a result.";
 
-/** @param {unknown} toolStats @param {unknown} fileWrites */
+/**
+ * 台账为空、且本 run 跑过 `exec` ⇒ 「引擎看不见 exec 写了什么」（payload 键 `fileWritesBlind`，
+ * 会随 run-state 落盘）。
+ *
+ * 与 issue #711 的 `fileWritesBlindToExec` **分工**（两面都在，不许合并成一个）：
+ *   - 本函数**不读命令内容**：只要「台账完全空 + 有 exec 调用」就举旗，所以一条纯只读的
+ *     `rg foo` 也会举旗（保守、宁多勿少，#386 的口径）；
+ *   - `fileWritesBlindToExec` **读过命令内容**：只在「确实出现写形态且台账里没有 exec 来源
+ *     条目」时举旗，所以纯只读的 exec 不会举它的旗，而 `> "$OUT"` 这种「有写但读不出目标」
+ *     一定会举。
+ * 两者都不改裁决；宿主拿到的都是「这份台账能不能当完整清单用」的事实。
+ *
+ * @param {unknown} toolStats @param {unknown} fileWrites
+ */
 export function isFileWritesBlind(toolStats, fileWrites) {
-  const execCalls = toolStats instanceof Map ? toolStats.get("exec")?.calls : undefined;
+  const execCalls = toolStats instanceof Map ? toolStats.get(EXEC_TOOL_NAME)?.calls : undefined;
   return Array.isArray(fileWrites)
     && fileWrites.length === 0
     && Number.isFinite(execCalls)

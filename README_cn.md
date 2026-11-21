@@ -151,6 +151,7 @@ src/
     termination.js                 终态归类
     final-text-shape.js            终稿形态判据：终稿正文是一段被文本化的工具调用（共享特征集，出口给宿主复用）（issue #862）
     deliverables.js                宿主声明的交付物判据（finalGuard 之前的机器闸门）
+    exec-writes.js                 从 exec 的 command 里读写形态：计数面与能解析的目标（#711）
     pending-tool-result.js         注入控制文本前结清尾部悬空 tool_use 的共享实现（issue #394）
     resume-manager.js              断点恢复与 run-state 应用
     resume-notice.js               恢复运行注入给模型的「这是复活赛」告示（issue #404）

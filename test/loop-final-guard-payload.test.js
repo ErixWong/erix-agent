@@ -30,6 +30,9 @@ const LEGACY_KEYS = ["finalText", "findings", "messages", "round", "rounds", "si
 const ADDITIVE_KEYS = [
   "cwd", "runId", "filesWritten", "filesWrittenTruncated", "fileWrites", "fileWritesTruncated",
   "fileWritesBlind",
+  // issue #711：exec 写形态的计数面（`execWriteCount`）与盲区面（`fileWritesBlindToExec`）。
+  // 两面都是「探不到就不写」的加法键 —— 缺席是「无此事实」，不是 false。
+  "execWriteCount", "fileWritesBlindToExec",
   "toolStats", "toolStatsTruncated",
   "taskBrief", "taskBriefTruncated", "selfReport", "selfReportSummaryTruncated",
   "selfReportOutputTruncated", "usage", "elapsedMs", "attempt", "guardBudget",

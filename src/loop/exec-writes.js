@@ -1,0 +1,591 @@
+// @ts-check
+// issue #711：从 `exec` 的 `command` 里读出「本 run 声明要写哪些文件」。
+//
+// 为什么需要这一份：写台账（`fileWrites`）过去只认**写工具**声明的路径（`rawWritePaths`），
+// 而模型大量用 shell 落盘 —— `cat > f <<'EOF'` / `echo x > f` / `tee f` / `sed -i … f`。
+// 那些写对引擎不可见，于是 `--require-deliverable` 的布尔简写对「只会用 shell 落盘」的模型
+// **空洞为真**（台账空集 ⇒ 没有东西要核），final guard 也拿不到 exec 的产物。
+//
+// 两条口径，**分别**成立，不许混（这是本单的诚实性核心）：
+//   * **计数面** `writeFormCount`：出现写形态（heredoc / `>` / `>>` / `tee` / `sed -i`）的
+//     **命令条数**。解析不出目标也算 —— 它说的是「这里有写、我不全知道」，不是「我写了几次」。
+//   * **台账面** `writes`：**只放解析得出来、且能化成绝对路径**的目标。解析不出来就**不进**，
+//     绝不猜（猜一个错路径进台账，宿主会去核一个模型根本没写的文件 —— 那是比盲区更坏的假事实）。
+//
+// 「解析不出来」的判定（一律只计数、不记路径）：目标是变量 / 命令替换 / 反引号 / 通配符 /
+// 花括号展开，或者命令结构读不懂（未闭合引号、heredoc 定界符本身是变量、嵌套子 shell）。
+// 相对路径需要 run 的 `cwd` 才能绝对化：**没有 `cwd` 就不记**（也是「不猜」）。
+//
+// 排除 `/dev/` 下的全部路径（`/dev/null`、`/dev/stdout`、`/dev/stderr` 在内）：写到设备是
+// **看得见的丢弃**，不是盲区 —— 它既不进台账，也不该把「我看不见」的旗子举起来。
+//
+// 只认工具名 `exec`（与 `termination.js` 的 `isFileWritesBlind` 数的是**同一个名字**，
+// 常量在这里导出，别处引它，别再各写一份字面量）。不加开关：要更宽的口径请宿主用
+// `deliverables` 自己声明判据（issue #711「明确不做」那一节）。
+
+import path from "node:path";
+
+/** 引擎里「shell 工具」的固定名字（与 `toolStats` / 台账 `tool` 字段同口径）。 */
+export const EXEC_TOOL_NAME = "exec";
+
+/** 台账条目第四个键 `via` 的取值（exec 来源条目的写形态；非 exec 条目**不写**这个键）。 */
+export const EXEC_WRITE_VIA = Object.freeze({
+  heredoc: "heredoc",
+  redirect: "redirect",
+  tee: "tee",
+  sedI: "sed-i",
+});
+
+/** 写在设备上是丢弃，不是盲区（`/dev/` 前缀整族排除，判据 2「`/dev/*` 一律排除」）。 */
+const DEV_PREFIX = "/dev/";
+
+/** 命令名前面可以跳过的包装词（`sudo tee f`、`nohup sed -i …`）。 */
+const WRAPPER_WORDS = new Set(["sudo", "env", "nohup", "exec", "time", "command", "nice"]);
+
+/** 会让目标「不确定」的 shell 展开字符（通配 / 花括号展开）。 */
+const GLOB_CHARS = /[*?[\]{}]/;
+
+/**
+ * 一个 token：`word` 是命令里的一个词（带「被引号包过」「含变量展开」两个诚实标记），
+ * `op` 是控制符。**token 只在这里表达引擎读得懂的东西**，读不懂的结构直接不进 token 流。
+ * @typedef {{type:"word", value:string, quoted:boolean, expansion:boolean, start:number, end:number}
+ *   | {type:"op", value:string, start:number, end:number}} Token
+ */
+
+/**
+ * 把一条 shell 命令切成 token。
+ *
+ * 刻意**不是**一个完整的 shell 解析器：它只保证「读得懂的部分精确，读不懂的部分不要瞎猜」。
+ * 读不懂时的动作是**停止扫描**（已收集的 token 仍然有效），不是继续硬解析。
+ *
+ * @param {string} command
+ * @returns {{tokens: Token[], truncated: boolean}} `truncated` = 后面有读不懂的东西被放弃了
+ */
+function tokenize(command) {
+  /** @type {Token[]} */
+  const tokens = [];
+  /** 行内尚未收尾的词。 */
+  let word = null;
+  let wordQuoted = false;
+  let wordExpansion = false;
+  let wordStart = 0;
+  /** 本行声明的 heredoc 定界符（一行可以有两个，按出现顺序消费正文）。 */
+  /** @type {{text:string, stripTabs:boolean}[]} */
+  const pending = [];
+  let truncated = false;
+  let i = 0;
+
+  const flush = (at) => {
+    if (word !== null) {
+      tokens.push({ type: "word", value: word, quoted: wordQuoted, expansion: wordExpansion, start: wordStart, end: at });
+      word = null;
+      wordQuoted = false;
+      wordExpansion = false;
+    }
+  };
+  const pushOp = (value, at) => {
+    flush(at);
+    tokens.push({ type: "op", value, start: at, end: at + value.length });
+  };
+  const startWord = () => {
+    if (word === null) {
+      word = "";
+      wordStart = i;
+    }
+  };
+
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === " " || ch === "\t" || ch === "\r") {
+      flush(i);
+      i += 1;
+      continue;
+    }
+    if (ch === "\n") {
+      flush(i);
+      const at = i;
+      i += 1;
+      // heredoc 正文从**下一行**开始；正文整体跳过 —— 正文里的 `>` 是文本，不是重定向。
+      while (pending.length > 0) {
+        const lineStart = i;
+        const nextBreak = command.indexOf("\n", lineStart);
+        const rawLine = nextBreak === -1 ? command.slice(lineStart) : command.slice(lineStart, nextBreak);
+        const wanted = pending[0];
+        const candidate = wanted.stripTabs ? rawLine.replace(/^\t+/, "") : rawLine;
+        i = nextBreak === -1 ? command.length : nextBreak + 1;
+        if (candidate === wanted.text) {
+          pending.shift();
+        } else if (nextBreak === -1) {
+          // 定界符到不了：剩下的全是正文（也可能整条命令本来就没写完）⇒ 保守放弃后面的扫描。
+          truncated = true;
+          break;
+        }
+      }
+      tokens.push({ type: "op", value: "\n", start: at, end: i });
+      if (truncated) break;
+      continue;
+    }
+    if (ch === "\\") {
+      if (command[i + 1] === "\n") {
+        // 续行：换行被吃掉，词不断开。
+        i += 2;
+        continue;
+      }
+      if (i + 1 < command.length) {
+        startWord();
+        word += command[i + 1];
+        wordQuoted = true; // 转义出来的字符是字面量（`my\ file` 是一个词）
+        i += 2;
+        continue;
+      }
+      truncated = true;
+      break;
+    }
+    if (ch === "#") {
+      // 词首的 `#` 起注释（词中的 `a#b` 是文件名的一部分）。
+      const prev = i === 0 ? "" : command[i - 1];
+      if (word === null && (i === 0 || /[\s;|&()<>]/.test(prev))) {
+        const nextBreak = command.indexOf("\n", i);
+        i = nextBreak === -1 ? command.length : nextBreak;
+        continue;
+      }
+    }
+    if (ch === "'") {
+      startWord();
+      i += 1;
+      const close = command.indexOf("'", i);
+      if (close === -1) {
+        word += command.slice(i);
+        wordQuoted = true;
+        i = command.length;
+        truncated = true; // 未闭合引号：后面读不懂
+        break;
+      }
+      word += command.slice(i, close);
+      wordQuoted = true;
+      i = close + 1;
+      continue;
+    }
+    if (ch === '"') {
+      startWord();
+      i += 1;
+      let closed = false;
+      while (i < command.length) {
+        if (command[i] === "\\" && i + 1 < command.length) {
+          if (command[i + 1] !== "\n") word += command[i + 1];
+          wordQuoted = true;
+          i += 2;
+          continue;
+        }
+        if (command[i] === '"') {
+          closed = true;
+          i += 1;
+          break;
+        }
+        // 双引号**不**阻止展开：`"$OUT"` 的值仍然不在引擎眼前 ⇒ 整个词标成不确定。
+        if (command[i] === "$" || command[i] === "`") wordExpansion = true;
+        word += command[i];
+        i += 1;
+      }
+      wordQuoted = true;
+      if (!closed) {
+        truncated = true;
+        break;
+      }
+      continue;
+    }
+    if (ch === "`") {
+      startWord();
+      const close = command.indexOf("`", i + 1);
+      if (close === -1) {
+        truncated = true;
+        break;
+      }
+      wordExpansion = true;
+      i = close + 1;
+      continue;
+    }
+    if (ch === "$") {
+      startWord();
+      wordExpansion = true;
+      if (command.startsWith("$(", i)) {
+        // 命令替换 / 算术替换：跳过配对括号，内部结构不解释（`$(pick.sh)` 读不出目标）。
+        let depth = 0;
+        let j = i + 1;
+        let done = false;
+        for (; j < command.length; j += 1) {
+          if (command[j] === "(") depth += 1;
+          else if (command[j] === ")") {
+            depth -= 1;
+            if (depth === 0) {
+              j += 1;
+              done = true;
+              break;
+            }
+          }
+        }
+        if (!done) {
+          truncated = true;
+          i = command.length;
+          break;
+        }
+        i = j;
+        continue;
+      }
+      if (command[i + 1] === "{") {
+        const close = command.indexOf("}", i + 2);
+        if (close === -1) {
+          truncated = true;
+          i = command.length;
+          break;
+        }
+        i = close + 1;
+        continue;
+      }
+      i += 1;
+      while (i < command.length && /[\w]/.test(command[i])) i += 1;
+      continue;
+    }
+    if (ch === "<" && command[i + 1] === "<") {
+      if (command[i + 2] === "<") {
+        // `<<<` here-string：写的是 stdin，不落盘。
+        pushOp("<<<", i);
+        i += 3;
+        continue;
+      }
+      const stripTabs = command[i + 2] === "-";
+      pushOp(stripTabs ? "<<-" : "<<", i);
+      i += stripTabs ? 3 : 2;
+      while (i < command.length && (command[i] === " " || command[i] === "\t")) i += 1;
+      const delimiter = readHeredocDelimiter();
+      if (delimiter === null) {
+        truncated = true;
+        break;
+      }
+      if (delimiter.expansion || delimiter.text === "") {
+        // 定界符本身是变量 ⇒ 正文边界找不到 ⇒ 后面每一行都可能是正文 ⇒ 放弃后续扫描。
+        truncated = true;
+        break;
+      }
+      pending.push({ text: delimiter.text, stripTabs });
+      continue;
+    }
+    if (ch === ">" && command[i + 1] === ">") {
+      pushOp(">>", i);
+      i += 2;
+      continue;
+    }
+    if (ch === ">" && command[i + 1] === "&") {
+      const after = command[i + 2];
+      if (after === undefined || after === "-" || /\d/.test(after)) {
+        pushOp(">&fd", i); // `>&2` / `>&-`：dup 到 fd，不是文件
+        i += after === undefined ? 2 : 3;
+        continue;
+      }
+      pushOp(">&", i);
+      i += 2;
+      continue;
+    }
+    if (ch === ">") {
+      pushOp(">", i);
+      i += 1;
+      continue;
+    }
+    if (ch === "&" && command[i + 1] === ">") {
+      pushOp(command[i + 2] === ">" ? "&>>" : "&>", i);
+      i += command[i + 2] === ">" ? 3 : 2;
+      continue;
+    }
+    if (ch === "<") {
+      pushOp("<", i); // stdin 重定向：读，不是写
+      i += 1;
+      continue;
+    }
+    if (ch === "|") {
+      const two = command[i + 1] === "|";
+      pushOp(two ? "||" : "|", i);
+      i += two ? 2 : 1;
+      continue;
+    }
+    if (ch === "&") {
+      const two = command[i + 1] === "&";
+      pushOp(two ? "&&" : "&", i);
+      i += two ? 2 : 1;
+      continue;
+    }
+    if (ch === ";") {
+      pushOp(";", i);
+      i += 1;
+      continue;
+    }
+    if ((ch === "(" || ch === ")") && word === null) {
+      // **词首**的括号才是子 shell（bash 的规矩）；词中的 `out(1).txt` 是文件名的一部分。
+      // 花括号当普通字符：`file{1,2}.txt` 由 GLOB_CHARS 标成不确定，而不是被切成三段。
+      pushOp(ch, i);
+      i += 1;
+      continue;
+    }
+    startWord();
+    word += ch;
+    i += 1;
+  }
+  flush(command.length);
+
+  /** 读 heredoc 的定界符（可以带引号、可以是变量）。 */
+  function readHeredocDelimiter() {
+    let text = "";
+    let expansion = false;
+    const before = i;
+    while (i < command.length && command[i] !== " " && command[i] !== "\t" && command[i] !== "\n" && command[i] !== ";") {
+      const c = command[i];
+      if (c === "'") {
+        const close = command.indexOf("'", i + 1);
+        if (close === -1) return null;
+        text += command.slice(i + 1, close);
+        i = close + 1;
+        continue;
+      }
+      if (c === '"') {
+        const close = command.indexOf('"', i + 1);
+        if (close === -1) return null;
+        text += command.slice(i + 1, close);
+        i = close + 1;
+        continue;
+      }
+      if (c === "$" || c === "`") expansion = true;
+      text += c;
+      i += 1;
+    }
+    if (i === before) return null;
+    return { text, expansion };
+  }
+
+  return { tokens, truncated };
+}
+
+/** 把 fd 前缀（`2>` 里的 `2`）从词里摘掉：它紧贴着重定向符，不是操作数。 */
+function isFileDescriptorPrefix(token, next) {
+  return token.type === "word"
+    && !token.quoted
+    && /^\d+$/.test(token.value)
+    && next !== undefined
+    && next.type === "op"
+    && next.start === token.end;
+}
+
+/** 按控制符切段：一段 = 一条简单命令。 */
+function splitSegments(tokens) {
+  /** @type {Token[][]} */
+  const segments = [[]];
+  for (const token of tokens) {
+    if (token.type === "op" && ["|", "||", "&&", ";", "&", "\n", "(", ")"].includes(token.value)) {
+      segments.push([]);
+      continue;
+    }
+    segments[segments.length - 1].push(token);
+  }
+  return segments.filter((segment) => segment.length > 0);
+}
+
+/**
+ * 把「词」解析成台账要的**绝对路径**。
+ *
+ * @param {Token|undefined} token
+ * @param {{cwd?: unknown, allowRelative?: boolean}} options
+ * @returns {string|null} 解析不出来 ⇒ `null`（只计数，不记路径）
+ */
+function resolveTargetPath(token, options) {
+  if (token === undefined || token.type !== "word") return null;
+  if (token.expansion) return null; // `$OUT` / `$(pick.sh)` / 反引号 —— 值不在引擎眼前
+  const text = token.value;
+  if (text === "" || GLOB_CHARS.test(text)) return null; // 通配/花括号展开：可能是 0 个或 N 个文件
+  const cwd = typeof options.cwd === "string" ? options.cwd : "";
+  let absolute;
+  if (path.isAbsolute(text)) {
+    absolute = path.resolve(text);
+  } else {
+    // 相对路径要靠 run 的 cwd 绝对化；没有 cwd 就不猜（判据 1 要的是绝对路径）。
+    // 命令里出现过 `cd` ⇒ 相对路径的基准**不再是** run 的 cwd ⇒ 同样不猜。
+    if (cwd === "" || options.allowRelative === false) return null;
+    absolute = path.resolve(cwd, text);
+  }
+  if (absolute === DEV_PREFIX || absolute.startsWith(DEV_PREFIX)) return null;
+  return absolute;
+}
+
+/** 把输出重定向到文件的运算符（`>&fd` 不在内：那是 dup 到 fd，不是文件）。 */
+const REDIRECT_OPS = [">", ">>", ">&", "&>", "&>>"];
+
+/** `sed` 里需要下一个词作值的选项（下一个词是**选项的值**，不是文件操作数）。 */
+const SED_VALUE_OPTIONS = new Set(["-e", "--expression", "-f", "--file", "--delimiter"]);
+/** `tee` 没有取值选项（`-a` 是开关）。 */
+const NO_VALUE_OPTIONS = new Set();
+
+/** 摘掉紧贴重定向符的 fd 前缀（`cmd 2>err.log` 里的 `2` 不是操作数）。 */
+function stripFdPrefixes(tokens) {
+  /** @type {Token[]} */
+  const cleaned = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (isFileDescriptorPrefix(tokens[index], tokens[index + 1])) continue;
+    cleaned.push(tokens[index]);
+  }
+  return cleaned;
+}
+
+/**
+ * 读一条 exec 命令里的写形态与写目标。
+ *
+ * @param {unknown} command `exec` 的 `input.command`（不是非空字符串 ⇒ 什么都不说）
+ * @param {{cwd?: unknown}} [options] `cwd` = 该 run 的 `config.run.cwd`（原样，引擎不校验它）
+ * @returns {{hasWriteForm: boolean, targets: {path:string, via:string}[]}}
+ */
+export function parseExecCommandWrites(command, options = {}) {
+  if (typeof command !== "string" || command.trim() === "") return { hasWriteForm: false, targets: [] };
+  const segments = splitSegments(stripFdPrefixes(tokenize(command).tokens));
+  // 命令里出现过 `cd`（含子 shell `(cd d && …)`）⇒ 相对路径的基准**不再是** run 的 cwd ⇒ 只认绝对路径。
+  const allowRelative = !segments.some((segment) => {
+    const head = commandWordOf(segment.filter((token) => token.type === "word"));
+    return head !== null && path.posix.basename(head.value) === "cd";
+  });
+  const resolveOptions = { cwd: options.cwd, allowRelative };
+
+  /** @type {{path:string, via:string}[]} */
+  const targets = [];
+  let hasWriteForm = false;
+  const pushTarget = (token, via) => {
+    hasWriteForm = true; // 目标解析不出来也要计数：那是「有写、我不全知道」（甲的计数面）
+    const resolved = resolveTargetPath(token, resolveOptions);
+    if (resolved !== null) targets.push({ path: resolved, via });
+  };
+
+  for (const segment of segments) {
+    const words = segment.filter((token) => token.type === "word");
+    const sawHeredoc = segment.some((token) => token.type === "op" && (token.value === "<<" || token.value === "<<-"));
+    // 重定向符与正文都扫过之后才知道这一段的写是不是 heredoc 喂出来的（`cat > f <<EOF` 与
+    // `cat <<EOF > f` 是同一件事，via 都是 `heredoc`）。
+    const redirectVia = sawHeredoc ? EXEC_WRITE_VIA.heredoc : EXEC_WRITE_VIA.redirect;
+    /** @type {Token[]} */
+    const redirectTokens = [];
+    for (const token of segment) {
+      if (token.type !== "op") continue;
+      if (token.value === "<<" || token.value === "<<-") {
+        // 裸 heredoc（`mysql <<SQL … SQL`）是**可见的写形态**：内容进了某个命令的 stdin，
+        // 落在哪个文件我们不一定看得见 ⇒ 计数，但不记路径。
+        hasWriteForm = true;
+        continue;
+      }
+      if (REDIRECT_OPS.includes(token.value)) {
+        // 重定向后紧跟的词就是目标；紧跟不上（缺词 / 换段）也算写形态，只是解析不出目标。
+        const target = segment[segment.indexOf(token) + 1];
+        if (target !== undefined && target.type === "word") redirectTokens.push(target);
+        else hasWriteForm = true;
+      }
+    }
+    for (const token of redirectTokens) pushTarget(token, redirectVia);
+
+    const commandToken = commandWordOf(words);
+    const toolName = commandToken === null ? "" : path.posix.basename(commandToken.value);
+    if (toolName === "tee") {
+      const files = operandsAfter(words, commandToken, NO_VALUE_OPTIONS).filter((token) => !redirectTokens.includes(token));
+      for (const file of files) pushTarget(file, EXEC_WRITE_VIA.tee);
+    } else if (toolName === "sed" && hasInPlaceOption(words)) {
+      // 没有 `-e` 时第一个非选项参数是脚本本身，其余才是文件；有 `-e` 时全是文件。
+      const operands = operandsAfter(words, commandToken, SED_VALUE_OPTIONS);
+      const files = (hasExpressionOption(words) ? operands : operands.slice(1)).filter((token) => !redirectTokens.includes(token));
+      hasWriteForm = true;
+      for (const file of files) pushTarget(file, EXEC_WRITE_VIA.sedI);
+    }
+  }
+  return { hasWriteForm, targets };
+}
+
+/** 段首的「命令词」：跳过 `VAR=value` 前置赋值与 `sudo`/`env` 这类包装词。 */
+function commandWordOf(words) {
+  for (const token of words) {
+    if (token.quoted) return token; // 引号包起来的不是赋值
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.value)) continue;
+    if (WRAPPER_WORDS.has(path.posix.basename(token.value))) continue;
+    return token;
+  }
+  return null;
+}
+
+/**
+ * 命令词之后的操作数（选项、选项的值、`env` 式前置赋值都排除）。
+ *
+ * @param {Token[]} words
+ * @param {Token|null} commandToken
+ * @param {Set<string>} valueOptions 需要吃掉下一个词的选项
+ */
+function operandsAfter(words, commandToken, valueOptions) {
+  if (commandToken === null) return [];
+  const rest = words.slice(words.indexOf(commandToken) + 1);
+  /** @type {Token[]} */
+  const operands = [];
+  let expectValue = false;
+  for (const token of rest) {
+    if (expectValue) {
+      expectValue = false;
+      continue;
+    }
+    if (token.quoted) {
+      operands.push(token);
+      continue;
+    }
+    if (token.value === "--") continue; // `--` 只是分隔符，本身不是操作数
+    if (token.value.startsWith("-") && token.value !== "-") {
+      if (valueOptions.has(token.value)) expectValue = true;
+      continue; // 选项（含 `-i.bak`）
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.value)) continue;
+    operands.push(token);
+  }
+  return operands;
+}
+
+/**
+ * `sed -i` / `sed -i.bak` / `sed -ni` / `--in-place[=SUFFIX]`。
+ *
+ * 短选项串里的 `i` 一律算就地改（`sed -ni 's/x/y/' f` 是真的在改 `f`）；长选项只认精确的
+ * `--in-place`，否则 `--version` 这种词里也带 `i`。
+ */
+function hasInPlaceOption(words) {
+  return words.some((token) => {
+    if (token.quoted || !token.value.startsWith("-")) return false;
+    if (token.value.startsWith("--")) return token.value === "--in-place" || token.value.startsWith("--in-place=");
+    return /^-[A-Za-z]*i[A-Za-z]*(\.|=|$)/.test(token.value);
+  });
+}
+
+/** `-e SCRIPT` / `--expression SCRIPT`：有它时非选项参数**全**是文件。 */
+function hasExpressionOption(words) {
+  return words.some((token) => !token.quoted && (token.value === "-e" || token.value === "--expression"));
+}
+
+/**
+ * 一批消息里所有 `exec` 调用的写形态计数与可解析目标。
+ *
+ * 这是台账唯一的 exec 读入口（`orchestrator.js` 的 `recordFileWrites` 调它）——
+ * resume 重放轮记录也走同一个函数，所以两个方向的口径**必然**一致（#388 的教训）。
+ *
+ * @param {any[]} messages
+ * @param {{cwd?: unknown}} [options]
+ * @returns {{writeFormCount: number, writes: {path:string, via:string}[]}}
+ */
+export function scanExecWrites(messages, options = {}) {
+  let writeFormCount = 0;
+  /** @type {{path:string, via:string}[]} */
+  const writes = [];
+  if (!Array.isArray(messages)) return { writeFormCount, writes };
+  for (const message of messages) {
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block?.type !== "tool_use" || block.name !== EXEC_TOOL_NAME) continue;
+      const parsed = parseExecCommandWrites(block.input?.command, options);
+      if (!parsed.hasWriteForm) continue;
+      writeFormCount += 1;
+      for (const target of parsed.targets) writes.push(target);
+    }
+  }
+  return { writeFormCount, writes };
+}
