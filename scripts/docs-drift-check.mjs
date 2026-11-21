@@ -2394,9 +2394,20 @@ function symbolDeclarations(rel) {
   // maskJs 涂改，这里复用同一份 codeLines）。捕获组取参数列表里第一段 `{…}` 的内层，逗号切分后取每段名
   // （`x: y` 取属性名 `x`，因为文档引的是属性名；`a as b` 取 `b`）。这类绑定行号取参数起始行。
   const codeText = codeLines.join("\n");
-  const PARAM_DESTRUCTURE_RE = /(?:function\s*(?:[A-Za-z_$][\w$]*)?|[A-Za-z_$][\w$]*)\s*\(\s*\{([^{}]*?)\}\s*(?:,[^()]*?)?\)\s*(?:\{|=>)|\(\s*\{([^{}]*?)\}\s*(?:,[^()]*?)?\)\s*=>/g;
+  // #755 阻断B：旧写法把「任意标识符 + ({…}) + {」都吐成参数解构，于是 `if ({ missingSymbol }) {}`、
+  // `while ({ a }) {}`、`switch ({ b }) {}` 被当成方法定义、把不存在的符号登记成声明 ⇒ 假绿。现在只认真
+  // 函数/方法位，并把前导名捕获成三组：
+  //   m[1] = `function` 关键字后的函数名（`function NAME({…})` / `function ({…})` / `async function …`，恒可）；
+  //   m[2] = `NAME({…}) {` 方法定义的方法名（**不许**是控制关键字，见 PARAM_DESTRUCTURE_DENY）；
+  //   m[3] = 上面两档的参数解构内层；m[4] = `({…}) =>` 箭头函数的参数解构内层（恒可）。
+  const PARAM_DESTRUCTURE_RE = /(?:function\s*([A-Za-z_$][\w$]*)?|([A-Za-z_$][\w$]*))\s*\(\s*\{([^{}]*?)\}\s*(?:,[^()]*?)?\)\s*(?:\{|=>)|\(\s*\{([^{}]*?)\}\s*(?:,[^()]*?)?\)\s*=>/g;
+  // #755 阻断B 的 deny-list：方法名档（m[2]）里出现这些就是**语句头**（控制语句/保留字）而不是方法名，
+  // 它的 `({…})` 不是参数解构（`if ({ x }) {}` 里的 `x` 是块内块语句不是声明）。`function` 由 m[1] 接住，不进这里。
+  const PARAM_DESTRUCTURE_DENY = new Set(["if", "else", "for", "while", "switch", "catch", "with", "do",
+    "return", "typeof", "instanceof", "delete", "void", "throw", "new", "in", "of", "await", "yield", "case", "default"]);
   for (const m of codeText.matchAll(PARAM_DESTRUCTURE_RE)) {
-    const inner = m[1] ?? m[2];
+    if (m[2] && PARAM_DESTRUCTURE_DENY.has(m[2])) continue;   // #755 阻断B：控制语句头的 `({…})` 不是参数解构
+    const inner = m[3] ?? m[4];
     const names = inner.split(",")
       .map((p) => p.trim().split(/\s+as\s+/).pop().trim().split(/:/)[0].trim())
       .filter((n) => /^[A-Za-z_$][\w$]*$/.test(n));
