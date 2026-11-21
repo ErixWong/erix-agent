@@ -359,6 +359,43 @@ export function createTerminationManager(ctx) {
   const callFinalGuard = async (reason, detail) => {
     guardAttempt += 1;
     const payload = buildFinalGuardPayload(ctx, reason, detail, guardAttempt);
+    // ── issue #881（新事件，纯加法）：交付物判据这次**判不了** ⇒ 说出来 ──────────────────
+    // 现场：#711 让 exec 落盘进台账，但「看不见」只写在 payload 的三个盲区键里——宿主不读 payload
+    // 就只会看到「判据通过」，与「真的通过」无法区分；裸 `--require-deliverable` 命中盲区时返回
+    // `ok:true` + 一句 detail，人眼面什么都没变。这条事件就是「这次判不了」唯一 durable 的副本
+    //（三个计数只在 payload 里、随内存消失）⇒ 分级表 `fact`（`src/loop/event-tiers.js`）。
+    // 判定**直接读刚构造好的 payload 自己的三个键**（任一成立即盲区），不另写一份判定逻辑——
+    // 两份口径迟早会漂。**不在 `buildFinalGuardPayload` 里发**：它是导出的纯构造器，测试与
+    // `scripts/final-guard-probe.mjs` 当纯函数调，在里面发事件会让纯函数产生副作用。
+    // **one-shot**：本函数按 `guardAttempt` 1..3 反复调（guard 判 revise ⇒ 补做 ⇒ 再来一次），
+    // 不设旗标一个 run 会发 3 条。旗标 `ctx.deliverableBlindEmitted` 住在 `runLoopState`，与
+    // `finalTextShapeEmitted` / `lowBudgetInjectFired` 同族（本次进程的现场，不是跨 resume 的
+    // 持久判据）。**中性事实**：不改任何裁决（`ok:true` 语义一字未动，见 `bin/final-guard.js` 的
+    // `createDeliverableChecks`）。载荷：`runId` 只在宿主传了时才写键（与 #182 /
+    // #862 同口径，引擎不自编标识），两个计数**只在 payload 里有值时才写**。
+    // 三个键的读法套一个**局部视图类型**：`buildFinalGuardPayload` 的返回声明是 `object`（#417 的
+    // strict 存量债，本单不还），而这里只是**读同一份 payload**、不另造一份事实。
+    const blindView = /** @type {{ fileWritesBlind?: boolean, fileWritesBlindToExec?: boolean, execWriteCount?: number, execWriteUnresolvedCount?: number }} */ (
+      payload
+    );
+    const deliverableBlind = blindView.fileWritesBlind === true
+      || blindView.fileWritesBlindToExec === true
+      || (blindView.execWriteUnresolvedCount ?? 0) > 0;
+    if (deliverableBlind && ctx.deliverableBlindEmitted !== true) {
+      ctx.deliverableBlindEmitted = true;
+      // 与本文件其余发射点同一口径：先接住 `ctx.emitEvent` 再调（直调会多造一族被调名，
+      // `test/event-tier-coverage-743.test.js` 的 T11 正是拦这个）。
+      const emitEvent = ctx.emitEvent;
+      emitEvent({
+        type: "deliverable_blind",
+        ...(ctx.runId ? { runId: ctx.runId } : {}),
+        round: ctx.rounds,
+        ...(blindView.execWriteCount === undefined ? {} : { execWriteCount: blindView.execWriteCount }),
+        ...(blindView.execWriteUnresolvedCount === undefined
+          ? {}
+          : { execWriteUnresolvedCount: blindView.execWriteUnresolvedCount }),
+      });
+    }
     // ── issue #386 切片 2 R2：**每次**调用 guard 之前核一遍宿主声明的交付物判据 ─────────────
     // 「每次」是核心：guard 判 revise → 模型补做 → 下一轮 attempt 的判据自动重算，补做之后才可能
     // 拿到 verified。只核一次（比如只在第一次调用前核）会把「补做后通过」的 run 永久拦在门外。
