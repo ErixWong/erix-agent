@@ -505,6 +505,16 @@ test("#711 阻断②：变量定界符的 heredoc 不是不可执行 ⇒ 之前�
   assert.ok(parsed.targets.some((t) => t.path.endsWith("/out.txt")), "早停但前缀有效 ⇒ 已读出的真目标不许连坐丢弃");
 });
 
+test("#711 阻断 B（判据 4）：未闭合定界符引号的 heredoc 不可执行 ⇒ 不记 out.txt、只计数", () => {
+  // `cat > out.txt <<'EOF`（定界符引号没闭合）⇒ heredoc 语法不完整、bash 根本不执行。
+  // 与「未闭合引号」同口径：只计数、不记路径。
+  const parsed = parseExecCommandWrites("cat > out.txt <<'EOF", { cwd: CWD });
+  assert.ok(!parsed.targets.some((t) => t.path.endsWith("/out.txt")),
+    "判据 4：命令不可执行 ⇒ 前面的 out.txt 也不进台账");
+  assert.equal(parsed.hasWriteForm, true, "有写形态 ⇒ 计数面成立");
+  assert.ok(parsed.unresolvedWriteCount >= 1, "判据 4：不可执行 ⇒ 计入未解析");
+});
+
 test("#711 阻断④（判据5）：混合命令 known && $OUT ⇒ 已知进台账，未解析一半仍举旗", () => {
   const parsed = parseExecCommandWrites('echo a > known.txt && echo b > "$OUT"', { cwd: CWD });
   assert.ok(parsed.targets.some((t) => t.path.endsWith("/known.txt")), "能解析的那一半必须进台账");
@@ -530,7 +540,17 @@ test("#711 判据6：-- 终止选项、-f 取值选项、附着式都让目标�
   assert.ok(targetPaths("tee -- -out.txt").some((p) => p.endsWith("/-out.txt")), "tee -- 后的 -out.txt 是文件名");
   assert.ok(targetPaths("sed -i -f script.sed notes.md").some((p) => p.endsWith("/notes.md")),
     "-f 的值 script.sed 不是目标，notes.md 才是");
-  assert.ok(targetPaths("sed -i -- -notes.md").some((p) => p.endsWith("/-notes.md")), "sed -i -- 后的 -notes.md 是文件名");
+  assert.ok(!targetPaths("sed -i -f script.sed notes.md").some((p) => p.endsWith("/script.sed")),
+    "判据 3：-f 的值 script.sed 是脚本文件，绝不进台账");
+  // 判据 1：`sed -i -- -notes.md` 里 `--` 只终止选项、不提供脚本 ⇒ `-notes.md` 是**脚本**、没有
+  // 文件操作数（sed 从 stdin 读）⇒ **不进台账**，但仍是写形态 ⇒ 计数 + 未解析 +1。
+  const noFileSed = parseExecCommandWrites("sed -i -- -notes.md", { cwd: CWD });
+  assert.equal(noFileSed.hasWriteForm, true, "sed -i 就是写形态，哪怕没有文件操作数也要计数");
+  assert.ok(!noFileSed.targets.some((p) => true), "判据 1：`-notes.md` 是脚本不是文件 ⇒ 台账无条目");
+  assert.ok(noFileSed.unresolvedWriteCount >= 1, "判据 1：有写、目标不明 ⇒ 未解析计数 +1");
+  // 判据 2（对照）：`sed -i 's/a/b/' -- -notes.md` 里脚本是 `'s/a/b/'`，`--` 之后那个 `-notes.md` 才是文件。
+  assert.ok(targetPaths("sed -i 's/a/b/' -- -notes.md").some((p) => p.endsWith("/-notes.md")),
+    "判据 2：`--` 之后的 -notes.md 是文件名，进台账");
   assert.ok(targetPaths("sed -i -f=script.sed notes.md").some((p) => p.endsWith("/notes.md")), "-f= 附着式：notes.md 是目标");
   assert.ok(targetPaths("sed -i --expression='s/a/b/' f.txt").some((p) => p.endsWith("/f.txt")), "--expression= 附着式：f.txt 是目标");
   assert.ok(targetPaths("tee -a out.txt").some((p) => p.endsWith("/out.txt")), "tee -a 是开关，不取值");

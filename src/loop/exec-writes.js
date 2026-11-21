@@ -290,11 +290,15 @@ function tokenize(command) {
       while (i < command.length && (command[i] === " " || command[i] === "\t")) i += 1;
       const delimiter = readHeredocDelimiter();
       if (delimiter === null) {
+        // 定界符**引号没闭合**（`<<'EOF`）或整条没有定界符 ⇒ heredoc 语法不完整、bash 根本不执行。
+        // 与「未闭合引号」同口径：`unterminated` ⇒ 前面已读出的 `>` 目标也只计数、不记路径（阻断 B）。
         truncated = true;
+        unterminated = true;
         break;
       }
       if (delimiter.expansion || delimiter.text === "") {
-        // 定界符本身是变量 ⇒ 正文边界找不到 ⇒ 后面每一行都可能是正文 ⇒ 放弃后续扫描。
+        // 定界符本身是变量（`<<$D`）⇒ 正文边界找不到 ⇒ 放弃后续扫描。但命令本身可执行 ⇒ **只**截断、
+        // **不**置 unterminated：早停前读出的 `>` 目标是真目标，不许连坐丢弃（判据 5）。
         truncated = true;
         break;
       }
@@ -570,11 +574,12 @@ export function parseExecCommandWrites(command, options = {}) {
       const files = operandsAfter(words, commandToken, NO_VALUE_OPTIONS).filter((token) => !redirectTokens.includes(token));
       for (const file of files) pushTarget(file, EXEC_WRITE_VIA.tee);
     } else if (toolName === "sed" && hasInPlaceOption(words)) {
-      // 脚本由选项（`-e`/`-f` 或其附着式）提供、或 `--` 终止了选项解析 ⇒ 非选项参数**全**是文件；
-      // 否则第一个非选项参数是脚本本身，其余才是文件。
+      // 脚本由 `-e`/`-f`（含附着式）提供 ⇒ 非选项参数**全**是文件；否则第一个位置操作数是脚本要丢掉
+      // （`--` 只终止选项、不提供脚本 ⇒ 丢掉后可能一个文件都不剩 ⇒ sed 从 stdin 读，目标不明）。
       const operands = operandsAfter(words, commandToken, SED_VALUE_OPTIONS);
       const files = (sedDropsFirstAsScript(words, operands) ? operands.slice(1) : operands).filter((token) => !redirectTokens.includes(token));
-      hasWriteForm = true;
+      hasWriteForm = true; // `sed -i` 本身就是写形态（判据 1：无文件也要计数）
+      if (files.length === 0) unresolvedWriteCount += 1; // 就地改但无文件操作数 ⇒ 有写、目标不明（判据 1）
       for (const file of files) pushTarget(file, EXEC_WRITE_VIA.sedI);
     }
   }
@@ -709,10 +714,14 @@ function hasInPlaceOption(words) {
 /**
  * `sed -i` 是否要把第一个非选项参数当**脚本**丢掉。
  *
- * 不丢（⇒ 非选项参数**全**是文件）的两种情形：
- *   * 脚本由取值选项提供：`-e`/`--expression`/`-f`/`--file`（含附着式 `-e=`/`--file=`）；
- *   * `--` 之前没有任何位置操作数（⇒ 无内联脚本）：`sed -i -- -notes.md` 里 `-notes.md` 是文件名。
- * 否则第一个位置操作数是内联脚本（`sed -i 's/x/y/' f`），要丢。
+ * 不丢（⇒ 非选项参数**全**是文件）的唯一情形：脚本由取值选项提供
+ *   `-e`/`--expression`/`-f`/`--file`（含附着式 `-e=`/`--file=`）。
+ * 否则第一个位置操作数就是内联脚本（`sed -i 's/x/y/' f`），要丢。
+ *
+ * ❗ `--` **只终止选项解析、不提供 sed 脚本**：没有 `-e`/`-f` 时，无论有没有 `--`，
+ * 第一个位置操作数都是脚本。`sed -i -- -notes.md` 里 `-notes.md` 是**脚本**、没有文件
+ * 操作数（sed 从 stdin 读）；`sed -i 's/a/b/' -- -notes.md` 里脚本是 `'s/a/b/'`，`--` 之后那个
+ * `-notes.md` 才是文件。上一轮把 `--` 当「后面都是文件」处理，正好把这两格判反。
  *
  * @param {Token[]} words @param {Token[]} operands 已按选项规则筛出的操作数
  * @returns {boolean}
@@ -726,9 +735,7 @@ function sedDropsFirstAsScript(words, operands) {
     return name === "-e" || name === "--expression" || name === "-f" || name === "--file";
   });
   if (isOptionProvidingScript) return false;
-  const dashDash = words.findIndex((token) => token.type === "word" && !token.quoted && token.value === "--");
-  if (dashDash === -1) return true; // 无 `--`：第一个位置操作数就是脚本
-  return words.indexOf(operands[0]) < dashDash; // 脚本在 `--` 之前才算脚本
+  return true; // 无脚本取值选项 ⇒ 第一个位置操作数就是脚本（`--` 不改变这一点）
 }
 
 /**
