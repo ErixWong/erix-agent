@@ -94,22 +94,27 @@ test("#711 P1 写形态四种都认：heredoc / 重定向 / tee / sed -i，目�
   assert.deepEqual(parseExecCommandWrites("cat > out.txt <<'EOF'\nbody with > inside\nEOF", { cwd: CWD }), {
     hasWriteForm: true,
     targets: [{ path: `${CWD}/out.txt`, via: EXEC_WRITE_VIA.heredoc }],
+    unresolvedWriteCount: 0,
   });
   assert.deepEqual(parseExecCommandWrites("cat <<'EOF' > out.txt\nbody\nEOF", { cwd: CWD }), {
     hasWriteForm: true,
     targets: [{ path: `${CWD}/out.txt`, via: EXEC_WRITE_VIA.heredoc }],
+    unresolvedWriteCount: 0,
   });
   assert.deepEqual(parseExecCommandWrites("echo x >> log.txt", { cwd: CWD }), {
     hasWriteForm: true,
     targets: [{ path: `${CWD}/log.txt`, via: EXEC_WRITE_VIA.redirect }],
+    unresolvedWriteCount: 0,
   });
   assert.deepEqual(parseExecCommandWrites("printf x | tee -a report.md", { cwd: CWD }), {
     hasWriteForm: true,
     targets: [{ path: `${CWD}/report.md`, via: EXEC_WRITE_VIA.tee }],
+    unresolvedWriteCount: 0,
   });
   assert.deepEqual(parseExecCommandWrites("sed -i 's/a/b/' notes.md", { cwd: CWD }), {
     hasWriteForm: true,
     targets: [{ path: `${CWD}/notes.md`, via: EXEC_WRITE_VIA.sedI }],
+    unresolvedWriteCount: 0,
   });
 });
 
@@ -124,11 +129,23 @@ test("#711 P2 只读命令与 /dev/* 都不进台账（判据 2）：rg / ls / >
   }
 });
 
-test("#711 P3 计数面：/dev/* 的丢弃仍算「出现过写形态」（计数面保守，台账面精确）", () => {
-  assert.equal(parseExecCommandWrites("cat a > /dev/null", { cwd: CWD }).hasWriteForm, true);
-  // 只读的 exec 不计数 —— 它没有写形态，旗子不该举。
+test("#711 P3 设备丢弃连写形态都不算（阻断③）：/dev/* ⇒ hasWriteForm 假、不计数、不举旗", () => {
+  // 写到设备是**看得见的丢弃**，不是盲区 ⇒ 既不进台账、也不计数、不举旗（与模块头部注释一致）。
+  for (const command of ["cat a > /dev/null", "cmd 2>/dev/null", "cat a > /dev/stdout", "cat a > /dev/stderr"]) {
+    const parsed = parseExecCommandWrites(command, { cwd: CWD });
+    assert.equal(parsed.hasWriteForm, false, `写到设备不算写形态：${command}`);
+    assert.equal(parsed.unresolvedWriteCount, 0, `写到设备不举盲区旗 ⇒ 未解析计数必为 0：${command}`);
+    assert.deepEqual(parsed.targets, [], command);
+  }
+  // 只读的 exec 不计数 —— 它没有写形态。
   assert.equal(parseExecCommandWrites("rg foo", { cwd: CWD }).hasWriteForm, false);
   assert.equal(parseExecCommandWrites("ls -la", { cwd: CWD }).hasWriteForm, false);
+  // /dev/* 整段都是只读 ⇒ scan 的计数面与未解析面都是 0（判据 4：三键都不出现的前提）。
+  const scanned = scanExecWrites([
+    { role: "assistant", content: [{ type: "tool_use", id: "1", name: "exec", input: { command: "cat a > /dev/null" } }] },
+  ], { cwd: CWD });
+  assert.deepEqual({ writeFormCount: scanned.writeFormCount, unresolvedWriteCount: scanned.unresolvedWriteCount },
+    { writeFormCount: 0, unresolvedWriteCount: 0 });
   // 一条命令里几个写形态只算**一条**（口径是「命令条数」，不是「写了几次」）。
   assert.deepEqual(scanExecWrites([
     { role: "assistant", content: [{ type: "tool_use", id: "1", name: "exec", input: { command: "echo a > a.txt && echo b > b.txt" } }] },
@@ -215,8 +232,8 @@ test("#711 P6 tee / sed -i 的操作数：包装词、选项、脚本与 -- 都�
   // 没有 `-i` 的 sed 只是读。
   assert.equal(parseExecCommandWrites("sed -n 's/a/b/p' notes.md", { cwd: CWD }).hasWriteForm, false);
   // 非空 command 的形状：缺 command / 非字符串 ⇒ 什么都不说。
-  assert.deepEqual(parseExecCommandWrites(undefined, { cwd: CWD }), { hasWriteForm: false, targets: [] });
-  assert.deepEqual(parseExecCommandWrites(42, { cwd: CWD }), { hasWriteForm: false, targets: [] });
+  assert.deepEqual(parseExecCommandWrites(undefined, { cwd: CWD }), { hasWriteForm: false, targets: [], unresolvedWriteCount: 0 });
+  assert.deepEqual(parseExecCommandWrites(42, { cwd: CWD }), { hasWriteForm: false, targets: [], unresolvedWriteCount: 0 });
 });
 
 // ── K 组：payload 两个加法键的形状 ───────────────────────────────────────────────────
@@ -231,32 +248,38 @@ function payloadFor(extra) {
   }, "end_turn", undefined, 1);
 }
 
-test("#711 K1 execWriteCount>0 且台账无 exec 来源条目 ⇒ 两个键都在，且 fileWritesBlindToExec 是真", () => {
+test("#711 K1 execWriteUnresolvedCount>0 ⇒ 三键都在（计数 / 未解析 / 旗），旗是真", () => {
   const payload = payloadFor({
     execWriteCount: 3,
+    execWriteUnresolvedCount: 3,
     fileWrites: [{ path: "a.txt", round: 1, tool: "writeFile" }],
     toolStats: new Map([[EXEC_TOOL_NAME, { calls: 3, failures: 0 }]]),
   });
   assert.equal(payload.execWriteCount, 3);
+  assert.equal(payload.execWriteUnresolvedCount, 3);
   assert.equal(payload.fileWritesBlindToExec, true);
 });
 
-test("#711 K2 探不到就不写：计数缺席 / 计数为 0 时两个键都不出现（绝不写 false）", () => {
-  for (const extra of [{}, { execWriteCount: 0 }, { execWriteCount: undefined }, { execWriteCount: "2" }, { execWriteCount: -1 }]) {
+test("#711 K2 探不到就不写：计数缺席 / 为 0 时三个键都不出现（绝不写 false）", () => {
+  for (const extra of [{}, { execWriteCount: 0 }, { execWriteCount: undefined }, { execWriteCount: "2" }, { execWriteCount: -1 },
+    { execWriteUnresolvedCount: 0 }, { execWriteUnresolvedCount: "2" }, { execWriteUnresolvedCount: -1 }]) {
     const payload = payloadFor(extra);
     assert.equal("execWriteCount" in payload, false, `不该写 execWriteCount：${JSON.stringify(extra)}`);
+    assert.equal("execWriteUnresolvedCount" in payload, false, `不该写 execWriteUnresolvedCount：${JSON.stringify(extra)}`);
     assert.equal("fileWritesBlindToExec" in payload, false, `不该写盲区旗：${JSON.stringify(extra)}`);
   }
 });
 
-test("#711 K3 台账里有一条 exec 来源条目 ⇒ 计数仍在，盲区旗必须闭", () => {
+test("#711 K3 台账里有可解析的 exec 条目（未解析计数为 0）⇒ 计数仍在，盲区旗必须闭", () => {
   const payload = payloadFor({
     execWriteCount: 1,
+    execWriteUnresolvedCount: 0,
     fileWrites: [{ path: "/abs/out.txt", round: 1, tool: EXEC_TOOL_NAME, via: "heredoc" }],
     toolStats: new Map([[EXEC_TOOL_NAME, { calls: 1, failures: 0 }]]),
   });
   assert.equal(payload.execWriteCount, 1);
-  assert.equal("fileWritesBlindToExec" in payload, false, "盲区已闭 ⇒ 不许继续举旗");
+  assert.equal("execWriteUnresolvedCount" in payload, false, "未解析为 0 ⇒ 第三个键也不该出现");
+  assert.equal("fileWritesBlindToExec" in payload, false, "未解析计数为 0 ⇒ 盲区已闭，不许继续举旗");
   // 粗旗 fileWritesBlind 也一并闭（台账不再空）—— 两面各判各的，互不覆盖。
   assert.equal("fileWritesBlind" in payload, false);
 });
@@ -265,14 +288,16 @@ test("#711 K4 分工：粗旗 fileWritesBlind 与细旗 fileWritesBlindToExec �
   // 只跑过一条**只读** exec：粗旗举（台账空 + 跑过 exec），细旗不举（没有写形态）。
   const readOnly = payloadFor({
     execWriteCount: 0,
+    execWriteUnresolvedCount: 0,
     fileWrites: [],
     toolStats: new Map([[EXEC_TOOL_NAME, { calls: 1, failures: 0 }]]),
   });
   assert.equal(readOnly.fileWritesBlind, true);
   assert.equal("fileWritesBlindToExec" in readOnly, false);
-  // 台账被裁到只剩 writeFile 条目、但 exec 写形态数出来了：细旗举，粗旗不举（台账非空）。
+  // 台账被裁到只剩 writeFile 条目、但 exec 有未解析目标 ⇒ 细旗举，粗旗不举（台账非空）。
   const trimmed = payloadFor({
     execWriteCount: 2,
+    execWriteUnresolvedCount: 2,
     fileWrites: [{ path: "written.txt", round: 1, tool: "writeFile" }],
     toolStats: new Map([[EXEC_TOOL_NAME, { calls: 9, failures: 0 }]]),
   });
@@ -309,6 +334,10 @@ test("#711 判据 2：只读 exec 不进台账；/dev/* 一律排除", async () 
   writeFileSync(join(dir, "a"), "seed\n");
   const { payload } = await runExecOnly(["printf x > /dev/null"], { cwd: dir });
   assert.deepEqual(payload.fileWrites, [], `写到 /dev/* 不是写文件，实测 ${JSON.stringify(payload.fileWrites)}`);
+  // 判据 4：写到设备是看得见的丢弃 ⇒ 三个键都不出现（既不计数、也不举旗）。
+  assert.equal("execWriteCount" in payload, false, `写到设备不该举 execWriteCount：${JSON.stringify(payload)}`);
+  assert.equal("execWriteUnresolvedCount" in payload, false, "写到设备不该举 execWriteUnresolvedCount");
+  assert.equal("fileWritesBlindToExec" in payload, false, "写到设备不该举 fileWritesBlindToExec");
   // 「什么都没写」的 run：粗旗按 #386 的口径仍举（跑过 exec 且台账空），这是既有语义，不许动。
   assert.equal(payload.fileWritesBlind, true);
 });
@@ -340,7 +369,8 @@ test("#711 判据 4：不确定形态不进台账，但必须计入 execWriteCou
   // 但目标值不在引擎眼前 ⇒ 台账一条都不记，计数面必须把它们都数到。
   assert.deepEqual(payload.fileWrites, [], `不确定的目标一条都不许猜，实测 ${JSON.stringify(payload.fileWrites)}`);
   assert.equal(payload.execWriteCount, 3, `三条命令都有写形态 ⇒ 计数面必须数到 3，实测 ${payload.execWriteCount}`);
-  assert.equal(payload.fileWritesBlindToExec, true, "有写形态而台账里没有 exec 条目 ⇒ 必须老实举旗");
+  assert.equal(payload.execWriteUnresolvedCount, 3, `三条都不进台账 ⇒ 未解析计数也必为 3，实测 ${payload.execWriteUnresolvedCount}`);
+  assert.equal(payload.fileWritesBlindToExec, true, "有未解析目标 ⇒ 必须老实举旗");
 });
 
 test("#711 台账共用同一个上限与去重：exec 条目与写工具条目同池裁剪，最新一条留下", async () => {
@@ -411,6 +441,97 @@ test("#711 判据 5：同一个 run 从账本重建，fileWrites 与非 resume �
     `resume 重建的台账必须与非 resume 逐字相等（重建：${JSON.stringify(resumedPayload.fileWrites)} / 原生：${JSON.stringify(plain.payload.fileWrites)}）`);
   assert.equal(resumedPayload.execWriteCount, plain.payload.execWriteCount,
     "计数面也必须同口径（同一个 recordFileWrites 单点）");
+  assert.equal(resumedPayload.execWriteUnresolvedCount, plain.payload.execWriteUnresolvedCount,
+    "未解析计数也必须同口径（同一条通道，#388 的教训）");
   assert.deepEqual(resumedPayload.fileWrites.map((entry) => entry.tool), ["exec", "exec", "exec"]);
   assert.equal(existsSync(join(dir, "out.txt")), true);
+});
+
+// ── 阻断 ①②③④⑤⑥ 专项：「不猜」口径守全（不确定时如实说自己不确定）──────────────
+const targetPaths = (command, cwd = CWD) => parseExecCommandWrites(command, { cwd }).targets.map((t) => t.path);
+
+test("#711 阻断① 不透明包装（bash/sh/eval/xargs/sudo bash）：载荷里有写形态 ⇒ 只计数+记未解析，绝不提路径", () => {
+  for (const command of [
+    "bash -c 'echo x > out'",
+    "sh -c 'echo x >> out'",
+    "eval 'echo x > out'",
+    "find . | xargs -I{} sh -c 'echo x > {}'",
+    "sudo bash -c 'echo x > out'",
+    "env bash -c 'echo x > out'",
+  ]) {
+    const parsed = parseExecCommandWrites(command, { cwd: CWD });
+    assert.equal(parsed.hasWriteForm, true, `不透明包装里的写形态必须计数：${command}`);
+    assert.ok(parsed.unresolvedWriteCount >= 1, `载荷读不出目标 ⇒ 必须计入未解析：${command}`);
+    assert.ok(!parsed.targets.some((t) => t.path.endsWith("/out")), `绝不从不透明载荷里提路径：${command}`);
+  }
+});
+
+test("#711 阻断① 判据2：只读的不透明包装不是写（bash -c 'rg foo' ⇒ 不计数）", () => {
+  for (const command of ["bash -c 'rg foo'", "sh -c 'ls -la'", "eval 'cat f.txt'", "bash -c 'echo hello'"]) {
+    const parsed = parseExecCommandWrites(command, { cwd: CWD });
+    assert.equal(parsed.hasWriteForm, false, `只读包装不是写形态，不许计数：${command}`);
+    assert.equal(parsed.unresolvedWriteCount, 0, command);
+    assert.deepEqual(parsed.targets, [], command);
+  }
+});
+
+test("#711 阻断① 端到端（判据1）：bash -c 里的写 ⇒ execWriteCount>=1 且举旗，台账里没有 out", async () => {
+  const dir = await makeTmp("erix-exec-writes-oppaque-");
+  const { payload } = await runExecOnly(["bash -c 'echo x > out'"], { cwd: dir });
+  assert.ok(payload.execWriteCount >= 1, `execWriteCount 必须 >= 1，实测 ${payload.execWriteCount}`);
+  assert.ok(payload.execWriteUnresolvedCount >= 1, `未解析计数必须 >= 1，实测 ${payload.execWriteUnresolvedCount}`);
+  assert.equal(payload.fileWritesBlindToExec, true, "不透明包装的写 ⇒ 必须老实举旗");
+  assert.deepEqual(payload.fileWrites, [], `台账里绝不出现从不透明载荷猜出的 out：${JSON.stringify(payload.fileWrites)}`);
+});
+
+test("#711 阻断②（判据3）：未闭合引号在重定向目标之后 ⇒ 不记 out.txt，但计数且举旗", () => {
+  const parsed = parseExecCommandWrites("echo x > out.txt 'unterminated", { cwd: CWD });
+  assert.ok(!parsed.targets.some((t) => t.path.endsWith("/out.txt")), "bash 根本不会执行 ⇒ 连之前的 out.txt 也不记");
+  assert.equal(parsed.hasWriteForm, true, "有写形态 ⇒ 计数面成立");
+  assert.ok(parsed.unresolvedWriteCount >= 1, "不可执行的命令 ⇒ 计入未解析");
+  const payload = payloadFor({
+    execWriteCount: 1,
+    execWriteUnresolvedCount: 1,
+    fileWrites: [],
+    toolStats: new Map([[EXEC_TOOL_NAME, { calls: 1, failures: 0 }]]),
+  });
+  assert.equal(payload.execWriteUnresolvedCount, 1);
+  assert.equal(payload.fileWritesBlindToExec, true);
+});
+
+test("#711 阻断②：变量定界符的 heredoc 不是不可执行 ⇒ 之前读出的 > 目标仍是真（保守早停，不连坐）", () => {
+  // `cat > out.txt <<$D` ：`> out.txt` 在畸形 heredoc **之前**且完整，bash 会真写 out.txt ⇒ 该记。
+  const parsed = parseExecCommandWrites("cat > out.txt <<$D\nbody\nEOF", { cwd: CWD });
+  assert.ok(parsed.targets.some((t) => t.path.endsWith("/out.txt")), "早停但前缀有效 ⇒ 已读出的真目标不许连坐丢弃");
+});
+
+test("#711 阻断④（判据5）：混合命令 known && $OUT ⇒ 已知进台账，未解析一半仍举旗", () => {
+  const parsed = parseExecCommandWrites('echo a > known.txt && echo b > "$OUT"', { cwd: CWD });
+  assert.ok(parsed.targets.some((t) => t.path.endsWith("/known.txt")), "能解析的那一半必须进台账");
+  assert.ok(parsed.unresolvedWriteCount >= 1, "$OUT 解析不出 ⇒ 计入未解析");
+  const payload = payloadFor({
+    execWriteCount: 1,
+    execWriteUnresolvedCount: 1,
+    fileWrites: [{ path: `${CWD}/known.txt`, round: 1, tool: EXEC_TOOL_NAME, via: "redirect" }],
+    toolStats: new Map([[EXEC_TOOL_NAME, { calls: 1, failures: 0 }]]),
+  });
+  assert.equal(payload.fileWritesBlindToExec, true, "有未解析的一半 ⇒ 即使台账里有 exec 条目也必须举旗");
+});
+
+test("#711 阻断④ 端到端（判据5）：known && $OUT ⇒ 台账含 known.txt 且举旗", async () => {
+  const dir = await makeTmp("erix-exec-writes-mixed-");
+  const { payload } = await runExecOnly(['echo a > known.txt && echo b > "$OUT"'], { cwd: dir });
+  assert.ok(payload.fileWrites.some((e) => e.path === join(dir, "known.txt")),
+    `已知的那一半必须进台账，实测 ${JSON.stringify(payload.fileWrites)}`);
+  assert.equal(payload.fileWritesBlindToExec, true, "未解析的 $OUT ⇒ 举旗");
+});
+
+test("#711 判据6：-- 终止选项、-f 取值选项、附着式都让目标解对", () => {
+  assert.ok(targetPaths("tee -- -out.txt").some((p) => p.endsWith("/-out.txt")), "tee -- 后的 -out.txt 是文件名");
+  assert.ok(targetPaths("sed -i -f script.sed notes.md").some((p) => p.endsWith("/notes.md")),
+    "-f 的值 script.sed 不是目标，notes.md 才是");
+  assert.ok(targetPaths("sed -i -- -notes.md").some((p) => p.endsWith("/-notes.md")), "sed -i -- 后的 -notes.md 是文件名");
+  assert.ok(targetPaths("sed -i -f=script.sed notes.md").some((p) => p.endsWith("/notes.md")), "-f= 附着式：notes.md 是目标");
+  assert.ok(targetPaths("sed -i --expression='s/a/b/' f.txt").some((p) => p.endsWith("/f.txt")), "--expression= 附着式：f.txt 是目标");
+  assert.ok(targetPaths("tee -a out.txt").some((p) => p.endsWith("/out.txt")), "tee -a 是开关，不取值");
 });
