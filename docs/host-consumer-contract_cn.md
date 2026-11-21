@@ -3689,7 +3689,7 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
 | `filesWritten` | `[{ path, round }]` | run 的时间线台账里记录的写工具调用 | **最后 50 条**；更早的被丢掉并置 `filesWrittenTruncated: true` |
 | `fileWrites` | `[{ path, round, tool, via? }]` | 本 run 的写入台账（issue #388）：写工具调用的**原始** `tool_use.input[pathKey]` 值；issue #711 起**另含从 `exec` 命令里解析出的目标**（`heredoc` / `redirect` / `tee` / `sed -i`），这类条目带 `tool: "exec"` 与 `via`。一律绝对路径，可直接 `stat()` | **最后 50 条**（`FILE_LEDGER_LIMIT`，与引擎台账同一个常量）；更早的被丢掉并置 `fileWritesTruncated: true` |
 | `execWriteCount` | number | issue #711：带写形态（heredoc / `>` / `>>` / `tee` / `sed -i`）的 `exec` **命令条数**。解析不出目标也照算 —— 它说的是「这里有写、我不全知道」 | 为 0 时缺席 |
-| `execWriteUnresolvedCount` | number | issue #711（阻断④）：这些写形态里有多少个**目标没进台账**（目标解析不出 / 结构读不懂 / 命令不可执行 / 来自不透明包装如 `bash -c '… > …'`）。它是 `fileWritesBlindToExec` 的唯一触发条件，且「有几个我没解析出来」比一个布尔更可诊断 | 为 0 时缺席 |
+| `execWriteUnresolvedCount` | number | issue #711（阻断④）：这些写形态里有多少个**目标没进台账**（目标解析不出 / 结构读不懂 / 命令不可执行 / 来自不透明包装如 `bash -c '… > …'`）。不透明包装处，它数的是载荷**里面**写形态的出现次数（`>` / `>>` / `<<` / `tee` / `sed -i`，上界 32），所以是一个**下界**——「至少这么多处没解析出来」，而不是精确目标数。它是 `fileWritesBlindToExec` 的唯一触发条件，且「有几个我没解析出来」比一个布尔更可诊断 | 为 0 时缺席 |
 | `fileWritesBlindToExec` | `true` | issue #711：`execWriteUnresolvedCount > 0` ⇒ 本 run 的台账对 `exec` 不完整。不再看「台账里有没有 exec 条目」：混合命令 `echo a > known && echo b > "$OUT"` 有已知条目也照样举旗。比 `fileWritesBlind` 更细的那面旗（那条只在台账全空时才会举） | 其它情形缺席 |
 | `fileWritesBlind` | `true` | 引擎的 `toolStats` Map 记录过至少一次 `exec` 调用，且 `fileWrites` 台账为空；空台账**不等于没有写入文件** | 其它情形缺席；持久化为 `deterministic.fileWritesBlind` |
 | `toolStats` | `{ [工具名]: { calls, failures } }` | run 的工具计数，**plain object**（`JSON.stringify(new Map())` 是 `{}`，直接交 `Map` 你只会读到空对象） | 按 `calls` 取**前 40** 个工具名；`toolStatsTruncated: true` |

@@ -569,7 +569,8 @@ export function parseExecCommandWrites(command, options = {}) {
     if (opaquePayload !== null) {
       // 不透明包装（阻断①）：载荷里有写形态 ⇒ 只计数 + 记「未解析」，**绝不从载荷里提路径**；
       // 载荷里没有写形态（`bash -c 'rg foo'`）⇒ 不计数（只读包装不是写）。
-      if (payloadHasWriteForm(opaquePayload)) { hasWriteForm = true; unresolvedWriteCount += 1; }
+      const payloadWrites = countPayloadWriteForms(opaquePayload); // 载荷里写形态的下界计数（判据 6）
+      if (payloadWrites > 0) { hasWriteForm = true; unresolvedWriteCount += payloadWrites; }
     } else if (toolName === "tee") {
       const files = operandsAfter(words, commandToken, NO_VALUE_OPTIONS).filter((token) => !redirectTokens.includes(token));
       for (const file of files) pushTarget(file, EXEC_WRITE_VIA.tee);
@@ -637,14 +638,25 @@ function opaqueWritePayloadOf(words, commandToken, toolName) {
     .join(" ");
 }
 
+/** 不透明载荷里写形态计数的上界：防病态输入（一条畸形载荷把 `unresolvedWriteCount` 撑爆）。 */
+const PAYLOAD_WRITE_FORM_CAP = 32;
+
 /**
- * 载荷文本里是否出现写形态（只判布尔，绝不从中提路径）：`>`/`>>`、heredoc `<<`、`tee`、`sed … -i`。
+ * 不透明载荷里写形态的出现**次数**（下界，绝不从中提路径）：`>`/`>>` 重定向、
+ * heredoc `<<`、`tee`、`sed … -i`。载荷对分词器不透明 ⇒ 只能按字面数：这是「至少这么多处
+ * 没解析出来」的**下界**，不是精确目标数（判据 6）。上界 {@link PAYLOAD_WRITE_FORM_CAP} 防病态输入。
  * @param {string} text
- * @returns {boolean}
+ * @returns {number}
  */
-function payloadHasWriteForm(text) {
-  if (text === "") return false;
-  return text.includes(">") || text.includes("<<") || /\btee\b/.test(text) || /\bsed\b[^\n]*\s-i/.test(text);
+function countPayloadWriteForms(text) {
+  if (text === "") return 0;
+  const count = (haystack, re) => (haystack.match(re) || []).length;
+  let n = count(text, />>/g); // 追加：一次写，先匹配，剩下的 `>` 不重复计
+  n += count(text.replace(/>>/g, " "), />/g); // 去掉 `>>` 后余下的单个 `>`
+  n += count(text.replace(/<<</g, " "), /<</g); // heredoc；`<<<` here-string 不写盘，先剔除
+  n += count(text, /\btee\b/g);
+  n += count(text, /\bsed\b[^\n]*\s-i/g);
+  return Math.min(n, PAYLOAD_WRITE_FORM_CAP);
 }
 
 /**

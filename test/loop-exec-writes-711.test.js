@@ -466,6 +466,16 @@ test("#711 阻断① 不透明包装（bash/sh/eval/xargs/sudo bash）：载荷�
   }
 });
 
+test("#711 建议 D（判据 6）：不透明载荷按写形态个数计数（下界），不是恒为 1", () => {
+  // 两处写 ⇒ 至少计 2（旧实现只给 1，低估了未解析面）。
+  const two = parseExecCommandWrites("bash -c 'echo a > a; echo b > b'", { cwd: CWD });
+  assert.ok(two.unresolvedWriteCount >= 2, `两处写 ⇒ 未解析计数应 >=2（实测 ${two.unresolvedWriteCount}）`);
+  assert.deepEqual(two.targets, [], "载荷里的 a/b 是相对目标，绝不从不透明载荷里提路径");
+  // 下界语义的另一面：病态多写载荷被上界 32 卡住（防撑爆），不会无限大。
+  const many = parseExecCommandWrites(`bash -c '${"> ".repeat(40)}'`, { cwd: CWD });
+  assert.equal(many.unresolvedWriteCount, 32, "病态 40 个 `>` ⇒ 被上界 32 卡住（是下界计数，不是精确目标数）");
+});
+
 test("#711 阻断① 判据2：只读的不透明包装不是写（bash -c 'rg foo' ⇒ 不计数）", () => {
   for (const command of ["bash -c 'rg foo'", "sh -c 'ls -la'", "eval 'cat f.txt'", "bash -c 'echo hello'"]) {
     const parsed = parseExecCommandWrites(command, { cwd: CWD });

@@ -21,7 +21,7 @@
   enters the ledger nor counts nor raises a flag; what a parse cannot land in the ledger still
   counts on two additive final-guard payload keys (both absent when 0): `execWriteCount` counts the
   `exec` **commands** that carried a write shape, and `execWriteUnresolvedCount` counts the write
-  **targets** that never made it into the ledger — and `fileWritesBlindToExec: true` now fires on
+  **targets** that never made it into the ledger (for an opaque wrapper such as `bash -c '… > …'` this is a **lower bound**: it counts the write shapes seen inside the payload — `>` / `>>` / `<<` / `tee` / `sed -i` occurrences, capped at 32 — not an exact target count) — and `fileWritesBlindToExec: true` now fires on
   that unresolved count being above zero, regardless of whether the ledger holds an `exec` entry
   (a mixed `echo a > known && echo b > "$OUT"` still flags, because the `$OUT` half is unknown). **Whose
   judgement changed: `--require-deliverable` and the final guard.** The bare boolean shorthand
@@ -39,7 +39,7 @@
   绝不从中提路径；bash 根本不会执行的命令（重定向目标**之后**的未闭合引号）连路径也不记。
   `/dev/*` 是看得见的丢弃，既不进台账、也不计数、不举旗；解析不进台账的照样在**两个**加法键上计数
   （都是 final guard payload 键，0 时缺席）：`execWriteCount` 数带写形态的 `exec` **命令条数**，
-  `execWriteUnresolvedCount` 数那些**没进台账**的写**目标个数**；`fileWritesBlindToExec: true` 现在
+  `execWriteUnresolvedCount` 数那些**没进台账**的写**目标个数**（不透明包装如 `bash -c '… > …'` 处是一个**下界**：数的是载荷里写形态的出现次数——`>` / `>>` / `<<` / `tee` / `sed -i`——上界 32，不是精确目标数）；`fileWritesBlindToExec: true` 现在
   改看这个未解析数是否大于 0（不再看台账里有没有 exec 条目）——混合命令 `echo a > known && echo b > "$OUT"`
   仍会举旗，因为 `$OUT` 那一半是未知。**判定变了的是
   谁：`--require-deliverable` 与 final guard。** 裸布尔简写对「只会用 shell 落盘」的模型不再是空集

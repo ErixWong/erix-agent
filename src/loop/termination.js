@@ -302,7 +302,9 @@ export function buildFinalGuardPayload(ctx, reason, detail, attempt) {
   //   - `execWriteCount`：出现写形态（heredoc / `>` / `>>` / `tee` / `sed -i`）的 exec **命令条数**，
   //     解析不出目标也算 —— 它说的是「这里有写、我不全知道」，不是「我写了几次文件」。
   //   - `execWriteUnresolvedCount`（阻断④）：这些写形态里「没进台账」的**目标个数**（目标解析不出 /
-  //     结构读不懂 / 被截断 / 来自不透明包装）—— 比一个布尔更可诊断（「有几个我没解析出来」）。
+  //     结构读不懂 / 被截断 / 不可执行）—— 比一个布尔更可诊断（「有几个我没解析出来」）。
+  //     不透明包装（`bash -c '… > …'`）处它数的是载荷里的写形态个数（上界 32）⇒ 是**下界**（至少这么多处
+  //     没解析），不是精确目标数；判据 6。
   //   - `fileWritesBlindToExec`：`execWriteUnresolvedCount > 0` ⇒ 台账对 exec 不完整，宿主别把
   //     「台账没东西」读成「没写文件」。**不再看「台账里有没有 exec 条目」**：混合命令
   //     `echo a > known && echo b > "$OUT"` 有已知条目但仍有未解析的一半 ⇒ 旗必须举。

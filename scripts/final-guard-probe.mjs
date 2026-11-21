@@ -53,7 +53,8 @@ const ADDITIVE_PAYLOAD_KEYS = [
   "fileWritesTruncated",
   "fileWritesBlind", // 只有「跑过 exec 且台账为空」时出现（#386 之后的粗旗）
   "execWriteCount", // issue #711：只有「出现写形态的 exec 命令数 > 0」时出现
-  "fileWritesBlindToExec", // issue #711：只有「有写形态而台账里没有 exec 来源条目」时出现
+  "execWriteUnresolvedCount", // issue #711（阻断④）：只有「有写形态没解析进台账（未解析计数 > 0）」时出现；不透明包装处是下界（至少这么多处没解析）
+  "fileWritesBlindToExec", // issue #711（细旗）：`execWriteUnresolvedCount > 0` 即举——**不再看台账里有没有 exec 条目**（混合命令有已知条目但仍有未解析一半照样举）
   "toolStats",
   "toolStatsTruncated",
   "taskBrief",
@@ -647,6 +648,48 @@ try {
     log(`\n── ${currentCase}`);
     log(`   messages ${messagesBytes} B / 新键 ${additiveBytes} B = ${(share * 100).toFixed(2)}%`
       + `（${result.rounds} 轮，filesWritten ${payload.filesWritten?.length} 条）`);
+  }
+  // ── S8 exec 不透明包装的写 ⇒ 未解析计数 + 细盲区旗（issue #711 第三轮建议 C）───────
+  // 探针此前没有一个「会触发未解析写」的 exec 场景（S1 是 writeFile-only），于是漏登记
+  // `execWriteUnresolvedCount` 不会被上面的「未知键」检查抓到。本格跑一条不透明包装里的写（
+  // `bash -c` 载荷里有两处 `>`）⇒ execWriteCount>=1、execWriteUnresolvedCount>=2（下界）、
+  // fileWritesBlindToExec=true，且这三个键都在已登记清单里（unknown=0）。
+  {
+    currentCase = "S8 exec 不透明包装的写 ⇒ 未解析计数 + 细盲区旗都在且已登记";
+    resetSandbox();
+    let execPayload;
+    await runToolLoop({
+      provider: createFakeProvider([
+        toolUse("x1", "exec", { command: "bash -c 'echo a > a; echo b > b'" }),
+        wrapup({ done: true, summary: "已写", output: "写了两个文件" }, { input_tokens: 10, output_tokens: 5 }),
+      ]),
+      config: {
+        input: { initialUserMessage: "用 exec 写文件" },
+        guard: { finalGuardMaxRetries: 2 },
+        metadata: { task: "用 exec 写文件" },
+        run: { cwd: sandbox, runId: "probe-run-exec", maxRounds: 4 },
+      },
+      // 探针不依赖子进程：引擎扫的是 assistant 消息里的命令文本，不靠真执行。
+      executeTool: async () => "ok",
+      finalGuard: async (value) => { execPayload = value; return { action: "accept" }; },
+    });
+    const execKeys = Object.keys(execPayload);
+    const execKnown = new Set([...LEGACY_PAYLOAD_KEYS, ...ADDITIVE_PAYLOAD_KEYS]);
+    const execUnknown = execKeys.filter((key) => !execKnown.has(key));
+    expect(execUnknown.length === 0, `exec 场景 payload 出现未登记的键：${execUnknown.join(",")}`);
+    expect((execPayload.execWriteCount ?? 0) >= 1, `execWriteCount 应 >=1（实测 ${execPayload.execWriteCount}）`);
+    expect((execPayload.execWriteUnresolvedCount ?? 0) >= 2,
+      `bash -c 载荷里两处写都读不出 ⇒ execWriteUnresolvedCount 应 >=2（实测 ${execPayload.execWriteUnresolvedCount}）`);
+    expect(execPayload.fileWritesBlindToExec === true, "有未解析写 ⇒ 细盲区旗必须举");
+    record({
+      execWriteCount: execPayload.execWriteCount,
+      execWriteUnresolvedCount: execPayload.execWriteUnresolvedCount,
+      fileWritesBlindToExec: execPayload.fileWritesBlindToExec,
+      exec_unknown_keys: execUnknown.join(",") || "none",
+    });
+    log(`\n── ${currentCase}`);
+    log(`   execWriteCount=${execPayload.execWriteCount} execWriteUnresolvedCount=${execPayload.execWriteUnresolvedCount}`
+      + ` 盲区旗=${execPayload.fileWritesBlindToExec} 未登记键=${execUnknown.join(",") || "无"}`);
   }
   // ── E4 预算类停机的补跑桥（**双格**，issue #386 切片 3；形状按 issue #393 改成末轮带工具）────
   // 同一个「轮预算被掐停、模型还在正常调工具、交付物还差一步」的现场，同一个 guard（第一次必
