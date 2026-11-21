@@ -2867,7 +2867,6 @@ function symbolShapeOccurrencesInText(text, doc) {
   const push = (o, line, at) => {
     const norm = symbolShapeNormalizePath(o.file);      // #755 阻断A：循环剥到底，并记下 ../ 层数（返回 {path, up}）
     const file = norm.path;
-    if (file.endsWith(".d.ts")) return;                 // 生成物声明文件不入库（#213），拿它当被引文件必然假红
     const lookup = symbolShapeLookup(o.sym);            // #755 阻断②：点号链取首段（宿主符号）查声明（报错仍用原名 o.sym）
     if (SYMBOL_NOT_SYMBOL.has(o.sym) || SYMBOL_NOT_SYMBOL.has(lookup)) return;   // JavaScript 字面量不是符号（沿用既有名单）
     const registered = SYMBOL_SHAPE_DIR_PREFIXES.some((p) => file.startsWith(p));
@@ -2878,6 +2877,10 @@ function symbolShapeOccurrencesInText(text, doc) {
       found.push({ ...o, file, lookup, doc, line, unregisteredDir: dir, start: lineStart + at, end: lineStart + at + o.sym.length });
       return;
     }
+    // #755 最后一轮：登记面内的 `.d.ts` 是 `npm run types:build` / `prepack` 生成的公共面声明产物（#213 不入库），
+    //   **不作声明来源** ⇒ 跳过、不查符号、不报红。但这一句必须在**已登记之后**才判：未登记目录的 `.d.ts` 仍是形状错
+    //   （`foo/bar.d.ts`: `sym`），要先报「未登记的目录 `foo/`」，不许在登记检查之前就早退把它静默吞掉（与刚修的自相矛盾）。
+    if (file.endsWith(".d.ts")) return;
     found.push({ ...o, file, lookup, doc, line, start: lineStart + at, end: lineStart + at + o.sym.length });
   };
   for (const [i, line] of text.split("\n").entries()) {
@@ -9657,8 +9660,16 @@ const SELF_TEST_CASES = [
 
   // —— #755 第三轮：阻断A（相对前缀剥到底 / 未登记目录报红 / 逃仓不算）与阻断B（参数解构只认真函数位）——
   {
-    label: "#755 阻断A 判据1 深 `../`（9 层）剥到底后仍落登记面⇒必须红（旧 guard<8 会漏判）：`../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor`",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor` 是 9 层 ../ 前缀的坐标。") },
+    label: "#755 阻断A 判据1 深 `../`（10 层）剥到底后仍落登记面⇒必须红（旧 guard<8 只能剥 8 层、会漏判 10 层）：`../../../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor`",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`../../../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor` 是 10 层 ../ 前缀的坐标。") },
+    // 样例里的 `../` 个数与 label 的「10 层」逐字一致：10 个 ../，旧 guard<8 剥 8 层后还剩 `../../src/...`⇒不落在登记面⇒带 bug 版本不红（能钉住 bug）。
+    expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`/, /没有 `stubFor` 的声明/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 对照 正好 8 层 `../` 剥到底后仍落登记面⇒同样必须红（与判据1 构成对照，证明不是靠「层数刚好」过的：8 层旧 guard<8 恰好剥得完、带 bug 也红，10 层才钉 bug，两格一起证剥到底在任何层数都成立）：`../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor`",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 对照）：`../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor` 是 8 层 ../ 前缀的坐标。") },
+    // 样例与 label 的「8 层」逐字一致：8 个 ../；修后 while 剥到底→src/loop/...⇒登记面内→查 `stubFor` 查不到⇒红。
     expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`/, /没有 `stubFor` 的声明/],
     expectFiles: [AGENTS_EN],
   },
@@ -9666,6 +9677,12 @@ const SELF_TEST_CASES = [
     label: "#755 阻断A 判据2 未登记目录不许静默忽略：`foo/bar.js`: `zzUnregDirProbe`⇒必须红并点名未登记的目录 `foo/`",
     overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`foo/bar.js`: `zzUnregDirProbe` 指向一个没登记的目录。") },
     expect: [/未登记的目录/, /`foo\/`/, /zzUnregDirProbe/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 最后一轮 ① 未登记目录的 `.d.ts` 不许静默跳过（.d.ts 早退必须在登记检查之后）：`foo/bar.d.ts`: `zzUnregDirDtsProbe`⇒必须红并点名未登记的目录 `foo/`（旧写法在登记检查前就早退⇒既不报未登记也不查符号，静默忽略，与判据2 自相矛盾）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 ①）：`foo/bar.d.ts`: `zzUnregDirDtsProbe` 指向一个没登记目录里的声明文件。") },
+    expect: [/未登记的目录/, /`foo\/`/, /zzUnregDirDtsProbe/],
     expectFiles: [AGENTS_EN],
   },
   {
