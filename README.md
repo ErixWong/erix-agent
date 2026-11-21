@@ -201,6 +201,7 @@ src/
     termination.js                 Termination reason classification
     final-text-shape.js            Final-text shape detector: a textualized tool call in the final text (shared marker set, exported for the host) (issue #862)
     deliverables.js                Host-declared deliverable checks (machine gate before finalGuard)
+    exec-writes.js                 Exec write shapes in `command`: count face + parseable targets (#711)
     pending-tool-result.js         Shared repair of a pending trailing tool_use before injecting control text (issue #394)
     resume-manager.js              Resume restore and run-state application
     resume-notice.js               The "this run was restored" notice injected into a resumed context (issue #404)

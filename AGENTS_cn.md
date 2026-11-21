@@ -95,7 +95,7 @@
   `EXTERNAL_REPO_PREFIXES` 里登记过（没登记的名字红，登记了却没人引用也红）。**不带前缀的路径就是本仓内的路径，
   必须在这里解析得到。**
 - **锚点**：本页只有四个数归门禁、也只有它们是现值——`BASELINE_ROOT = 102`、符号锚点地板
-  `SYMBOL_ANCHOR_MIN_UNIQUE = 244`（只升：掉到地板以下就红——锚点在退化被抓住）、裸行号棘轮
+  `SYMBOL_ANCHOR_MIN_UNIQUE = 249`（只升：掉到地板以下就红——锚点在退化被抓住）、裸行号棘轮
   `BARE_LINE_REF_BASELINE = 6`（只降）、锚点覆盖面地板 `REF_SCAN_DOCS_MINIMUM = 53`。文档不得依赖裸行号：
   指位置要写符号 + 它的文件（`` `符号`（`路径`） ``），不写 `路径:123`。实测流水住在
   `docs/maintenance/symbol-anchor-ledger_cn.md`。加锚点或搬锚点之前先读 `#docs-anchors`。
@@ -134,7 +134,7 @@ npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → �
   `npm version <x.y.z> --no-git-tag-version`。
 - `package.json` 那一面：去掉 `private`、`repository.url` 用 `git+https://…` 形态、`files` 是一份很长的显式
   白名单（读 `package.json`，别抄）；用 `npm publish --dry-run` 看产物 ⇒
-  `docs/maintenance/command-reference_cn.md#publish-prerequisites` 与 `#npm-policy`。随包安装应列出 **92** 个
+  `docs/maintenance/command-reference_cn.md#publish-prerequisites` 与 `#npm-policy`。随包安装应列出 **93** 个
   `.d.ts`（`prepack` 生成，由 `npm run check:pack-links` 对账）。
 - **打 tag 之前有两步是人工的**（锚点只覆盖有人登记过的维度）：① 手工走一遍**默认值**、**数字**与**名称集合**
   这三类声称，范围是两份 README、两份 AGENTS 与两份契约文档；② 如果 `check:changelog` 打了 `unattributed` 提示，

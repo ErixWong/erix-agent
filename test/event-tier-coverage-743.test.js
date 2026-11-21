@@ -826,6 +826,9 @@ test("T10 枚举范围写清（评审必修 3）：`persistence_error` 走诊断
 const LOOKALIKE_NON_EMITTERS = Object.freeze({
   "content.push": "消息 content block 的构造点（`type` 是块类型 `text` / `tool_result` / `thinking`，不是事件名）",
   "parts.push": "同上，多模态 parts 的块类型",
+  // issue #711：`src/loop/exec-writes.js` 的 shell 词法器把 token 推进数组，`type` 是词法类别
+  // （`word` / `op`），与事件名无关；这个模块不发任何事件（纯解析器，`grep emitEvent` = 0）。
+  "tokens.push": "shell 词法器推 token（`type` 是 `word` / `op`），不是事件发射点",
   "streamCleanupEligible": "分级表自己的谓词，入参对象里带 `type` 字段",
   "Object.freeze": "冻结表与名单，入参是对象不是事件",
 });

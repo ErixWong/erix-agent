@@ -2640,7 +2640,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  同批把四处现值声称一起抬（名单见上面 #769 R8 那条），
  *  流水记在 `docs/maintenance/symbol-anchor-ledger.md`。
  *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 244;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 249;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -9156,9 +9156,9 @@ const SELF_TEST_CASES = [
     expectGreen: true,
   },
   {
-    label: "#286 越界必红：CN 契约的 terminationReasonForAction 区间 :111 改成 99999-111（唯一区间数不变、区间仍与声明处相交 → 只有越界这条红）",
-    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/termination.js:111").join("src/loop/termination.js:99999-111") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:99999-111，但该文件只有 \d+ 行/],
+    label: "#286 越界必红：CN 契约的 terminationReasonForAction 区间 :114 改成 99999-114（唯一区间数不变、区间仍与声明处相交 → 只有越界这条红）",
+    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/termination.js:114").join("src/loop/termination.js:99999-114") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:99999-114，但该文件只有 \d+ 行/],
     expectFiles: [CONTRACT_CN],
   },
   {
@@ -9184,10 +9184,10 @@ const SELF_TEST_CASES = [
   //    弱档（具名字面量）也真的按「该字面量的出现行」判 → 改窄到不含出现行就红。
   //  四条都用 `mutateSymbolAnchorSpan`（与主检查同一套提取逻辑，#279 口径：打靶由提取逻辑定）。
   {
-    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:111）改窄成 112-116 ⇒ 声明在 111，红",
-    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":112-116") },
-    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:112-116`）/,
-      /声明处不相交/, /真值位在 111/],
+    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:114）改窄成 100-105 ⇒ 声明在 114，红",
+    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":100-105") },
+    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:100-105`）/,
+      /声明处不相交/, /真值位在 114/],
     expectFiles: [CONTRACT_EN],
   },
   {
@@ -9198,12 +9198,12 @@ const SELF_TEST_CASES = [
     expectFiles: [CONTRACT_CN],
   },
   {
-    label: "#286 T-b1a 区间相交的放行证：删掉 `max_rounds_cap`（termination.js:115）的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
+    label: "#286 T-b1a 区间相交的放行证：删掉 `max_rounds_cap`（termination.js:119）的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
     overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", "") },
     expectGreen: true,
   },
   {
-    label: "#286 T-b1a 弱档真值位：把 `max_rounds_cap`（termination.js:115）改窄到 300-301 ⇒ 字面量都在区间外，红（弱档也真按出现行判）",
+    label: "#286 T-b1a 弱档真值位：把 `max_rounds_cap`（termination.js:119）改窄到 300-301 ⇒ 字面量都在区间外，红（弱档也真按出现行判）",
     overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", ":300-301") },
     expect: [/symbol-anchor-span: .*引用 `max_rounds_cap`（`src\/loop\/termination\.js:300-301`）/,
       /真值形态 具名字面量成员/],
@@ -9295,15 +9295,15 @@ const SELF_TEST_CASES = [
   // 前者从前是漏洞：`:0-1` 的结尾 1 永远不超过文件行数 ⇒ 零条红（主 agent 注入实测过）。
   // 后者从前是 `continue`：目标文件不存在就跳过，于是「文件改名/被删 + 还留着行号」静默放行。
   {
-    label: "#286 返工 R3 下界：把 CN 契约的 terminationReasonForAction 区间写成 :0-111 ⇒ 必须红（从前零条红，`:0` 在越界判据里永远不越界；结尾仍与声明处相交，所以只有下界这条红）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:111", "src/loop/termination.js:0-111") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:0-111 的行号不合法——行号必须 \*\*≥ 1\*\*/],
+    label: "#286 返工 R3 下界：把 CN 契约的 terminationReasonForAction 区间写成 :0-114 ⇒ 必须红（从前零条红，`:0` 在越界判据里永远不越界；结尾仍与声明处相交，所以只有下界这条红）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:114", "src/loop/termination.js:0-114") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:0-114 的行号不合法——行号必须 \*\*≥ 1\*\*/],
     expectFiles: [CONTRACT_CN],
   },
   {
     label: "#286 返工 R3 不存在：把 CN 契约的一处目标改成 src/loop/__no_such_probe__.js ⇒ 必须红（从前是 continue 静默跳过；同一坐标的符号锚点也会点名「文件不存在」，属同一处坏坐标）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:111", "src/loop/__no_such_probe__.js:111") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:111，但 .*在本仓不存在——裸行号没有可核对的真值/],
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:114", "src/loop/__no_such_probe__.js:114") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:114，但 .*在本仓不存在——裸行号没有可核对的真值/],
     expectFiles: [CONTRACT_CN],
   },
 

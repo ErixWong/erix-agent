@@ -133,6 +133,7 @@ import {
   withTerminationPayload,
 } from "./termination.js";
 import { normalizeDeliverables } from "./deliverables.js";
+import { EXEC_TOOL_NAME, scanExecWrites } from "./exec-writes.js";
 import { createErrorLedger } from "./error-ledger.js";
 import {
   judgeRecordFields,
@@ -2030,6 +2031,15 @@ export async function runToolLoop(options) {
     // 分工：`filesWritten` = judge 提示用的摘要（40 码点、不裁斜杠、无截断标记）；
     // `fileWrites` = 判据用的原值（可直接 `stat()`）。两个键名不许混用。
     fileWrites: [],
+    // issue #711：**出现写形态的 exec 命令条数**（heredoc / `>` / `>>` / `tee` / `sed -i`）。
+    // 它是 payload 加法键 `execWriteCount` 的唯一来源，也在 `recordFileWrites` 里累加 ——
+    // 计数与台账同一条通道，所以 resume 重放轮记录后的值与非 resume 一路跑完必然相等。
+    // 它**不是**「写了几次文件」：解析不出目标的命令也算一条（那是「我看不见」的面，不是交付面）。
+    execWriteCount: 0,
+    // issue #711（阻断④）：**有写形态但没进台账**的写目标个数（目标解析不出 / 结构读不懂 /
+    // 被截断 / 来自不透明包装）。它是 payload 加法键 `execWriteUnresolvedCount` 与细盲区旗
+    // `fileWritesBlindToExec` 的唯一来源，与 `execWriteCount` 同一条通道、同样 resume 同口径。
+    execWriteUnresolvedCount: 0,
   };
   const toolStats = new Map();
   // `lowBudgetPrompted` 已迁入 `runLoopState`（issue #177 刀5-E）。
@@ -2074,12 +2084,25 @@ export async function runToolLoop(options) {
   };
   // issue #388：把一段消息里写工具声明的**原始**路径记进 `fileWrites` 台账。
   // 主循环与 resume 都只调这一个函数（两份实现 = 两种口径，那正是 #388 的根因形状）。
+  // issue #711：exec 的写形态与写目标也走**这一个**入口 —— 同一个 `trimFileWrites`、
+  // 同一个 `FILE_LEDGER_LIMIT`，**没有第二份台账**。
   const recordFileWrites = (sourceMessages, round) => {
     for (const write of rawWritePaths(sourceMessages, 0, {
       writeToolNames: resolvedWriteToolNames,
       writeToolPathKeys: resolvedWriteToolPathKeys,
     })) {
       governorState.fileWrites.push({ path: write.path, round, tool: write.name });
+      trimFileWrites();
+    }
+    const execWrites = scanExecWrites(sourceMessages, { cwd });
+    // 计数面（甲）：出现写形态的命令条数 —— 解析不出目标的也算，它说的是「这里有写、我不全知道」。
+    governorState.execWriteCount += execWrites.writeFormCount;
+    // 未解析面（阻断④）：有写形态但没进台账的目标个数 —— 细盲区旗的唯一判据。
+    governorState.execWriteUnresolvedCount += execWrites.unresolvedWriteCount;
+    // 台账面（乙）：**只把解析得出来、且能绝对化**的目标并进台账，条目第四个键 `via` 记写形态。
+    // 猜一个错路径进去比不记更坏：宿主会去 `stat()` 一个模型根本没写的文件。
+    for (const write of execWrites.writes) {
+      governorState.fileWrites.push({ path: write.path, round, tool: EXEC_TOOL_NAME, via: write.via });
       trimFileWrites();
     }
   };
@@ -3816,6 +3839,14 @@ export async function runToolLoop(options) {
     // issue #388：原始写路径台账（与 `filesWritten` 并列的第二个键，不是替换）。
     get fileWrites() {
       return governorState.fileWrites;
+    },
+    // issue #711：出现写形态的 exec 命令条数（payload 加法键 `execWriteCount` 的来源）。
+    get execWriteCount() {
+      return governorState.execWriteCount;
+    },
+    // issue #711（阻断④）：有写形态但未解析进台账的目标个数（`execWriteUnresolvedCount` / 细盲区旗的来源）。
+    get execWriteUnresolvedCount() {
+      return governorState.execWriteUnresolvedCount;
     },
     get selfReport() {
       return selfReport;

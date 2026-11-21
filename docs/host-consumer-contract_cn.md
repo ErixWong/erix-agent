@@ -1867,10 +1867,10 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 <!-- erix:snapshot-cell-axes:begin -->
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3369` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
-| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3372` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
-| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3372` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6115` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3373`、`src/loop/orchestrator.js:6115` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3392` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
+| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3395` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
+| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3395` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
+| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6146` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3396`、`src/loop/orchestrator.js:6146` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = 该格不双写，没有权威源/交接条件可谈。
@@ -3015,7 +3015,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`isEndTurn`（`src/loop/orchestrator.js`）），映射在 `terminationReasonForAction`（`src/loop/termination.js`）。**issue #473 起**还要求被判的那一轮产出了**交付物**（`text`）块，或模型自己的信封没有写 `done:false`——见上文轮内链条第 6 步；**issue #865 起**，一段内容是被文本化的工具调用的 `text` 块**不算**这种交付物块 | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`DEFAULT_REFLECTION_MIN_ROUNDS`（`src/loop/reflection.js`）） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
 | `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`stallWindow`（`src/loop/orchestrator.js`））叠加 streak 累加（`stallStreak`（`src/loop/orchestrator.js`）），stop 在 `decideRoundAction`（`src/reflection/governor.js`），`STALL_STREAK_LIMIT` = 3（`src/reflection/governor.js`），映射在 `terminationReasonForAction`（`src/loop/termination.js`） | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死——这个排序就在 `decideRoundAction`（`src/reflection/governor.js`）里 | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
-| `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:118`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
+| `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:119`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
 | `max_rounds_cap` | (a) `decideWithEvaluation`（`src/reflection/governor.js`）的治理层 stop `cap`：接近上限且不允许扩轮；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，收尾在 `3189-3207`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
 | `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`FINAL_GUARD_NON_CONTINUABLE_REASONS`（`src/loop/termination.js`））、修订次数触顶（`finalGuardRetryLimit`（`src/loop/orchestrator.js`））、或轮循环跑完的收尾（`forceFinalIfNeeded`（`src/loop/termination.js`））。只对 6 个 guard 适用 reason 生效（名单在 `FINAL_GUARD_TERMINATION_REASONS`（`src/loop/termination.js`）），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`（`src/loop/orchestrator.js`））；`finalGuardMaxRetries` 调修订上限（默认 2，`budgetRounds`，`src/loop/orchestrator.js`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
 | `aborted` | 终局 `fail`（`src/loop/orchestrator.js`）路径且宿主 signal 已 abort | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的。**静默** run 不再必然落到这一行：issue #441 之后 CLI 接上了引擎的可重试相位截止，静默在重试用尽后以 `failed` / `errorCode: "timeout"` 收尾（见「静默是一条可重试的截止」）；本行现在的含义是「信号真的被 abort 了」——宿主动的手，或者没有任何相位截止能先响时 idle 看门狗动的手；看门狗动的手时，载荷仍以 `code: "idle_timeout"` 挂在抛出的错误上（issue #440，见「CLI 的 idle 判死保留载荷」） |
@@ -3060,12 +3060,12 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
 
 同一个轮次内只有一个机制能拍板，顺序如下
 （`judge_done`，`src/loop/orchestrator.js`、`decideRoundAction`（`src/reflection/governor.js`）与
-`decideWithEvaluation`（`src/reflection/governor.js`）、`terminationReasonForAction`（`src/loop/termination.js:113`））：
+`decideWithEvaluation`（`src/reflection/governor.js`）、`terminationReasonForAction`（`src/loop/termination.js:114`））：
 
 1. **token 补全边界**——连续 `max_tokens` 响应置上 `continuationExhausted`，它是两个
    治理入口的首要检查——`decideRoundAction`（`src/reflection/governor.js`）与
    `decideWithEvaluation`（`src/reflection/governor.js`）。因为
-   `continuationExhausted` 在 `cap` 映射到 `max_rounds_cap` 之前被检查（`src/loop/termination.js:118`），
+   `continuationExhausted` 在 `cap` 映射到 `max_rounds_cap` 之前被检查（`src/loop/termination.js:119`），
    由输出截断引起的 `cap` stop 报的是 `continuation_exhausted`，**永远不会**是
    `max_rounds_cap`。
 2. **stall stop**——`decideRoundAction`（`src/reflection/governor.js`）里的 stall 分支——故意高于收尾 nudge 与错误
@@ -3687,7 +3687,10 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
 | `cwd` | string | 宿主传给 `runToolLoop` 的 `cwd`，原样 | 无——引擎从不解释它（不 `chdir`、不校验存在性、不拼路径） |
 | `runId` | string | 宿主传的 `runId`，原样 | 无 |
 | `filesWritten` | `[{ path, round }]` | run 的时间线台账里记录的写工具调用 | **最后 50 条**；更早的被丢掉并置 `filesWrittenTruncated: true` |
-| `fileWrites` | `[{ path, round, tool }]` | 写工具调用声明的**原始** `tool_use.input[pathKey]` 值（issue #388）：不摘要、不截断，可直接 `stat()` | **最后 50 条**（`FILE_LEDGER_LIMIT`，与引擎台账同一个常量）；更早的被丢掉并置 `fileWritesTruncated: true` |
+| `fileWrites` | `[{ path, round, tool, via? }]` | 本 run 的写入台账（issue #388）：写工具调用的**原始** `tool_use.input[pathKey]` 值；issue #711 起**另含从 `exec` 命令里解析出的目标**（`heredoc` / `redirect` / `tee` / `sed -i`），这类条目带 `tool: "exec"` 与 `via`。一律绝对路径，可直接 `stat()` | **最后 50 条**（`FILE_LEDGER_LIMIT`，与引擎台账同一个常量）；更早的被丢掉并置 `fileWritesTruncated: true` |
+| `execWriteCount` | number | issue #711：带写形态（heredoc / `>` / `>>` / `tee` / `sed -i`）的 `exec` **命令条数**。解析不出目标也照算 —— 它说的是「这里有写、我不全知道」 | 为 0 时缺席 |
+| `execWriteUnresolvedCount` | number | issue #711（阻断④）：这些写形态里有多少个**目标没进台账**（目标解析不出 / 结构读不懂 / 命令不可执行 / 来自不透明包装如 `bash -c '… > …'`）。不透明包装处，它数的是载荷**里面**写形态的出现次数（`>` / `>>` / `<<` / `tee` / `sed -i`，上界 32），所以是一个**下界**——「至少这么多处没解析出来」，而不是精确目标数。它是 `fileWritesBlindToExec` 的唯一触发条件，且「有几个我没解析出来」比一个布尔更可诊断 | 为 0 时缺席 |
+| `fileWritesBlindToExec` | `true` | issue #711：`execWriteUnresolvedCount > 0` ⇒ 本 run 的台账对 `exec` 不完整。不再看「台账里有没有 exec 条目」：混合命令 `echo a > known && echo b > "$OUT"` 有已知条目也照样举旗。比 `fileWritesBlind` 更细的那面旗（那条只在台账全空时才会举） | 其它情形缺席 |
 | `fileWritesBlind` | `true` | 引擎的 `toolStats` Map 记录过至少一次 `exec` 调用，且 `fileWrites` 台账为空；空台账**不等于没有写入文件** | 其它情形缺席；持久化为 `deterministic.fileWritesBlind` |
 | `toolStats` | `{ [工具名]: { calls, failures } }` | run 的工具计数，**plain object**（`JSON.stringify(new Map())` 是 `{}`，直接交 `Map` 你只会读到空对象） | 按 `calls` 取**前 40** 个工具名；`toolStatsTruncated: true` |
 | `taskBrief` | string | 本次 run 由 `resolveTaskBrief`（`src/loop/task-brief.js`）产出、judge 与收尾看到的那份任务简报 | 2000 码点；`taskBriefTruncated: true` |
@@ -3706,12 +3709,21 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
   （`src/reflection/judge.js`）），被截到 40 个码点且**不带任何截断标记**。把它当提示（「这个 run
   写过一条长这样的路径」），核事实请用文件系统、`messages` 里的 tool_result 或 `cwd`；别拿它当 join 键。
   **要精确值就用 `fileWrites[].path`**（issue #388）：它是原始入参值，`stat()`/`existsSync()` 才有意义；
-  摘要不是（>40 码点的路径被无声截断，拿它建判据会系统性误拦已经做对的 run）。
+  摘要不是（>40 码点的路径被无声截断，拿它建判据会系统性误拦已经做对的 run）。issue #711 起台账
+  里还有 **`exec` 来源**的条目——那些路径是**从命令文本里解析出来的**（不是声明），一律绝对路径
+  （相对路径按该 run 的 `cwd` 绝对化；没有 `cwd` 或命令里先 `cd` 过 ⇒ **不记**），而解析不出目标
+  （变量、`$(…)`、通配符、结构读不懂，或藏在 `bash -c '… > …'` 这种不透明包装里）时**绝不猜**——
+  只累加 `execWriteCount` 与 `execWriteUnresolvedCount`，并由
+  `fileWritesBlindToExec: true` 告诉你「这个 run 的台账对 shell 是瞎的」。
 - **`filesWritten` 与 `toolStats` 在任何一次 `runToolLoop` 里都在场**（空数组 / 空对象的意思是
   「这个 run 什么都没记」——这本身就是事实）。`cwd`、`runId`、`taskBrief`、`selfReport` 只在真有
   东西可报时在场。
 - **`fileWritesBlind` 只在出现过 `exec` 调用且 `fileWrites` 为空时出现。** 没有这个键不证明没有写文件；
-  它只表示没有观察到这一个「写入台账盲区」条件。
+  它只表示没有观察到这一个「写入台账盲区」条件。issue #711 另加了更细的三个：`execWriteCount`
+  （多少条 `exec` 命令写了东西）、`execWriteUnresolvedCount`（其中有多少目标没进台账）与
+  `fileWritesBlindToExec`（这个未解析数 > 0 ⇒ 举旗；即使混合命令留下了已知条目也照样举，因为未解析的那一半仍是未知）。
+  **下「这个 run 什么都没写」的结论之前，三个键要一起读**：空台账 + `execWriteCount: 3`
+  与空台账 + 两个键都没有，**不是同一个事实**。
 - **开销有上限且已实测。** `node scripts/final-guard-probe.mjs` 离线跑「30 轮 × 4KB 工具输出」：
   `messages` 257,618 字节、加法键 4,789 字节 = **1.86%**（`fileWrites` 落地前是 2,242 字节），
   预算上限是 < 2%。所以宿主可以整包落盘/入队
