@@ -259,12 +259,6 @@ function plainSelfReport(raw, findings, limit) {
   };
 }
 
-/** 台账里有没有**任何** `exec` 来源条目（#711 `fileWritesBlindToExec` 判据的后半边）。 */
-function hasExecSourcedWrite(fileWrites) {
-  return Array.isArray(fileWrites)
-    && fileWrites.some((entry) => entry !== null && typeof entry === "object" && entry.tool === EXEC_TOOL_NAME);
-}
-
 /**
  * 组装 `finalGuard` 的 payload。
  *
@@ -304,16 +298,24 @@ export function buildFinalGuardPayload(ctx, reason, detail, attempt) {
     if (writes.truncated) payload.fileWritesTruncated = true;
   }
   if (isFileWritesBlind(ctx.toolStats, ctx.fileWrites)) payload.fileWritesBlind = true;
-  // issue #711：exec 写形态的两面（**计数面**与**盲区面**），都是加法键，探不到就不写。
+  // issue #711：exec 写形态的三面（**计数面**、**未解析面**、**盲区旗**），都是加法键，探不到就不写。
   //   - `execWriteCount`：出现写形态（heredoc / `>` / `>>` / `tee` / `sed -i`）的 exec **命令条数**，
   //     解析不出目标也算 —— 它说的是「这里有写、我不全知道」，不是「我写了几次文件」。
-  //   - `fileWritesBlindToExec`：上面数出来 > 0，而台账里**一条 exec 来源条目都没有**
-  //     ⇒ 台账对 exec 是瞎的，宿主别把「台账没东西」读成「没写文件」。
+  //   - `execWriteUnresolvedCount`（阻断④）：这些写形态里「没进台账」的**目标个数**（目标解析不出 /
+  //     结构读不懂 / 被截断 / 来自不透明包装）—— 比一个布尔更可诊断（「有几个我没解析出来」）。
+  //   - `fileWritesBlindToExec`：`execWriteUnresolvedCount > 0` ⇒ 台账对 exec 不完整，宿主别把
+  //     「台账没东西」读成「没写文件」。**不再看「台账里有没有 exec 条目」**：混合命令
+  //     `echo a > known && echo b > "$OUT"` 有已知条目但仍有未解析的一半 ⇒ 旗必须举。
   // 与 #386 的 `fileWritesBlind` 并存不合并：那条是「台账完全空 + 跑过 exec」的粗旗，
   // 这条是「读过命令内容」的细旗（见 `isFileWritesBlind` 的分工注释）。裁决一字未动。
   const execWriteCount = Number.isSafeInteger(ctx.execWriteCount) && ctx.execWriteCount > 0 ? ctx.execWriteCount : 0;
   if (execWriteCount > 0) payload.execWriteCount = execWriteCount;
-  if (execWriteCount > 0 && !hasExecSourcedWrite(ctx.fileWrites)) payload.fileWritesBlindToExec = true;
+  const execWriteUnresolvedCount = Number.isSafeInteger(ctx.execWriteUnresolvedCount)
+    && ctx.execWriteUnresolvedCount > 0 ? ctx.execWriteUnresolvedCount : 0;
+  if (execWriteUnresolvedCount > 0) {
+    payload.execWriteUnresolvedCount = execWriteUnresolvedCount;
+    payload.fileWritesBlindToExec = true;
+  }
   const stats = plainToolStats(ctx.toolStats, FINAL_GUARD_PAYLOAD_LIMITS.toolStats);
   if (stats !== null) {
     payload.toolStats = stats.stats;
@@ -899,9 +901,9 @@ export const FORCED_FINAL_FALLBACK_TEXT =
  * 与 issue #711 的 `fileWritesBlindToExec` **分工**（两面都在，不许合并成一个）：
  *   - 本函数**不读命令内容**：只要「台账完全空 + 有 exec 调用」就举旗，所以一条纯只读的
  *     `rg foo` 也会举旗（保守、宁多勿少，#386 的口径）；
- *   - `fileWritesBlindToExec` **读过命令内容**：只在「确实出现写形态且台账里没有 exec 来源
- *     条目」时举旗，所以纯只读的 exec 不会举它的旗，而 `> "$OUT"` 这种「有写但读不出目标」
- *     一定会举。
+ *   - `fileWritesBlindToExec` **读过命令内容**：只在「确实有写形态没解析进台账（未解析计数 > 0）」
+ *     时举旗，所以纯只读的 exec 与能完整解析出目标的写都不会举它的旗，而 `> "$OUT"` /
+ *     `bash -c '… > …'` 这种「有写但读不出目标」一定会举。
  * 两者都不改裁决；宿主拿到的都是「这份台账能不能当完整清单用」的事实。
  *
  * @param {unknown} toolStats @param {unknown} fileWrites

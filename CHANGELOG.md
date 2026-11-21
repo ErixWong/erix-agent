@@ -12,13 +12,18 @@
   `scanExecWrites` (`src/loop/exec-writes.js`) now parse each `exec` command for its write
   shapes (heredoc, `>` / `>>` redirects, `tee`, `sed -i`) and record every target that resolves
   to an absolute path into the same ledger — as entries with `tool: "exec"` and a `via` key
-  (`heredoc` / `redirect` / `tee` / `sed-i`; non-exec entries never carry that key). Two claims
+  (`heredoc` / `redirect` / `tee` / `sed-i`; non-exec entries never carry that key). Three claims
   stay deliberately separate: **targets are only recorded, never guessed** — variables, command
   substitution, wildcards, brace expansion, unreadable structure, and relative paths without a
-  run `cwd` stay out (`/dev/*` is a visible discard, not a blind spot); what a parse cannot
-  resolve still counts: `execWriteCount` (additive final-guard payload key, absent when 0)
-  counts the `exec` **commands** that carried a write shape, and `fileWritesBlindToExec: true`
-  says that count is above zero while the ledger holds no `exec`-sourced entry. **Whose
+  run `cwd` stay out; writing hidden inside an opaque wrapper (`bash -c '… > …'`, `eval`, `xargs`) is
+  counted but never mined for a path; a command bash would not even execute (an unterminated quote
+  **after** a redirect target) drops its path too. `/dev/*` is a visible discard, so it neither
+  enters the ledger nor counts nor raises a flag; what a parse cannot land in the ledger still
+  counts on two additive final-guard payload keys (both absent when 0): `execWriteCount` counts the
+  `exec` **commands** that carried a write shape, and `execWriteUnresolvedCount` counts the write
+  **targets** that never made it into the ledger — and `fileWritesBlindToExec: true` now fires on
+  that unresolved count being above zero, regardless of whether the ledger holds an `exec` entry
+  (a mixed `echo a > known && echo b > "$OUT"` still flags, because the `$OUT` half is unknown). **Whose
   judgement changed: `--require-deliverable` and the final guard.** The bare boolean shorthand
   no longer passes vacuously for a model that only writes via shell — its ledger is no longer
   the empty set, so the checks really run; and `payload.fileWrites` handed to `finalGuard` no
@@ -29,10 +34,14 @@
   （`src/loop/exec-writes.js`）现在会把每条 `exec` 命令按写形态解析（heredoc、`>` / `>>` 重定向、
   `tee`、`sed -i`），并把解析得出来且能化成绝对路径的目标记进同一本台账——条目带
   `tool: "exec"` 与 `via` 键（`heredoc` / `redirect` / `tee` / `sed-i`；非 exec 条目永远不写这个键）。
-  两条口径刻意不合并：**目标只记不猜**——变量、命令替换、通配、花括号展开、读不懂的结构，以及没有
-  run `cwd` 时的相对路径，一律不进（`/dev/*` 是看得见的丢弃，不是盲区）；解析不出的照样计数：
-  `execWriteCount`（final guard payload 的加法键，0 时缺席）数带写形态的 `exec` **命令条数**，
-  `fileWritesBlindToExec: true` 表示这个计数大于 0 而台账里没有任何 exec 来源条目。**判定变了的是
+  三条口径刻意不合并：**目标只记不猜**——变量、命令替换、通配、花括号展开、读不懂的结构，以及没有
+  run `cwd` 时的相对路径，一律不进；藏在**不透明包装**（`bash -c '… > …'`、`eval`、`xargs`）里的写只计数、
+  绝不从中提路径；bash 根本不会执行的命令（重定向目标**之后**的未闭合引号）连路径也不记。
+  `/dev/*` 是看得见的丢弃，既不进台账、也不计数、不举旗；解析不进台账的照样在**两个**加法键上计数
+  （都是 final guard payload 键，0 时缺席）：`execWriteCount` 数带写形态的 `exec` **命令条数**，
+  `execWriteUnresolvedCount` 数那些**没进台账**的写**目标个数**；`fileWritesBlindToExec: true` 现在
+  改看这个未解析数是否大于 0（不再看台账里有没有 exec 条目）——混合命令 `echo a > known && echo b > "$OUT"`
+  仍会举旗，因为 `$OUT` 那一半是未知。**判定变了的是
   谁：`--require-deliverable` 与 final guard。** 裸布尔简写对「只会用 shell 落盘」的模型不再是空集
   恒真——它的台账不再是空集，检查真的会跑；交给 `finalGuard` 的 `payload.fileWrites` 也不再系统性
   少算本轮的产物。钉子：`test/loop-exec-writes-711.test.js`。

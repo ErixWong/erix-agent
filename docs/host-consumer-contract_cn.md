@@ -1867,10 +1867,10 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 <!-- erix:snapshot-cell-axes:begin -->
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3386` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
-| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3389` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
-| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3389` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6136` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3390`、`src/loop/orchestrator.js:6136` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3392` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
+| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3395` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
+| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3395` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
+| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6146` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3396`、`src/loop/orchestrator.js:6146` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = 该格不双写，没有权威源/交接条件可谈。
@@ -3689,7 +3689,8 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
 | `filesWritten` | `[{ path, round }]` | run 的时间线台账里记录的写工具调用 | **最后 50 条**；更早的被丢掉并置 `filesWrittenTruncated: true` |
 | `fileWrites` | `[{ path, round, tool, via? }]` | 本 run 的写入台账（issue #388）：写工具调用的**原始** `tool_use.input[pathKey]` 值；issue #711 起**另含从 `exec` 命令里解析出的目标**（`heredoc` / `redirect` / `tee` / `sed -i`），这类条目带 `tool: "exec"` 与 `via`。一律绝对路径，可直接 `stat()` | **最后 50 条**（`FILE_LEDGER_LIMIT`，与引擎台账同一个常量）；更早的被丢掉并置 `fileWritesTruncated: true` |
 | `execWriteCount` | number | issue #711：带写形态（heredoc / `>` / `>>` / `tee` / `sed -i`）的 `exec` **命令条数**。解析不出目标也照算 —— 它说的是「这里有写、我不全知道」 | 为 0 时缺席 |
-| `fileWritesBlindToExec` | `true` | issue #711：`execWriteCount > 0` **且**台账里**一条** `tool: "exec"` 条目都没有 ⇒ 本 run 的台账对 `exec` 是瞎的。比 `fileWritesBlind` 更细的那面旗（那条只在台账全空时才会举） | 其它情形缺席 |
+| `execWriteUnresolvedCount` | number | issue #711（阻断④）：这些写形态里有多少个**目标没进台账**（目标解析不出 / 结构读不懂 / 命令不可执行 / 来自不透明包装如 `bash -c '… > …'`）。它是 `fileWritesBlindToExec` 的唯一触发条件，且「有几个我没解析出来」比一个布尔更可诊断 | 为 0 时缺席 |
+| `fileWritesBlindToExec` | `true` | issue #711：`execWriteUnresolvedCount > 0` ⇒ 本 run 的台账对 `exec` 不完整。不再看「台账里有没有 exec 条目」：混合命令 `echo a > known && echo b > "$OUT"` 有已知条目也照样举旗。比 `fileWritesBlind` 更细的那面旗（那条只在台账全空时才会举） | 其它情形缺席 |
 | `fileWritesBlind` | `true` | 引擎的 `toolStats` Map 记录过至少一次 `exec` 调用，且 `fileWrites` 台账为空；空台账**不等于没有写入文件** | 其它情形缺席；持久化为 `deterministic.fileWritesBlind` |
 | `toolStats` | `{ [工具名]: { calls, failures } }` | run 的工具计数，**plain object**（`JSON.stringify(new Map())` 是 `{}`，直接交 `Map` 你只会读到空对象） | 按 `calls` 取**前 40** 个工具名；`toolStatsTruncated: true` |
 | `taskBrief` | string | 本次 run 由 `resolveTaskBrief`（`src/loop/task-brief.js`）产出、judge 与收尾看到的那份任务简报 | 2000 码点；`taskBriefTruncated: true` |
@@ -3711,15 +3712,17 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
   摘要不是（>40 码点的路径被无声截断，拿它建判据会系统性误拦已经做对的 run）。issue #711 起台账
   里还有 **`exec` 来源**的条目——那些路径是**从命令文本里解析出来的**（不是声明），一律绝对路径
   （相对路径按该 run 的 `cwd` 绝对化；没有 `cwd` 或命令里先 `cd` 过 ⇒ **不记**），而解析不出目标
-  （变量、`$(…)`、通配符、结构读不懂）时**绝不猜**——只累加 `execWriteCount`，并由
+  （变量、`$(…)`、通配符、结构读不懂，或藏在 `bash -c '… > …'` 这种不透明包装里）时**绝不猜**——
+  只累加 `execWriteCount` 与 `execWriteUnresolvedCount`，并由
   `fileWritesBlindToExec: true` 告诉你「这个 run 的台账对 shell 是瞎的」。
 - **`filesWritten` 与 `toolStats` 在任何一次 `runToolLoop` 里都在场**（空数组 / 空对象的意思是
   「这个 run 什么都没记」——这本身就是事实）。`cwd`、`runId`、`taskBrief`、`selfReport` 只在真有
   东西可报时在场。
 - **`fileWritesBlind` 只在出现过 `exec` 调用且 `fileWrites` 为空时出现。** 没有这个键不证明没有写文件；
-  它只表示没有观察到这一个「写入台账盲区」条件。issue #711 另加了更细的一对：`execWriteCount`
-  （多少条 `exec` 命令写了东西）与 `fileWritesBlindToExec`（这个数 > 0 而台账里没有一条 `exec` 来源
-  条目）。**下「这个 run 什么都没写」的结论之前，三个键要一起读**：空台账 + `execWriteCount: 3`
+  它只表示没有观察到这一个「写入台账盲区」条件。issue #711 另加了更细的三个：`execWriteCount`
+  （多少条 `exec` 命令写了东西）、`execWriteUnresolvedCount`（其中有多少目标没进台账）与
+  `fileWritesBlindToExec`（这个未解析数 > 0 ⇒ 举旗；即使混合命令留下了已知条目也照样举，因为未解析的那一半仍是未知）。
+  **下「这个 run 什么都没写」的结论之前，三个键要一起读**：空台账 + `execWriteCount: 3`
   与空台账 + 两个键都没有，**不是同一个事实**。
 - **开销有上限且已实测。** `node scripts/final-guard-probe.mjs` 离线跑「30 轮 × 4KB 工具输出」：
   `messages` 257,618 字节、加法键 4,789 字节 = **1.86%**（`fileWrites` 落地前是 2,242 字节），
