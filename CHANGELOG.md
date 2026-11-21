@@ -5,6 +5,38 @@
 
 ### Changed
 
+- **The write ledger now sees the writes the model makes through the shell (issue #711).**
+  `fileWrites` used to contain only the paths the write tools declared, so a model that lands
+  files with `cat > f <<EOF`, `echo x > f`, `tee f` or `sed -i … f` left an empty ledger — and
+  an empty ledger was consumed as "nothing to verify". `parseExecCommandWrites` /
+  `scanExecWrites` (`src/loop/exec-writes.js`) now parse each `exec` command for its write
+  shapes (heredoc, `>` / `>>` redirects, `tee`, `sed -i`) and record every target that resolves
+  to an absolute path into the same ledger — as entries with `tool: "exec"` and a `via` key
+  (`heredoc` / `redirect` / `tee` / `sed-i`; non-exec entries never carry that key). Two claims
+  stay deliberately separate: **targets are only recorded, never guessed** — variables, command
+  substitution, wildcards, brace expansion, unreadable structure, and relative paths without a
+  run `cwd` stay out (`/dev/*` is a visible discard, not a blind spot); what a parse cannot
+  resolve still counts: `execWriteCount` (additive final-guard payload key, absent when 0)
+  counts the `exec` **commands** that carried a write shape, and `fileWritesBlindToExec: true`
+  says that count is above zero while the ledger holds no `exec`-sourced entry. **Whose
+  judgement changed: `--require-deliverable` and the final guard.** The bare boolean shorthand
+  no longer passes vacuously for a model that only writes via shell — its ledger is no longer
+  the empty set, so the checks really run; and `payload.fileWrites` handed to `finalGuard` no
+  longer systematically undercounts what the run produced. Pin: `test/loop-exec-writes-711.test.js`.
+- **写台账现在看得见模型用 shell 落盘的写（issue #711）。** `fileWrites` 过去只收写工具声明的
+  路径，于是用 `cat > f <<EOF`、`echo x > f`、`tee f`、`sed -i … f` 落盘的模型留下一本空台账——
+  而空台账会被当成「没东西要核」消费。`parseExecCommandWrites` / `scanExecWrites`
+  （`src/loop/exec-writes.js`）现在会把每条 `exec` 命令按写形态解析（heredoc、`>` / `>>` 重定向、
+  `tee`、`sed -i`），并把解析得出来且能化成绝对路径的目标记进同一本台账——条目带
+  `tool: "exec"` 与 `via` 键（`heredoc` / `redirect` / `tee` / `sed-i`；非 exec 条目永远不写这个键）。
+  两条口径刻意不合并：**目标只记不猜**——变量、命令替换、通配、花括号展开、读不懂的结构，以及没有
+  run `cwd` 时的相对路径，一律不进（`/dev/*` 是看得见的丢弃，不是盲区）；解析不出的照样计数：
+  `execWriteCount`（final guard payload 的加法键，0 时缺席）数带写形态的 `exec` **命令条数**，
+  `fileWritesBlindToExec: true` 表示这个计数大于 0 而台账里没有任何 exec 来源条目。**判定变了的是
+  谁：`--require-deliverable` 与 final guard。** 裸布尔简写对「只会用 shell 落盘」的模型不再是空集
+  恒真——它的台账不再是空集，检查真的会跑；交给 `finalGuard` 的 `payload.fileWrites` 也不再系统性
+  少算本轮的产物。钉子：`test/loop-exec-writes-711.test.js`。
+
 - **A textualized tool call is no longer a deliverable, so it no longer grants the `judge_done`
   stop (issue #865, #862 fix B).** **Whose judgement changed: the round judge's stop gate** — a
   host that runs with `reflection.roundJudge` on can now see one extra round on a run whose judged

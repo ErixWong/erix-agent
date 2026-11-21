@@ -409,7 +409,7 @@ const CONTRACT_BODY_PINS = Object.freeze({
   //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(dropped)  pin=466  uses=464
   // 钉子随文案走、不许反推：改文案 ⇒ 现测 ⇒ 重钉（口径同 #714 / #729 / #730 / #753 / #769-R5）。
   // #838 S2 closeout: current strict-scan measurement.
-  "docs/host-consumer-contract.md": 465,
+  "docs/host-consumer-contract.md": 467,
   // 457 → 458（issue #769 R2，净 +1）：本单新增的「恢复行」那两节把**契约面写实的签名与叶名**都写了
   // 进代码语境（同名异义，`AMBIGUOUS_KEYS`，不进退役判据但计入本钉子）：EN 新增行里的 6 处命中在
   // :3740（`completion` × 2 与 `wrapup`）、:3744（`maxTokenContinuations` 与其内的 `maxTokens`）、
@@ -485,7 +485,7 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 591 → 592（issue #865 / #862 修法 B，本支现测）：CN 新增「文本化工具调用不算交付物」那一段，
   // 新增正文里一处同名异义命中（扫描器在这棵树上现报 `verdict=SUSPECT(raised)  pin=591  uses=592`）。
   // 口径同上面 #714 / #729 / #730 / #753 / #769：改文案 ⇒ 现测 ⇒ 重钉，不反推、不躲它。
-  "docs/host-consumer-contract_cn.md": 592,
+  "docs/host-consumer-contract_cn.md": 594,
   // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
   // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
   // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名

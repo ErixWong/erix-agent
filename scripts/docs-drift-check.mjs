@@ -2640,7 +2640,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  同批把四处现值声称一起抬（名单见上面 #769 R8 那条），
  *  流水记在 `docs/maintenance/symbol-anchor-ledger.md`。
  *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 244;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 249;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
