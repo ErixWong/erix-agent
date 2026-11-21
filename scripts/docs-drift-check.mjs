@@ -2388,6 +2388,21 @@ function symbolDeclarations(rel) {
       all.get(m[1]).push({ line: i + 1, kind: "环境变量读取处" });
     }
   });
+  // #755 建议③：函数参数里的解构绑定也是声明。`function f({ a, b })`、`({ a }) =>` 都算，
+  // 尤其是**跨行**的多行参数解构（如 `export function toolContextFor({\n toolContext,\n ...\n}) {`）——
+  // 单行的 `{…}` 正则够不到跨行形态，所以直接在**涂改后的整段代码文本**上扫参数位（注释/字符串已被上面的
+  // maskJs 涂改，这里复用同一份 codeLines）。捕获组取参数列表里第一段 `{…}` 的内层，逗号切分后取每段名
+  // （`x: y` 取属性名 `x`，因为文档引的是属性名；`a as b` 取 `b`）。这类绑定行号取参数起始行。
+  const codeText = codeLines.join("\n");
+  const PARAM_DESTRUCTURE_RE = /(?:function\s*(?:[A-Za-z_$][\w$]*)?|[A-Za-z_$][\w$]*)\s*\(\s*\{([^{}]*?)\}\s*(?:,[^()]*?)?\)\s*(?:\{|=>)|\(\s*\{([^{}]*?)\}\s*(?:,[^()]*?)?\)\s*=>/g;
+  for (const m of codeText.matchAll(PARAM_DESTRUCTURE_RE)) {
+    const inner = m[1] ?? m[2];
+    const names = inner.split(",")
+      .map((p) => p.trim().split(/\s+as\s+/).pop().trim().split(/:/)[0].trim())
+      .filter((n) => /^[A-Za-z_$][\w$]*$/.test(n));
+    const at = codeText.slice(0, m.index).split("\n").length - 1;
+    for (const n of names) push(n, at, "参数解构");
+  }
   rec.decls = out;
   return out;
 }
@@ -2770,19 +2785,32 @@ const SYMBOL_SHAPE_DIR_PREFIXES = Object.freeze(["src/", "bin/", "scripts/", "te
 const SYMBOL_SHAPE_NOT_A_DECLARATION = "对象键/类字段";
 
 /** 路径那一段（带目录前缀登记 + JS/TS 扩展名 + 可选行号尾巴 + 可选 `<仓名>:` 前缀）。 */
-const SYMBOL_SHAPE_PATH_SRC = `(?:${SYMBOL_SHAPE_DIR_PREFIXES.map(esc).join("|")})[A-Za-z0-9_./-]+\\.(?:js|mjs|cjs|ts)`;
+const SYMBOL_SHAPE_PATH_SRC = `(?:\\./|\\.\\./)*(?:${SYMBOL_SHAPE_DIR_PREFIXES.map(esc).join("|")})[A-Za-z0-9_./-]+\\.(?:js|mjs|cjs|ts)`;
 const SYMBOL_SHAPE_REPO_SRC = "(?:([a-z][a-z0-9_-]{1,30}):)?";
 /** S2：`` `path`: `` / `` `path`： `` ——冒号在**反引号外面**，符号列举在冒号后面。 */
 const SYMBOL_SHAPE_S2_RE = new RegExp(
   "`" + SYMBOL_SHAPE_REPO_SRC + "(" + SYMBOL_SHAPE_PATH_SRC + ")(?:\\:\\d+(?:-\\d+)?)?`\\s*[:：]", "g");
-/** S3：`` `path:symbol` `` ——整条在同一个 code span 里（冒号后是标识符；数字尾巴归 2.8.2）。 */
+/** S3：`` `path:symbol` `` ——整条在同一个 code span 里。**全角冒号 `：` 与半角 `:` 都认**（#755 阻断②，与 S2
+ *  同口径）；符号可带点号链（`path:obj.method`，取最后一段去查声明，同 S2）。数字尾巴归 2.8.2。 */
 const SYMBOL_SHAPE_S3_RE = new RegExp(
-  "`" + SYMBOL_SHAPE_REPO_SRC + "(" + SYMBOL_SHAPE_PATH_SRC + "):([A-Za-z_$][\\w$]*)`", "g");
+  "`" + SYMBOL_SHAPE_REPO_SRC + "(" + SYMBOL_SHAPE_PATH_SRC + ")[:：]([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)`", "g");
 /** S2 冒号后面的列举分隔符：中英标点 + `and/or` + 中文连接词；**分隔符之后必须紧跟 code span**，
  *  否则列举就结束（`src/x.js`: `a` 在 `src/y.js` 里 ⇒ 只认 `a`，不把「在」后面的 span 拽进来）。 */
 const SYMBOL_SHAPE_TAIL_SEP_RE = /^\s*(?:(?:,|，|、|;|；|\/|\+|和|与|及|或|以及|\band\b|\bor\b)\s*)?/;
 const SYMBOL_SHAPE_SPAN_RE = /^`([^`\s]+)`/;
 const SYMBOL_SHAPE_IDENT_RE = /^[A-Za-z_$][\w$]*$/;
+/** #755 阻断②：S2 符号列举里接受**点号链**（`obj.method`）——取最后一段去查声明，报错照原样点名。 */
+const SYMBOL_SHAPE_REF_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
+/** 取拿去查声明的那一段：点号链取最后一段，无点号就是原名。 */
+const symbolShapeLookup = (sym) => (sym.includes(".") ? sym.slice(sym.lastIndexOf(".") + 1) : sym);
+/** #755 阻断②：判前先剥前导 `./`（以及 `../`）；剥完仍须落在登记前缀面内才算坐标（`../` 逃仓就不算）。 */
+function symbolShapeNormalizePath(p) {
+  let q = p;
+  for (let guard = 0; guard < 8 && (q.startsWith("./") || q.startsWith("../")); guard += 1) {
+    q = q.slice(q.startsWith("../") ? 3 : 2);
+  }
+  return q;
+}
 
 /** 从冒号右侧扫符号列举（最多 12 个，防呆）。返回符号名与它在行内的字符区间（自测定点变异要用）。 */
 function symbolShapeTail(line, from) {
@@ -2792,21 +2820,31 @@ function symbolShapeTail(line, from) {
     const sep = SYMBOL_SHAPE_TAIL_SEP_RE.exec(line.slice(i));
     const j = i + sep[0].length;
     const span = SYMBOL_SHAPE_SPAN_RE.exec(line.slice(j));
-    if (!span || !SYMBOL_SHAPE_IDENT_RE.test(span[1])) break;
+    if (!span || !SYMBOL_SHAPE_REF_RE.test(span[1])) break;
     out.push({ sym: span[1], start: j + 1, end: j + 1 + span[1].length });
     i = j + span[0].length;
   }
   return out;
 }
 
-/** 抽一份文本里的 S2/S3 坐标（带形状名、被指文件、可选外仓前缀、符号名的字符区间）。 */
+/** 抽一份文本里的 S2/S3 坐标（带形状名、被指文件、可选外仓前缀、符号名的字符区间）。
+ *
+ *  **已知边界（#755 阻断②第 4 点）：只扫单行——跨行坐标不在范围内。** 即「路径与反引号在上一行、冒号
+ *  与符号在下一行」这种把一处坐标拆成两行写的形式**不判红**。理由：判据是**逐行**跑的；若改成段落级
+ *  扫描，正常散文里「先给一句路径、下一句才提到某个同名符号」会被跨行拼接连坐成假坐标（#862 里
+ *  `~~~` 围栏那条同款的「宁窄勿宽」处理）。这个边界由自测里一条「跨行 S2 ⇒ 必须不红」的例钉住——
+ *  断言的是当前行为**有意**如此，不是漏。
+ */
 function symbolShapeOccurrencesInText(text, doc) {
   const found = [];
   let lineStart = 0;
   const push = (o, line, at) => {
-    if (o.file.endsWith(".d.ts")) return;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
-    if (SYMBOL_NOT_SYMBOL.has(o.sym)) return;          // JavaScript 字面量不是符号（沿用既有名单）
-    found.push({ ...o, doc, line, start: lineStart + at, end: lineStart + at + o.sym.length });
+    const file = symbolShapeNormalizePath(o.file);              // #755 阻断②：先剥 ./ ../ 前缀再按登记前缀判
+    if (!SYMBOL_SHAPE_DIR_PREFIXES.some((p) => file.startsWith(p))) return;   // 剥完不在登记面内（`../` 逃仓）⇒ 不是坐标
+    if (file.endsWith(".d.ts")) return;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
+    const lookup = symbolShapeLookup(o.sym);         // #755 阻断②：点号链取最后一段查声明（报错仍用原名 o.sym）
+    if (SYMBOL_NOT_SYMBOL.has(o.sym) || SYMBOL_NOT_SYMBOL.has(lookup)) return;   // JavaScript 字面量不是符号（沿用既有名单）
+    found.push({ ...o, file, lookup, doc, line, start: lineStart + at, end: lineStart + at + o.sym.length });
   };
   for (const [i, line] of text.split("\n").entries()) {
     SYMBOL_SHAPE_S2_RE.lastIndex = 0;
@@ -2858,15 +2896,17 @@ function mutateSymbolShape(sym, filePath, to) {
  *  写法必须保持 `const SYMBOL_EXISTENCE_BASELINE = <数字>;` 一行（自测的两例要改这个数）。
  *
  *  取数命令：`node scripts/docs-drift-check.mjs --verbose` 里 `symbol-shape:` 那条 note 的「miss 实测 **N**」。
- *  现测数 = **2**（2026-12-04 在 `fix-261121-02-doc-symbol-shapes` @ 基点 main `046f4d98` 上量）。
- *  那两组全部来自 `docs/host-upgrade-guide-0.27.0.md:84` 那一句：它用 S2 形状枚举的是**白名单键名**
- *  （`src/loop/budget.js`: `toolContext`, `expert`, `user`, `session`, `requestId`），而该文件里
- *  `toolContext` 只是 `toolContextFor()` 的**解构参数名**、`expert` 只以 `expert:` 对象键出现 ⇒
- *  按 #755 的声明表都不算声明。它们是「写法形状撞上了符号坐标的形状」而不是假坐标（同一句里的
- *  `user` 倒真有一条 `const user = …` 绑定），所以本单不去改一份**历史指南**的措辞（改它等于拿
- *  今天的口径重写当时那段发布说明），而是登记成基线。合法的降法：把那一句从「路径冒号 + 键名枚举」
- *  改成不含 S2 形状的写法（例如把键名清单并进散文、或改成 S1 形状并指真符号），降基线时写明理由。 */
-const SYMBOL_EXISTENCE_BASELINE = 2;
+ *  现测数 = **0**（**2026-11-21** 当天在 `fix-261121-02-doc-symbol-shapes` 分支上跑上面那条取数命令实测；
+ *  分支基点 = main `046f4d98`。日期是当天 `date +%F` 的真值，不是手写的）。**已无存量**：
+ *  #755 闸初落地那天登记过 2 组，两组均来自 `docs/host-upgrade-guide-0.27.0.md:84` 那一句
+ *  （`src/loop/budget.js`: `toolContext`, `expert`, `user`, `session`, `requestId`）；当时算 miss 是因为
+ *  声明表里没有「函数参数解构」这一档，而 `toolContext`、`expert` 都只出现在 `src/loop/budget.js`
+ *  里 `export function toolContextFor({ toolContext, context, expert, … })` 的**参数解构**（写在多行）。
+ *  本单（建议③）把「函数参数里的解构绑定」补进声明表后，这两个名字成了真声明 ⇒ 那两组不再算 miss，
+ *  实测降到 0。这不是为了让数好看而放宽判据，而是声明表本来就少认了这一档（见 `symbolDeclarations`
+ *  里的参数解构扫描）。降基线理由：声明表补档后**实测归零**，所以登记为 0；后续若再现指不到声明的
+ *  S2/S3 坐标，实测会重新 > 0 并当场红（棘轮空转为 0，新增即抓）。 */
+const SYMBOL_EXISTENCE_BASELINE = 0;
 
 /** 生效值从**本脚本自己的文本**里读（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）。 */
 function symbolShapeBaseline() {
@@ -2891,9 +2931,9 @@ function symbolShapeVerdict(sym, rel) {
   const near = nearestSymbols(sym, decls);
   const why = (rec.declsAll?.get(sym) ?? []).length
     ? `该文件里 \`${sym}\` 只以 \`${sym}:\` 这种**对象键/类字段**出现，而 S2/S3 的语义表不认它当声明`
-      + "（认的形态：export function/const/let X、export class X、function X(、const|let X =、class X {、方法 X(、解构绑定、再导出、process.env.X 读取处；注释与字符串里的同名不算）"
+      + "（认的形态：export function/const/let X、export class X、function X(、const|let X =、class X {、方法 X(、解构绑定、参数解构、再导出、process.env.X 读取处；注释与字符串里的同名不算）"
     : `该文件里没有 \`${sym}\` 的声明`
-      + "（认的形态：export function/const/let X、export class X、function X(、const|let X =、class X {、方法 X(、解构绑定、再导出、process.env.X 读取处；注释与字符串里的同名不算）";
+      + "（认的形态：export function/const/let X、export class X、function X(、const|let X =、class X {、方法 X(、解构绑定、参数解构、再导出、process.env.X 读取处；注释与字符串里的同名不算）";
   return { ok: false, near, why };
 }
 
@@ -2917,12 +2957,12 @@ function collectSymbolShapeErrors() {
       continue;
     }
     const key = `${o.doc}|${o.sym}|${o.file}`;
-    if (!groups.has(key)) groups.set(key, { doc: o.doc, line: o.line, sym: o.sym, file: o.file, form: o.form, sites: [] });
+    if (!groups.has(key)) groups.set(key, { doc: o.doc, line: o.line, sym: o.sym, lookup: o.lookup ?? o.sym, file: o.file, form: o.form, sites: [] });
     groups.get(key).sites.push(`${o.doc}:${o.line}`);
   }
   const misses = [];
   for (const g of groups.values()) {
-    const v = symbolShapeVerdict(g.sym, g.file);
+    const v = symbolShapeVerdict(g.lookup, g.file);   // #755 阻断②：点号链拿最后一段查声明（点名仍用原名 g.sym）
     if (v.ok) continue;
     const why = v.missing ? `${g.file} 在本仓不存在——坐标的真理在被引文件里，文件没了这条坐标就是死的` : v.why;
     misses.push({ ...g, why });
@@ -9493,25 +9533,29 @@ const SELF_TEST_CASES = [
     label: "#755 外仓前缀不查：`pi-subagents:src/loop/tool-result-ttl.js`: `zzShapeProbeNotChecked` ⇒ 必须 0 错（别的仓的真值不在这棵树里）",
     overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`pi-subagents:src/loop/tool-result-ttl.js`: `zzShapeProbeNotChecked` 属于别的仓。") },
     expectGreen: true,
+    // #755 建议④：绿只能证「没报红」，证不到「它真的走到了跳过分支」。若提取器以后漏了 `<仓>:<路径>`
+    // 这个形状，坐标会被当成无仓库前缀的本仓路径去查⇒ 假绿。所以再问一句 note：extSkipped 必须非空。
+    assertAfter: () => ((collectSymbolShapeErrors.notes ?? []).some((n) => /外仓前缀跳过 [1-9]\d* 处/.test(n))
+      ? null
+      : "外仓例假绿：没有真的命中跳过分支（外仓前缀跳过计数为 0），说明提取器漏掉了 `<仓>:<路径>` 这个形状"),
   },
   {
-    label: "#755 散文式列举不判 + 对象键不算：只写 `stubFor` 不给文件 ⇒ 绿；给文件但文件里只有 `expert:` 这种键 ⇒ 红",
+    label: "#755 散文式列举不判 + 对象键不算：只写 `stubFor` 不给文件 ⇒ 绿；对象键 `budgetTokens:` 不算声明（见下一例）",
     overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：散文里只写 `stubFor`，不给文件。") },
     expectGreen: true,
   },
   {
-    label: "#755 声明表不认对象键：`src/loop/budget.js`: `expert`（该文件里只有 `expert:` 这个键）⇒ 必须红",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/budget.js`: `expert` 只是白名单里的键名。") },
-    expect: [/AGENTS\.md:\d+ 引用 `expert`（`src\/loop\/budget\.js`/, /对象键/],
+    label: "#755 声明表不认对象键：`src/loop/budget.js`: `budgetTokens`（该文件里只以 `budgetTokens:` 这个对象键出现）⇒ 必须红",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/budget.js`: `budgetTokens` 只是个对象键，不是声明。") },
+    expect: [/AGENTS\.md:\d+ 引用 `budgetTokens`（`src\/loop\/budget\.js`/, /对象键/],
     expectFiles: [AGENTS_EN],
   },
   {
-    label: `#755 棘轮下限：把 SYMBOL_EXISTENCE_BASELINE 调到 ${SYMBOL_EXISTENCE_BASELINE - 1} ⇒ 必须红（证明这个数真是锁，不是装饰）`,
-    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(
-      `const SYMBOL_EXISTENCE_BASELINE = ${SYMBOL_EXISTENCE_BASELINE};`,
-      `const SYMBOL_EXISTENCE_BASELINE = ${SYMBOL_EXISTENCE_BASELINE - 1};`) },
-    expect: [new RegExp(`symbol-shape: .*指不到声明的实测 \\*\\*${SYMBOL_EXISTENCE_BASELINE}\\*\\* 组，超过基线 \\*\\*${SYMBOL_EXISTENCE_BASELINE - 1}\\*\\* 组`),
-      new RegExp(`并把基线改成 ${SYMBOL_EXISTENCE_BASELINE}`)],
+    label: "#755 棘轮在地板 0 上仍是锁：注入一处指不到声明的新坐标（`zzRatchetProbeAtFloor`）⇒ 实测 1 > 基线 0 ⇒ 必须红（证明这个数不是装饰）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `zzRatchetProbeAtFloor` 是编的。") },
+    expect: [/symbol-shape: .*指不到声明的实测 \*\*1\*\* 组，超过基线 \*\*0\*\* 组/,
+      /引用 `zzRatchetProbeAtFloor`/, /并把基线改成 1/],
+    expectFiles: [AGENTS_EN],
   },
   {
     label: `#755 棘轮下限的反向证：把基线调到 ${SYMBOL_EXISTENCE_BASELINE + 1} ⇒ 必须 0 错，并打一行「可下调至 ${SYMBOL_EXISTENCE_BASELINE}」`,
@@ -9523,6 +9567,34 @@ const SELF_TEST_CASES = [
     assertAfter: () => ((collectSymbolShapeErrors.notes ?? []).some((n) => n.includes(`请把 SYMBOL_EXISTENCE_BASELINE 降到 ${SYMBOL_EXISTENCE_BASELINE}`))
       ? null
       : `基线调高到 ${SYMBOL_EXISTENCE_BASELINE + 1} 之后没打「可下调至 ${SYMBOL_EXISTENCE_BASELINE}」的提示（只降不升的棘轮不许空转）`),
+  },
+  {
+    label: "#755 判据① 剥 `./` 前缀后仍要查：`./src/loop/tool-result-ttl.js`: `stubFor` ⇒ 必须红（不能因为多了个 ./ 就漏判）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`./src/loop/tool-result-ttl.js`: `stubFor` 是红。") },
+    expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`，S2/, /没有 `stubFor` 的声明/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 判据②a 点号符号取末段去查：`src/loop/tool-result-ttl.js`: `noteWriteEvidence.call` ⇒ 必须 0 错（`noteWriteEvidence` 真存在）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `noteWriteEvidence.call` 点号取末段就能查到。") },
+    expectGreen: true,
+  },
+  {
+    label: "#755 判据②b 点号符号查不到时报错照原样点名：`src/loop/tool-result-ttl.js`: `stubFor.call` ⇒ 必须红且报错里写的是 `stubFor.call`",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `stubFor.call` 查不到。") },
+    expect: [/引用 `stubFor\.call`（`src\/loop\/tool-result-ttl\.js`，S2 路径先行/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 判据③ S3 全角冒号：`src/loop/tool-result-ttl.js：stubFor` ⇒ 必须红（全角与半角同口径）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js：stubFor` 是全角冒号的 S3。") },
+    expect: [/引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`，S3 同一个 code span/, /没有 `stubFor` 的声明/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#755 判据④ 跨行坐标是已知边界（只扫单行）：路径与冒号分两行写 ⇒ 必须不红（当前行为有意如此）",
+    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）跨行边界：`src/loop/tool-result-ttl.js`\n: `stubFor` —— 跨行写的坐标必须不判红。") },
+    expectGreen: true,
   },
   {
     label: "#755 变异器空转证：靶子（S2/S3 里不存在的坐标）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
