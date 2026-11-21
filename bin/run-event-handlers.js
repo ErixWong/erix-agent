@@ -91,6 +91,35 @@ export function formatTextualizedToolCallLine(event) {
 }
 
 /**
+ * 交付物判据这次**判不了**（#881）时的一行 stderr 提示。
+ * 措辞**中性**：这不是失败——交付物判据在盲区 run 仍返回 `ok:true`（#711 的语义，本单不改），
+ * 终态与退出码也不因它变；它只说「这一次没法拿台账当交付清单用」，并点名数字
+ *（几条 exec 写了东西、几条目标解析不出来）。与 `formatTextualizedToolCallLine` 同一形状
+ *（命中⇒一行，否则 null），同一通道（stderr）。
+ *
+ * @param {*} event
+ * @returns {string|null}
+ */
+export function formatDeliverableBlindLine(event) {
+  if (event?.type !== "deliverable_blind") return null;
+  const count = Number.isSafeInteger(event?.execWriteCount) && event.execWriteCount > 0
+    ? event.execWriteCount
+    : undefined;
+  const unresolved = Number.isSafeInteger(event?.execWriteUnresolvedCount) && event.execWriteUnresolvedCount > 0
+    ? event.execWriteUnresolvedCount
+    : undefined;
+  const numbers = count === undefined
+    ? "本 run 跑过 exec，但台账里没有它的写盘条目（引擎看不见 shell 写了什么）"
+    : unresolved === undefined
+      ? `本 run 有 ${count} 条 exec 命令写了东西，都没解析进台账`
+      : `本 run 有 ${count} 条 exec 命令写了东西，其中 ${unresolved} 条的目标没能解析进台账`;
+  const roundText = Number.isSafeInteger(event?.round) ? `（第 ${event.round} 轮）` : "";
+  return `[erix] 交付物判据这次判不了：${numbers}${roundText}。`
+    + "这不是失败，但别把「台账没东西」读成「没写文件」；"
+    + "要确定交付了某几个文件，就声明 deliverablePaths（或在命令里用可解析的写目标）。";
+}
+
+/**
  * Shared run event handling for chat and REPL: judge-log recording, stderr notices, and idle touches.
  *
  * @param {object} [options]
@@ -163,6 +192,8 @@ export function createRunEventHandlers({
     if (stubNotice !== null) emitStderr(stubNotice);
     const textualizedLine = formatTextualizedToolCallLine(event);
     if (textualizedLine !== null) emitStderr(textualizedLine);
+    const deliverableBlindLine = formatDeliverableBlindLine(event);
+    if (deliverableBlindLine !== null) emitStderr(deliverableBlindLine);
   };
   return { appendJudgeLogRecord, onEvent };
 }
