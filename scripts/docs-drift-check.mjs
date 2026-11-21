@@ -2791,7 +2791,7 @@ const SYMBOL_SHAPE_REPO_SRC = "(?:([a-z][a-z0-9_-]{1,30}):)?";
 const SYMBOL_SHAPE_S2_RE = new RegExp(
   "`" + SYMBOL_SHAPE_REPO_SRC + "(" + SYMBOL_SHAPE_PATH_SRC + ")(?:\\:\\d+(?:-\\d+)?)?`\\s*[:：]", "g");
 /** S3：`` `path:symbol` `` ——整条在同一个 code span 里。**全角冒号 `：` 与半角 `:` 都认**（#755 阻断②，与 S2
- *  同口径）；符号可带点号链（`path:obj.method`，取最后一段去查声明，同 S2）。数字尾巴归 2.8.2。 */
+ *  同口径）；符号可带点号链（`path:noteWriteEvidence.call`，取首段去查声明，同 S2）。数字尾巴归 2.8.2。 */
 const SYMBOL_SHAPE_S3_RE = new RegExp(
   "`" + SYMBOL_SHAPE_REPO_SRC + "(" + SYMBOL_SHAPE_PATH_SRC + ")[:：]([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)`", "g");
 /** S2 冒号后面的列举分隔符：中英标点 + `and/or` + 中文连接词；**分隔符之后必须紧跟 code span**，
@@ -2799,10 +2799,12 @@ const SYMBOL_SHAPE_S3_RE = new RegExp(
 const SYMBOL_SHAPE_TAIL_SEP_RE = /^\s*(?:(?:,|，|、|;|；|\/|\+|和|与|及|或|以及|\band\b|\bor\b)\s*)?/;
 const SYMBOL_SHAPE_SPAN_RE = /^`([^`\s]+)`/;
 const SYMBOL_SHAPE_IDENT_RE = /^[A-Za-z_$][\w$]*$/;
-/** #755 阻断②：S2 符号列举里接受**点号链**（`obj.method`）——取最后一段去查声明，报错照原样点名。 */
+/** #755 阻断②：S2 符号列举里接受**点号链**（`noteWriteEvidence.call`）——按首段（被引用的宿主符号）查声明，报错照原样点名整条。 */
 const SYMBOL_SHAPE_REF_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
-/** 取拿去查声明的那一段：点号链取最后一段，无点号就是原名。 */
-const symbolShapeLookup = (sym) => (sym.includes(".") ? sym.slice(sym.lastIndexOf(".") + 1) : sym);
+/** 取拿去查声明的那一段：点号链取**首段**（被引用的宿主符号，`A.call` ⇒ 查 `A`），无点号就是原名。
+ *  取首段而非末段：坐标指向文件里那个真符号本身；`.call`/`.bind` 这类原型成员人尽皆有，拿末段查会让
+ *  `stubFor.call` 因 `call` 命中而假绿（#755 判据②：`noteWriteEvidence.call` 绿、`stubFor.call` 红）。 */
+const symbolShapeLookup = (sym) => sym.split(".")[0];
 /** #755 阻断②：判前先剥前导 `./`（以及 `../`）；剥完仍须落在登记前缀面内才算坐标（`../` 逃仓就不算）。 */
 function symbolShapeNormalizePath(p) {
   let q = p;
@@ -2842,7 +2844,7 @@ function symbolShapeOccurrencesInText(text, doc) {
     const file = symbolShapeNormalizePath(o.file);              // #755 阻断②：先剥 ./ ../ 前缀再按登记前缀判
     if (!SYMBOL_SHAPE_DIR_PREFIXES.some((p) => file.startsWith(p))) return;   // 剥完不在登记面内（`../` 逃仓）⇒ 不是坐标
     if (file.endsWith(".d.ts")) return;              // 生成物声明文件不入库（#213），拿它当被引文件必然假红
-    const lookup = symbolShapeLookup(o.sym);         // #755 阻断②：点号链取最后一段查声明（报错仍用原名 o.sym）
+    const lookup = symbolShapeLookup(o.sym);         // #755 阻断②：点号链取首段（宿主符号）查声明（报错仍用原名 o.sym）
     if (SYMBOL_NOT_SYMBOL.has(o.sym) || SYMBOL_NOT_SYMBOL.has(lookup)) return;   // JavaScript 字面量不是符号（沿用既有名单）
     found.push({ ...o, file, lookup, doc, line, start: lineStart + at, end: lineStart + at + o.sym.length });
   };
@@ -2962,7 +2964,7 @@ function collectSymbolShapeErrors() {
   }
   const misses = [];
   for (const g of groups.values()) {
-    const v = symbolShapeVerdict(g.lookup, g.file);   // #755 阻断②：点号链拿最后一段查声明（点名仍用原名 g.sym）
+    const v = symbolShapeVerdict(g.lookup, g.file);   // #755 阻断②：点号链拿首段（宿主符号）查声明（点名仍用原名 g.sym）
     if (v.ok) continue;
     const why = v.missing ? `${g.file} 在本仓不存在——坐标的真理在被引文件里，文件没了这条坐标就是死的` : v.why;
     misses.push({ ...g, why });
