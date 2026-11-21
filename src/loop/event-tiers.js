@@ -130,6 +130,13 @@ export const EVENT_TIERS = Object.freeze({
   // 「这个 completed 的 run 当时有没有被认出未交付」（`round_end.finalText` 是**每轮**
   // 的正文，不是终局判定）。
   final_text_textualized_tool_call: EVENT_TIER_FACT,
+  // issue #881（新格）：交付物判据这次**判不了**（finalGuard payload 的三个盲区键任一成立：
+  // `fileWritesBlind` / `fileWritesBlindToExec` / `execWriteUnresolvedCount > 0）。
+  // 为什么是 `fact` 而不是 `derived`：那三个计数**只住在 payload 里**（随 `result` 一起消失在内存，
+  // 不落账本行：台账自己只能证明「它记到的那些」，不能证明「引擎当时看不见哪些」），而裁决面
+  // 仍是 `ok:true`（#711 的语义，不改）⇒ 删了这条事件，「这个判据通过的 run 当时其实判不了」
+  // 就再也回答不了（与上面 #862 那格同形：事实本身只在事件里）。
+  deliverable_blind: EVENT_TIER_FACT,
   run_outcome: EVENT_TIER_FACT,
   // 宿主把 `onJudge` 通道的决策记录按 `judge` 这个名字入库（引擎侧那条记录没有 `type` 字段，
   // 见 `HOST_SIDE_EVENT_TYPE_NAMES`）：裁决本身只在这里有一份。

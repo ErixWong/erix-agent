@@ -5,6 +5,59 @@
 
 ### Changed
 
+- **"The deliverable criterion could not decide this run" is now said out loud (issue #881, the
+  observation gap left by #711).** **Whose judgement did *not* change: nobody's** — the verdict is
+  byte-identical, only how **noticeable** it is grew. #711 put the engine's three blind-spot keys
+  (`fileWritesBlind` / `fileWritesBlindToExec` / `execWriteUnresolvedCount`) into the final-guard
+  payload, but they lived **only in the payload**: a host that does not read the payload sees
+  "criterion passed", and bare `--require-deliverable` answers `ok: true` with a "cannot decide"
+  detail that `=== 统计 ===` never renders. So `callFinalGuard` (`src/loop/termination.js`) now
+  emits one additive **`deliverable_blind`** event — `{ type: "deliverable_blind", runId?, round,
+  execWriteCount?, execWriteUnresolvedCount? }` — right after the payload is built and before the
+  host's `deliverables` checks, reading the payload's **own** three keys (any one of them; the
+  emitter keeps no second copy of that judgement). It is **one-shot per run** (flag
+  `runLoopState.deliverableBlindEmitted`, same family as `finalTextShapeEmitted`) because
+  `callFinalGuard` runs once per guard attempt (1..3); the numeric keys are written only when the
+  payload carries them and `runId` only when the host supplied one. Tier **`fact`**
+  (`src/loop/event-tiers.js`): those three counters vanish with `result`, so the event is the
+  fact's only durable copy. The event is deliberately **not** emitted inside
+  `buildFinalGuardPayload` — that exported constructor is called as a pure function by tests and
+  `scripts/final-guard-probe.mjs`, and it stayed pure. **Two boundaries**: it can only fire when a
+  `finalGuard` is configured (`callFinalGuard` sits behind `typeof finalGuard === "function"`), and
+  it does **not** cover "the model declared no write at all" — that run has an empty ledger and an
+  empty criterion set (vacuously true), none of the three keys appears, and it still passes
+  silently (issue #391's other half, not this ticket). The CLI (`bin/run-event-handlers.js`,
+  `formatDeliverableBlindLine`) prints one **neutral** stderr line naming both counts: not a
+  failure, but "do not read 'the ledger has nothing' as 'no file was written'"; declare
+  `deliverablePaths` when specific files must be delivered. `createDeliverableChecks`' `ok: true`
+  semantics are untouched — fail-closing would judge every shell-writing run red. Pins:
+  `test/loop-deliverable-blind-881.test.js` (cells ①–⑦, including a **real** second guard attempt
+  for the one-shot) and `test/run-event-handlers-deliverable-blind-881.test.js` (one stderr line,
+  end to end).
+- **「交付物判据这次判不了」现在被说出来了（issue #881，#711 留下的观测缺口）。**
+  **判定变了的是谁：没有人**——裁决逐字不动，动的只是「能不能被人看见」。#711 把三个盲区键
+  （`fileWritesBlind` / `fileWritesBlindToExec` / `execWriteUnresolvedCount`）放进了 final guard 载荷，
+  但它们**只在载荷里**：不读 payload 的宿主只会看到「判据通过」，裸 `--require-deliverable` 则回
+  `ok:true` + 一句 detail，而 `=== 统计 ===` 那行从不渲染它。于是 `callFinalGuard`
+  （`src/loop/termination.js`）现在发一条加法事件 **`deliverable_blind`**——
+  `{ type: "deliverable_blind", runId?, round, execWriteCount?, execWriteUnresolvedCount? }`——
+  位置在 payload 构造完之后、宿主 `deliverables` 判据之前，判定**直读 payload 自己的三个键**
+  （任一成立即可；发射处不留第二份「盲不盲」的口径）。它是**一个 run 至多一条**的 one-shot
+  （旗标 `runLoopState.deliverableBlindEmitted`，与 `finalTextShapeEmitted` 同族），因为
+  `callFinalGuard` 会按 guard attempt（1..3）反复调；两个数字键只在 payload 真带着时才写，
+  `runId` 只在宿主传了时才写。档位是 **`fact`**（`src/loop/event-tiers.js`）：那三个计数随 `result`
+  消失在内存，本事件是这条事实唯一的 durable 副本。事件**故意不在 `buildFinalGuardPayload` 里发**——
+  那个导出构造器被测试与 `scripts/final-guard-probe.mjs` 当纯函数调，它今天仍是纯的。
+  **两条边界**：它只在**配了 `finalGuard`** 时才可能发（`callFinalGuard` 在
+  `typeof finalGuard === "function"` 那道闸后面），且**不覆盖**「模型一个写都没声明」——那种 run
+  台账空、判据集也空（空集恒真），三个键一个都不出现，仍然静默通过（#391 的另一半，本单不做）。
+  CLI（`bin/run-event-handlers.js` 的 `formatDeliverableBlindLine`）打**一行中性** stderr，点名两个
+  数字：这不是失败，但别把「台账没东西」读成「没写文件」；要确定交付某几个文件就声明
+  `deliverablePaths`。`createDeliverableChecks` 的 `ok:true` 语义一字未动——改成 fail-closed 会把所有
+  shell 落盘的 run 全判红。钉子：`test/loop-deliverable-blind-881.test.js`（①–⑦ 格，含 one-shot
+  那一格**真的**走了第二次 guard attempt）与 `test/run-event-handlers-deliverable-blind-881.test.js`
+  （端到端恰好一行 stderr）
+
 - **The write ledger now sees the writes the model makes through the shell (issue #711).**
   `fileWrites` used to contain only the paths the write tools declared, so a model that lands
   files with `cat > f <<EOF`, `echo x > f`, `tee f` or `sed -i … f` left an empty ledger — and

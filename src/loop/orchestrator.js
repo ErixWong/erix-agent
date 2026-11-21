@@ -472,7 +472,7 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -484,6 +484,15 @@ function mergeFoldedRoundRanges(first, second) {
  *   专用——命中的那一条特征**原文**（逐字取自 `DEFAULT_TOOLCALL_MARKERS`，不做任何
  *   改写/截断）。它只是界面上的一段引用文本：下游渲染一律按**中性提示**，
  *   不是「run 失败了」。只在命中那条事件上出现；其余事件**不写该键**。
+ * @property {number} [execWriteCount] issue #881（additive）：`deliverable_blind` 专用——本 run 里
+ *   **出现写形态的 exec 命令条数**，与 finalGuard payload 的同名键**同源同口径**（解析不出目标也
+ *   算）：说的是「这里有写、我不全知道」，不是「写了几次文件」。只在 payload 里有值时才写键
+ *   （0 不写，同 payload 口径）；其余事件不写该键。
+ * @property {number} [execWriteUnresolvedCount] issue #881（additive）：`deliverable_blind` 专用——
+ *   上述写形态里**没进台账**的目标个数（目标解析不出 / 结构读不懂 / 被截断 / 来自不透明包装如
+ *   `bash -c '… > …'`；不透明包装处是**下界**，口径同 payload 同名键）。三个盲区键就是本事件的
+ *   存在条件，而 `execWriteUnresolvedCount > 0` 本身就是其中之一 ⇒ 举细旗时它必在；仅粗旗
+ *   `fileWritesBlind` 成立时本键缺席（与 payload 同一口径：0 不写）。其余事件不写该键。
  * @property {string} [parentRunId] issue #617（P0，additive）：子 run 的发起者关联，只镜像不解释；
  *   宿主没给 `parentRunId` 时该字段缺省（不写假值）。
  * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing, compaction_strategy_fallback).
@@ -1090,7 +1099,7 @@ export async function runToolLoop(options) {
   // 已初始化不改变可观察行为；其余声明（含 `emitEvent` 在 `notifyModelMetadataMissing` 下方
   // 这个次序）一行没动。
   // 【C resume 尾队列】`resumePendingTools` / `resumeTailMessages` 与 `resumeTranscriptStart`。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeUnledgeredToolResults: any[], resumeTailMessages: any[], resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, roundRunStateInject: { lowBudget: boolean, request: boolean, persist: boolean, remainingRounds: number, injections: number }|undefined, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeUnledgeredToolResults: any[], resumeTailMessages: any[], resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, roundRunStateInject: { lowBudget: boolean, request: boolean, persist: boolean, remainingRounds: number, injections: number }|undefined, deliverableBlindEmitted: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -1158,6 +1167,13 @@ export async function runToolLoop(options) {
     //   （重置段只服务注入旗标）。初值 `false` 逐字是「本 run 还没发过」；起点若是
     //   `true` 就等于首条告警静默消失。
     finalTextShapeEmitted: false,
+    // issue #881（新格）：本 run 是否已经发过那条 `deliverable_blind`（交付物判据这次**判不了**）。
+    //   与上一格同族的 **one-shot 旗标**：读与写都只在 `termination.js` 的 `callFinalGuard` 里，而
+    //   那个函数按 `guardAttempt` 1..3 反复调（guard 判 revise ⇒ 模型补做 ⇒ 下一轮再调）——不设旗标
+    //   就是 3 条。初值 `false` 逐字是「本 run 还没说过判不了」；起点若为 `true` 就等于首条静默消失。
+    //   它是本次进程的现场，不是跨 resume 的持久判据（resume 重跑会重新问 guard，本来就该再有一次
+    //   机会说一次）⇒ 不入 run-state、也不进 resume 后的重置段（重置段只服务注入旗标）。
+    deliverableBlindEmitted: false,
     // 【E 轮内量（续）】`foldedRoundCount`（原 :1204）与 `navigationRecordCount`（原 :1205）——两个
     //   **有初值**的累计计数器，初值逐字原样搬（都是 `0`）：它们的值经 `createDeterministicRunState` 的
     //   `foldedRounds:` / `navigationRecords:` 两个键落盘并渲染进模型可见的 run-state 文本，起点不是装饰。
@@ -3828,6 +3844,14 @@ export async function runToolLoop(options) {
     },
     set finalTextShapeEmitted(value) {
       runLoopState.finalTextShapeEmitted = value;
+    },
+    // issue #881：`deliverable_blind` 的 one-shot 旗标（读写都在 `runLoopState`，与上面
+    // `finalTextShapeEmitted` 同一条访问器口径：本模块不持有状态）。
+    get deliverableBlindEmitted() {
+      return runLoopState.deliverableBlindEmitted;
+    },
+    set deliverableBlindEmitted(value) {
+      runLoopState.deliverableBlindEmitted = value;
     },
     taskBrief,
     toolStats,
