@@ -4,7 +4,7 @@
 
 **erix-agent** is a zero-dependency, pure ESM LLM runtime for headless coding
 agents. It provides dual-protocol streaming providers, a tool-calling loop,
-context compaction, run snapshot (latest-only autosave), resume, note-first
+context compaction, resume, note-first
 retrieval, and an optional reflection/judge layer for unattended work.
 
 **Positioning: headless agent.** The product is an engine plus a
@@ -135,7 +135,7 @@ instead of re-solving the engineering underneath it.
 |---|---|---|
 | Lower the barrier to LLM use | `runToolLoop` as the single entry point; dual-protocol providers; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
 | Centralised model configuration and run policy | duck-typed `ModelConfigProvider.resolve(slot)` with `static` / `env` / `json-file` adapters, per-slot models, `apiKey`/`apiKeyEnv`/`apiKeyFile` indirection, budget derivation | the configuration store itself (database or config centre), project and tenant quotas, fallback policy, prompt and agent versions |
-| Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, stable run ids, and run snapshots (latest-only autosave) | log and cost storage, dashboards, retention, audit process |
+| Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, and stable run ids | log and cost storage, dashboards, retention, audit process |
 | One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, and note-first retrieval through `note_list` → `note_read` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
 | Contain third-party framework churn | zero runtime dependencies and an owned implementation, a stable exported surface plus `erix-agent/contract-tests` for consumers | — |
 | Accumulate reusable agent engineering | canonical message and tool formats, ADR-tracked decisions, contract tests, benchmark harness | — |
@@ -285,7 +285,7 @@ src/
     delegation/                    Child-run bookkeeping (issue #617 P1a) plus the bounded transcript-tail
                                    read (issue #626 C1): no fork/spawn, opaque fields pass through,
                                    liveness is a host-injected predicate
-      roster.js                    Roster: 21-field record (issue #630 S1 adds resultText /
+      roster.js                    Roster: 22-field record (issue #630 S1 adds resultText /
                                    resultTruncated / errorMessage), atomic write, updatedAt
                                    monotonic, stale reconcile
       capacity.js                  Concurrency quota leases: a fixed slot pool taken with one exclusive
@@ -333,7 +333,7 @@ const assemblyPort = createAssemblyPort({
   modelConfig, // ModelConfigProvider: { resolve(slot) }
   provider,    // { chat?, chatStream? }
   tools: { definitions, executeTool, getToolMetadata? },
-  store?,      // optional TranscriptStore (required: appendRound, load; optional: run-snapshot/run-state)
+  store?,      // optional TranscriptStore (required: appendRound, load; optional: run-state)
   session: { id, initialMessages? }, // data only: resume is a top-level option / config.run.resume
   policy?,     // explicit runToolLoop options; unknown keys are rejected
   emit?,       // (eventType, payload) => void
@@ -562,17 +562,16 @@ optional `runState`, aggregate `usage`, and `compactionStats`.
   explicitly `false`; an object passed without `mode` falls back to `appear`
   (only the engine default is `consecutive`).
 - `resume` defaults to `false`. With a `store` and `runId`, `resume: true`
-  restores the transcript, run state, latest run snapshot, and all pending
-  tool calls that still need execution. Stores with both a snapshot writer
-  (`saveRunSnapshot`; legacy-only stores are still accepted via the fallback
-  chain `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint`) and a
-  snapshot loader (`loadLatestRunSnapshot`, or the deprecated
-  `loadLatestCheckpoint`) fail closed when a pre-execution or post-execution
-  snapshot cannot be persisted. Snapshot/run-state methods are optional
-  capabilities: a store that lacks them degrades with a one-shot
-  `persistence_capability_degraded` event (`{type, runId, method, detail}`)
-  per missing method (the run completes normally, only mid-flight crash
-  resume is unavailable). The
+  restores the transcript ledger, the run state (`saveRunState`/`loadRunState`/
+  `markRunState`), the recovery rows (`appendRecoveryRow`/`listRecoveryRows`/
+  `clearRecoveryRows`), and all pending tool calls that still need execution.
+  The run-state and recovery-row store methods are optional capabilities: a
+  store that lacks them degrades with a one-shot
+  `persistence_capability_degraded` event (`{type, runId, method, detail}`) per
+  missing method name (the run completes normally, only mid-flight crash resume
+  is unavailable); the recovery-row **read** method `listRecoveryRows` is the
+  one exception — its absence is silent, so a host that needs that answer checks
+  its own store for the method. The
   host's `executeTool` must still be idempotent by tool id; the loop cannot
   guarantee exactly-once external side effects.
 
@@ -686,9 +685,9 @@ The defaults used by the loop are:
   `src/loop/reflection.js`): with it off, an `uncertain` verdict still produces
   no direction-hint text at all, and the request sequence stays byte-for-byte
   identical to a run without this option. A non-boolean value throws
-  `TypeError: reflection.judgeDoneAdvisory must be a boolean` at startup. The
-  pending advisory is not carried in the run snapshot, so a resume before the
-  first flush drops it.
+  `TypeError: reflection.judgeDoneAdvisory must be a boolean` at startup. An
+  advisory produced but not yet flushed can be lost if a resume happens before
+  the flush (see the advisory implementation in `src/reflection/`).
 - At `nearLimit` (`budgetRounds >= floor(effectiveMaxRounds * 0.8)`), both
   end-turn judging and the next interception audit receive the current budget
   and extension count. The judge must additionally return `extend`,
@@ -771,17 +770,19 @@ decide whether to consume the result.
   The judge's `filesWritten` footprint does not infer arbitrary write tools
   from their names.
 - `TranscriptStore` implementations provide idempotent `appendRound` and
-  `load` (the two required methods) plus optional run-snapshot
-  (`saveRunSnapshot`/`loadLatestRunSnapshot`) and run-state
-  (`markRunState`, `saveRunState`/`loadRunState`) capabilities — see the
+  `load` (the two required methods) plus optional run-state
+  (`saveRunState`/`loadRunState`/`markRunState`) and ledger recovery-row
+  (`appendRecoveryRow`/`listRecoveryRows`/`clearRecoveryRows`) capabilities,
+  along with the other optional probes (`loadRunStateStatus`,
+  `loadByDedupKey`/`loadMaxRound`, `loadRawRows`) — see the
   capability tiers in `docs/host-consumer-contract.md`. Pass
   `persistence: "none"` to explicitly disable all writes. Model-facing
   retrieval is note-first: use `note_list` then `note_read`; there is no
   transcript retrieval API; the former recall adapters were retired in 0.8.0.
 - `runState` is deterministic, bounded, and replace-injected at compaction
   points. Stores can implement `markRunState`,
-  `saveRunState`/`loadRunState`, `saveRunSnapshot`, and
-  `loadLatestRunSnapshot`. Persisted run state has a 64 KiB serialized hard
+  `saveRunState`/`loadRunState`, and the recovery-row methods
+  `appendRecoveryRow`/`listRecoveryRows`/`clearRecoveryRows`. Persisted run state has a 64 KiB serialized hard
   limit plus entry and field limits; truncation is visible through
   `bounds.truncated`. `todoStateProvider` and `semanticStateProvider` are
   host-injected; semantic state is bounded and versioned, and stale versions
@@ -808,12 +809,14 @@ onDelta
 onReasoningDelta
 onToolCall
 onUsage
+onFoldSummary
 onEvent
 ```
 
 Streaming observers (`onDelta`, `onReasoningDelta`, `onToolCall`, and
-`onUsage`) report through `onObserverError` when an observer throws — as do all
-the other observer callbacks (issue #173, detailed below).
+`onUsage`) report through `onObserverError` when an observer throws — as do
+the other observer callbacks except `onFoldSummary` (issue #173, detailed below;
+`onFoldSummary` reports through the persistence-error channel).
 Persistence failures use `onPersistenceError`. `onEvent` receives structured
 events including `round_start`, `round_end`, `tool_use`, `tool_result`,
 `attempt`, `recovering`, `recovered`, `delta`, `reasoning_delta`, `tool_call`,
@@ -825,9 +828,11 @@ call is absent, the recovery-row **write** method `appendRecoveryRow` and
 method `listRecoveryRows` is **not** one of those — its absence is silent, so a
 host that needs that answer checks its own store for the method).
 
-All nine observer callbacks above are error-isolated (issue #173): a throw in any
-of them is reported through `onObserverError(error, {channel, runId?, …})` and
-**the run continues** — it can no longer change `termination.reason`. Observer
+All ten observer callbacks above are error-isolated (issue #173): a throw in any
+of them is reported through `onObserverError(error, {channel, runId?, …})` — except
+`onFoldSummary`, whose throw surfaces as `persistence_error` (`operation:
+"onFoldSummary"`, `fatal: false`) instead — and **the run continues**: it can no
+longer change `termination.reason`. Observer
 errors are best-effort and are not part of the persistence ledger, so a host must
 count `onObserverError` itself. To end a run from a callback, call
 `signal.abort()` (the thrown error carries the issue #180 payload); the callbacks
@@ -1194,8 +1199,8 @@ MCP configuration is read from the current directory's `.mcp.json` or
   session-meta.json            RETIRED (issue #168): no longer read or written; safe to delete
   transcripts/
     <safeRunId>.jsonl
-    <safeRunId>.snapshot.json
-    <safeRunId>.checkpoint.json  legacy snapshot suffix (read-compatible)
+    <safeRunId>.snapshot.json    RETIRED (issue #838): the engine neither reads nor writes it; safe to delete
+    <safeRunId>.checkpoint.json  RETIRED (issue #838): legacy snapshot suffix; the engine neither reads nor writes it; safe to delete
     <safeRunId>.state.json
   <session>.json                 REPL session snapshot
   notes/run/<safeRunId>/         NotesStore data
