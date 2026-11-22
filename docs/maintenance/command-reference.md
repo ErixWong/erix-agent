@@ -306,8 +306,8 @@ Generate the published `.d.ts` into `src/**/*.d.ts` and keep them (issue #213; t
 Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains `runToolLoop` / `src/tools/index.d.ts` contains `createFileTools`, then delete the artifacts (issue #213; needs `npm install --include=dev`)
 
 ## type-ratchets
-`--checkJs` **ratchet**: counts the type errors reachable from `src/index.js` and fails if the total exceeds the baseline constant **102** in `scripts/type-check-ratchet.mjs` (issue #214; ratchet = never up, going down is a pass with a "you may lower the baseline to N" hint; both tiers are counted and lowered in one commit, and the round-by-round history of that total lives in the header comment of `scripts/type-check-ratchet.mjs` — the command prints the current total, the per-file distribution and the "you may lower it to N" hint, so no count beyond the two baselines is copied here). **Delete the generated `src/**/*.d.ts` first** — see the `--checkJs` ratchet rule below. `-- --with-tools` widens it to the `./tools` entry (baseline **137** / 28 files)
-- `--checkJs` ratchet rule (issue #214): `npm run check:types` does **not** aim for zero errors — 102 of them
+`--checkJs` **ratchet**: counts the type errors reachable from `src/index.js` and fails if the total exceeds the baseline constant **98** in `scripts/type-check-ratchet.mjs` (issue #214; ratchet = never up, going down is a pass with a "you may lower the baseline to N" hint; both tiers are counted and lowered in one commit, and the round-by-round history of that total lives in the header comment of `scripts/type-check-ratchet.mjs` — the command prints the current total, the per-file distribution and the "you may lower it to N" hint, so no count beyond the two baselines is copied here). **Delete the generated `src/**/*.d.ts` first** — see the `--checkJs` ratchet rule below. `-- --with-tools` widens it to the `./tools` entry (baseline **133** / 28 files)
+- `--checkJs` ratchet rule (issue #214): `npm run check:types` does **not** aim for zero errors — 98 of them
   (26 files) are accepted debt (the #214 measurement was 218; issue #177 knife 1 took one off
   `src/loop/orchestrator.js` by annotating `resumeRunSnapshot`; PR #249 — the #213 provider-factory JSDoc — took
   75 more, **all of it in two files**: `src/providers/openai.js` 46 → 7 and `src/providers/anthropic.js` 45 → 9,
@@ -316,7 +316,9 @@ Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains
   (`src/store/notes-port.js`, `src/store/notes-memory.js`) contributing 0, and the other 28 error-carrying files
   moving by zero — verified file by file against the `7354fab^` tree exported with `git archive`, which reproduces
   142 / 185 verbatim). What it guarantees is **never up**: the total is compared against the
-  `BASELINE_ROOT = 102` constant in `scripts/type-check-ratchet.mjs` (re-measured 2026-11-01 on the #661 wrap-up tree, where the −4 is `src/compact/fold-llm.js` 5 → 1; the same day's earlier #177 slice-4 round read 107; 2026-10-31 on `c92c8fa` read 108
+  `BASELINE_ROOT = 98` constant in `scripts/type-check-ratchet.mjs` (lowered to **98** on 2026-11-22 by
+  PR #885, where the reading was 98 / 26 files; the parenthetical below is history, not the current value —
+  re-measured 2026-11-01 on the #661 wrap-up tree **at 102**, where the −4 is `src/compact/fold-llm.js` 5 → 1; the same day's earlier #177 slice-4 round read 107; 2026-10-31 on `c92c8fa` read 108
   with `typescript@5.9.3` + `@types/node@22.20.5`, **both tiers lowered in the same commit**: 110 → 108 and
   146 → 144, two units each, the whole of it `src/loop/orchestrator.js` 14 → 12 (the `deliverablesAllPassed` /
   `deliverablesFailures` block extracted two inline expressions into typed locals — a refactor side effect, not a
@@ -343,7 +345,7 @@ Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains
     the number only shrinks.
   - ⚠ **Delete the generated declarations before running it.** tsc resolves `./x.js` to a sibling `x.d.ts` first,
     so after `npm run types:build`/`prepack` the ratchet would be checking declarations instead of
-    implementations: **102 errors** with none present (the constant's value) against **0 errors** with the
+    implementations: **98 errors** with none present (the constant's value) against **0 errors** with the
     declarations present, because `--skipLibCheck` skips declaration files; drop `--skipLibCheck` and the same run
     reports a small set of errors that all point at `.d.ts` files (the command prints that count and those files).
     The declaration count itself is the one `check:pack-links` reconciles, not a copy here; the earlier readings
@@ -354,7 +356,7 @@ Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains
   - Known hole, deliberately left open by the spec: the second public entry `src/tools/index.js` pulls in
     `src/tools/file-tools.js` (19 errors) and `src/skills/loader.js` (16), which the package-root graph never
     reaches, so new errors there are **not** caught by the default gate. `npm run check:types -- --with-tools`
-    gates the union (baseline **137** / 28 files = 102 + 19 + 16, counted together with the fix that lowered it;
+    gates the union (baseline **133** / 28 files = 98 + 19 + 16, counted together with the fix that lowered it;
     **both tiers now have their own CI step** — the `--with-tools` steps sit right after the package-root ones, so
     a stale constant here reds like any other, issue #653). The per-file counts behind that union are printed by
     the command (`--verbose`), and gating that union is the cheap way to tighten this later; which file lost how
