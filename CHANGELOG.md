@@ -33,7 +33,7 @@
   semantics are untouched — fail-closing would judge every shell-writing run red. Pins:
   `test/loop-deliverable-blind-881.test.js` (cells ①–⑦, including a **real** second guard attempt
   for the one-shot) and `test/run-event-handlers-deliverable-blind-881.test.js` (one stderr line,
-  end to end).
+  end to end). (PR #882)
 - **「交付物判据这次判不了」现在被说出来了（issue #881，#711 留下的观测缺口）。**
   **判定变了的是谁：没有人**——裁决逐字不动，动的只是「能不能被人看见」。#711 把三个盲区键
   （`fileWritesBlind` / `fileWritesBlindToExec` / `execWriteUnresolvedCount`）放进了 final guard 载荷，
@@ -56,7 +56,7 @@
   `deliverablePaths`。`createDeliverableChecks` 的 `ok:true` 语义一字未动——改成 fail-closed 会把所有
   shell 落盘的 run 全判红。钉子：`test/loop-deliverable-blind-881.test.js`（①–⑦ 格，含 one-shot
   那一格**真的**走了第二次 guard attempt）与 `test/run-event-handlers-deliverable-blind-881.test.js`
-  （端到端恰好一行 stderr）
+  （端到端恰好一行 stderr）（PR #882）
 
 - **The write ledger now sees the writes the model makes through the shell (issue #711).**
   `fileWrites` used to contain only the paths the write tools declared, so a model that lands
@@ -80,7 +80,7 @@
   judgement changed: `--require-deliverable` and the final guard.** The bare boolean shorthand
   no longer passes vacuously for a model that only writes via shell — its ledger is no longer
   the empty set, so the checks really run; and `payload.fileWrites` handed to `finalGuard` no
-  longer systematically undercounts what the run produced. Pin: `test/loop-exec-writes-711.test.js`.
+  longer systematically undercounts what the run produced. Pin: `test/loop-exec-writes-711.test.js`. (PR #880)
 - **写台账现在看得见模型用 shell 落盘的写（issue #711）。** `fileWrites` 过去只收写工具声明的
   路径，于是用 `cat > f <<EOF`、`echo x > f`、`tee f`、`sed -i … f` 落盘的模型留下一本空台账——
   而空台账会被当成「没东西要核」消费。`parseExecCommandWrites` / `scanExecWrites`
@@ -97,7 +97,7 @@
   仍会举旗，因为 `$OUT` 那一半是未知。**判定变了的是
   谁：`--require-deliverable` 与 final guard。** 裸布尔简写对「只会用 shell 落盘」的模型不再是空集
   恒真——它的台账不再是空集，检查真的会跑；交给 `finalGuard` 的 `payload.fileWrites` 也不再系统性
-  少算本轮的产物。钉子：`test/loop-exec-writes-711.test.js`。
+  少算本轮的产物。钉子：`test/loop-exec-writes-711.test.js`。（PR #880）
 
 - **A textualized tool call is no longer a deliverable, so it no longer grants the `judge_done`
   stop (issue #865, #862 fix B).** **Whose judgement changed: the round judge's stop gate** — a
@@ -144,7 +144,7 @@
   fixtures, with a reverse anchor that rejects a fixture copied from the changed tree; and the two
   renderer mandatory-slot cells) plus `test/loop-judge-done-textualized-865.test.js` (3 cells: the
   nudge really fires and names the label, the quota exhausts into `judge_done`, and the quoted
-  control group does not move).
+  control group does not move). (PR #876)
 - **被文本化的工具调用不再是交付物，因此它也不再授予 `judge_done` 的停机许可（issue #865，
   #862 修法 B）。** **判定变了的是谁：本轮评审的那道停门**——开着 `reflection.roundJudge` 的宿主，
   在被评的那轮只有一段被文本化工具调用时可能多看到一轮。有些上游/网关把 tool call 编进了
@@ -176,7 +176,7 @@
   围栏与行内码引用的格子——按名钉 `marker_in_fence`——配「抹掉围栏必命中」的反向锚，免这一格恒真；
   十条不命中的消息序列与 `origin/main` 的 fixture 逐键逐值对账，配「fixture 不许是改动后抄件」的
   反向锚；以及渲染器两个 mandatory 名额格）与 `test/loop-judge-done-textualized-865.test.js`
-  （3 格：nudge 真的发出且点名标签、配额用尽后落到 `judge_done`、围栏引用那一组对照纹丝不动）。
+  （3 格：nudge 真的发出且点名标签、配额用尽后落到 `judge_done`、围栏引用那一组对照纹丝不动）。（PR #876）
 
 - **Whether a run-state injection really happened is now recorded on the round itself
   (issue #872, #862 fix C — observability only).** `round_end` gains one additive key
@@ -206,7 +206,7 @@
   a continuation inject); the pure `mergeRoundRunStateInject` is unit-tested (undefined+A ⇒
   injections 1; A+B OR; same-channel twice; three-increment); and both injection channels are really
   exercised — A via per-round whole-round folds (`folding.context.budgetTokens`), B via both the
-  low-budget gate and the TTL-armed first fold.)
+  low-budget gate and the TTL-armed first fold.) (PR #874)
 - **引擎现在把「本轮是否真的发生了 run-state 注入」记进轮记录（issue #872，#862 修法 C——
   纯观测面）。** `round_end` 新增**一个**加法键 `runStateInject` = `{ lowBudget, request,
   persist, remainingRounds, injections }`，**只在真的注入了的轮出现**——缺席就是否定答案，绝不写
@@ -226,7 +226,7 @@
   字 / 删一条注入块，都必须红）；一个 `max_tokens` 续写真格钉住同轮 `injections === 2`（轮首注入 +
   续写注入）；纯函数 `mergeRoundRunStateInject` 有单测（undefined+A⇒injections 1；A+B OR；同通道两次；
   三次累加）；两条注入通道各有真格——A 用逐轮整轮折叠（`folding.context.budgetTokens`），B 用低预算门
-  与 TTL 首折 armed 两个来源。）
+  与 TTL 首折 armed 两个来源。）（PR #874）
 
 - **The engine now recognizes a final text that is really a textualized tool call, and says
   so (issue #862, fix A).** Some upstreams/gateways encode the tool call into `content`, so the
@@ -252,7 +252,7 @@
   markers, fence/inline near-miss set, key-absence + key-set equality, terminal-identity,
   runId key rule, mid-round-not-judged incl. resume, marker-set/tier equality, the one-shot flag
   pinned by two direct `finish()` calls, a `max_rounds_cap` terminal (proves the key is not
-  `end_turn`-only), and a `failed` terminal carrying neither the key nor the event.)
+  `end_turn`-only), and a `failed` terminal carrying neither the key nor the event.) (PR #864)
 - **引擎现在认得出「终稿其实是一段被文本化的工具调用」，并且会把这件事说出来（issue #862，
   修法 A）。** 有些上游/网关把 tool call 编进了 `content`，于是最后一轮看起来就是「无
   `tool_use` + `end_turn` + 正文非空」，run 被判 `completed`，而它交付的是 `<｜｜DSML｜｜ calls>`
@@ -273,7 +273,7 @@
   （`test/loop-final-text-shape-862.test.js` 十二格：真样本端到端、五条特征逐个、围栏/行内码
   近邻词不误伤集、键缺席 + 键集合对账、终态同值、`runId` 写键规则、**中途轮不判**（含 resume）、
   特征集与分级对账、one-shot 旗标（对同一 ctx 直调两次 `finish` 咬住）、`max_rounds_cap` 终局
-  （证明该键不只 `end_turn`）、`failed` 终局既无该键也无该事件。）
+  （证明该键不只 `end_turn`）、`failed` 终局既无该键也无该事件。）（PR #864）
 - **The `readFile` description no longer quotes numbers measured from this repository (issue #628).**
   The model-visible copy used to carry two families of in-repo measurements, and both were hostage
   to source churn: line capacity (`fewest ≥ 3,850 lines … median 6,007 … most 9,407`, plus two CJK
@@ -351,7 +351,7 @@
   full budget and pasting the marker afterwards really does overflow, the extreme-budget ladder
   above, the boundary where an `[已修剪]` field is itself over budget (never “neither a complete
   `[已修剪]` nor a truncation marker”), and a lock on the four wording points — verdict, number
-  format, continuation keywords, no-re-run clause — plus the order between them. (PR #—)
+  format, continuation keywords, no-re-run clause — plus the order between them. (PR #868)
 - **单个超预算的内容不再被静默剪掉（issue #609）。** 本仓三种「内容丢失」在诚实度上本来不齐：
   字段被修剪会留标题并写 `[已修剪]`（`prunedFieldText`，issue #469），整条消息被删会留
   `stubFor` 桩，而 `truncateTextToBudget()` 以前返回**裸 slice** ⇒ 模型拿着半截工具结果在干活，
@@ -372,7 +372,7 @@
   resume 的逐字比对仍成立）。`test/loop-budget-truncation-marker-609.test.js` 十六格钉住：反向证
   「拿整条预算截完再贴标记确实会超预算」、上面那条极小预算的退化阶梯、`[已修剪]` 字段自身超预算的
   边界（不许「既没有完整 `[已修剪]`、也没有截断标记」），以及把四个措辞要点 —— 结论词、数字格式、
-  续读关键词、别重跑副作用 —— 连同它们之间的先后顺序一起锁住。（PR #—）
+  续读关键词、别重跑副作用 —— 连同它们之间的先后顺序一起锁住。（PR #868）
 - **Changed (issue #609, with #271 / #453 / #537 / #730): the `readFile` median tier moved 6,157 → 6,007, because the fixed sample's median element itself changed hands — `src/loop/budget.js` is now the element sitting at the median, replacing `src/loop/error-ledger.js` (byte-for-byte unchanged this round).** Re-measured with the test's own `measureReadLineCapacity` / `CJK_CHAR` on this tree (the harness `/tmp/609-linecap-census.mjs` extracts those functions, the sample list and the role table out of `test/tools/file-tools.test.js` and `eval`s them, rather than transcribing a second copy of the metric — the lesson of #714, which wrote an anchor by hand and got it wrong): `src/loop/budget.js` 22,481 → **23,998** B / 521 → **550** lines ⇒ 43.1497 → **43.6327** bytes per line ⇒ **6,007** lines at the default 262,144-byte budget, and that file is sample element **42/83**, so with an odd-length sample it **is** the median (6,056 → **6,007**). The cause is #609's own commentary on the `TRUNCATION_OMISSION_MARK` cell, not a defect in `readFile`; the file the anchor was pinned to measured **6,157, byte-identical to the record**, and what reddened was `medianClaim` against the sample median (2.50% past ±2%). The two ±2% bands still intersected (`[6,034, 6,127]`) but **contained no measured value** — neither the sample median nor the pinned file's own measurement — so the role was **handed to the file actually at the median** (#730 / #769 R3 precedent) rather than picking an invented midpoint out of the intersection the way #493 once did. Both description edits are **same-digit-count replacements** (`median 6,157 (42.6)` → `median 6,007 (43.6)`), so they are byte-neutral for `src/tools/file-tools.js`; what did move that file is the history note above the description (133,104 → **135,358** B / 2,324 → **2,340** lines ⇒ own capacity 4,577 → **4,531**), so `this tool's own source fits` moved with it, the precedent #537 set, re-measured twice to convergence rather than guessed. **Nothing was relaxed to make this pass**: the ±2% / ±1% constants, `measureReadLineCapacity`, the 83 hardcoded sample paths and `assertTierTight` are untouched, no case was deleted or skipped, `fewest` / `densest` / `most` were re-measured and are byte-identical to their records, and after the sync both median assertions hold at **0.00%**. The structural fix — making the median stop drifting with sample membership and with one file's comment width — is **issue #628** and is deliberately not smuggled into this re-measurement.（PR #—）
 - **变更（issue #609，同 #271 / #453 / #537 / #730）：`readFile` 的中位档从 6,157 → 6,007，原因是写死样本的**中位元素自己换了人**——现任是 `src/loop/budget.js`（它就坐在中位上），离任是 `src/loop/error-ledger.js`（本轮逐字未动）。** 数字全部由测试自己的 `measureReadLineCapacity` / `CJK_CHAR` 在这棵树现算（夹具 `/tmp/609-linecap-census.mjs` 把那两个度量函数、样本清单与角色表从 `test/tools/file-tools.test.js` 里**原样抽出来 eval**，不另抄一份口径 —— #714 手写数把锚点写歪的教训）：`src/loop/budget.js` 22,481 → **23,998** 字节 / 521 → **550** 行 ⇒ 均行字节 43.1497 → **43.6327** ⇒ 默认 262,144 字节额度下装 **6,007** 行，而它是写死样本的第 **42/83** 个 —— 奇数长度的样本里它**就是**中位（样本中位 6,056 → **6,007**）。成因是 #609 给 `TRUNCATION_OMISSION_MARK` 那一格写的中文注释，不是 `readFile` 坏了；被钉的那个文件实测 **6,157，与记录逐字相同**，红的是「声称的中位 vs 样本中位」那一条（越过 ±2% 达 **2.50%**）。两条 ±2% 的带**仍有交集**（`[6,034, 6,127]`），但**里面没有任何一个实测值**（既不是样本中位，也不是被钉文件自己的实测）⇒ 按 #730 / #769 R3 先例把角色**交给当时真在中位的那一个**，而不像 #493 那样在交集里挑一个发明出来的中间数。描述两处改动都是**同位数替换**（`median 6,157 (42.6)` → `median 6,007 (43.6)`）⇒ 对 `src/tools/file-tools.js` 字节中性；真正挪动它的是描述上方那条历史注（133,104 → **135,358** 字节 / 2,324 → **2,340** 行 ⇒ 自身容量 4,577 → **4,531**），所以 `this tool's own source fits` 跟着刷（#537 立的先例），连测两次逐字相同才收，不是猜的。**判据一条都没放宽**：±2% / ±1% 常量、`measureReadLineCapacity`、83 条写死样本、`assertTierTight` 一字未动，没删例也没 skip，`fewest` / `densest` / `most` 当场复测与记录**逐字相同**，刷完之后两条 median 断言都是 **0.00%**。结构性修法 —— 让中位不再随样本成员与单个文件的注释宽度漂移 —— 是 **issue #628**，本单不顺手把口径换掉。（PR #—）
 - **The CHANGELOG coverage gate's own wiring check no longer borrows a documentation step as
@@ -422,6 +422,26 @@
   工具返回里，照抄它照样打回（复审实测）。六格离线用例钉住：发出去的例子自身
   真能过闸、只在 `tool_use` 里出现的命令名仍被打回、两处引用的是同一段文本、
   照抄示例值仍 revise、以及那两个标记不许被删掉（删了就红）。（PR #859）
+- The 0.33.0 version cut reached `main` through a PR, so the cut itself is one of this interval's
+  merges (PR #851; merge 7b631a8, task 261115-12). The `v0.33.0` tag points at the cut commit
+  `ed953ea4`, which is that merge's **second parent** — so the merge is a descendant of the tag,
+  and the coverage gate reads it as work the *next* section must name. What it carries is the cut
+  and nothing else: `package.json` `0.32.0 → 0.33.0`, the current-version and release lines in
+  both READMEs, both AGENTS files and both `docs/requirements*`, this file's 0.33.0 section, the
+  `What does not change` section both 0.33.0 upgrade guides gained, and the two history pins the
+  guides got in `scripts/retired-spelling-scan.mjs`. **`src/` and `bin/` are untouched — no behaviour change.**
+  Registered the way this gate's own 0.32.0 rule says a cut that goes through a PR is registered
+  (PR #818: "a cut that goes through a PR names its own PR"): **as an entry, not as a
+  `COVERAGE_EXEMPTIONS` row** — that registry stays empty and `COVERAGE_EXEMPTION_MAX` stays `0`.
+- 0.33.0 的切版走 PR 进 `main`，于是切版本身就是本区间的一笔合并（PR #851；合并 7b631a8，工单
+  261115-12）：`v0.33.0` 那个 tag 指的是切版提交 `ed953ea4`，而它是那笔合并的**第二父**——所以那笔
+  合并是 tag 的后代，覆盖闸于是把它读成「要由**下一段**点名」的工作。它带进来的只有切版本身：
+  `package.json` 的 `0.32.0 → 0.33.0`、两份 README、两份 AGENTS 与两份 `docs/requirements*` 的当前
+  版本句与发布行、本文件的 0.33.0 段、两份 0.33.0 升级指南新增的「没有变的东西」一节，以及
+  `scripts/retired-spelling-scan.mjs` 里给那两份指南补的两处历史钉。**`src/` 与 `bin/` 零改动——行为没有任何变化。**
+  登记方式照这道闸自己在 0.32.0 立的规矩（PR #818：「走 PR 的切版要在自己那一版段里点自己的 PR」）：
+  **写成条目，不是往 `COVERAGE_EXEMPTIONS` 里塞一行**——那张登记表继续空着，`COVERAGE_EXEMPTION_MAX`
+  仍是 `0`。
 
 ### Fixed
 
