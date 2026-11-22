@@ -32,7 +32,9 @@
 ## 3. 开发命令
 
 一行一道闸：它判什么，以及改那道闸管的东西之前先读哪一节（锚点都是
-`docs/maintenance/command-reference_cn.md` 的小节）。
+`docs/maintenance/command-reference_cn.md` 的小节）。**这里只列一次改动要回答的闸**；
+完整清单看 `package.json`——只在发版或维护探针时才跑的那几个（`check:version-state-probe`、
+`check:version-states`、`check:final-guard-probe`、`check:tests`）故意不占行。
 
 | 命令 | 判什么 | 先读这一节 |
 |---|---|---|

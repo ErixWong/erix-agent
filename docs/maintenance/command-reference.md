@@ -194,11 +194,14 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
   agree: `REF_SCAN_DOCS_MINIMUM = 53` is the floor, and the count it stands for (pinned documents + the guides the
-  directory scan finds) is machine-checked: `check:docs` reads the stated numbers back out of every document that
-  states them (both READMEs and the ledger) and compares them with the scan, so a stale copy is red, not prose.
-  `test/docs-anchor-ratchet.test.js` keeps its own pinned list of the same documents plus the discovered guide set
-  file names. Renaming or adding a guide is
-  red until both places are updated. `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
+  directory scan finds) is **reported, not judged** (261122): `check:docs` prints the measured numbers as a
+  `ref-scan-claims` note every run, and a document that restates a different number is a **note**, not a red —
+  restating a measurement nobody acts on was a self-referential gate (it taxed every new guide with four edits).
+  The floor itself is still enforced: shrinking the anchor face below `REF_SCAN_DOCS_MINIMUM` stays red.
+  `test/docs-anchor-ratchet.test.js` keeps its own pinned list of the same documents. **Renaming or removing** a
+  pinned guide is red (that is the coverage silently shrinking); **adding** one is not — it joins the anchor face
+  automatically, because demanding that the pinned list match the discovered set exactly taxed every new guide with
+  another edit and produced nothing a reader could see (261122). `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
   release time, and rewriting them would fake history (same reasoning as the #278 shorthand register).
   Batch T-a built the infrastructure and the ratchet; batch T-b1a converted the contract's
   `src/loop/orchestrator.js` anchors that carry their own range (EN + CN in the same PR) and took the baseline from
