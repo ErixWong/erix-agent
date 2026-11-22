@@ -354,7 +354,7 @@ Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains
     stale `src/**/*.d.ts` (the repository commits zero `.d.ts`, so their presence always means generated).
     Fix: `find src -name '*.d.ts' -delete` — they are git-ignored and regenerable.
   - Known hole, deliberately left open by the spec: the second public entry `src/tools/index.js` pulls in
-    `src/tools/file-tools.js` (19 errors) and `src/skills/loader.js` (16), which the package-root graph never
+    `src/tools/file-tools.js` and `src/skills/loader.js`, which the package-root graph never
     reaches, so new errors there are **not** caught by the default gate. `npm run check:types -- --with-tools`
     gates the union (baseline **133** / 28 files = 98 + 19 + 16, counted together with the fix that lowered it;
     **both tiers now have their own CI step** — the `--with-tools` steps sit right after the package-root ones, so

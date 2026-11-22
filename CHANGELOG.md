@@ -443,6 +443,37 @@
   **写成条目，不是往 `COVERAGE_EXEMPTIONS` 里塞一行**——那张登记表继续空着，`COVERAGE_EXEMPTION_MAX`
   仍是 `0`。
 
+- **The run-snapshot retirement reached the documents that still taught hosts to implement it (PR #884).**
+  The engine stopped writing and reading run snapshots in 0.33.0, and the contract, the 0.33.0 upgrade
+  guides and `bin/repl.js` said so — but both READMEs, `docs/requirements*` and `docs/architecture*` kept
+  describing snapshot persistence as a live capability. `README.md` told hosts to implement
+  `saveRunSnapshot` / `saveCheckpoint` / `appendCheckpoint` / `loadLatestRunSnapshot` /
+  `loadLatestCheckpoint` and promised that a failed snapshot write fails the run closed; none of those
+  five names exists anywhere in `src/` or `bin/`. Resume now reads exactly what the engine reads
+  (transcript ledger + run state + recovery rows + replayable pending tool calls), the `TranscriptStore`
+  tier list is copied from the contract instead of invented, the on-disk layout marks both snapshot
+  suffixes **RETIRED**, the roster record count is **22** (not 21 — `#630 S1` and `#682`), and the
+  callback list gains `onFoldSummary` while the "nine observer callbacks" count stays nine (eight
+  channels plus `onObserverError`; `onPersistenceError` and `onFoldSummary` report through the
+  persistence-error channel and are **not** among them). Two contract names were wrong and are fixed
+  (`buildRecoveryEventKey` → `recoveryEventKey`; `recordedEntries` described a retired mechanism).
+  **No behaviour change: `src/` and `bin/` are untouched** — what changed is that the documents stop
+  promising something the engine does not do. The gates could not catch this class: `check:docs`
+  reconciles versions, defaults, lists, the module map, paths and EN/CN skeletons, never "is the
+  capability this prose names still in the code".
+- **run-snapshot 退役终于追上了那些还在教宿主实现它的文档（PR #884）。** 引擎在 0.33.0 就不再写、也不再读
+  run snapshot，契约、0.33.0 两份升级指南与 `bin/repl.js` 都说了——但两份 README、`docs/requirements*`、
+  `docs/architecture*` 仍在把 snapshot 持久化写成现行能力。`README.md` 教宿主实现
+  `saveRunSnapshot` / `saveCheckpoint` / `appendCheckpoint` / `loadLatestRunSnapshot` /
+  `loadLatestCheckpoint`，还承诺「快照写失败则 fail closed」；这五个名字在 `src/` 与 `bin/` 里**一个都不存在**。
+  现在 resume 只读引擎真正读的东西（transcript 账本 + run-state + recovery rows + 可复放的待执行工具调用），
+  `TranscriptStore` 分级照契约抄而不再自创，盘上布局给两个 snapshot 后缀标了 **RETIRED**，名册记录数改成
+  **22**（不是 21——`#630 S1` 与 `#682`），回调清单补上 `onFoldSummary`，而「九个观察者回调」这个数仍是
+  九（八条通道 + `onObserverError`；`onPersistenceError` 与 `onFoldSummary` 走持久化错误通道，**不在**其中）。
+  契约里两个错名字一并改准（`buildRecoveryEventKey` → `recoveryEventKey`；`recordedEntries` 描述的是一套
+  已退役机制）。**行为零变化：`src/` 与 `bin/` 一字未动**——变的是文档不再承诺引擎做不到的事。这道闸拦不住
+  这一类：`check:docs` 对账的是版本、默认值、清单、模块地图、路径与中英骨架，从不对账「这句散文点名的能力
+  在代码里还在不在」。
 ### Fixed
 
 - **fix(extension): a job's two timers belong to the run and to the delivery, not to the session (`erix_run`, `examples/pi-extension/`; issue #875, second cut).** **Whose ownership changed: the timers hanging on a job** — a session event can no longer reach into a run that is still executing. Two defects, one axis, both read off the code: (a) `shutdown()` had **no `reason` parameter**, and `erix-run.ts` read `reason` **after** calling it, so `/reload` took the same branch as `quit` and deleted `job.notifyRetry`, while the recovery loop filtered on `job.delivery !== "orphaned"` — a job sitting on `delivery:"failed"` with retry budget left was picked up by nobody: issue #659's bounded retry had already spent its first delivery, and issue #800's recovery loop never looked at `failed` ⇒ that terminal summary is silent forever. (b) The run-level watchdog was a session resource, so a session leaving while its run kept executing removed the only path that ever writes a terminal state ⇒ `status.json` stayed `running`; (b) got strictly worse in the first cut of this issue, because a job stuck in `running` keeps `isActive()` true and that session is then never reaped either. `clearJobTimers` is split into `clearJobWatchdog` (belongs to the **run**: only `settle`, the timeout itself and `action:"cancel"` may drop it) and `clearNotifyRetry` (belongs to the **delivery**: `reload` never drops it — the new instance re-registers a handle under the same `sessionId`, so that pending slot still lands); `shutdown(ownerSessionId, sessionHandle, reason)` gained the third parameter and clears only the retry, and only for reasons other than `reload`, while `clearJobTimers` keeps its semantics byte-for-byte and is left with those three call sites; `requeueOrphaned`'s filter is now `orphaned ∪ failed`, and the function name, the `orphanRecoveries` field and the recover-at-most-once bound are unchanged (that counter now counts both recovery kinds together, still one per job). **Unchanged**: the `shutdownTimerSkips` accounting deliberately did **not** move with the new branch — its condition still answers "a late instance touched this job while it held a timer", not "what did we clear"; `delivery`'s five-value domain, `jobView`'s field set, the shape of `status.json`, `NOTIFY_RETRY_DELAYS_MS` and `src/**` (zero bytes) are untouched. Pinned by `test/examples/erix-run-async.test.js`: three new cells assert the **consequence** of keeping a timer instead of its mere existence — under a fake clock the retry retained across `reload` really reaches `sent` (and `status.json` follows), the watchdog retained across a `quit` really writes `aborted` **onto the disk**, and a second `requeueOrphaned` on a job that is *still* `failed` returns `[]`, so it is the bound that stopped it and not the filter — plus four existing cells moved to the new ownership (`#658` and `#800` now expect `false` from a `quit` whose jobs hold no retry, and two comments). Three reverse proofs, one per new cell: drop the `reason !== "reload"` guard ⇒ the `reload` cell reddens; restore `clearJobTimers(job)` inside `shutdown` ⇒ the `quit` cell reddens (no watchdog ⇒ no `aborted` on disk); restrict the filter back to `orphaned` ⇒ the recovery cell reddens.
