@@ -17,7 +17,7 @@
   |                               |-- tool_use -> executeTool ------>| 调用方代码
   |                               |<-- tool_result ------------------|
   |                               |-- completion / stall / judge     |
-  |                               |-- run snapshot 与轮次归档        |
+  |                               |-- 轮次归档                       |
   |<------------- 结果 -----------|                                  |
 ```
 
@@ -206,8 +206,10 @@ runToolLoop({
 ```
 
 `config.input.messages` 优先于 `config.input.initialUserMessage`。当
-`config.run.resume: true` 时，循环加载 `config.run.runId` 对应的 transcript 和最新
-run snapshot，使用持久化的消息及轮次状态，而不是初始消息。
+`config.run.resume: true` 时，`restoreResume`（`src/loop/resume-manager.js`）从
+`config.run.runId` 对应的 transcript 账本、持久化的 run-state 记录与 recovery
+rows 重建循环状态，使用持久化的消息及轮次状态，而不是初始消息；它不读取 run
+snapshot。
 
 `executeTool` 支持以下任一形式：
 
@@ -411,24 +413,24 @@ resolveApiKey(config = {})
  *   必需方法（issue #78）：
  * @property {(runId:string, record:object) => Promise<void>} appendRound
  * @property {(runId:string) => Promise<object[]>} load
- *   可选 run-snapshot capability（latest-only 覆盖写，由 "checkpoint" 更名；
- *   appendCheckpoint 已并入 saveRunSnapshot）：
- * @property {(runId:string, snapshot:object) => Promise<void>} saveRunSnapshot
- * @property {(runId:string) => Promise<object|undefined>} loadLatestRunSnapshot
  *   可选 run-state capability：
  * @property {(runId:string, state:string) => Promise<void>} markRunState
  * @property {(runId:string, state:object) => Promise<void>} saveRunState
  * @property {(runId:string) => Promise<object|undefined>} loadRunState
  *   宿主面向的可选终态读取（引擎不调用、不校验）：
  * @property {(runId:string) => Promise<string|undefined>} loadRunStateStatus
+ *   可选 ledger recovery-row capability（issue #769）：
+ * @property {(runId:string, record:object) => Promise<boolean|void>} appendRecoveryRow
+ * @property {(runId:string) => Promise<object[]>} listRecoveryRows
+ * @property {(runId:string) => Promise<void>} clearRecoveryRows
  */
 ```
 
-内存实现是进程内 `Map` 的克隆。文件实现将每行一个 JSON 对象存储在 `<safeRunId(runId)>.jsonl` 中，并将当前 run-state 快照存储在 `<safeRunId(runId)>.state.json`、终态存储在 `<safeRunId(runId)>.status.json`、最新 run snapshot 存储在 `<safeRunId(runId)>.snapshot.json` 中（新后缀不存在时仍读取旧 `.checkpoint.json`；读取兼容，不做迁移）。`appendRound` 通过 `dedupKey`、`roundKey` 或存储器生成的 run/round key 实现幂等。
+内存实现是进程内 `Map` 的克隆。文件实现将每行一个 JSON 对象存储在 `<safeRunId(runId)>.jsonl` 中，并将当前 run-state 快照存储在 `<safeRunId(runId)>.state.json`、终态存储在 `<safeRunId(runId)>.status.json`；recovery rows 追加到另开的单 run 文件 `<safeRunId(runId)>.recovery.jsonl`。`appendRound` 通过 `dedupKey`、`roundKey` 或存储器生成的 run/round key 实现幂等。
 
 该存储器设计为每个 `runId` 和每个进程一个写入方。它会修复缺少末尾换行符的完整 JSONL 记录，并隔离不完整的尾部片段。跨进程锁定不属于存储器契约。
 
-`runToolLoop` 在提供 store 时默认使用 `config.run.persistence: "required"`，并在 provider 调用前校验两个必需方法；run-snapshot 与 run-state 方法为可选 capability。可选方法缺失时，引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，整轮 run 去重），并跳过对应持久化——run 正常跑完，仅不支持中途 crash resume。过渡期内引擎也接受只实现旧名的 store：快照写入按 `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint` 解析，快照读取按 `loadLatestRunSnapshot` → `loadLatestCheckpoint` 解析（库内 store 的旧方法名以 `@deprecated` 别名保留）。`config.run.persistence: "none"` 是显式的完全 no-op 模式。对 store 已实现的方法，required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。snapshot 在工具前后都执行：前置失败报告 `sideEffect: "not_started"` 且阻止工具执行；后置失败报告 `sideEffect: "executed_uncommitted"`，同时保留 `checkpoint_failed` 错误类。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
+`runToolLoop` 在提供 store 时默认使用 `config.run.persistence: "required"`，并在 provider 调用前校验两个必需方法；run-state 与 recovery-row 方法为可选 capability。可选方法缺失时，引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，整轮 run 去重），并跳过对应持久化——run 正常跑完，仅不支持中途 crash resume。run snapshot 持久化已于 0.33.0 退役（issue #838）：引擎既不写也不读 run snapshot，也没有回落到它的兜底。`config.run.persistence: "none"` 是显式的完全 no-op 模式。对 store 已实现的方法，required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。账本写入记录每一轮：必需写入在本轮工具执行之前失败时报告 `sideEffect: "not_started"`，在工具已执行之后失败时报告 `sideEffect: "executed_uncommitted"`（副作用已发生但未入账）。恢复会按原始顺序重放待处理的工具调用；这些待处理调用由 resume 路径上的 `resumePendingTools` 从账本推出，而非从 run snapshot 读取；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
 
 安全文件名命名空间会让匹配 `[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*` 的简单 ID 保持可读，但 `"."`、`".."` 和保留的 `run-h-` 前缀除外。其他 ID 会变成 `run-h-` 加其 SHA-256 摘要的前 24 个十六进制字符。
 
@@ -453,7 +455,7 @@ createToolRegistry({ executors, schemas }) => {
 
 宿主自建的 provider 选择 `sel.set` 或 `default`；把多个 provider 按名称合并是宿主自己的组合。`erix-agent/tools` 子路径导出工具注册表、文件工具规范实现（`src/tools/file-tools.js`，issue #184）与技能包 loader（`src/skills/loader.js`，issue #197）。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集，而且它们都不在包根导出面上。两条历史事实很容易被并成一句错话：牢笼助手（`JailError` / `createJail`）与当时的 `createFileTools` 是在 **0.6.0** 破坏窗口删除的（commit `a8cd193`；0.5.1 是最后一个还带着它们的版本），而 `createFileTools` 在 **0.18.0** 以上面那个规范实现回来了；牢笼则彻底没回来——按 ADR-009，本库不提供安全边界。模型侧取回采用 note-first——**前提是确有笔记可指**：先使用 `note_list`，再使用 `note_read`；transcript recall API 已在 0.8.0 退役。issue #741 之后**折叠替代物与 TTL 占位符这两处**只在**有证据**时才这么说（工具面上有整族笔记工具，且可见账本里有一条现在还能查的 `note_take` 写入——与那个 `tool_use_id` 配对、载荷证实成功、没被后续成功的 `note_forget` 撤销）；否则这两处明说「无可复原的决策记录」并给出原因（四格之一：无笔记工具 / 无笔记写入 / 笔记已撤销 / 无笔记证据），且**这两处**的模型可见文本里一个 `note_*` 都不出现。**覆盖面到 issue #746 为止是下面这些入口，且只有这些**（#741 那句只点两处的旧写法在 #746 之后就是错的，守卫 `test/prompt-note-coverage-746.test.js` 会把退回全称话的措辞判红）。这里有两道强度不同的门，混不得：**工具面门**（整族 `note_*` 在不在装配后的真面上）与**账本证据门**（还要账本里有一条现在还能查的 `note_take` 写入）。
 
-**接完整证据门（工具面 + 账本）的取回指令**——它们说的是「现在去哪取回」：#741 的 TTL 占位符（`src/loop/tool-result-ttl.js` 的 `foldToolResultsForRequest`，每个请求视图只算一次取回判定）与折叠替代物（那句广告语的判定在 `src/compact/helpers.js` 的 `resolveFoldRecoveryHint` → `noteRecallFromMessages`，机械替代物本体由 `src/compact/fold-statistical.js` 与 `src/compact/fold-llm.js` 渲染——后者 352 行的注释就叫「本次折叠的**机械替代物**」），加上 #746 接上同一门的聚合超限桩（`src/loop/aggregate-budget.js`）、run snapshot 的逐条超限桩（`src/loop/run-snapshot-executor.js`，与 S1 同源），以及 `bin/` 侧三处：guard 的 run 状态摘要与打回指针（`bin/final-guard.js`）、折叠桩后缀与恢复提示（`bin/final-guard-support.js` / `bin/final-guard.js` 的 `buildCaptureRecoveryHint`），以及 `bin/delegation.js` 里子 run 的两处（折叠桩、恢复提示）——它们与父侧同用**子的真工具面**这一个事实源（评审必修 2；以前子的提示词恒按「有笔记」装配，而子的折叠桩早已现推，同一个 run 的两个出口各说一套）。子 run 的系统提示本身是下面第 1 类那一段的**子侧同位点**：它只接工具面门，而它的工具面事实是**子自己的名单**（第 3 轮必修①：`notes` 从 `toolNames` 现推，不再由调用方另外递一份）。这些位的证据是**装配事实 + 账本**，不是 `--no-notes` 这个旗标——`--tools` 白名单同样能把笔记工具滤掉，只看旗标会漏。
+**接完整证据门（工具面 + 账本）的取回指令**——它们说的是「现在去哪取回」：#741 的 TTL 占位符（`src/loop/tool-result-ttl.js` 的 `foldToolResultsForRequest`，每个请求视图只算一次取回判定）与折叠替代物（那句广告语的判定在 `src/compact/helpers.js` 的 `resolveFoldRecoveryHint` → `noteRecallFromMessages`，机械替代物本体由 `src/compact/fold-statistical.js` 与 `src/compact/fold-llm.js` 渲染——后者 352 行的注释就叫「本次折叠的**机械替代物**」），加上 #746 接上同一门的聚合超限桩（`src/loop/aggregate-budget.js`）、逐条超限桩（`src/loop/run-snapshot-executor.js`，与 S1 同源），以及 `bin/` 侧三处：guard 的 run 状态摘要与打回指针（`bin/final-guard.js`）、折叠桩后缀与恢复提示（`bin/final-guard-support.js` / `bin/final-guard.js` 的 `buildCaptureRecoveryHint`），以及 `bin/delegation.js` 里子 run 的两处（折叠桩、恢复提示）——它们与父侧同用**子的真工具面**这一个事实源（评审必修 2；以前子的提示词恒按「有笔记」装配，而子的折叠桩早已现推，同一个 run 的两个出口各说一套）。子 run 的系统提示本身是下面第 1 类那一段的**子侧同位点**：它只接工具面门，而它的工具面事实是**子自己的名单**（第 3 轮必修①：`notes` 从 `toolNames` 现推，不再由调用方另外递一份）。这些位的证据是**装配事实 + 账本**，不是 `--no-notes` 这个旗标——`--tools` 白名单同样能把笔记工具滤掉，只看旗标会漏。
 
 **刻意只接工具面门、不接账本证据门的能力陈述**（逐条带理由，不是暂时没做）：
 
@@ -509,8 +511,8 @@ src/
 │   ├── sliding-window.js     # 整轮滑动窗口折叠
 │   └── pipeline.js           # 六层压缩注册表声明（顺序、fallback 链、逐层统计）
 ├── store/
-│   ├── file.js               # JSONL transcript、状态与 run snapshot 存储
-│   ├── memory.js             # 进程内 transcript、状态与 run snapshot 存储
+│   ├── file.js               # JSONL transcript、run-state 与 recovery rows 存储
+│   ├── memory.js             # 进程内 transcript、run-state 与 recovery rows 存储
 │   └── notes.js              # 宿主侧 notes 存储
 ├── config/
 │   ├── api-key.js            # 直接、环境和文件密钥解析
@@ -540,7 +542,7 @@ src/
 2. 规范工具调用轮次按完整的 assistant/tool-result 组折叠，因此正常压缩不会产生孤立的工具消息。
 3. 整轮策略会将 system 消息和首个真实 user 消息保留在头部。如果请求仍超出预算，紧急安全截断回退可以减少或移除未受保护的内容。
 4. LLM 生成的折叠摘要在插入上下文前会经过确定性的尺寸强制。
-5. 上下文压缩可以返回用于持久化的 `foldedPayload`；tool-result TTL 折叠只改变 provider request view，run snapshot 保留完整的工具结果文本。
+5. 上下文压缩可以返回用于持久化的 `foldedPayload`；tool-result TTL 折叠只改变 provider request view，账本保留完整的工具结果文本。
 6. 库源码中不嵌入 secret。API key 可以直接提供，也可以通过 `apiKeyEnv` 和 `apiKeyFile` 间接解析。
 7. 执行器注册表由代码拥有。JSON 或其他提供器数据可以选择和约束暴露的 schema，但不能添加可执行能力。
 8. 只有 `verification.status === "verified"` 这一结果状态允许宿主将 `finalText` 视为经过 final-guard 验证。`skipped`、`unverified` 和 `error` 需要宿主按自身规则处理。

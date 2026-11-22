@@ -2,7 +2,7 @@
 
 > English version: [README.md](README.md)
 
-**erix-agent** 是一个零依赖、纯 ESM 的无头编码 agent LLM 运行时。它提供双协议流式 provider、工具调用循环、上下文压缩、run snapshot（latest-only autosave）、恢复、note-first 取回，以及可选的 reflection/judge 层，用于无人值守工作。
+**erix-agent** 是一个零依赖、纯 ESM 的无头编码 agent LLM 运行时。它提供双协议流式 provider、工具调用循环、上下文压缩、恢复、note-first 取回，以及可选的 reflection/judge 层，用于无人值守工作。
 
 **定位：无头 agent。** 产品形态是一个引擎加编程式任务入口：任务进入，agent 运行工具循环，事件离开进程，运行可以恢复。它不是 UI，也不是为坐在终端前的人设计的。`runToolLoop` 管理一个 agent 任务的完整生命周期：启动、运行、停止、恢复，并通过 `onRound`、`onDelta`、`onToolCall`、`onUsage` 和 `onEvent` 流式传出事件。
 
@@ -98,7 +98,7 @@ Agent 行为难以预测。统一 Headless Agent 的价值，就是让业务代�
 |---|---|---|
 | 降低使用 LLM 的门槛 | `runToolLoop` 单一入口；双协议 provider；规范消息模型；上下文压缩；checkpoint/resume；错误分类 | 产品级的 Prompt 与流程设计 |
 | 统一管理模型配置与运行策略 | 鸭子类型的 `ModelConfigProvider.resolve(slot)`，内置 `static` / `env` / `json-file` 适配器；按 slot 选模型；`apiKey`/`apiKeyEnv`/`apiKeyFile` 间接引用；预算推导 | 配置来源本身（数据库/配置中心）、项目与租户额度、fallback 策略、Prompt 与 Agent 版本 |
-| 统一记录调用、支撑成本分析与事后审计 | 事件流（`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`）、token 计量、`TranscriptStore` 落盘、稳定 run id 和 run snapshot（latest-only autosave） | 日志与成本存储、监控看板、保留策略、审计流程 |
+| 统一记录调用、支撑成本分析与事后审计 | 事件流（`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`）、token 计量、`TranscriptStore` 落盘、稳定 run id | 日志与成本存储、监控看板、保留策略、审计流程 |
 | 统一安全、权限与工具调用边界 | 唯一执行入口（`executeTool`）；数据无法扩张的执行器注册表；schema 求交；通过 `note_list` → `note_read` 的 note-first 取回 | 策略本身：哪个项目能用哪些 Agent、可调哪些工具、哪些操作需人工确认、是否允许联网与写操作、调用次数与时长限制 |
 | 降低第三方框架升级的影响 | 零运行时依赖、自有实现；稳定导出面 + 面向消费方的 `erix-agent/contract-tests` | — |
 | 沉淀统一的 Agent 能力与工程规范 | 规范消息与工具格式、ADR 决策记录、契约测试、基准 harness | — |
@@ -234,7 +234,7 @@ src/
     registry.js                     工具 schema 与 executor registry
     delegation/                    派生（子 run）纯簿记（issue #617 P1a），外加有界的 transcript 尾读
                                    （issue #626 C1）：不 fork/spawn，opaque 字段原样过，进程存活由宿主注入谓词
-      roster.js                     名册：21 项记录（#630 S1 加 resultText / resultTruncated /
+      roster.js                     名册：22 项记录（#630 S1 加 resultText / resultTruncated /
                                    errorMessage）、原子落盘、updatedAt 单调、陈旧重算
       capacity.js                   并发配额租约：固定槽位池 + 一次独占创建（跨进程原子）、
                                     崩溃槽回收、幂等归还
@@ -267,7 +267,7 @@ const assemblyPort = createAssemblyPort({
   modelConfig, // ModelConfigProvider: { resolve(slot) }
   provider,    // { chat?, chatStream? }
   tools: { definitions, executeTool, getToolMetadata? },
-  store?,      // 可选 TranscriptStore（必需：appendRound、load；可选：run-snapshot/run-state）
+  store?,      // 可选 TranscriptStore（必需：appendRound、load；可选：run-state）
   session: { id, initialMessages? }, // 纯数据：resume 是顶层选项 / config.run.resume
   policy?,     // 显式 runToolLoop 选项；陌生键会被拒绝
   emit?,       // (eventType, payload) => void
@@ -439,7 +439,7 @@ await runToolLoop({ provider, executeTool, ...options });
 - 库中的 `maxRounds` 默认为 `8`。CLI 提供自己的命令级默认值。
 - `maxTokenContinuations` 默认为 `3`。以 `max_tokens` 结束的响应最多可以继续指定次数；耗尽后产生 `termination.reason === "continuation_exhausted"`。
 - `stallDetection` 默认为 `{ window: 4, mode: "consecutive" }`：整个四签名窗口都必须是同一签名，因此合法地重读同一个文件不再被判为 stall。传入 `{ mode: "appear" }` 会检测窗口内任意位置重复的工具签名；传入 `stallDetection: false` 可禁用检测（同时使 `termination.reason === "stall"` 不可达）。`ERIX_STALL_MODE` 会覆盖 mode，除非该选项显式为 `false`；传入对象但未写 `mode` 时仍回落为 `appear`（只有引擎默认值才是 `consecutive`）。
-- `resume` 默认为 `false`。配合 `store` 和 `runId` 时，`resume: true` 会恢复 transcript、运行状态、最新 run snapshot，以及所有仍需执行的待处理工具调用。若 store 同时提供快照 writer（`saveRunSnapshot`；仅实现旧名的 store 仍被接受，fallback 链 `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint`）与 loader（`loadLatestRunSnapshot`，或 deprecated 的 `loadLatestCheckpoint`），则在执行前或执行后 snapshot 无法持久化时会 fail closed。快照/run-state 方法为可选 capability：缺失时引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，run 正常跑完，仅不支持中途 crash resume）。宿主的 `executeTool` 仍必须按 tool id 保证幂等；循环无法保证外部副作用 exactly-once。
+- `resume` 默认为 `false`，且只在持久化开着时才会恢复：没有 `store`、或 `persistence: "none"` 时，`restoreResume` 直接返回、什么都不恢复。配合 `store` 和 `runId` 时，`resume: true` 会从 transcript 账本、运行状态（`saveRunState`/`loadRunState`/`markRunState`）、读回的 recovery rows（`listRecoveryRows`），以及所有仍需执行的待处理工具调用重建 run。`clearRecoveryRows` **不属于**续跑时的恢复动作：recovery rows 只在**全新 run**（`resume !== true`，且持久化开着）开始时被清盘，续跑期间绝不清洗。run-state 与 recovery-row 的 store 方法都是可选 capability：缺失时引擎对每个缺失方法名只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，run 正常跑完，仅不支持中途 crash resume）；recovery-row 的**读**方法 `listRecoveryRows` 是唯一例外——它缺失时静默无事件，需要这个答案的宿主只能自查 store 是否实现了该方法。宿主的 `executeTool` 仍必须按 tool id 保证幂等；循环无法保证外部副作用 exactly-once。
 
 正常终止词汇为：
 
@@ -508,8 +508,8 @@ onReflection
   门控 `uncertain` 的**中性**方向提示文案（`src/loop/reflection.js` 的 `directionHintText`）：关闭时
   `uncertain` 仍然一条方向提示都不产、请求序列与没开本选项时**逐字相同**；开启时才改用中性文案
   （不再把「方向未定」说成「当前路线可能偏，可考虑换思路」）。非布尔值会在启动期抛
-  `TypeError: reflection.judgeDoneAdvisory must be a boolean`。待投递的 advisory 不进 run snapshot，
-  因此首次 flush 之前 resume 会丢掉它（已知毛刺）。
+  `TypeError: reflection.judgeDoneAdvisory must be a boolean`。尚未 flush 的 advisory 若在 flush 前
+  发生 resume 可能丢失（advisory 实现见 `src/reflection/`；已知毛刺）。
 - 当进入 `nearLimit`（`budgetRounds >= floor(effectiveMaxRounds * 0.8)`）时，
   end-turn judge 和下一次工具拦截审计都会收到当前预算与扩轮次数。Judge 还必须返回
   `extend`、`extendReason` 和 `plan`；允许 `extend: true` 会增加有效预算，
@@ -534,8 +534,8 @@ Judge 拦截使用 6,000 token 的会话预算；round judge 最多输出 1,024 
 - `stubFor(message)` hook 可以为折叠后的工具结果保留有界、非秘密 stub（**全部** tool_result，不再有可重放性标记子集——ADR-016）。CLI 的 stub 限制为 200 个字符，最多包含三个安全的 `label=value` fact。折叠导航记录是形如 `{ roundFrom, roundTo, artifacts: [{ id, locator, digest, status }] }` 的仅地址记录，最多 10 个 artifact、400 个字符。它们不是语义搜索，也不是 provenance 证明。
 - tool-result TTL 折叠独立于上下文压缩，只改变 provider request view；checkpoint 保留完整工具结果文本。`toolResultTtl` 默认为 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认为估算的 `4000` token。`age === ttl - 1` 的 warning round 会要求模型使用 `note_take`；折叠占位符包含 navigation digest，并在适用的 JSON 中包含 JSON skeleton。`note_*`、todo、错误和显式保护的结果不会折叠。
 - `writeToolNames` 默认为 `["writeFile", "edit"]`（`edit` 于 0.18.0 进入默认集，issue #191——judge 看不见的 `edit` 就是一次被静默漏掉的写入）；自定义写工具仍必须显式命名。`writeToolPathKeys` 默认为 `["path", "file_path"]`。judge 的 `filesWritten` 足迹不会根据工具名称推断任意写工具。
-- `TranscriptStore` 实现提供幂等的 `appendRound` 与 `load`（两个必需方法），以及可选的 run-snapshot（`saveRunSnapshot`/`loadLatestRunSnapshot`）与 run-state（`markRunState`、`saveRunState`/`loadRunState`）capability——分级详见 `docs/host-consumer-contract.md`。传入 `persistence: "none"` 可显式禁用所有写入。模型侧取回采用 note-first：先用 `note_list`，再用 `note_read`；transcript recall API 已在 0.8.0 退役。
-- `runState` 是确定性的、有界的，并在压缩点以替换方式注入。store 可以实现 `markRunState`、`saveRunState`/`loadRunState`、`saveRunSnapshot` 和 `loadLatestRunSnapshot`。持久化 run state 有 64 KiB 序列化硬上限，以及条目和字段上限；裁剪通过 `bounds.truncated` 可见。`todoStateProvider` 和 `semanticStateProvider` 由宿主注入；语义状态有界且带版本，过期版本标记为 `stale`。无效或损坏的状态在 resume 时报告为 `state_unavailable`，而不是静默当作全新状态。
+- `TranscriptStore` 实现提供幂等的 `appendRound` 与 `load`（两个必需方法），以及可选的 run-state（`saveRunState`/`loadRunState`/`markRunState`）与 ledger recovery-row（`appendRecoveryRow`/`listRecoveryRows`/`clearRecoveryRows`）capability，外加其余可选探针（`loadRunStateStatus`、`loadByDedupKey`/`loadMaxRound`、`loadRawRows`）——分级详见 `docs/host-consumer-contract.md`。传入 `persistence: "none"` 可显式禁用所有写入。模型侧取回采用 note-first：先用 `note_list`，再用 `note_read`；transcript recall API 已在 0.8.0 退役。
+- `runState` 是确定性的、有界的，并在压缩点以替换方式注入。store 可以实现 `markRunState`、`saveRunState`/`loadRunState`，以及 recovery-row 方法 `appendRecoveryRow`/`listRecoveryRows`/`clearRecoveryRows`。持久化 run state 有 64 KiB 序列化硬上限，以及条目和字段上限；裁剪通过 `bounds.truncated` 可见。`todoStateProvider` 和 `semanticStateProvider` 由宿主注入；语义状态有界且带版本，过期版本标记为 `stale`。无效或损坏的状态在 resume 时报告为 `state_unavailable`，而不是静默当作全新状态。
 - Provider 特有的细节保持显式：`transport` 作为 `dispatcher` 透传给 fetch（也可以增强 fetch options）；格式错误的 OpenAI 工具参数以 `_truncatedArguments` 暴露，`_raw` 为兼容别名；不安全的 run ID 映射为 `run-h-<sha256 first 24 hex characters>`。
 
 ### 回调与事件
@@ -552,12 +552,13 @@ onDelta
 onReasoningDelta
 onToolCall
 onUsage
+onFoldSummary
 onEvent
 ```
 
-流式 observer（`onDelta`、`onReasoningDelta`、`onToolCall` 和 `onUsage`）在 observer 抛出异常时通过 `onObserverError` 报告——其余 observer 回调同样如此（issue #173，详见下文）。持久化失败使用 `onPersistenceError`。`onEvent` 接收包括 `round_start`、`round_end`、`tool_use`、`tool_result`、`attempt`、`recovering`、`recovered`、`delta`、`reasoning_delta`、`tool_call`、`usage`、`forced_final`、`final_guard` 和 `persistence_capability_degraded`（按缺失的方法名各发一条、整轮去重：引擎要调用的可选 store 能力缺席时就发，恢复行的**写侧** `appendRecoveryRow` 与**清盘侧** `clearRecoveryRows` 都在其中；恢复行的**读侧** `listRecoveryRows` **不**在这些里 —— 它缺席时一声不响，想要这个答案的宿主只能自己去查 store 有没有实现这个方法）在内的结构化事件。
+流式 observer（`onDelta`、`onReasoningDelta`、`onToolCall` 和 `onUsage`）在 observer 抛出异常时通过 `onObserverError` 报告——其余 observer 回调（`onFoldSummary` 除外——它走持久化错误通道）同样如此（issue #173，详见下文）。持久化失败使用 `onPersistenceError`。`onEvent` 接收包括 `round_start`、`round_end`、`tool_use`、`tool_result`、`attempt`、`recovering`、`recovered`、`delta`、`reasoning_delta`、`tool_call`、`usage`、`forced_final`、`final_guard` 和 `persistence_capability_degraded`（按缺失的方法名各发一条、整轮去重：引擎要调用的可选 store 能力缺席时就发，恢复行的**写侧** `appendRecoveryRow` 与**清盘侧** `clearRecoveryRows` 都在其中；恢复行的**读侧** `listRecoveryRows` **不**在这些里 —— 它缺席时一声不响，想要这个答案的宿主只能自己去查 store 有没有实现这个方法）在内的结构化事件。
 
-上述九个观察者回调均已做错误隔离（issue #173）：任何一个抛错都会经 `onObserverError(error, {channel, runId?, …})` 上报，并且 **run 继续跑**——抛错再也改变不了 `termination.reason`。观察者错误是 best-effort，不进持久化错误账本，因此宿主必须自己对 `onObserverError` 计数。要从回调里终结 run，请调 `signal.abort()`（抛出的错误携带 issue #180 载荷）；回调必须同步返回——只有被 await 的 `onRound` 与 `onToolResult` 会额外吸收 rejected Promise。`onToolResult` 是在**改写**工具结果而不是单纯观察：抛错时引擎保留自己的**原始**结果并上报，因此写在这个 hook 里的脱敏逻辑必须自己防住自己。完整契约见 `docs/host-consumer-contract_cn.md`「观察者回调抛错（issue #173）」。
+上述九个观察者回调均已做错误隔离（issue #173）：即八条通道 `onEvent` / `onRound` / `onToolResult` / `onJudge` / `onDelta` / `onReasoningDelta` / `onToolCall` / `onUsage`，加上不承诺异步的错账户 `onObserverError` 自身。任何一个抛错都会经 `onObserverError(error, {channel, runId?, …})` 上报，并且 **run 继续跑**：抛错再也改变不了 `termination.reason`。`onPersistenceError` 不在这九个观察者里——它就是持久化错误通道；`onFoldSummary` 虽列于上方清单，同样不计入这九个：它的抛错改走持久化错误通道（`persistence_error`，`operation: "onFoldSummary"`，`fatal: false`）。观察者错误是 best-effort，不进持久化错误账本，因此宿主必须自己对 `onObserverError` 计数。要从回调里终结 run，请调 `signal.abort()`（抛出的错误携带 issue #180 载荷）；回调必须同步返回——只有被 await 的 `onRound` 与 `onToolResult` 会额外吸收 rejected Promise。`onToolResult` 是在**改写**工具结果而不是单纯观察：抛错时引擎保留自己的**原始**结果并上报，因此写在这个 hook 里的脱敏逻辑必须自己防住自己。完整契约见 `docs/host-consumer-contract_cn.md`「观察者回调抛错（issue #173）」。
 
 ## CLI：`erix`
 
@@ -641,8 +642,8 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
   session-meta.json            已退役（issue #168）：不再读写，可安全删除
   transcripts/
     <safeRunId>.jsonl
-    <safeRunId>.snapshot.json
-    <safeRunId>.checkpoint.json  旧快照后缀（读取兼容）
+    <safeRunId>.snapshot.json    已退役（issue #838）：引擎既不读也不写，可安全删除
+    <safeRunId>.checkpoint.json  已退役（issue #838）：旧快照后缀；引擎既不读也不写，可安全删除
     <safeRunId>.state.json
   <session>.json                 REPL session 快照
   notes/run/<safeRunId>/         NotesStore 数据

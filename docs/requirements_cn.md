@@ -84,7 +84,7 @@
 | # | 需求 | 状态与实现 |
 |---|---|---|
 | FR-4.1 | `ModelConfigProvider` 契约，提供 static 和 JSON-file 实现；`apiKey` 可间接引用环境变量或文件 | **已交付，但实现为 duck-typed 的 `resolve(slot)` 契约，而非类或正式接口。** `createStaticModelConfigProvider` 与 `createJsonFileModelConfigProvider` 已发布，宿主在同一个 `resolve(slot)` 形状里自己读环境变量（环境变量工厂不再是公共入口）；`resolveApiKey` 支持直接值、`apiKeyEnv` 和 `apiKeyFile`。 |
-| FR-4.2 | `TranscriptStore` 契约，提供 memory 和 JSONL-file 实现，包括崩溃恢复 | **已交付。** `createMemoryTranscriptStore` 和 `createFileTranscriptStore` 实现 transcript、运行状态和 checkpoint 方法。file store 会修复或隔离损坏的末尾 JSONL 片段，`runToolLoop({ store, runId, resume: true })` 会恢复 transcript 和待处理的 checkpoint 工作。恰好一次的副作用仍由宿主负责。 |
+| FR-4.2 | `TranscriptStore` 契约，提供 memory 和 JSONL-file 实现，包括崩溃恢复 | **已交付。** `createMemoryTranscriptStore` 和 `createFileTranscriptStore` 实现 transcript、运行状态和 recovery-row 方法。file store 会修复或隔离损坏的末尾 JSONL 片段，`runToolLoop({ store, runId, resume: true })` 会恢复 transcript、运行状态和 recovery rows。恰好一次的副作用仍由宿主负责。 |
 
 ### FR-5 工具体系
 

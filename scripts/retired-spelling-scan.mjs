@@ -496,7 +496,12 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 里面那个 `runId` 是一次同名异义命中（事件载荷键，不是扁平选项）。扫描器现报：
   //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=594  uses=595
   // （命中定位：CN :2966 `runId`。）
-  "docs/host-consumer-contract_cn.md": 595,
+  // 595 → 596（工单 261122-01，本支现测）：退役 run-snapshot 文档同步里，B5 把 `buildRecoveryEventKey`
+  // 改成真实签名 `recoveryEventKey(runId, round, event, discriminator)`（工单钉死、不许躲写法）——签名里的
+  // `runId` / `round` 是同名异义命中（store 方法入参名，不是扁平选项）。扫描器现报：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=595  uses=596
+  // （命中定位：CN :5922 的签名 `runId`/`round`。）口径同 #714 / #729 / #730 / #769 / #881：契约要能拄签名，数取自扫描器现报。
+  "docs/host-consumer-contract_cn.md": 596,
   // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
   // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
   // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名
@@ -559,8 +564,12 @@ const ROOT_DOC_BODY_PINS = Object.freeze({
   // 三个档位名，其中 `stream` 与退役的扁平选项 `config.run.stream` 同名异义（它在 `AMBIGUOUS_KEYS` 里，
   // 不进退役判据，但计入本钉子的 uses）。同 #729 的先例：不为了躲钉子把模块名后面的说明改模糊。
   // 数取自扫描器自己报的 ✗ 行：`README.md … pin=79 uses=80` / `README_cn.md … pin=64 uses=65`。
-  "README.md": 80,
-  "README_cn.md": 65,
+  // 80 → 81 / 65 → 66（issue #838 261122-01 验收修）：README 两份的 resume 段新增了一句「无 store /
+  // `persistence: "none"` 时 `restoreResume` 直接返回」——`persistence` 是退役的扁平选项（`config.run.persistence`，
+  // 同名异义已在 `AMBIGUOUS_KEYS` 里，不进退役判据但计入本钉子 uses），与 README 既有的 `persistence: "none"` 写法
+  // 同一口径，不为躲钉子把这句改模糊。同 #743/#729 先例。数取自扫描器现报：`README.md … pin=80 uses=81` / `README_cn.md … pin=65 uses=66`。
+  "README.md": 81,
+  "README_cn.md": 66,
 });
 
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */

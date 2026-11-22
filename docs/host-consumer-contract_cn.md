@@ -2000,7 +2000,7 @@ status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunStat
 `loadRunState` 读取 `stateVersion`、`deterministic`、`semantic` 等快照字段。旧的内嵌终态仍可读取，
 但新写入的快照不再带 `state`。
 
-**历史更名与合并（0.33.0 之前）。** `saveCheckpoint` → `saveRunSnapshot`，
+**已退役——历史更名与合并（0.33.0 之前）。** `saveCheckpoint` → `saveRunSnapshot`，
 `loadLatestCheckpoint` → `loadLatestRunSnapshot`。`appendCheckpoint` **并入
 `saveRunSnapshot`**：两者本来就是同一语义的 latest-only 覆盖写，单独保留 "append"
 只会误导出"有版本"的错觉。file store 当时将快照写入 `<runId>.snapshot.json`
@@ -2542,8 +2542,9 @@ JS 字符串、`2.5`、`null`，或者压根没这个键——抛 `TypeError`：
 
 `src/loop/resume-manager.js` 按 `load()` 返回顺序重建状态，且不对记录二次排序。受顺序
 影响的不只是 `messages`，还包括 governor history（`:101-109`）、供
-`taskBriefSource` 使用的 round 0 seed 消息（`:88-90`），以及对顺序敏感的 snapshot
-`recordedEntries` 匹配（`:152-200`）。典型平局是上一段引擎轮处于 `round=max`，预写 user
+`taskBriefSource` 使用的 round 0 seed 消息（`:88-90`），以及对顺序敏感的补跑结果插入（把恢复出的结果插到其
+assistant 行旁）与按 `dedupKey`/形状的引擎-宿主归属判别（`:114-200`，
+`insertRecoveredToolResult` / `hasHostPreWriteShape`）。典型平局是上一段引擎轮处于 `round=max`，预写 user
 行也处于同一 round——因为 `appendUserTurn` 刻意复用最大 round。若这两行顺序反转，新用户
 消息就会排在上一段引擎轮之前，改变消息序列语义。
 
@@ -5918,7 +5919,7 @@ append-only 账本现在在既有的 `<dir>/<runId>.jsonl` 旁边**每本 run �
   只取该轮最后一条，追加 N 条前缀就是把一份越来越长的正文存 N 遍。
   所有事件的 `messages` 恒为 `[]`：恢复行**从不载消息正文**，所以「transcript + 恢复行」并排读也
   不会把同一份正文数出两遍。
-- `dedupKey` 就是**事件键**，由 `recovery-rows.js` 里的 `buildRecoveryEventKey` 生成。形状按 store 测试自己的夹具取样：`tool-executed` 行只带光板的 `toolUseId`（`pendingToolUseIds: ["call-7f"]`、`toolUseId: "call-7f"`）；`partial-text` 行带 `text`，判别字段换成那段正文的指纹。同一事件键 + 同一 payload
+- `dedupKey` 就是**事件键**，由 `recovery-rows.js` 里的 `recoveryEventKey(runId, round, event, discriminator)` 生成。形状按 store 测试自己的夹具取样：`tool-executed` 行只带光板的 `toolUseId`（`pendingToolUseIds: ["call-7f"]`、`toolUseId: "call-7f"`）；`partial-text` 行带 `text`，判别字段换成那段正文的指纹。同一事件键 + 同一 payload
   重放会被跳过（`appendRecoveryRow` 返回 `false`）；同键不同 payload 是**拒绝**，不是覆盖。正文变长算**新事件**，
   它会**接管该轮的槽**：该轮上一条在重写中消失，文件里只剩最新全文那一条。自 #827 第 2 刀起，同一次重写
   还会**剪掉旧轮的 `partial-text` 行**：读侧只认崩溃轮（`readPartialTextRecoveryRow(records, crashRound)`，
