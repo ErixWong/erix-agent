@@ -496,7 +496,12 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 里面那个 `runId` 是一次同名异义命中（事件载荷键，不是扁平选项）。扫描器现报：
   //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=594  uses=595
   // （命中定位：CN :2966 `runId`。）
-  "docs/host-consumer-contract_cn.md": 595,
+  // 595 → 596（工单 261122-01，本支现测）：退役 run-snapshot 文档同步里，B5 把 `buildRecoveryEventKey`
+  // 改成真实签名 `recoveryEventKey(runId, round, event, discriminator)`（工单钉死、不许躲写法）——签名里的
+  // `runId` / `round` 是同名异义命中（store 方法入参名，不是扁平选项）。扫描器现报：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=595  uses=596
+  // （命中定位：CN :5922 的签名 `runId`/`round`。）口径同 #714 / #729 / #730 / #769 / #881：契约要能拄签名，数取自扫描器现报。
+  "docs/host-consumer-contract_cn.md": 596,
   // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
   // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
   // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名

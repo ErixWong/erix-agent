@@ -2000,7 +2000,7 @@ status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunStat
 `loadRunState` 读取 `stateVersion`、`deterministic`、`semantic` 等快照字段。旧的内嵌终态仍可读取，
 但新写入的快照不再带 `state`。
 
-**历史更名与合并（0.33.0 之前）。** `saveCheckpoint` → `saveRunSnapshot`，
+**已退役——历史更名与合并（0.33.0 之前）。** `saveCheckpoint` → `saveRunSnapshot`，
 `loadLatestCheckpoint` → `loadLatestRunSnapshot`。`appendCheckpoint` **并入
 `saveRunSnapshot`**：两者本来就是同一语义的 latest-only 覆盖写，单独保留 "append"
 只会误导出"有版本"的错觉。file store 当时将快照写入 `<runId>.snapshot.json`
@@ -2542,7 +2542,7 @@ JS 字符串、`2.5`、`null`，或者压根没这个键——抛 `TypeError`：
 
 `src/loop/resume-manager.js` 按 `load()` 返回顺序重建状态，且不对记录二次排序。受顺序
 影响的不只是 `messages`，还包括 governor history（`:101-109`）、供
-`taskBriefSource` 使用的 round 0 seed 消息（`:88-90`），以及对顺序敏感的补跑结果插入（把恢复出的 tool_result 插到其
+`taskBriefSource` 使用的 round 0 seed 消息（`:88-90`），以及对顺序敏感的补跑结果插入（把恢复出的结果插到其
 assistant 行旁）与按 `dedupKey`/形状的引擎-宿主归属判别（`:114-200`，
 `insertRecoveredToolResult` / `hasHostPreWriteShape`）。典型平局是上一段引擎轮处于 `round=max`，预写 user
 行也处于同一 round——因为 `appendUserTurn` 刻意复用最大 round。若这两行顺序反转，新用户
