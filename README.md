@@ -828,11 +828,15 @@ call is absent, the recovery-row **write** method `appendRecoveryRow` and
 method `listRecoveryRows` is **not** one of those — its absence is silent, so a
 host that needs that answer checks its own store for the method).
 
-All ten observer callbacks above are error-isolated (issue #173): a throw in any
-of them is reported through `onObserverError(error, {channel, runId?, …})` — except
-`onFoldSummary`, whose throw surfaces as `persistence_error` (`operation:
-"onFoldSummary"`, `fatal: false`) instead — and **the run continues**: it can no
-longer change `termination.reason`. Observer
+All nine observer callbacks are error-isolated (issue #173): the eight channels
+`onEvent`, `onRound`, `onToolResult`, `onJudge`, `onDelta`, `onReasoningDelta`,
+`onToolCall`, and `onUsage`, plus the error account `onObserverError` itself. A
+throw in any of them is reported through `onObserverError(error, {channel, runId?,
+…})` and **the run continues**: it can no longer change `termination.reason`.
+`onPersistenceError` is not one of these observers — it is the persistence-error
+channel — and although `onFoldSummary` is listed above, it is not counted among
+the nine either: its throw surfaces as `persistence_error` (`operation:
+"onFoldSummary"`, `fatal: false`) through that persistence-error channel. Observer
 errors are best-effort and are not part of the persistence ledger, so a host must
 count `onObserverError` itself. To end a run from a callback, call
 `signal.abort()` (the thrown error carries the issue #180 payload); the callbacks
