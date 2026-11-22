@@ -2486,7 +2486,7 @@ fields such as `stateVersion`, `deterministic`, and `semantic`. Existing
 embedded statuses remain readable; new snapshot writes no longer include
 `state`.
 
-**Historical rename & merge (before 0.33.0).** `saveCheckpoint` → `saveRunSnapshot`,
+**RETIRED — historical rename & merge (before 0.33.0).** `saveCheckpoint` → `saveRunSnapshot`,
 `loadLatestCheckpoint` → `loadLatestRunSnapshot`. `appendCheckpoint` was
 **merged into `saveRunSnapshot`**: both were identical latest-only overwrite
 writes, so a separate "append" only invited the false assumption of
