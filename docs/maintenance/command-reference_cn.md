@@ -187,7 +187,7 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
     「0 < 基线」在这里是**假绿**，所以脚本对残留的 `src/**/*.d.ts` 直接变红（仓库提交了 0 个 `.d.ts`，存在即生成物）；
     清掉即可：`find src -name '*.d.ts' -delete`（生成物不入库、可随时重建）。
   - 故意留着的盲区（规格就是这么定的）：第二个公共入口 `src/tools/index.js` 会拉进包根图里**到不了**的
-    `src/tools/file-tools.js`（19 个错）与 `src/skills/loader.js`（16 个），所以这两个文件的新错默认**卡不住**；
+    `src/tools/file-tools.js` 与 `src/skills/loader.js`，所以这两个文件的新错默认**卡不住**；
     `npm run check:types -- --with-tools` 卡并集（基线 **133** / 28 个文件 = 98 + 19 + 16，与压低它的那笔修同一笔提交里一起数；**两档在 CI 上都有自己的步骤**——`--with-tools` 那两步紧跟包根档，所以常量在这里过期会像别处一样红，issue #653）。并集背后的每文件计数由命令打印（`--verbose`），每一轮降基线都在**降它的那笔提交**里写清哪个文件减了几个（issue #409 的 `parseToolArguments` 改走、`parseJsonWithRepair` 的 `@returns` 拍平、issue #356 的 `markerCount` 窄化）；将来收紧就走这条路，不要拿它当「反正卡不住」的理由。
     ⚠ 退役的 261 里悄悄留着 #177 已经还掉的那 1 个（那一档当时没跟着复测）：**下调基线必须两档在同一笔提交里一起复测、一起降**。
   - 工具链许可（issue #213，#214 重申）：`typescript` + `@types/node` 只能待在 dev——零运行时依赖红线约束的是
