@@ -564,8 +564,12 @@ const ROOT_DOC_BODY_PINS = Object.freeze({
   // 三个档位名，其中 `stream` 与退役的扁平选项 `config.run.stream` 同名异义（它在 `AMBIGUOUS_KEYS` 里，
   // 不进退役判据，但计入本钉子的 uses）。同 #729 的先例：不为了躲钉子把模块名后面的说明改模糊。
   // 数取自扫描器自己报的 ✗ 行：`README.md … pin=79 uses=80` / `README_cn.md … pin=64 uses=65`。
-  "README.md": 80,
-  "README_cn.md": 65,
+  // 80 → 81 / 65 → 66（issue #838 261122-01 验收修）：README 两份的 resume 段新增了一句「无 store /
+  // `persistence: "none"` 时 `restoreResume` 直接返回」——`persistence` 是退役的扁平选项（`config.run.persistence`，
+  // 同名异义已在 `AMBIGUOUS_KEYS` 里，不进退役判据但计入本钉子 uses），与 README 既有的 `persistence: "none"` 写法
+  // 同一口径，不为躲钉子把这句改模糊。同 #743/#729 先例。数取自扫描器现报：`README.md … pin=80 uses=81` / `README_cn.md … pin=65 uses=66`。
+  "README.md": 81,
+  "README_cn.md": 66,
 });
 
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */
