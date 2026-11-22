@@ -353,7 +353,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 - 永远不要提交 token、API key 或其他凭据。
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
-发布行）。当前发布版本：**v0.34.0**（2026-11-22；
+发布行）。当前发布版本：**v0.34.0**（2026-11-23；
 **0.27.0 从未发布**）。下面引用的 `files` 清单以
 `package.json` 为权威：
 
@@ -714,7 +714,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，
 `npm run check:docs` 会校验下面这行发布声明。
-当前发布版本：**v0.34.0**（2026-11-22；**0.27.0 从未发布**，
+当前发布版本：**v0.34.0**（2026-11-23；**0.27.0 从未发布**，
 已发布线是 0.26.0 → 0.30.0）。
 完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出
 改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见

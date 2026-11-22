@@ -35,8 +35,10 @@ costing every turn.
 
 ## 3. Development commands
 
-One row per gate: what it judges, and the anchor to read before editing what it owns (anchors are sections of
-`docs/maintenance/command-reference.md`).
+One row per gate a change here has to answer to: what it judges, and the anchor to read before editing what it
+owns (anchors are sections of `docs/maintenance/command-reference.md`). `package.json` is the full list — the
+handful of probes that only a release or a probe-maintenance pass runs (`check:version-state-probe`,
+`check:version-states`, `check:final-guard-probe`, `check:tests`) are deliberately not rows here.
 
 | Command | What it judges | Anchor to read first |
 |---|---|---|

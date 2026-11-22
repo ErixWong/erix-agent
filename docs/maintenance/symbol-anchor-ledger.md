@@ -15,8 +15,10 @@
 ## 1. The one current number in this file
 
 The anchor face is **the pinned documents plus the upgrade-guide files the directory scan finds**
-(`REF_SCAN_DOCS_MINIMUM = 53`). `check:docs` reads those numbers back out of every document that states them
-(this pair and both READMEs) and compares them with the scan, so this sentence cannot go stale in silence.
+(`REF_SCAN_DOCS_MINIMUM = 53` is its floor). This file deliberately **no longer restates the count** (261122):
+`check:docs` prints the measured numbers as a `ref-scan-claims` note on every run, and restating a measurement
+that nobody acts on only creates a number to drift. The floor is still enforced — the anchor face shrinking
+below 53 is red.
 
 ## 2. The chain, verbatim
 

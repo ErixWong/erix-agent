@@ -312,6 +312,11 @@ const HISTORY_BODY_PINS = Object.freeze({
   "docs/host-upgrade-guide-0.32.0_cn.md": 2,
   "docs/host-upgrade-guide-0.33.0.md": 2,
   "docs/host-upgrade-guide-0.33.0_cn.md": 2,
+  // 0.34.0 中英指南（切版时新增）：命中全是**同名异义**——EN 的 `options` / `defaults` 是六个
+  // 「不变面」的小标题，`runId` 是 `loadRunState(runId)` 的形参；CN 侧同形。值取自扫描器自己报的
+  // `uses=2` / `uses=3`，不是手算；历史类钉的只是「这一段没被改写成规位形态」。
+  "docs/host-upgrade-guide-0.34.0.md": 2,
+  "docs/host-upgrade-guide-0.34.0_cn.md": 3,
   "docs/host-upgrade-guide-0.6.0.md": 12,
   "docs/host-upgrade-guide-v030.md": 49,
   "docs/host-upgrade-guide-v030_cn.md": 49,

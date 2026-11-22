@@ -89,9 +89,10 @@
   行号越界是**错误**，不是观察项。覆盖面是宿主真会读的那批文档：两份 README、中英 AGENTS、中英契约、中英架构、中英图表、中英需求对照、`examples/pi-extension/README.md`、维护账本中英（`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`），加上
   **全部** `docs/host-upgrade-guide*.md`（按目录实扫，新指南一落地就自动在面内）。按目录实扫有一个静默失效的形状：
   把某份指南改名到不再匹配那个模式，脚本侧和用同一个 glob 的测试侧**一起**少一份，两边数字仍然相等 ⇒ 覆盖面悄悄缩面。
-  所以有 `REF_SCAN_DOCS_MINIMUM = 53` 这道下限，它代表的份数（点名文档 + 目录实扫到的指南）是**机器对账**的：
-  `check:docs` 会把**声称这组数**的文档（两份 README 与 `docs/maintenance/symbol-anchor-ledger_cn.md`）里的数读回来跟实扫结果比，
-  抄错一格就红并点名是哪一份的哪个数。并且 `test/docs-anchor-ratchet.test.js` 里另硬编码了同一批点名文档 + 实扫到的指南清单做对照：改名或新增指南，两处不同步就红。`CHANGELOG.md` 明确**不参与**：
+  所以有 `REF_SCAN_DOCS_MINIMUM = 53` 这道下限，它代表的份数（点名文档 + 目录实扫到的指南）现在**只报不判**（261122）：
+  `check:docs` 每次把实测值打成一条 `ref-scan-claims` 提示，文档里写了个不一样的数也只是**提示**、不再判红——
+  「让文档复述一个没人拿来做决定的测量」属于自指类判据（每加一份指南就要连带改四处）。下限本身照旧强制：
+  锚点覆盖面掉到 `REF_SCAN_DOCS_MINIMUM` 以下仍然是红。并且 `test/docs-anchor-ratchet.test.js` 里另硬编码了同一批点名文档：**改名或删除**其中一份是红（那是覆盖面被悄悄缩了），**新增**指南不红——它自动进锚点覆盖面（261122 裁决：要求清单与实扫集合逐份相等，等于每加一份指南就多一次改清单的税，而读者看不到任何收益）。`CHANGELOG.md` 明确**不参与**：
   它的行号记的是「发版那一刻为真」的事实，改掉等于伪造历史（与 #278 的简称登记表同一套理由）。
   第一批 T-a 做的是基建与棘轮；第二批 T-b1a 把契约里**自带区间的符号锚点**那一族改绿（中英同一个 PR），基线从 244 降到 232；第三批 T-b1b 收尾同一族——两份契约里剩下的裸 `src/loop/orchestrator.js:N[-M]` 条目要么**删掉区间**（首选，并把真声明处的符号名写进句子：`resolvedModelConfig` / `reportObserverError` / `persist` / `isEndTurn` 等），要么作为**范围性事实**保留并把区间对过代码，基线从 232 降到 144。剩下的 `provider-runner.js` / `termination.js` / `governor.js` 三族属 T-b2，而「把基线常量降下来并在提交信息里写理由」
   仍然是「确实少了一些」唯一可核对的写法。
