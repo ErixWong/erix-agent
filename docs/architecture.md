@@ -17,7 +17,7 @@ Caller                         erix-agent                         LLM API
   |                               |-- tool_use -> executeTool ------>| Caller-owned code
   |                               |<-- tool_result ------------------|
   |                               |-- completion / stall / judge     |
-  |                               |-- run snapshot and round archive |
+  |                               |-- round archive                  |
   |<------------- result ---------|                                  |
 ```
 
@@ -247,22 +247,25 @@ runToolLoop({
 ```
 
 `config.input.messages` takes precedence over `config.input.initialUserMessage`.
-With `config.run.resume: true`, the loop loads the transcript and the latest run
-snapshot for `config.run.runId` and uses the persisted messages and round state
-instead of the initial messages.
+With `config.run.resume: true`, `restoreResume` (`src/loop/resume-manager.js`)
+rebuilds the loop state from the transcript ledger, the persisted run-state
+record, and the recovery rows for `config.run.runId`, using the persisted
+messages and round state instead of the initial messages. It does not read a
+run snapshot.
 
 `config.run.partialPersistence` is disabled by default. Opting in with
-`{ intervalMs, minBytes? }` writes streamed assistant text into the latest run
-snapshot using the existing snapshot writer; it adds no TranscriptStore method.
-With the default threshold, the engine schedules a partial snapshot at least
-once per `intervalMs` while text is arriving, and a crash loses at most the
-text generated during that interval. Writes are single-flight; deltas received
+`{ intervalMs, minBytes? }` persists streamed assistant text into the transcript
+ledger as a partial-text recovery row (appended through `appendRecoveryRow`);
+a crash loses at most the text generated since the last commit. With the default
+threshold, the engine commits a partial recovery row at least once per
+`intervalMs` while text is arriving. Writes are single-flight; deltas received
 during a write are coalesced into the next commit. A configured `minBytes`
-suppresses timer scheduling for smaller individual deltas. New snapshots carry
-`partialText` and `partialRound`; resume appends a matching partial as assistant
-text only when restoring a newer snapshot. Snapshots without these fields are
-unchanged.
-Prerequisite: set `config.run.stream: true`; otherwise startup throws.
+suppresses timer scheduling for smaller individual deltas. On resume, a matching
+partial is appended as assistant text only when restoring the round it was
+captured in and that round's assistant message has not already been persisted.
+When the store does not implement `appendRecoveryRow`, this persistence degrades
+as an optional capability. Prerequisite: set `config.run.stream: true`;
+otherwise startup throws.
 
 `executeTool` receives one structured execution object:
 
@@ -661,20 +664,21 @@ writes nor reads a run snapshot, and there is no fallback to one.
 `config.run.persistence: "none"` is an explicit no-op mode. Writes to methods the store does advertise use the
 loop retry policy; an exhausted write emits a `persistence_error` through
 `diagnostics.error` and terminates with `reason: "persistence_failed"`.
-Snapshot persistence is used before and after tool execution. A pre-tool
-failure reports `sideEffect: "not_started"` and prevents execution; a
-post-tool failure reports `sideEffect: "executed_uncommitted"` while retaining
-the `checkpoint_failed` error class. Resume replays pending tool calls in
-their original order by default; hosts must still make side-effecting
+Ledger appends record each round: when a required append fails before a tool has
+run in the current round it reports `sideEffect: "not_started"`, and when it
+fails after a tool has run it reports `sideEffect: "executed_uncommitted"` (the
+side effect happened but was not committed). Resume replays pending tool calls in
+their original order; the pending calls are derived from the ledger by
+`resumePendingTools` on the resume path (`src/loop/orchestrator.js`), not read
+from a run snapshot. Hosts must still make side-effecting
 `executeTool` implementations idempotent. Tool schemas may declare
-`replay: "safe" | "unsafe"` (omission defaults to unsafe), which is captured
-on each `pendingToolUses` intent in the run snapshot. The engine-level
+`replay: "safe" | "unsafe"` (omission defaults to unsafe), which is applied when
+recovering the pending tool calls. The engine-level
 `config.run.replayPolicy: "always-replay"` default ignores that declaration during
 recovery. With `"per-tool-declaration"`, safe calls replay as before and
 unsafe calls are skipped and returned to the model as interrupted tool results;
 the optional `tool_replay_decision_required` event marks them for host
-resolution. Snapshots written before this declaration existed are treated as
-unsafe under the opt-in policy.
+resolution.
 
 The safe file-name namespace keeps simple IDs matching
 `[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*` readable, except `"."`, `".."`, and
@@ -745,7 +749,7 @@ different strength are in play and must not be merged: the **tool-surface gate**
 `noteRecallFromMessages` in `src/compact/helpers.js` while the mechanical substitute itself is
 rendered by `src/compact/fold-statistical.js` and `src/compact/fold-llm.js` (that file's own
 comment at line 352 calls it 机械替代物). Plus #746's aggregate-limit stub (`src/loop/aggregate-budget.js`)
-and the run-snapshot per-output stub (`src/loop/run-snapshot-executor.js`, same wording as the
+and the per-output stub (`src/loop/run-snapshot-executor.js`, same wording as the
 aggregate stub), plus three `bin/` sites: the guard's run-state summary and its revise pointer
 (`bin/final-guard.js`), and the fold-stub suffix plus the recovery hint
 (`bin/final-guard-support.js` and `bin/final-guard.js`'s `buildCaptureRecoveryHint`), plus the
@@ -853,8 +857,8 @@ src/
 │   ├── sliding-window.js     # Whole-round sliding-window folding
 │   └── pipeline.js           # Six-layer compaction registry declaration (order, fallback chain, per-layer stats)
 ├── store/
-│   ├── file.js               # JSONL transcript, state, and run-snapshot store
-│   ├── memory.js             # In-process transcript, state, and run-snapshot store
+│   ├── file.js               # JSONL transcript, run-state, and recovery-row store
+│   ├── memory.js             # In-process transcript, run-state, and recovery-row store
 │   └── notes.js              # Host-side notes store
 ├── config/
 │   ├── api-key.js            # Direct, environment, and file key resolution
@@ -894,8 +898,8 @@ intentionally has no `src/providers/index.js`, and `src/skills/` ships
 4. LLM-generated fold summaries pass deterministic size enforcement before they
    are inserted into the context.
 5. Context compaction may return `foldedPayload` for persistence, while
-   tool-result TTL folding changes only the provider request view; run snapshots
-   retain the complete tool-result text.
+   tool-result TTL folding changes only the provider request view; the ledger
+   retains the complete tool-result text.
 6. No secret is embedded in the library source. API keys can be supplied
    directly or resolved indirectly through `apiKeyEnv` and `apiKeyFile`.
 7. The executor registry is code-owned. JSON or other provider data can select
