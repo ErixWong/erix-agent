@@ -353,7 +353,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 - 永远不要提交 token、API key 或其他凭据。
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
-发布行）。当前发布版本：**v0.33.0**（2026-11-15；
+发布行）。当前发布版本：**v0.34.0**（2026-11-22；
 **0.27.0 从未发布**）。下面引用的 `files` 清单以
 `package.json` 为权威：
 
@@ -406,6 +406,8 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "docs/host-upgrade-guide-0.32.0_cn.md",
   "docs/host-upgrade-guide-0.33.0.md",
   "docs/host-upgrade-guide-0.33.0_cn.md",
+  "docs/host-upgrade-guide-0.34.0.md",
+  "docs/host-upgrade-guide-0.34.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -691,11 +693,11 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 本仓不是每份 Markdown 都在声明同一件事，门禁也按不同的口径筛（`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`）。三类：
 
 - **活文档——有门禁，必须「今天为真」。** `README*.md`、`AGENTS*.md`、中英契约（`docs/host-consumer-contract.md` /
-  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 40 份，按目录实扫），再加上
+  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（按目录实扫；现测份数由 `check:docs` 的 `ref-scan-claims` 提示打印），再加上
   工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
   （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）、
   `erix_run` 的 README（`examples/pi-extension/README.md`）与维护账本中英（`docs/maintenance/symbol-anchor-ledger.md` /
-  `docs/maintenance/symbol-anchor-ledger_cn.md`——正文是**历史**账本，门禁钉它的正文而不是要求它写现状）。共 55 份（`REF_SCAN_DOCS_MINIMUM = 53`：15 份点名 + 按目录实扫到的 40 份升级指南）：文件改名、
+  `docs/maintenance/symbol-anchor-ledger_cn.md`——正文是**历史**账本，门禁钉它的正文而不是要求它写现状）。份数就是锚点覆盖面（下限是 `REF_SCAN_DOCS_MINIMUM = 53`；现测值由 `check:docs` 打印）：文件改名、
   行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
 - **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
   `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行
@@ -712,7 +714,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，
 `npm run check:docs` 会校验下面这行发布声明。
-当前发布版本：**v0.33.0**（2026-11-15；**0.27.0 从未发布**，
+当前发布版本：**v0.34.0**（2026-11-22；**0.27.0 从未发布**，
 已发布线是 0.26.0 → 0.30.0）。
 完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出
 改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见

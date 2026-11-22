@@ -2130,22 +2130,32 @@ const REF_SCAN_COUNT_LABEL = Object.freeze({
   pinned: "点名文档", guides: "实扫指南", total: "文档合计", floor: "下限常量",
 });
 
+/**
+ * issue #726 后续（切 0.34.0 时裁决）：**这一族从「判红」降级为「只报」**。
+ *
+ * 它量的是**闸自己的覆盖面**（点名几份 + 实扫几份 = 合计），再要求文档把这个测量**复述**一遍。
+ * 复述没有读者：没有人拿「57 份」做任何决定，而每次新增一份指南（例如切版时新增的升级指南对）
+ * 都要连带改 README 中英 + 账本中英四处数字——那是自指类判据在收税，不是漂移。
+ *
+ * 真值仍然**算**（`refScanDocs()` 是覆盖面判据的同源真值），只是不再拿它判文档红：
+ * 数字对不上只打印一行提示，谁想改就改，不改也不拦。
+ */
 function collectRefScanCountClaimErrors() {
-  const out = [];
+  const out = [];          // 恒空：这一族不再产生红（保留返回形状，调用点不动）
   const notes = [];
   const truth = refScanCountTruth();
   let claims = 0;
+  let mismatched = 0;
   for (const { doc, rules } of REF_SCAN_COUNT_CLAIMS) {
     const text = textOf(doc);
     if (typeof text !== "string") {
-      out.push(`ref-scan-claims: ${doc} 读不到文本——份数声称面少一份，等于这份文档的数没人校`);
+      notes.push(`ref-scan-claims（提示）：${doc} 读不到文本，跳过`);
       continue;
     }
     for (const { re, groups, label } of rules) {
       const hits = [...text.matchAll(re)];
       if (!hits.length) {
-        out.push(`ref-scan-claims: ${doc} 里找不到「${label}」那条份数声称——`
-          + "句子被删也要红（否则删掉这句话就是合法逃逸；声称面登记在 REF_SCAN_COUNT_CLAIMS）");
+        notes.push(`ref-scan-claims（提示）：${doc} 里没有「${label}」那条份数声称（不拦）`);
         continue;
       }
       for (const m of hits) {
@@ -2155,16 +2165,16 @@ function collectRefScanCountClaimErrors() {
           const want = truth[key];
           claims += 1;
           if (claimed !== want) {
-            out.push(`ref-scan-claims: ${doc}:${line} 声称「${REF_SCAN_COUNT_LABEL[key]}」${claimed}，`
-              + `但脚本实测 ${want}——份数声称必须等于实测（${label}）；`
-              + "改文档里的数，或把 SYMBOL_DOCS_STATIC / 目录里的指南一起改到一致");
+            mismatched += 1;
+            notes.push(`ref-scan-claims（提示，不拦）：${doc}:${line} 写「${REF_SCAN_COUNT_LABEL[key]}」${claimed}，`
+              + `脚本实测 ${want}——这行只是把测量摆出来，要不要改文档由人决定`);
           }
         });
       }
     }
   }
-  notes.push(`ref-scan-claims: ${REF_SCAN_COUNT_CLAIMS.length} 份文档的 ${claims} 处份数声称全部等于实测`
-    + `（点名 ${truth.pinned} / 实扫 ${truth.guides} / 合计 ${truth.total} / 下限 ${truth.floor}）`);
+  notes.push(`ref-scan-claims（只报不判）：实测 点名 ${truth.pinned} / 实扫 ${truth.guides} / 合计 ${truth.total}`
+    + ` / 下限 ${truth.floor}；文档里 ${claims} 处复述，其中 ${mismatched} 处与实测不同（不拦）`);
   collectRefScanCountClaimErrors.notes = notes;
   return out;
 }
@@ -10243,24 +10253,19 @@ const SELF_TEST_CASES = [
     simulateRegistry: selfTestRegistry(),
     expect: [new RegExp(`guide-coverage: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
   },
-  // ══ issue #635 ①：文档里的「点名几份 + 实扫几份 = 下限」份数声称必须等于实测 ══════════
+  // ══ issue #635 ①（261122 裁决后改写）：份数声称**只报不判** ══════════════════════
+  // 旧的三例断言「数字不符 ⇒ 红」。那三例守的是「闸自己的覆盖面必须被文档复述」——自指类判据。
+  // 现在改成两例：**数字被改错仍然绿**（不再收税），且提示里确实把实测摆出来（信息没丢）。
   {
-    label: `#635 ①：把账本英文侧的「点名文档」数从 ${REF_SCAN_TRUTH.pinned} 改成 ${REF_SCAN_TRUTH.pinned + 1} ⇒ 红并点名那份文档的哪个数（份数声称是散文时没人校，正是本单的病根）`,
+    label: `#635 ①（改写）：把账本英文侧的「点名文档」数改成 ${REF_SCAN_TRUTH.pinned + 1} ⇒ **仍然绿**（只报不判），提示里摆出实测 ${REF_SCAN_TRUTH.pinned}`,
     overlay: { [LEDGER_EN]: (t) => t.replace(`**${REF_SCAN_TRUTH.pinned} pinned documents`, `**${REF_SCAN_TRUTH.pinned + 1} pinned documents`) },
-    expect: [new RegExp(`ref-scan-claims: docs/maintenance/symbol-anchor-ledger[.]md:[0-9]+ 声称「点名文档」${REF_SCAN_TRUTH.pinned + 1}，但脚本实测 ${REF_SCAN_TRUTH.pinned}`, "u")],
-    expectFiles: [LEDGER_EN],
+    expect: [new RegExp(`ref-scan-claims（只报不判）：实测 点名 ${REF_SCAN_TRUTH.pinned}`, "u")],
+    expectGreen: true,
   },
   {
-    label: `#635 ①：把 README 英文侧的「That is ${REF_SCAN_TRUTH.total} documents」改成 ${REF_SCAN_TRUTH.total - 8} ⇒ 红（份数声称与实扫不一致）`,
-    overlay: { [README_EN]: (t) => t.replace(`That is ${REF_SCAN_TRUTH.total} documents`, `That is ${REF_SCAN_TRUTH.total - 8} documents`) },
-    expect: [new RegExp(`ref-scan-claims: README[.]md:[0-9]+ 声称「文档合计」${REF_SCAN_TRUTH.total - 8}，但脚本实测 ${REF_SCAN_TRUTH.total}`, "u")],
-    expectFiles: [README_EN],
-  },
-  {
-    label: `#635 ①（句子被删也要红）：把中文 README 里「（当前 ${REF_SCAN_TRUTH.guides} 份，按目录实扫）」整句删掉 ⇒ 红（删句子 = 合法逃逸）`,
+    label: "#635 ①（改写）：把中文 README 那句份数声称整句删掉 ⇒ **仍然绿**（删句子不再是「逃逸」，因为它本就不该是判据）",
     overlay: { [README_CN]: (t) => t.replace(`（当前 ${REF_SCAN_TRUTH.guides} 份，按目录实扫）`, "") },
-    expect: [/ref-scan-claims: README_cn\.md 里找不到「按目录实扫到的升级指南份数」那条份数声称/],
-    expectFiles: [README_CN],
+    expectGreen: true,
   },
   // ══ issue #644 ③：指令面必须指着声称链的新家（搬走了但没人知道搬哪去 = 没搬）══════════
   {

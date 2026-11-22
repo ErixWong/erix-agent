@@ -3,7 +3,11 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.34.0]（未发布 / unpublished）
+
 ### Changed
+- 0.34.0 version cut: this section registers every public-surface merge it covers (PR #887).
+- 0.34.0 切版：本节逐条登记它覆盖的公开面合并号（PR #887）。
 
 - **"The deliverable criterion could not decide this run" is now said out loud (issue #881, the
   observation gap left by #711).** **Whose judgement did *not* change: nobody's** — the verdict is

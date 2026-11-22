@@ -2,7 +2,7 @@
 
 > English version: [requirements.md](requirements.md)
 
-本文档初稿于 2026-08-29，现已与 0.33.0 版本交付的实现完成对照。
+本文档初稿于 2026-08-29，现已与 0.34.0 版本交付的实现完成对照。
 它描述的是库的实际范围与 API，而不是未经限定的未来计划清单。
 
 ## 1. 消费方背景与痛点
@@ -96,7 +96,7 @@
 
 ## 4. 分期与实现状态
 
-下面将原始分期计划与 package 版本 0.33.0 中已有的内容对齐。
+下面将原始分期计划与 package 版本 0.34.0 中已有的内容对齐。
 “已交付”描述仓库代码；消费方迁移和真实 provider
 基准运行仍属于外部验收工作。
 
@@ -108,7 +108,7 @@
 | **v0.3.x–v0.4.x — 已交付** | 检查点/恢复强化，以及 `src/reflection/` 中的可选反思层：governor 决策、L0 facts、收尾解析/归一化、轮次 judge、透明工具拦截、方向提示和 `finalGuard`/验证钩子 | 循环通过 `reflection`、`onJudge`、`finalGuard` 以及返回的终止/验证数据暴露这些行为。当 `maxRounds >= 16` 时，反思会自动启用，除非显式禁用。 |
 | **v0.5.0–v0.7.x — 已被取代** | 早期档案/取回实验、确定性运行状态、折叠导航记录和可安全恢复的状态持久化 | 发布历史记录了这些变化；当前公共表面是 0.8.0 引入的 note-first 工作流与请求视图 TTL 折叠。 |
 | **v0.8.0 — 已交付** | Note-first 取回（`note_list` → `note_read`）、请求视图工具结果 TTL 折叠、可重试的空 assistant 响应、CLI `--tools` 能力白名单、纯 Node `grep` 工具、按语言的 system-prompt 指令以及更高效的 judge/最终轮次行为 | `ERIX_TOOL_RESULT_TTL` 默认 `2`（`0` 关闭折叠），`ERIX_TOOL_RESULT_FOLD_MIN_TOKENS` 默认 `4000`，`ERIX_RETRY_ATTEMPTS` 覆盖 CLI 重试次数。拦截预算为 6,000 token，round judge 输出上限为 1,024 且不启用 reasoning，保留原始 judge 输出，最终预算轮次不发送工具。 |
-| **v0.9.0–v0.33.0 — 当前** | 扩轮决策归 judge |
+| **v0.9.0–v0.34.0 — 当前** | 扩轮决策归 judge |
 |  | notes 迁到宿主侧 `NotesStore`，统一保留期旋钮 |
 |  | run snapshot 更名；`TranscriptStore` 能力分级 |
 |  | run-state 终态通道 |
