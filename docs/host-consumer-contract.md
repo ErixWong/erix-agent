@@ -3170,8 +3170,10 @@ plans, incidental primary-key scan order, or accidental `filesort` behavior.
 `src/loop/resume-manager.js` rebuilds state in the order returned by `load()`
 and does not sort records again. This order controls not only `messages`, but
 also governor history (`:101-109`), round-0 seed messages used for
-`taskBriefSource` (`:88-90`), and the order-sensitive snapshot
-`recordedEntries` matching (`:152-200`). A typical tie is the previous engine
+`taskBriefSource` (`:88-90`), and the order-sensitive placement of a recovered
+tool result next to its assistant row plus the `dedupKey`/shape-based
+engine-vs-host row classification (`:114-200`, `insertRecoveredToolResult` /
+`hasHostPreWriteShape`). A typical tie is the previous engine
 round at `round=max` followed by a pre-written user row at the same round,
 because `appendUserTurn` deliberately reuses the maximum round. Reversing
 those rows places the new user message before the previous engine turn and
@@ -7528,7 +7530,7 @@ one line is still exactly one round, and nothing moved out of it (message bodies
   only the last row of the round, so appending N prefixes stored N copies of one growing text.
   `messages: []` always, for every event: a recovery row **never carries message
   bodies**, so reading the transcript and recovery rows side by side cannot double a message body.
-- `dedupKey` is the **event key**, built by `buildRecoveryEventKey` in `recovery-rows.js`. Exact shape, sampled from
+- `dedupKey` is the **event key**, built by `recoveryEventKey(runId, round, event, discriminator)` in `recovery-rows.js`. Exact shape, sampled from
   the store test's own fixtures: a `tool-executed` row carries the bare `toolUseId` and nothing else
   (`pendingToolUseIds: ["call-7f"]`, `toolUseId: "call-7f"`); a `partial-text` row carries `text`, a fingerprint of the text, in place of the
   discriminator. Re-appending the
