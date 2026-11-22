@@ -59,7 +59,7 @@ One row per gate: what it judges, and the anchor to read before editing what it 
 | `npm run check:agents-directives` | this page: status claims, expiring copies, bare coordinates, byte budget | `#check-agents-directives` |
 | `npm run types:build` | generates the published `src/**/*.d.ts` | `#type-surface` |
 | `npm run check:types-build` | those declarations still generate with the entry symbols | `#type-surface` |
-| `npm run check:types` | `--checkJs` error-count ratchet (`--with-tools`: baseline **137** / 28 files) | `#type-ratchets` |
+| `npm run check:types` | `--checkJs` error-count ratchet (`--with-tools`: baseline **133** / 28 files) | `#type-ratchets` |
 | `npm run check:types:strict` | the strict ratchet (blocks; its baselines live in the script) | `#type-ratchets` |
 | `npm run check:mutation` | the committed mutation-sample table against the tree | `#check-mutation` |
 | `npm run check:mutation:run` | the samples bite (mutate → red → restore → green) | `#check-mutation` |
@@ -83,11 +83,11 @@ One row per gate: what it judges, and the anchor to read before editing what it 
 - Type surface (issue #213): `src/**/*.d.ts` are **generated, never committed**; `prepack` regenerates them and logs
   to **stderr only**. Two JSDoc shapes silently degrade a parameter to `any` ⇒ `#type-surface`.
 - **Type ratchets** (`check:types` / `check:types:strict`, issues #214 / #417): the root tier accepts debt against
-  `BASELINE_ROOT = 102` (baseline constant **102**, the accepted debt measured 102 errors) in
+  `BASELINE_ROOT = 98` (baseline constant **98**, the accepted debt measured 98 errors) in
   `scripts/type-check-ratchet.mjs`: above it ⇒ exit 1, equal ⇒ green, below ⇒ green plus a "you may lower the baseline" hint, so the total never rises;
   per-file counts and host reachability come from `--verbose`. Historical readings (142 / 185 / 218 / 226 / 261)
   are history, not current state. `--with-tools` widens the union to `./tools`
-  (baseline **137** / 28 files); `check:types:strict` re-runs it with `--strict` against its own baselines, blocks,
+  (baseline **133** / 28 files); `check:types:strict` re-runs it with `--strict` against its own baselines, blocks,
   and **both tiers drop in one commit**. ⚠ **Delete the generated declarations before running a ratchet**
   (`find src -name '*.d.ts' -delete`): while they sit next to their sources, `tsc` resolves `./x.js` to the sibling
   declaration and checks declarations instead of implementations.
@@ -103,7 +103,7 @@ One row per gate: what it judges, and the anchor to read before editing what it 
   `pi-subagents:src/runs/background/async-execution.js:4` — and the repo name must be registered in
   `EXTERNAL_REPO_PREFIXES` in `scripts/docs-drift-check.mjs` (unregistered names are red; registered names nobody
   references are red too). **An unprefixed path is a path in this repository and must resolve here.**
-- **Anchors**: four gate-owned numbers are the only truth on this page — `BASELINE_ROOT = 102`, the symbol-anchor
+- **Anchors**: four gate-owned numbers are the only truth on this page — `BASELINE_ROOT = 98`, the symbol-anchor
   floor `SYMBOL_ANCHOR_MIN_UNIQUE = 249` (only-up: falling below it is red — anchor degeneration being caught), the
   bare-line ratchet `BARE_LINE_REF_BASELINE = 6` (only-down), and the anchor-face floor
   `REF_SCAN_DOCS_MINIMUM = 53`. Docs must not lean on bare line numbers: point at a symbol with its file

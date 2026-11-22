@@ -242,7 +242,7 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   本支在同一棵树上同样是 **99 / 26 个文件** ⇒ 本片对非 strict 档**净增 0**；+3 落在 #735 slice2 的改动上
 //   （旧记录那个 96 量于 `47b69bf`，主干自己往前走了）。常量取最终树现测 **99**：它仍比主干登记的 103 低 4，
 //   棘轮方向没被松开。带错文件数 **26** 未变。
-const BASELINE_ROOT = 102;
+const BASELINE_ROOT = 98;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
@@ -272,7 +272,7 @@ const BASELINE_ROOT = 102;
 //     check:types: OK — 实测 134 个 --checkJs 错误 / 28 个文件（含 ./tools 入口），比基线 138 **少 4 个**。
 //   本支在同一棵树上也是 **134 / 28**（本片净增 0，+3 同属 #735 slice2）。分解式仍成立：**134 = 99 + 19 + 16**
 //   （`src/tools/file-tools.js` 19、`src/skills/loader.js` 16 两个计数逐个复核未动）。带错文件数 **28** 未变。
-const BASELINE_WITH_TOOLS = 137;
+const BASELINE_WITH_TOOLS = 133;
 
 // ── strict 档基线（issue #417：把 #416 的「只观测」升级成棘轮）──────────────────────
 // 这两个常量是 strict 那一档的**唯一真值**。同一条 tsc 命令（入口 / target / module / `--skipLibCheck` 与非
@@ -315,7 +315,7 @@ const BASELINE_WITH_TOOLS = 137;
 // 两档各 +3，取现报值 1890 / 2103（同一笔提交一起抬，口径同 #417 / #765）。
 // 三处都是 TS7006 隐式 any 参数，与存量 962 条同一类，
 // 属「已知债 + 本轮不还」；非 strict 两档没动（仍 102 / 137）。
-const BASELINE_STRICT_ROOT = 1890;
+const BASELINE_STRICT_ROOT = 1888;
 // 2026-11-01 重测下调 2128 → 2124（−4 = `f55eb8f` 一行 `@returns` 补 `facts`；包根档同笔复测未动）
 // 下调记录：**2122 → 2085**（issue #753 C1，2026-11-07，与上三档同一次测量、同一笔提交）：主干那一侧并集
 //   档实测 **2081 / 78 文件**、本支 **2085 / 78**（同一个 +4，出处见 `BASELINE_STRICT_ROOT` 那条：TS7006 一族，
