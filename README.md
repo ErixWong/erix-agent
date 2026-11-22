@@ -561,12 +561,16 @@ optional `runState`, aggregate `usage`, and `compactionStats`.
   unreachable). `ERIX_STALL_MODE` overrides the mode unless the option is
   explicitly `false`; an object passed without `mode` falls back to `appear`
   (only the engine default is `consecutive`).
-- `resume` defaults to `false`. With a `store` and `runId`, `resume: true`
-  restores the transcript ledger, the run state (`saveRunState`/`loadRunState`/
-  `markRunState`), the recovery rows (`appendRecoveryRow`/`listRecoveryRows`/
-  `clearRecoveryRows`), and all pending tool calls that still need execution.
-  The run-state and recovery-row store methods are optional capabilities: a
-  store that lacks them degrades with a one-shot
+- `resume` defaults to `false`, and it restores only when persistence is active:
+  with no `store`, or `persistence: "none"`, `restoreResume` returns immediately
+  and nothing is restored. With a `store` and `runId`, `resume: true` rebuilds the
+  run from the transcript ledger, the run state (`saveRunState`/`loadRunState`/
+  `markRunState`), the recovery rows it reads back (`listRecoveryRows`), and all
+  pending tool calls that still need execution. `clearRecoveryRows` is **not**
+  part of restoring a resumed run: the recovery rows are cleared only at the
+  start of a **fresh** run (`resume !== true`, and only when persistence is
+  active), never during a resume. The run-state and recovery-row store methods
+  are optional capabilities: a store that lacks them degrades with a one-shot
   `persistence_capability_degraded` event (`{type, runId, method, detail}`) per
   missing method name (the run completes normally, only mid-flight crash resume
   is unavailable); the recovery-row **read** method `listRecoveryRows` is the
