@@ -88,7 +88,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 | # | Requirement | Status and implementation |
 |---|---|---|
 | FR-4.1 | A `ModelConfigProvider` contract with static and JSON-file implementations; `apiKey` may refer indirectly to an environment variable or file | **Delivered as a duck-typed `resolve(slot)` contract rather than a class or formal interface.** `createStaticModelConfigProvider` and `createJsonFileModelConfigProvider` are published, and a host reads its own environment inside the same `resolve(slot)` shape (the environment-variable factory is no longer a public entry); `resolveApiKey` supports direct values, `apiKeyEnv`, and `apiKeyFile`. |
-| FR-4.2 | A `TranscriptStore` contract with memory and JSONL-file implementations, including crash resume | **Delivered.** `createMemoryTranscriptStore` and `createFileTranscriptStore` implement transcript, run-state, and checkpoint methods. The file store repairs or isolates a damaged trailing JSONL fragment, and `runToolLoop({ store, runId, resume: true })` restores transcript and pending checkpoint work. Exactly-once side effects remain the host's responsibility. |
+| FR-4.2 | A `TranscriptStore` contract with memory and JSONL-file implementations, including crash resume | **Delivered.** `createMemoryTranscriptStore` and `createFileTranscriptStore` implement transcript, run-state, and recovery-row methods. The file store repairs or isolates a damaged trailing JSONL fragment, and `runToolLoop({ store, runId, resume: true })` restores the transcript, run state, and recovery rows. Exactly-once side effects remain the host's responsibility. |
 
 ### FR-5 Tool system
 

@@ -411,24 +411,24 @@ resolveApiKey(config = {})
  *   必需方法（issue #78）：
  * @property {(runId:string, record:object) => Promise<void>} appendRound
  * @property {(runId:string) => Promise<object[]>} load
- *   可选 run-snapshot capability（latest-only 覆盖写，由 "checkpoint" 更名；
- *   appendCheckpoint 已并入 saveRunSnapshot）：
- * @property {(runId:string, snapshot:object) => Promise<void>} saveRunSnapshot
- * @property {(runId:string) => Promise<object|undefined>} loadLatestRunSnapshot
  *   可选 run-state capability：
  * @property {(runId:string, state:string) => Promise<void>} markRunState
  * @property {(runId:string, state:object) => Promise<void>} saveRunState
  * @property {(runId:string) => Promise<object|undefined>} loadRunState
  *   宿主面向的可选终态读取（引擎不调用、不校验）：
  * @property {(runId:string) => Promise<string|undefined>} loadRunStateStatus
+ *   可选 ledger recovery-row capability（issue #769）：
+ * @property {(runId:string, record:object) => Promise<boolean|void>} appendRecoveryRow
+ * @property {(runId:string) => Promise<object[]>} listRecoveryRows
+ * @property {(runId:string) => Promise<void>} clearRecoveryRows
  */
 ```
 
-内存实现是进程内 `Map` 的克隆。文件实现将每行一个 JSON 对象存储在 `<safeRunId(runId)>.jsonl` 中，并将当前 run-state 快照存储在 `<safeRunId(runId)>.state.json`、终态存储在 `<safeRunId(runId)>.status.json`、最新 run snapshot 存储在 `<safeRunId(runId)>.snapshot.json` 中（新后缀不存在时仍读取旧 `.checkpoint.json`；读取兼容，不做迁移）。`appendRound` 通过 `dedupKey`、`roundKey` 或存储器生成的 run/round key 实现幂等。
+内存实现是进程内 `Map` 的克隆。文件实现将每行一个 JSON 对象存储在 `<safeRunId(runId)>.jsonl` 中，并将当前 run-state 快照存储在 `<safeRunId(runId)>.state.json`、终态存储在 `<safeRunId(runId)>.status.json`；recovery rows 追加到另开的单 run 文件 `<safeRunId(runId)>.recovery.jsonl`。`appendRound` 通过 `dedupKey`、`roundKey` 或存储器生成的 run/round key 实现幂等。
 
 该存储器设计为每个 `runId` 和每个进程一个写入方。它会修复缺少末尾换行符的完整 JSONL 记录，并隔离不完整的尾部片段。跨进程锁定不属于存储器契约。
 
-`runToolLoop` 在提供 store 时默认使用 `config.run.persistence: "required"`，并在 provider 调用前校验两个必需方法；run-snapshot 与 run-state 方法为可选 capability。可选方法缺失时，引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，整轮 run 去重），并跳过对应持久化——run 正常跑完，仅不支持中途 crash resume。过渡期内引擎也接受只实现旧名的 store：快照写入按 `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint` 解析，快照读取按 `loadLatestRunSnapshot` → `loadLatestCheckpoint` 解析（库内 store 的旧方法名以 `@deprecated` 别名保留）。`config.run.persistence: "none"` 是显式的完全 no-op 模式。对 store 已实现的方法，required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。snapshot 在工具前后都执行：前置失败报告 `sideEffect: "not_started"` 且阻止工具执行；后置失败报告 `sideEffect: "executed_uncommitted"`，同时保留 `checkpoint_failed` 错误类。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
+`runToolLoop` 在提供 store 时默认使用 `config.run.persistence: "required"`，并在 provider 调用前校验两个必需方法；run-state 与 recovery-row 方法为可选 capability。可选方法缺失时，引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，整轮 run 去重），并跳过对应持久化——run 正常跑完，仅不支持中途 crash resume。run snapshot 持久化已于 0.33.0 退役（issue #838）：引擎既不写也不读 run snapshot，也没有回落到它的兜底。`config.run.persistence: "none"` 是显式的完全 no-op 模式。对 store 已实现的方法，required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。snapshot 在工具前后都执行：前置失败报告 `sideEffect: "not_started"` 且阻止工具执行；后置失败报告 `sideEffect: "executed_uncommitted"`，同时保留 `checkpoint_failed` 错误类。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
 
 安全文件名命名空间会让匹配 `[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*` 的简单 ID 保持可读，但 `"."`、`".."` 和保留的 `run-h-` 前缀除外。其他 ID 会变成 `run-h-` 加其 SHA-256 摘要的前 24 个十六进制字符。
 
