@@ -6,8 +6,8 @@
 ## [0.34.0]（未发布 / unpublished）
 
 ### Changed
-- 0.34.0 version cut: this section registers every public-surface merge it covers (PR #CUTPR).
-- 0.34.0 切版：本节逐条登记它覆盖的公开面合并号（PR #CUTPR）。
+- 0.34.0 version cut: this section registers every public-surface merge it covers (PR #887).
+- 0.34.0 切版：本节逐条登记它覆盖的公开面合并号（PR #887）。
 
 - **"The deliverable criterion could not decide this run" is now said out loud (issue #881, the
   observation gap left by #711).** **Whose judgement did *not* change: nobody's** — the verdict is
