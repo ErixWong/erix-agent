@@ -316,7 +316,9 @@ Assertion gate: `tsc` exit 0 / declaration count > 0 / `src/index.d.ts` contains
   (`src/store/notes-port.js`, `src/store/notes-memory.js`) contributing 0, and the other 28 error-carrying files
   moving by zero — verified file by file against the `7354fab^` tree exported with `git archive`, which reproduces
   142 / 185 verbatim). What it guarantees is **never up**: the total is compared against the
-  `BASELINE_ROOT = 98` constant in `scripts/type-check-ratchet.mjs` (re-measured 2026-11-01 on the #661 wrap-up tree, where the −4 is `src/compact/fold-llm.js` 5 → 1; the same day's earlier #177 slice-4 round read 107; 2026-10-31 on `c92c8fa` read 108
+  `BASELINE_ROOT = 98` constant in `scripts/type-check-ratchet.mjs` (lowered to **98** on 2026-11-22 by
+  PR #885, where the reading was 98 / 26 files; the parenthetical below is history, not the current value —
+  re-measured 2026-11-01 on the #661 wrap-up tree **at 102**, where the −4 is `src/compact/fold-llm.js` 5 → 1; the same day's earlier #177 slice-4 round read 107; 2026-10-31 on `c92c8fa` read 108
   with `typescript@5.9.3` + `@types/node@22.20.5`, **both tiers lowered in the same commit**: 110 → 108 and
   146 → 144, two units each, the whole of it `src/loop/orchestrator.js` 14 → 12 (the `deliverablesAllPassed` /
   `deliverablesFailures` block extracted two inline expressions into typed locals — a refactor side effect, not a

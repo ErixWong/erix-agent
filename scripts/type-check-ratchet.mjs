@@ -44,8 +44,8 @@
 //     **必须在装了 devDependencies 的环境里跑**（`tsc` 取不到时下面直接给指路报错，不堆栈）。
 //
 // 用法：
-//   npm run check:types                        # 默认：包根入口 src/index.js，非 strict 基线 99
-//   npm run check:types -- --with-tools        # 连 erix-agent/tools 入口一起卡，非 strict 基线 134
+//   npm run check:types                        # 默认：包根入口 src/index.js，非 strict 基线 98
+//   npm run check:types -- --with-tools        # 连 erix-agent/tools 入口一起卡，非 strict 基线 133
 //   npm run check:types:strict                 # strict 棘轮（issue #417）：同一张依赖图加 `--strict`，基线 `BASELINE_STRICT_ROOT`
 //   npm run check:types:strict -- --with-tools # strict 并集一档，基线 `BASELINE_STRICT_WITH_TOOLS`
 //   node scripts/type-check-ratchet.mjs --verbose                   # 额外打印每文件、每错误码分布
