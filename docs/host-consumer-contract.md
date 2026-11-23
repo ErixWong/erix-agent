@@ -397,8 +397,8 @@ call-level `config.input.initialUserMessage = "B"` yields one event carrying
 `conflicts: [{path: "input.initialUserMessage", key: "initialUserMessage"}]`. The paragraph's own
 case — a call-level `config` written **for something else** (say only `config.run.*`) — overlaps on
 no leaf, and that whole-tree override is reported by **nothing at all**: zero events, no field in
-the terminal payload. Making that silent case observable without an observer is deferred to a later
-minor release; the semantics themselves are unchanged (issue #406 R6: one source per value, no deep
+the terminal payload. There is currently **no** observation point that would make that silent case
+visible without an observer — the run emits nothing there (no event, no terminal-payload field); the semantics themselves are unchanged (issue #406 R6: one source per value, no deep
 merge), and the seed is deliberately not moved a second time (issue #524 ruling). This paragraph
 describes `runToolLoop` itself (the direct route, and the shape a host builds by passing `config`
 alongside `assemblyPort`). On the **wrapper** route that silent case no longer exists: since issue
@@ -708,7 +708,7 @@ Five rules govern it:
   `config` (at the top level or under a group) throws at startup and names the key; the message also
   names the new home when there is one (`capabilities.hooks.<name>` / `capabilities.checks.<leaf>`),
   and the error carries the same `via` tag as every other gate error (`"direct"` / `"assembly"`).
-  The nine leaves that only exist as capability **slots** (issue #498 S4c) are not on that list
+  The eleven leaves that only exist as capability **slots** (nine from issue #498 S4c, plus `hooks.continuityProvider` from issue #568 and `hooks.nextUserTurn` from issue #753 C1) are not on that list
   because they are not top-level options at all: writing `sleepImpl` / `onBeforeFold` / … at the top
   of `config`, or one group too high (`config.timing.sleepImpl`, `config.folding.onBeforeFold`),
   answers `unknown config.<group> option: … (… belongs to capabilities.<group>.<leaf>)`, and writing
@@ -1521,7 +1521,7 @@ The **sixteen** host callbacks — `onEvent`, `onObserverError`, `onPersistenceE
 source: the alias map `CAPABILITIES_ALIAS_PATHS` (`src/loop/capabilities-namespace.js`) is derived
 from it exactly the way the `config` alias map is, so `capabilities.hooks.onEvent` and the flat
 `onEvent` are the same key (alias = schema path, leaf name verbatim the flat option name) — with the
-one registered exception described below (nine leaves that never were top-level options).
+one registered exception described below (eleven leaves that never were top-level options).
 
 | namespace | members |
 | --- | --- |
@@ -1582,9 +1582,10 @@ Six rules, deliberately symmetric with `config` (two containers, one set of rule
   all, emit no `config_override_conflict`, and shadow nothing: same behaviour for all three groups,
   because an empty object is read as "absent", not as "present but empty". (`checks: { deliverables:
   [] }` is the same story one level down: an empty array is "not declared".)
-- **Nine leaves have no flat alias** (issue #498 S4c) — `ports.sleepImpl`, `ports.judgeProvider`,
-  `ports.strategy`, `hooks.onReflection`, `hooks.onBeforeFold`, `hooks.onAfterFold`, `hooks.stubFor`,
-  `hooks.protectedMessage` and `hooks.recoveryHint` **never were top-level options**, so 0.28.0
+- **Eleven leaves have no flat alias** (issue #498 S4c registered the first nine: `ports.sleepImpl`,
+  `ports.judgeProvider`, `ports.strategy`, `hooks.onReflection`, `hooks.onBeforeFold`, `hooks.onAfterFold`,
+  `hooks.stubFor`, `hooks.protectedMessage`, `hooks.recoveryHint`; issue #568 later added `hooks.continuityProvider`
+  and issue #753 C1 added `hooks.nextUserTurn`) — all of them **never were top-level options**, so 0.28.0
   invents a container member slot for them instead of a new flat key. Their destinations are
   registered in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`) and expansion
   hands them to the engine on a side channel rather than writing new flat keys — which is why the
@@ -1607,7 +1608,7 @@ Six rules, deliberately symmetric with `config` (two containers, one set of rule
 
 `capabilities` never reaches the engine either: expansion removes it, so `effectiveOptions` — and
 the `explicitOptions` returned by `normalizeRunToolLoopOptions` (`src/loop/option-normalization.js`)
-— carry flat keys only (the nine leaves above travel on the `capabilitySlots` side channel instead of
+— carry flat keys only (the eleven leaves above travel on the `capabilitySlots` side channel instead of
 becoming flat keys). The assembly port accepts `capabilities` in its `policy` as well, so both
 entry routes share this one expansion, and the `via` tag says which route threw.
 
@@ -4653,11 +4654,11 @@ whether the deliverable meets its requirements, and whether it may proceed
 automatically downstream remain decisions for the host, test system, or human
 review.
 
-### The `finalGuard` payload: 7 contract keys plus 12 additive facts (issue #386)
+### The `finalGuard` payload: 7 contract keys plus 15 additive facts (issue #386)
 
 `callFinalGuard` (`src/loop/termination.js`) assembles the payload. The seven keys listed
 above (`finalText`, `findings`, `messages`, `round`, `rounds`, `signal`, `termination`) are
-the original contract: their names, types, **order**, and values are unchanged. Twelve
+the original contract: their names, types, **order**, and values are unchanged. Fifteen
 **additive** keys follow them. Each one is written only when the engine can actually read
 that fact — absence is the "not probed / not provided" signal, and it is never faked with
 `null`, `0`, `""`, or `{}`:
@@ -7471,13 +7472,13 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 
 | suite | what it asserts | yours to satisfy | upstream-internal detail it also pins |
 |---|---|---|---|
-| `transcript-store.js` (28 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, the paired probe tier, and the same-key idempotency/conflict tier (issue #326: same payload replays — including drifted top-level `ts`/`round` and reordered fields — are no-ops, a differing payload rejects with `code` `dedup_payload_conflict`, array order and host-owned fields count as payload, and the fallback `roundKey`/`<runId>:round:<n>` keys are covered), and \u2014 since issue #739 \u2014 the **optional-capability guard ledger**: every optional group (run snapshot, run-state, `loadRunStateStatus`, `loadRawRows`, the #157 probes) is guarded cell by cell and cross-checked by one accounting case per label, so absent means \u201cjumped over **and recorded as skipped**\u201d while present means \u201cevery guarded cell reached its assertions and the methods were really called\u201d \u2014 a store providing only the required tier passes the whole suite, and an implementation that quietly drops an optional method it used to have goes red instead of hiding inside the guard) | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance, the `dedup_payload_conflict` code |
+| `transcript-store.js` (28 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, the paired probe tier, and the same-key idempotency/conflict tier (issue #326: same payload replays — including drifted top-level `ts`/`round` and reordered fields — are no-ops, a differing payload rejects with `code` `dedup_payload_conflict`, array order and host-owned fields count as payload, and the fallback `roundKey`/`<runId>:round:<n>` keys are covered), and \u2014 since issue #739 \u2014 the **optional-capability guard ledger**: every optional group (run-state, `loadRunStateStatus`, `loadRawRows`, the #157 probes) is guarded cell by cell and cross-checked by one accounting case per label, so absent means \u201cjumped over **and recorded as skipped**\u201d while present means \u201cevery guarded cell reached its assertions and the methods were really called\u201d \u2014 a store providing only the required tier passes the whole suite, and an implementation that quietly drops an optional method it used to have goes red instead of hiding inside the guard) | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance, the `dedup_payload_conflict` code |
 | `notes-store.js` (9 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, the `limit` threshold (more than 200 stored records: a given limit clamps to exactly 200, an illegal limit throws), `revoke`'s observable disappearance with the `expectedState`/`expectedUpdatedAt` guards, and — since issue #265 — rejection of an empty `filters.state` array and an unknown `filters.source`, `revoked_at`/`revoke_reason` visible on a revoke tombstone, and `purge` scanning scopes (not records) with `before` only shrinking the window | the port surface and the record/guard semantics. Since issue #183 the split between upstream mandate and host policy is explicit: the port mandates observable disappearance (tombstone **or** physical delete) and leaves record expiry to the host, while the one-writer last-write-wins behaviour is the file adapter's own business and is no longer asserted here. The #265 additions only assert typedef-promised behaviour, but they are new assertions on a published surface: a host adapter that ignored one of them goes red after the bump | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`, `/positive safe integer/`, `/filters\.state/`, `/filters\.source/`), retention/purge timing |
 | `notes-store.js` → `notesStoreCasContract` (1 test, optional; issue #183) | concurrent same-key writers: at most one may fail, a failure must be a thrown error rather than a silent drop, and the winner is the record that stays readable in its full shape | compare-and-swap hosts only, and only in addition to `notesStoreContract` — this sub-suite is deliberately weaker than the retired last-write-wins assertion, so passing it says nothing about a store that serializes writers | the two payload contents it happens to exercise (`left`/`right`), not any conflict error text |
 | `assembly-port.js` (5 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider on the **direct** route, `assemblyPortOptions(port, { provider })` is rejected at startup on the **override channel** (issue #498), and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port, direct route), the override-channel conflict text, the startup-validation error text |
 | `execute-tool.js` (7 tests) + `execute-tool-migration-contract` (2 tests) | your executor receives exactly one structured execution object, and each canonical return form (`string`, `{content, metadata, success}`, legacy `{data}`, returned `Error`, thrown `Error`) becomes the documented `tool_result` | the call shape and the return shapes. The migration suite additionally proves that a bare positional `(name, input)` executor is **rejected**, not silently supported | that the assertions are observed through `runToolLoop`'s provider request rather than through a public result field |
 | `model-config-provider.js` (4 tests) | `resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer stated **per provider shape** (issue #518): a slot-map provider (static / json-file) must **throw**, naming the unknown slot and listing the available ones, never falling back to default, while a single-config provider returns the same config under any slot name — that is a shape difference, not an unknown-slot fallback to default | your provider's slot resolution and key materialisation, plus its mandatory unknown-slot shape declaration | nothing engine-side: it never loads the engine |
-| `engine-api.js` (2 tests) | the package entry exports `appendUserTurn` and `projectTranscriptForDisplay` as functions, and `appendUserTurn` completes one pre-write against a minimal store stub (including the `dedupKey`/`roundKey` shape and that the pre-write feeds the display projection) | nothing — this is an entry-surface sentinel; it goes red when an upstream bump renames or drops engine API | the exact pre-write record shape (`round: 0`, `dedupKey`, `roundKey`, `ts`) |
+| `engine-api.js` (6 tests) | the package entry exports `appendUserTurn` and `projectTranscriptForDisplay` as functions, `parseReflectionDecision` returning an object tagged with its `via` source (issue #305), `parseModelJson` with three distinguishable failure states and no `value` on failure (issue #307), `normalizeModelJson` (async, with a fallback) kept distinct from the synchronous L0 `parseModelJson` (issue #406), and the slot→provider constructors `loadModelSlot` + `createProviderForSlot` (issue #406 C-a); `appendUserTurn` also completes one pre-write against a minimal store stub (including the `dedupKey`/`roundKey` shape and that the pre-write feeds the display projection) | nothing — this is an entry-surface sentinel; it goes red when an upstream bump renames or drops engine API | the exact pre-write record shape (`round: 0`, `dedupKey`, `roundKey`, `ts`) |
 | `termination-payload.js` (4 tests) | a `failed` terminal outcome carries `termination.errorCode` (classification passthrough, `unknown` fallback), an abort throws with `usage`/`rounds`/`finalText` and `termination.partial`, cumulative usage is attributed per round, and the success path keeps its old shape (no `errorCode`/`partial`/`usage` appearing out of nowhere) | nothing directly — it is your host-side decision table's regression net (issue #170 / #176 / #180) | the stubbed provider script, the zero-vs-missing-field rule for `usage` |
 | `tool-result-envelope.js` (26 tests) | the field ownership of every `tool_result` the engine builds, asserted against `TOOL_RESULT_CONTRACT` itself: the protocol fields stay at the top level, engine facts only appear under `erix`, host extensions appear only under `metadata` (no host key is flattened to the top level any more, and none of the retired top-level names may reappear), all six executor return forms carry `toolCallKey`/`round`/`durationMs`, interception and interrupted replay carry **no** `durationMs` and no `round`, a replayed completed result is returned with its original values (`durationMs` never recomputed, the executor never re-invoked), the stream fragment, the `tool_use` block, the `tool_result` and the projection all carry one identity key, the provider pairing id is never rewritten, and the projection omits `toolCallKey`/`durationMs` for pre-issue-#284 records instead of inventing them | nothing — the fact surface is engine-owned, so this is a pure drift sentinel (it also fails if the constant itself is trimmed) | the stubbed provider/judge scripts and the run-snapshot shapes it hand-writes, the `tc_` key format, the fact that the loop forwards no `tool_call` event to `onEvent` |
 

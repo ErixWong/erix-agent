@@ -316,7 +316,7 @@ feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550
 `policy.config.input.initialUserMessage`、又为了别的事传了一个调用级 `config`」的宿主会丢掉 policy 那份——
 规则与以前一样，只是它现在落在几乎每个宿主都会用的键上。
 
-**诊断报什么、不报什么（issue #524，装配口那一路实测）。** `config_override_conflict` 事件列的是**两边都写了、且值不同的叶子**，所以它只在两棵树**重叠**时发：`policy.config.input.initialUserMessage = "A"` 加上调用级 `config.input.initialUserMessage = "B"` 会发一条，载荷是 `conflicts: [{path: "input.initialUserMessage", key: "initialUserMessage"}]`。而上面那段自己讲的情形——调用级 `config` 是**为了别的事**写的（比如只写 `config.run.*`）——一个叶子都不重叠，那次整棵覆盖**什么都不报**：零事件，终局载荷里也没有对应字段。把这种静默情形做成「不挂 observer 也看得见」留到后续 minor 版本；语义本身不变（#406 复审 R6：每个值只有一个来源、不做深合并），种子也**刻意不再搬第二次**（#524 裁决）。这段讲的是 `runToolLoop` 本身（直连路线，以及宿主把 `config` 与 `assemblyPort` 一起递进去的那个形状）。**包装**路线上那个静默情形已经不存在了：自 issue #571 片2 起 `createAgent` 递出去的那棵树以 `policy.config` 的拷贝打底，所以什么都没丢，也就没有什么可报。
+**诊断报什么、不报什么（issue #524，装配口那一路实测）。** `config_override_conflict` 事件列的是**两边都写了、且值不同的叶子**，所以它只在两棵树**重叠**时发：`policy.config.input.initialUserMessage = "A"` 加上调用级 `config.input.initialUserMessage = "B"` 会发一条，载荷是 `conflicts: [{path: "input.initialUserMessage", key: "initialUserMessage"}]`。而上面那段自己讲的情形——调用级 `config` 是**为了别的事**写的（比如只写 `config.run.*`）——一个叶子都不重叠，那次整棵覆盖**什么都不报**：零事件，终局载荷里也没有对应字段。把这种静默情形做成「不挂 observer 也看得见」的观测点目前**并不存在**——那次覆盖不产出任何事件、终局载荷里也没有对应字段；语义本身不变（#406 复审 R6：每个值只有一个来源、不做深合并），种子也**刻意不再搬第二次**（#524 裁决）。这段讲的是 `runToolLoop` 本身（直连路线，以及宿主把 `config` 与 `assemblyPort` 一起递进去的那个形状）。**包装**路线上那个静默情形已经不存在了：自 issue #571 片2 起 `createAgent` 递出去的那棵树以 `policy.config` 的拷贝打底，所以什么都没丢，也就没有什么可报。
 
 **扁平写法的版本口径**（issue #498 S3，`tuning` 切片——第五片，也是第一个退掉**标量**旋钮、
 而不是壳的切片）：
@@ -571,7 +571,7 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   `finalGuard` 与 `deliverables`。把它们写进 `config`（顶层或组内）⇒ 启动即抛并点名该键；有
   新家的还会点出新家（`capabilities.hooks.<name>` / `capabilities.checks.<leaf>`），错误带着与
   其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。
-  只以**能力面槽位**存在的 9 个叶子（issue #498 S4c）不在这份名单里，因为它们根本不是顶层选项：
+  只以**能力面槽位**存在的 11 个叶子（issue #498 S4c 起了头九个，issue #568 加了 `hooks.continuityProvider`、issue #753 C1 加了 `hooks.nextUserTurn`）不在这份名单里，因为它们根本不是顶层选项：
   把 `sleepImpl` / `onBeforeFold` / … 写在 `config` 顶层、或写高一层（`config.timing.sleepImpl`、
   `config.folding.onBeforeFold`）回的是 `unknown config.<group> option: … (… belongs to
   capabilities.<group>.<leaf>)`；写在它真正的嵌套老住处（`config.timing.retry.sleepImpl`）撞的是
@@ -1294,9 +1294,9 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
   `capabilities: { ports: {} }` 照常通过校验、展开后一个键都不产生、不发 `config_override_conflict`、
   也不遮蔽任何扁平键：三组同一条口径，因为空对象被读成「没有」，不是「有但是空」。
   （`checks: { deliverables: [] }` 是同一件事往下一层：空数组 = 未声明。）
-- **9 个叶子没有扁平别名**（issue #498 S4c）——`ports.sleepImpl`、`ports.judgeProvider`、
+- **11 个叶子没有扁平别名**（issue #498 S4c 登记了头九个：`ports.sleepImpl`、`ports.judgeProvider`、
   `ports.strategy`、`hooks.onReflection`、`hooks.onBeforeFold`、`hooks.onAfterFold`、`hooks.stubFor`、
-  `hooks.protectedMessage`、`hooks.recoveryHint` **从来不是顶层选项**，所以 0.28.0 给它们发明的是
+  `hooks.protectedMessage`、`hooks.recoveryHint`；issue #568 又加了 `hooks.continuityProvider`、issue #753 C1 加了 `hooks.nextUserTurn`）——它们**从来不是顶层选项**，所以 0.28.0 给它们发明的是
   **容器成员位**，不是新的扁平键。去向登记在 `CAPABILITY_SLOT_DESTINATIONS`
   （`src/loop/capabilities-namespace.js`）里，展开走侧信道而不是写新的扁平键——这就是为什么顶层
   白名单在那一刀仍是 **67** 条、恒等式当时是三向（43 配置面 + 22 能力面 + 2 容器）。issue #527
@@ -1313,7 +1313,7 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 
 `capabilities` 同样从不进引擎：展开会把它删掉，所以 `effectiveOptions`——以及
 `normalizeRunToolLoopOptions`（`src/loop/option-normalization.js`）返回的 `explicitOptions`——
-里只剩扁平键（上面那 9 个叶子走 `capabilitySlots` 侧信道，不会变成扁平键）。装配口的 `policy`
+里只剩扁平键（上面那 11 个叶子走 `capabilitySlots` 侧信道，不会变成扁平键）。装配口的 `policy`
 同样接受 `capabilities`，于是两条入口路线共用这一次展开，`via` 标签负责说明是哪条路线抛的。
 
 #### `capabilities.ports`（issue #498 S4c）
@@ -3677,11 +3677,11 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 等事实。任务是否完成、交付物是否满足要求、能否自动进入下游，仍由宿主、测试系统或人工
 审核决定。
 
-### `finalGuard` 载荷：既有 7 键 + 12 个加法事实（issue #386）
+### `finalGuard` 载荷：既有 7 键 + 15 个加法事实（issue #386）
 
 payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的 7 个键
 （`finalText`、`findings`、`messages`、`round`、`rounds`、`signal`、`termination`）是原有契约：
-名字、类型、**顺序**与取值一律不变。其后是 12 个**加法**键，每个都只在引擎真读得到那份事实时才写
+名字、类型、**顺序**与取值一律不变。其后是 15 个**加法**键，每个都只在引擎真读得到那份事实时才写
 ——**缺席就是「没探到 / 没提供」的信号**，绝不用 `null`、`0`、`""` 或 `{}` 冒充：
 
 | 键 | 类型 | 含义 | 上限 |
@@ -5872,13 +5872,13 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 
 | 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
 |---|---|---|---|
-| `transcript-store.js`（28 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束），以及 \u2014\u2014 issue #739 起 \u2014\u2014 **可选能力守卫账本**：每个可选能力组（run snapshot、run-state、`loadRunStateStatus`、`loadRawRows`、#157 探针）都逐格设守卫，并由每个 label 一条收尾用例核对：缺席 = \u201c跳过**且逐格记为 skipped**\u201d，在场 = \u201c每个守卫格都跑到断言且方法真的被调过\u201d \u2014\u2014 只实现必需面的 store 能整套通过，而悄悄删掉某个原本有的可选实现会红，不再躲在守卫里） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
+| `transcript-store.js`（28 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束），以及 \u2014\u2014 issue #739 起 \u2014\u2014 **可选能力守卫账本**：每个可选能力组（run-state、`loadRunStateStatus`、`loadRawRows`、#157 探针）都逐格设守卫，并由每个 label 一条收尾用例核对：缺席 = \u201c跳过**且逐格记为 skipped**\u201d，在场 = \u201c每个守卫格都跑到断言且方法真的被调过\u201d \u2014\u2014 只实现必需面的 store 能整套通过，而悄悄删掉某个原本有的可选实现会红，不再躲在守卫里） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
 | `notes-store.js`（9 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错）、带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失，以及 issue #265 新增：空 `filters.state` 数组与非法 `filters.source` 必须拒、revoke 墓碑上 `revoked_at`/`revoke_reason` 可见、`purge` 的 `scanned` 是 scope 数且 `before` 只能缩小窗口 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言。#265 新增只断言 typedef 早已承诺的行为，但它们是发布面上的新断言：宿主适配器曾静默忽略其中任何一条，升级后就会冒新红 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`、`/filters\.state/`、`/filters\.source/`）、保留期/purge 时机 |
 | `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
 | `assembly-port.js`（5 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项在**直连路线**上覆盖端口自带的 provider，`assemblyPortOptions(port, { provider })` 在**覆盖通道**上被启动期拒绝（issue #498），缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（直连路线上显式选项胜过端口）、覆盖通道的冲突文案、启动校验的错误文案 |
 | `execute-tool.js`（7 条）+ `executeToolMigrationContract`（2 条） | 你的执行器恰好收到一个结构化执行对象，且每种规范返回形态（`string`、`{content, metadata, success}`、遗留的 `{data}`、返回的 `Error`、抛出的 `Error`）都变成文档规定的 `tool_result` | 调用形状与返回形状。迁移套件还额外证明：裸的位置参数 `(name, input)` 执行器是被**拒绝**的，不是被静默支持 | 这些断言是通过 `runToolLoop` 的 provider 请求观测到的，而不是通过某个公开结果字段 |
 | `model-config-provider.js`（4 条） | `resolve()` → default 槽，`resolve(slot)` → 具名槽，`apiKey` 间接引用物化（ADR-001），以及按 provider 形态分别陈述的「未知槽名」答案（issue #518）：槽位图形态（static / json-file）必须**抛错**，错误点名该未知槽名并列出可用槽位，**不许回落 default**；单配置形态则任何槽名都返回同一份配置——这是形态差异，不是「未知槽名回落 default」 | 你的 provider 的槽位解析与 key 物化，外加它必填的未知槽形态声明 | 没有任何引擎侧内容：它从不加载引擎 |
-| `engine-api.js`（2 条） | 包入口把 `appendUserTurn` 与 `projectTranscriptForDisplay` 导出为函数，且 `appendUserTurn` 在一个最小 store stub 上完成一次预写（含 `dedupKey`/`roundKey` 形状，以及这次预写能喂给展示投影） | 无 —— 这是入口面的哨兵；上游某次 bump 重命名或删掉引擎 API 时它会变红 | 预写记录的确切形状（`round: 0`、`dedupKey`、`roundKey`、`ts`） |
+| `engine-api.js`（6 条） | 包入口把 `appendUserTurn` 与 `projectTranscriptForDisplay` 导出为函数，`parseReflectionDecision` 返回带 `via` 来源标记的对象（issue #305），`parseModelJson` 失败三态可分且失败结果不带 `value`（issue #307），`normalizeModelJson`（异步、带兜底）与同步 L0 的 `parseModelJson` 分工不混（issue #406），以及槽位→provider 的构造件 `loadModelSlot` + `createProviderForSlot`（issue #406 C-a）；`appendUserTurn` 还在一个最小 store stub 上完成一次预写（含 `dedupKey`/`roundKey` 形状，以及这次预写能喂给展示投影） | 无 —— 这是入口面的哨兵；上游某次 bump 重命名或删掉引擎 API 时它会变红 | 预写记录的确切形状（`round: 0`、`dedupKey`、`roundKey`、`ts`） |
 | `termination-payload.js`（4 条） | `failed` 终局携带 `termination.errorCode`（分类透传、`unknown` 回落），abort 抛错携带 `usage`/`rounds`/`finalText` 与 `termination.partial`，累计 usage 按轮归属，成功路径保持旧形状（不会凭空冒出 `errorCode`/`partial`/`usage`） | 不直接对应 —— 它是你宿主侧裁决表的回归网（issue #170 / #176 / #180） | 被打桩的 provider 脚本、`usage` 的「零值 vs 缺字段」规则 |
 
 ### 宿主接线规则
