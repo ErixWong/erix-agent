@@ -119,7 +119,11 @@ function seenTexts(provider) {
 test("#657-6 成功的 fold-llm 折叠：`foldedFacts.text` 不含任务原文，且等于交给上下文的那份累计摘要", async () => {
   const provider = makeProvider({ toolTurns: 4, summaryBytes: 400 });
   const { folds } = await runChain({ runId: "657-6-success", provider });
-  assert.equal(folds.length, 1, `前置：本夹具恰好折一次（实测 ${folds.length}）`);
+  // issue #873（旧语义→新语义）：旧语义 `keepRounds: 0` 一次把所有可折轮折光⇒只留一份
+  // foldedFacts。新语义每折只折到预算×`FOLD_TARGET_RATIO`(0.65)，run 继续长⇒下一轮再超⇒
+  // 再折一次⇒**分阶段折 2 次**（都是真 fold-llm：round4 折 1–2、round5 折 3–4，非同一轮兵底，
+  // 而是新一轮内容再超预算的正常再触发，设计允许）。下面只取 folds[0]（首折），契约断言逐字不动。
+  assert.equal(folds.length, 2, `本夹具新语义下分阶段折两次（实测 ${folds.length}）`);
   assert.ok(provider.summaryCalls() >= 1, "前置：走的是真摘要器那条路（否则测的是降级分支）");
 
   const { facts } = folds[0];

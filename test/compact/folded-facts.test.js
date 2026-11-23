@@ -98,12 +98,15 @@ const foldRoundRecords = (records) => records.filter((record) => (
 
 test("#470-1 fold-statistical（零 LLM）：替代物落进轮记录，含范围句 + 工具足迹", async () => {
   const store = createMemoryTranscriptStore();
-  const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")] });
+  // issue #873：原 1 个 tool 轮 + budget 300⇒引擎第 1 轮就触发压缩但只有 1 轮⇒新语义
+  // keepRounds:0 留 1 不折⇒无 foldedFacts。改 2 个 tool 轮 + budget 450（>1轮 364 ⇒
+  // 第 1 轮不触发；<2轮 524 ⇒ 第 2 轮触发时折最老那 1 轮）。
+  const provider = createProvider({ mainScript: [toolTurn("a"), toolTurn("b"), endTurn("收尾结论")] });
   await runToolLoop(withSeed(runOptions("470-statistical", store, provider, {
-    budgetTokens: 300,
+    budgetTokens: 450,
     keepRounds: 0,
     strategy: "fold-statistical",
-  })));
+  }, { maxRounds: 3 })));
 
   // 前置：这条路真的没调过任何 LLM 摘要器（否则「零 LLM 也有替代物」是空断言）。
   assert.equal(provider.summaryCalls, 0, "本用例必须全程零 LLM 摘要调用");
@@ -132,12 +135,14 @@ test("#470-3 下界锁（issue #661 反转）：summarizer 必然失败 ⇒ run 
   // run 也不再「看起来跑完了」。
   const store = createMemoryTranscriptStore();
   summaryCalls = 0;
-  const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")], failSummary: true });
+  // issue #873：同 #470-1——budget 300 下第 1 轮就超⇒新语义折 0 轮⇒摘要器不调。改 2 个
+  // tool 轮 + budget 450 使第 2 轮触发时真折最老轮并调摘要器。
+  const provider = createProvider({ mainScript: [toolTurn("a"), toolTurn("b"), endTurn("收尾结论")], failSummary: true });
   const failure = await runToolLoop(withSeed(runOptions("470-degrade", store, provider, {
-    budgetTokens: 300,
+    budgetTokens: 450,
     keepRounds: 0,
     strategy: "fold-llm",
-  }))).then(
+  }, { maxRounds: 3 }))).then(
     () => assert.fail("摘要器失败必须让 run 以 failed 终局"),
     (error) => error,
   );

@@ -123,11 +123,15 @@ test("#565-1 fold-statistical（零 LLM）：origin === mechanical，summary 缺
   await runDirect({
     provider: makeProvider(),
     executeTool: async () => `tool output ${"z".repeat(400)}`,
-    maxRounds: 2,
+    // issue #873：maxRounds:2 ⇒ 引擎只在 1 轮在场时查一次（budget 300 下第 1 轮就超），新语义
+    // keepRounds:0 留 1 不折⇒折的其实是 sliding-window fallback（source=strategy）。提到
+    // maxRounds:3 + budget 450（>1轮 364 ⇒第 1 轮不触发；<2轮 524 ⇒第 2 轮触发）⇒
+    // fold-statistical 真的折最老轮⇒source=statistical。断言逐字未动。
+    maxRounds: 3,
     completion: false,
     reflection: false,
     config: {
-      folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-statistical" } },
+      folding: { context: { budgetTokens: 450, keepRounds: 0, strategy: "fold-statistical" } },
     },
     store,
     runId: "565-mechanical",
