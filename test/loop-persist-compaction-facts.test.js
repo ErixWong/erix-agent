@@ -78,13 +78,16 @@ const toolUse = (id) => ({ type: "tool_use", id, name: "work", input: { path: `s
 const toolTurn = (id) => ({ content: [toolUse(id)], stopReason: "tool_use" });
 const endTurn = (value) => ({ content: [{ type: "text", text: value }], stopReason: "end_turn" });
 
-const foldContext = { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" };
+// issue #873：budget 300 ⇒ 引擎第 1 轮就触发但只有 1 轮⇒新语义 keepRounds:0 留 1 不折
+// ⇒fold-llm 不调摘要器⇒无 foldedSummary。提到 450（>1轮364、<2轮524⇒隔一轮触发）。
+// 各用例 mainScript 同步补到 ≥2 个 tool 轮。断言逐字未动。
+const foldContext = { budgetTokens: 450, keepRounds: 0, strategy: "fold-llm" };
 const bigToolOutput = (id) => `tool output for ${id} ${"z".repeat(400)}`;
 
 const foldRunOptions = (runId, store, provider, extra = {}) => ({
   provider,
   executeTool: async ({ id }) => bigToolOutput(id),
-  maxRounds: 2,
+  maxRounds: 3,
   completion: false,
   reflection: false,
   config: { folding: { context: foldContext } },
@@ -95,7 +98,7 @@ const foldRunOptions = (runId, store, provider, extra = {}) => ({
 
 test("#326-C fold-llm 摘要：实际喂出去的那份在 store.load() 里读得到（memory store）", async () => {
   const store = createMemoryTranscriptStore();
-  const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")] });
+  const provider = createProvider({ mainScript: [toolTurn("a"), toolTurn("b"), endTurn("收尾结论")] });
   await runDirect(foldRunOptions("326c-fold", store, provider, {
     initialUserMessage: `start ${"y".repeat(600)}`,
   }));
@@ -120,7 +123,7 @@ test("#326-C fold-llm 摘要：实际喂出去的那份在 store.load() 里读�
 test("#326-C fold-llm 摘要：file store（真落盘 JSONL）里也读得到，且带可指认的折叠身份", async () => {
   const dir = await makeTmp("erix-326c-fold-file-");
   const store = createFileTranscriptStore({ dir });
-  const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")] });
+  const provider = createProvider({ mainScript: [toolTurn("a"), toolTurn("b"), endTurn("收尾结论")] });
   await runDirect(foldRunOptions("326c-fold-file", store, provider, {
     initialUserMessage: `start ${"y".repeat(600)}`,
   }));
@@ -132,7 +135,7 @@ test("#326-C fold-llm 摘要：file store（真落盘 JSONL）里也读得到，
   assert.equal(entry.folded, undefined, "事实行不占用 `folded`：那个键的既有含义是「本条轮记录所在的轮被折过」");
   assert.equal(entry.foldedRoundRange, undefined,
     "事实行不放顶层 foldedRoundRange：resume 的 foldedThrough 按这个键统计，重复一份会把同一区间数两遍");
-  assert.deepEqual(entry.foldedSummary.foldedRoundRange, { from: 1, to: 1 }, "「覆盖了哪些轮」在事实体里说清");
+  assert.deepEqual(entry.foldedSummary.foldedRoundRange, { from: 1, to: 2 }, "「覆盖了哪些轮」在事实体里说清");
   assert.equal(typeof entry.foldedSummary.fingerprint, "string", "必须带复用键（fingerprint）");
   assert.match(entry.foldedSummary.fingerprint, /^sha256:[0-9a-f]{12,}$/u);
   assert.equal(typeof entry.foldedSummary.strategy, "string");
@@ -140,19 +143,20 @@ test("#326-C fold-llm 摘要：file store（真落盘 JSONL）里也读得到，
 
 test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，用的就是已入账那份", async () => {
   const store = createMemoryTranscriptStore();
-  // 崩溃现场：折叠发生在轮 2 圈顶，而轮 2 的模型调用直接抛 ⇒ 轮 2 的记录没写成。
-  const first = createProvider({ mainScript: [toolTurn("a"), { throw: new Error("boom: 轮 2 的模型调用炸了") }] });
+  // 崩溃现场（#873：夹具补到 2 个 tool 轮，崩溃轮从轮 2 移到轮 3）：折叠发生在轮 3 圈顶，
+  // 而轮 3 的模型调用直接抛 ⇒ 轮 3 的记录没写成（轮 2 = tool b 已正常落盘）。
+  const first = createProvider({ mainScript: [toolTurn("a"), toolTurn("b"), { throw: new Error("boom: 轮 3 的模型调用炸了") }] });
   await assert.rejects(() => runDirect({
     ...foldRunOptions("326c-fold-resume", store, first, {
       initialUserMessage: `start ${"y".repeat(600)}`,
       maxRounds: 5,
       executeTool: async ({ id }) => bigToolOutput(id),
     }),
-  }), /boom: 轮 2/u);
+  }), /boom: 轮 3/u);
   assert.equal(first.summaryCalls, 1, "基线：一次折叠摘要");
   assert.equal((await store.load("326c-fold-resume"))
-    .filter((record) => (record.round ?? 0) === 2 && (record.messages?.length ?? 0) > 0).length, 0,
-    "前置：轮 2 的轮记录确实没落盘（这才是「崩溃在折叠之后」的现场）");
+    .filter((record) => (record.round ?? 0) === 3 && (record.messages?.length ?? 0) > 0).length, 0,
+    "前置：轮 3 的轮记录确实没落盘（这才是「崩溃在折叠之后」的现场）");
 
   const recordsBefore = await store.load("326c-fold-resume");
   const journaledSummary = recordsBefore.find((record) => (
