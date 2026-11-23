@@ -3109,8 +3109,9 @@ What a host can observe, and what it must not conclude:
   working-set floor and the progress guarantee may override that. `keepRounds` is a **retention floor** (the
   most recent `max(keepRounds, MIN_KEEP_ROUNDS)` rounds are never folded), **not** a "fold until only N rounds
   remain" target. When there are no more rounds than the effective floor, nothing is folded and the
-  enforce-size safety layer takes over. Only when `budgetTokens` is absent does folding fall back to the
-  retention count (the unchanged legacy behavior), where `keepRounds: 0` still folds to zero.
+  enforce-size safety layer takes over. Only when there is no positive finite target (`targetTokens`
+  absent, zero, negative or non-finite) does folding fall back to the retention count (the unchanged
+  legacy behavior), where `keepRounds: 0` still folds to zero.
 
 ### Same-key payload conflicts (issue #326)
 

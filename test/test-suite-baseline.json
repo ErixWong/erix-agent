@@ -3,7 +3,7 @@
  "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
  "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
  "expect": {
-  "tests": 3958,
+  "tests": 3967,
   "fail": 0,
   "maxSkipped": 18
  },
@@ -1718,7 +1718,7 @@
    "skipped": 13,
    "todo": 0,
    "cancelled": 0,
-   "why": "**tests 3950 → 3958（净 +8）**：issue #873 把折叠目标从「按轮数」改成「按预算比例 `FOLD_TARGET_RATIO = 0.65`」并引入保留下限 `MIN_KEEP_ROUNDS = 5`，新增覆盖：目标落点按 token 计（一次折叠买回 ~5 轮）、`keepRounds: 0` + 目标不可达 ⇒ 恰好留 5 轮（不是折光）、`keepRounds: 6` 同理留 6、摘要开销由调用方声明 `summaryOverheadTokens` 的三策略各一格。没有删用例、没有加 skip。"
+   "why": "**tests 3950 → 3958（净 +8）**：issue #873 把折叠目标从「按轮数」改成「按预算比例 `FOLD_TARGET_RATIO = 0.65`」并引入保留下限 `MIN_KEEP_ROUNDS = 5`，新增覆盖：目标落点按 token 计（一次折叠买回 ~5 轮）、`keepRounds: 0` + 目标不可达 ⇒ 恰好留 5 轮（不是折光）、`keepRounds: 6` 同理留 6、摘要开销由调用方声明 `summaryOverheadTokens` 的三策略各一格。**再 +9（3958 → 3967）**：PR #893 审查后补的两格（`fold-llm` 保真层先进再统一限长 ⇒ 声明开销成真上界；`fold-statistical` 摘要开销回调改收**实际选中的轮索引**，非前缀集合也能算对）连同它们各自的边界格。没有删用例、没有加 skip。"
   },
   "261122 切 0.34.0：`test/version-state-probe-703.test.js` 整份挪到 `scripts/self-tests/version-state-probe-703.integration.js`（7 例随之离开默认套件，3957 → 3950）。理由不是「它红了就挪走」，而是它**本来就不该在默认套件里**：①它要联网（`npm view erix-agent`）读真 registry，离线/CI 环境读数不稳定；②它造**合成夹具树**来验证探针自己，判据对象是夹具而非任何会发出去的产物——切版时新增「未发布段 + 指南对」就会让夹具与真树形状打架，于是每次切版都必然红一次（本次实测）。现由 `npm run check:version-state-probe` 显式跑，探针本身的判据一行没删。"
  ]

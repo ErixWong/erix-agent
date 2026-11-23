@@ -2493,7 +2493,8 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
   开始逐轮加入，一旦本地估算（含摘要块开销）降到 `FOLD_TARGET_RATIO`（0.65）× `budgetTokens` 及以下就停；
   工作集地板与进度保证仍可覆盖它。`keepRounds` 是**保留下限**（最近 `max(keepRounds, MIN_KEEP_ROUNDS)` 轮永不折），
   **不是**「折到只剩 N 轮」的目标。轮数不超过有效下限时一轮都不折，交给 enforce-size 安全层。只有没有
-  `budgetTokens` 时才退回保留轮数口径（逐字沿用旧行为），那里 `keepRounds: 0` 仍折到 0。
+  **正的有限目标**（`targetTokens` 缺席、为零、为负或非有限值）时才退回保留轮数口径（逐字沿用旧行为），
+  那里 `keepRounds: 0` 仍折到 0。
 
 ### 同 key 异 payload 的冲突（issue #326）
 

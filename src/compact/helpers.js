@@ -236,8 +236,10 @@ export function suggestedBudgetTokens(tokens) {
  *
  * 块是 `messages` 里的一条真 user 消息（#568 的实现前提：这样它才天然计入本地估算），
  * 于是它和普通消息一样会落进「被折轮次」的候选范围。`keepRounds >= 1` 时它在尾部、折不到；
- * **`keepRounds: 0` 时 `target = rounds.length - keepRounds` 会把包括尾部在内的全部轮次选中**
- * ⇒ 块正文进 `foldedPayload` 归档与 `summarizeFoldedPayload` 摘要。两层后果：
+ * **旧口径（无正有限目标）下 `keepRounds: 0` 会让 `target = rounds.length - keepRounds` 把包括尾部
+ * 在内的全部轮次选中** ⇒ 块正文进 `foldedPayload` 归档与 `summarizeFoldedPayload` 摘要。新口径
+ * （issue #873）不受这条影响：有效保留下限是 `max(keepRounds, MIN_KEEP_ROUNDS)`，尾部那几轮永不折。
+ * 两层后果：
  *   ① **取证面污染** —— 归档/摘要里出现「上一版续接块」的正文，读者分不清那是历史事实还是
  *      当前状态的旧快照（#564/#565/#566 那一轮修的就是这个病）；
  *   ② 体积放大 —— 块按预算可到 1200 token。
@@ -622,7 +624,8 @@ export function foldOptions(factoryOptions, callOptions = {}) {
     stubFor: optionValue(callOptions, factoryOptions, "stubFor"),
     onLayer: optionValue(callOptions, factoryOptions, "onLayer"),
     // issue #608：工作集地板（最近 N 个带 `tool_result` 的轮次不折）。默认 `0` = 关闭：
-    // 直接调策略的既有判据（`keepRounds: 0` ⇒ 全折）逐字不变；引擎在 `compactOptions` 里显式
+    // 直接调策略的既有判据逐字不变（旧口径下 `keepRounds: 0` ⇒ 全折；issue #873 的新口径另有
+    // `MIN_KEEP_ROUNDS` 硬下限，与本地板无关）；引擎在 `compactOptions` 里显式
     // 开成 `WORKING_SET_RECENT_ROUNDS`。
     workingSetRecentRounds: optionValue(
       callOptions,

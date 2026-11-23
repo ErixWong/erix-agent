@@ -1,6 +1,7 @@
 // issue #873 验收阻断（PR #893）—— 折叠目标的两处语义修正的判据。
 //
-// 阻断 ①（`keepRounds: 0` + 目标不可达 ⇒ 必须留恰好 1 轮，不许把所有轮折光）与
+// 阻断 ①（目标不可达 ⇒ 必须留恰好 `MIN_KEEP_ROUNDS` 轮，不许把所有轮折光；下限从 1 抬到 5 是
+// 用户裁决「留 1 轮等于没留」，见 `src/compact/helpers.js` 的 `MIN_KEEP_ROUNDS`）与
 // 阻断 ②（摘要开销改由调用方声明 `target.summaryOverheadTokens`，三策略各按真实来源传）：
 //   · fold-llm      ⇒ 传它自己配置的 `maxSummaryTokens`（模型摘要 ≤ 该上限）；
 //   · fold-statistical ⇒ 传它**实际会拼出来的那份**机械摘要（含 inventory / stubs /
