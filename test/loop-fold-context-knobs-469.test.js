@@ -59,7 +59,11 @@ function createFakeProvider({ summaryText = LONG_SUMMARY, summaryChat } = {}) {
   return provider;
 }
 
-/** 多轮折叠：每轮都产出一段足够长的历史，`keepRounds:0` ⇒ 每轮都折。 */
+/** 多轮折叠：每轮都产出一段足够长的历史，`keepRounds:0` ⇒ 每轮都折。
+ * issue #873：budget 从 300 提到 450——旧值下引擎第 1 轮就触发压缩但只有 1 轮在场，
+ * 新语义 keepRounds:0 留 1 不折⇒fold-llm 根本不调摘要器。450 > 1轮(364) ⇒第 1 轮不触发，
+ * <2轮(524) ⇒隔一轮触发一次；maxRounds 同步提到 6 保证累计能折≥两次（续写基底/默认对齐等
+ * 断言需要两次）。 */
 function runFolding(provider, context, extra = {}) {
   // #498 S3（`tuning` A5）：扁平 `maxTokens` 已退役（家 = `config.tuning.maxTokens`）。本函数是这一族
   // 格子的**唯一** run 装配点，所以「run 级输出预算」在夹具里收成一个 `tuning` 入参，由它并进
@@ -70,11 +74,11 @@ function runFolding(provider, context, extra = {}) {
     provider,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-    maxRounds: 4,
+    maxRounds: 6,
     completion: false,
     wrapup: false,
     config: {
-      folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", ...context } },
+      folding: { context: { budgetTokens: 450, keepRounds: 0, strategy: "fold-llm", ...context } },
       ...(tuning === undefined ? {} : { tuning }),
     },
     store: createMemoryTranscriptStore(),
