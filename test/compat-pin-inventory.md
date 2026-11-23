@@ -779,7 +779,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli-idle.test.js` | 10 | `prompt`×5, `session`×5 |
 | `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1 |
 | `test/loop-governance-switch-cells.test.js` | 10 | `completion`×4, `reflection`×4, `wrapup`×2 |
-| `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `resume`×1, `strategy`×1 |
+| `test/loop-persist-compaction-facts.test.js` | 9 | `completion`×3, `reflection`×3, `strategy`×2, `resume`×1 |
 | `test/loop-resume-unpersisted-tool-results.test.js` | 8 | `resume`×4, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-tool-list.test.js` | 9 | `tools`×7, `prompt`×2 |
 | `test/loop-resume-fold-immunity.test.js` | 2 | `tools`×2 |
