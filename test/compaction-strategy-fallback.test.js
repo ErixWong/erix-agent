@@ -425,13 +425,17 @@ test("#657 真值表前两行：配置策略真的折了 ⇒ 仍写配置名（�
   // 行 1：配置策略折了、兜底没折。
   const rowOne = await runFoldLlmChain({
     runId: "657-row-one",
-    budgetTokens: 1200,
+    // issue #873 新语义：`keepRounds: 0` 时「至少留 1 轮」是硬下限，单轮上下文折叠后必须留那 1 轮
+    // ⇒ 若触发点只有 1 轮可折，配置策略会折 0 轮、交兜底（这是设计允许的地板，不是回归）。
+    // 旧夹具用 `toolBytes: 9000` 让首轮即爆预算 ⇒ 触发时恰好只有 1 轮 ⇒ 配置策略从没真折（旧语义会折光那
+    // 1 轮才调摘要器）。改成多轮累积到触发点的形状（小 toolBytes + 相应预算），让配置的 fold-llm 真的折。
+    budgetTokens: 1000,
     keepRounds: 0,
     foldAtRatio: 1,
     toolTurns: 4,
-    toolBytes: 9000,
-    seedBytes: 200,
-    summaryBytes: 400,
+    toolBytes: 600,
+    seedBytes: 1500,
+    summaryBytes: 200,
   });
   assert.ok(rowOne.compactions.length >= 1, "前置：这一格必须真的折叠");
   assert.ok(rowOne.provider.summaryCalls() >= 1, "前置：配置的 fold-llm 真的跑了摘要器（它折了）");

@@ -150,9 +150,14 @@ const requestedBlocks = (provider) => provider.mainRequests
 test("#738-A 写侧自证：fedSummaryText 在真实请求里对得上，而 .summary 从来没有作为整块 fed 过", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createProvider({
+    // issue #873（旧语义→新语义）：旧语义 `keepRounds: 0` = 折到只剩 0 轮 ⇒ 只有 1 轮也折光、才调得起
+    // 摘要器。新语义 `keepRounds: 0` 有「至少留 1 轮」硬下限 ⇒ 若第一次折叠就落在只有 1 轮可折的触发点，
+    // `fold-llm` 折 0 轮、一次都不发摘要（本切片要证的 fedSummaryText 那一格根本不出现）。本夹具预算
+    // 从 `300` 抬到 `500`：种子 + 1 工具轮（≈357 token）不再立刻越线，第一次折叠推迟到有 2 轮可折时
+    // 才发生 ⇒ 配置策略真的折、真的调摘要器、真的落 `fedSummaryText`。工具轮 / 崩溃轮 / 全部契约断言逐字不变。
     mainScript: [toolTurn("a"), toolTurn("b"), { throw: new Error("boom: 崩在折叠之后") }],
   });
-  await assert.rejects(() => runToolLoop(options("738-exact", store, provider, { budgetTokens: 300 })),
+  await assert.rejects(() => runToolLoop(options("738-exact", store, provider, { budgetTokens: 500 })),
     /boom: 崩在折叠之后/u);
   const facts = factsOf(await store.load("738-exact"));
   assert.equal(provider.summaryCalls >= 1, true, "前置：`fold-llm` 必须真跑过摘要器");
