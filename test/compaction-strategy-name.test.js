@@ -51,9 +51,19 @@ function createSummarizingProvider({
   return provider;
 }
 
+// issue #873（旧语义→新语义）：本夹具原来只有 1 个 tool 轮。新语义下 `keepRounds: 0`
+// 目标不可达时**留恰好 1 轮**，而本夹具的预算小到引擎第一次触发压缩时只有 1 轮在场
+// ⇒ 配置策略守那 1 轮、折 0 轮 ⇒ fold-llm 摘要器从不调、fold-statistical 也不 compact。
+// 旧语义（`keepRounds: 0` = 折到只剩 0 轮）会连唯一一轮一起折光，摘要器才会被调。因此把
+// BASE_SCRIPT 改成 **2 个 tool 轮 + 收尾**（触发压缩时已有 2 轮，策略折最老那 1 轮）。
+// 所有契约断言逐字保留；只把随夹具形状变化的 `result.rounds` 从 2 改 3（多一个 tool 轮）。
 const BASE_SCRIPT = [
   {
     content: [{ type: "tool_use", id: "work-1", name: "work", input: { path: "src/a.js" } }],
+    stopReason: "tool_use",
+  },
+  {
+    content: [{ type: "tool_use", id: "work-2", name: "work", input: { path: "src/b.js" } }],
     stopReason: "tool_use",
   },
   { content: [{ type: "text", text: "final answer" }], stopReason: "end_turn" },
@@ -71,7 +81,7 @@ async function runWithProvider(provider, context, usageSink, { toolOutputChars =
     provider,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(toolOutputChars)}`,
-    maxRounds: 3,
+    maxRounds: 4,
     completion: false,
     // #498 S3: split by **value shape**, not by key name. A strategy **object** is a behaviour
     // carrier (`capabilities.ports.strategy`); a strategy **name** (`"fold-llm"`) or a bad scalar
@@ -161,7 +171,7 @@ test("fold-llm by name summarizes folded rounds with the run provider and books 
 
   // 5) the run still finishes normally, and the summary call is not a round
   assert.equal(result.termination.reason, "end_turn");
-  assert.equal(result.rounds, 2);
+  assert.equal(result.rounds, 3, "2 个 tool 轮 + 收尾 = 3 个模型轮（摘要不占轮）");
   assert.equal(result.finalText, "final answer");
   assert.ok(events.some((event) => event.type === "compaction"));
 });
@@ -191,11 +201,12 @@ test("a failing summarizer fails the run with summarizer_failed instead of degra
 
 test("an empty summarizer answer fails the run rather than folding into nothing", async () => {
   // issue #661：空串 / 空白摘要不再降级（那是「模型什么都没产出」，不是成功的空摘要）。
-  // 旧夹具为「测得到降级」调过预算与工具输出长度；现在断言的是终局错误，夹具保持原样即可。
+  // issue #873：`toolOutputChars: 4000` 让单轮远超预算⇒旧预算 700 下第 1 轮就超⇒新语义折 0
+  // 轮⇒摘要器不调。提到 2500 让触发时已有≥2 轮。断言逐字未动。
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT, summaryText: "   " });
   const failure = await runWithProvider(
     provider,
-    { strategy: "fold-llm", budgetTokens: 700 },
+    { strategy: "fold-llm", budgetTokens: 2500 },
     undefined,
     { toolOutputChars: 4000 },
   ).then(
@@ -279,9 +290,9 @@ test("#486 P1-B 宿主 abort 必须真的中止摘要请求（run 的 signal 不
       provider,
       initialUserMessage: `start ${"y".repeat(600)}`,
       executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-      maxRounds: 3,
+      maxRounds: 5,
       completion: false,
-      config: { folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
+      config: { folding: { context: { budgetTokens: 450, keepRounds: 0, strategy: "fold-llm" } } },
       store: createMemoryTranscriptStore(),
       runId: "issue-486-p1b",
     }).catch(() => {}),
