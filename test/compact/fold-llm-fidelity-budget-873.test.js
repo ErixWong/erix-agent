@@ -100,7 +100,7 @@ test("夹具：本折确实产出保真层，且它单独就大于 summaryBudget
   );
 });
 
-test("夹具：旧顺序的落点必然破目标（保留部分 + 声明开销 + 保真层 > 目标）", async () => {
+test("夹具：旧顺序把保真层躲在预算外 ⇒ 落点高于目标（用声明上限作模型摘要的保守替身）", async () => {
   const messages = roundFixture();
   const result = await makeStrategy().compact(messages, {
     budgetTokens: BUDGET,
@@ -120,10 +120,13 @@ test("夹具：旧顺序的落点必然破目标（保留部分 + 声明开销 +
   ]);
   // 新口径成立：保留部分 + 声明开销 ≤ 目标 ⇒ 选择器按声明停手是安全的。
   assert.ok(keptEstimate + SUMMARY_BUDGET <= TARGET, "新口径：声明开销下落点在目标内");
-  // 旧顺序的落点：保留部分 + 夹断后的模型摘要 + 躲在预算外的保真层 ⇒ 必破目标。
+  // 旧顺序的落点：保留部分 + 夹断后的模型摘要 + 躲在预算外的保真层。
+  // ⚠ 这里用**声明上限** `SUMMARY_BUDGET` 当模型摘要的替身（夹具里的假 provider 只回固定串，
+  // 量不到真实摘要长度）⇒ 本格证明的是「保真层在预算外时，即便模型摘要顶到上限也只是刚好越线」，
+  // **不是**「任何旧顺序落点都破目标」。真正钉住顺序回归的是本文件那格「最终摘要 ≤ summaryBudget」。
   assert.ok(
     keptEstimate + SUMMARY_BUDGET + estimateTokens(fidelity) > TARGET,
-    "旧顺序（保真层在预算外）的落点必须高于目标，否则这一格钉不住被修的 bug",
+    "旧顺序（保真层在预算外）在模型摘要顶到上限时落点高于目标",
   );
 });
 

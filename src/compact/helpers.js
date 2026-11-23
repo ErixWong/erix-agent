@@ -286,7 +286,7 @@ export const MIN_KEEP_ROUNDS = 5;
 /**
  * 选「折哪些轮」。两种口径：
  *
- *   ① **旧口径（`target.targetTokens` 缺席 / 非正数）**：折到只剩 `keepRounds` 轮
+ *   ① **旧口径（没有正的有限 `target.targetTokens`：缺席 / 0 / 负数 / `NaN` / `Infinity`）**：折到只剩 `keepRounds` 轮
  *      （`target = rounds.length - keepRounds`）。库消费者直接调 `compact`（不传 `budgetTokens`）
  *      逐字走这一支——这是 issue #873 的**反向证 A**：没有预算就没有「折到某比例」可言。
  *
@@ -315,7 +315,7 @@ export const MIN_KEEP_ROUNDS = 5;
  * @param {number} [workingSetRecentRounds] 工作集地板（#608）
  * @param {{ targetTokens?: number, headMessages?: any[],
  *   summaryOverheadTokens?: number | ((foldedCount: number, foldedIndexes: number[]) => number) }} [target]
- *   按 token 目标折的入参；`targetTokens` 非正数 ⇒ 退回旧口径；`summaryOverheadTokens` = 摘要开销上界（缺席 ⇒ `0`；
+ *   按 token 目标折的入参；`targetTokens` 不是正的有限数 ⇒ 退回旧口径；`summaryOverheadTokens` = 摘要开销上界（缺席 ⇒ `0`；
  *   回调形态拿到的第二参是**实际选中**的轮索引，不是前缀）
  * @returns {{ folded: any[], retained: any[], foldedIndexes: number[] }}
  */
@@ -389,7 +389,9 @@ export function selectFoldedRounds(
   const effectiveKeep = Math.max(keepRounds, MIN_KEEP_ROUNDS);
   const keepFloor = Math.max(0, rounds.length - effectiveKeep);
   /** @type {any[]} */ const headMessages = Array.isArray(target?.headMessages) ? target.headMessages : [];
-  // 摘要开销上界由调用方声明（issue #873 验收阻断②）：`number | ((foldedCount)=>number)`；
+  // 摘要开销上界由调用方声明（issue #873 验收阻断②）：
+  // `number | ((foldedCount: number, foldedIndexes: number[]) => number)`——第二个参数是**实际选中**的
+  // 折叠轮索引（升序），回调据此算「真要拼出来的那份摘要」，不要假定它是前 N 轮；
   // 缺席 ⇒ `0`（= 调用方声明这次折叠没有摘要开销）。本函数不再自己调机械摘要去猜。
   const summaryOverheadTokens = target?.summaryOverheadTokens;
 
