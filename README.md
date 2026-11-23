@@ -748,8 +748,11 @@ decide whether to consume the result.
   `modelMetadata`, `model`, `provider`, or `context`. When a strategy is active,
   compaction folds the **oldest** rounds first until its local estimate (including
   the fold-summary overhead) falls to 65% of `budgetTokens` or below (issue #873);
-  `keepRounds` (default 6) is a **retention floor** — the most recent `keepRounds`
-  rounds are never folded — not the fold target. When `budgetTokens` is absent, it
+  `keepRounds` (default 6) is a **retention floor** whose **minimum effective value is
+  5** (`MIN_KEEP_ROUNDS`, issue #873 — keeping one round is the same as keeping none) — the most recent
+  `max(keepRounds, 5)` rounds are never folded, so `keepRounds: 0` folds as if 5 rather than folding
+  everything — and it is not the fold target. When there are no more rounds than the effective floor,
+  nothing is folded and the enforce-size safety layer takes over. When `budgetTokens` is absent, it
   folds to keep `keepRounds` rounds (unchanged legacy behavior). A task brief takes
   precedence
   in this order: explicit `task`, `context.task`, then the last user message

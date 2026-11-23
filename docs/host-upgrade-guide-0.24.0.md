@@ -612,8 +612,10 @@ verify anything — **so a host whose tools have side effects should still make 
 its own side** (a key, a lock, a dedupe table). That gap is open, not covered by this release.
 
 **Two boundaries worth knowing.** The notice is the newest round, so the default `keepRounds` (6) keeps it
-unfolded; with an aggressive compaction configuration (e.g. `keepRounds: 0`) it can be folded into the
-summary in the very same turn and the model reads the summary instead. And a resume that has to
+unfolded; and since budget-relative folding treats `keepRounds` as a retention floor with a **minimum
+effective value of 5** (`MIN_KEEP_ROUNDS`, issue #873 — keeping one round is the same as keeping none), even
+an aggressive `keepRounds: 0` keeps the newest round in the retained window rather than folding it into the
+summary. And a resume that has to
 re-summarize does so **once**: the notice changes the fold input, so the journaled-summary reuse of #326
 can miss — it must not re-summarize per round.
 

@@ -270,6 +270,18 @@ function roundHoldsContinuityBlock(round) {
 export const FOLD_TARGET_RATIO = 0.65;
 
 /**
+ * 保留轮次的**硬下限**（issue #873 用户裁决）：无论 `keepRounds` 给多小（含 `0`），按预算比例
+ * 折叠后**至少**保留这么多轮。用户裁决「留 1 轮等于没留」——一次折叠若只剩 1 轮原文，等于把
+ * 整段工作历史压成摘要 + 一条尾巴，信息量与「全折光」几乎无差；因此把上一版的「至少留 1 轮」
+ * 上提到 5。
+ *
+ * 有效保留下限 = `max(keepRounds, MIN_KEEP_ROUNDS)`：`keepRounds: 0`（或 1–4）⇒ 实际按 5 算；
+ * `keepRounds: 6`（默认）⇒ 仍 6。`rounds.length <=` 有效下限 ⇒ 一轮都不折（没有可折的），交给
+ * enforce-size 安全层。`keepRounds: 0` 因此**不再**意味着「折光」。
+ */
+export const MIN_KEEP_ROUNDS = 5;
+
+/**
  * 选「折哪些轮」。两种口径：
  *
  *   ① **旧口径（`target.targetTokens` 缺席 / 非正数）**：折到只剩 `keepRounds` 轮
@@ -293,7 +305,7 @@ export const FOLD_TARGET_RATIO = 0.65;
  * **不把所有轮折光**；`budgetUnreachable` 仍由引擎既有的 enforce-size 口径如实上报（本函数不改它）。
  *
  * @param {object[]} rounds
- * @param {number} keepRounds 保留下限（新口径）/ 保留目标（旧口径）
+ * @param {number} keepRounds 保留下限（新口径，有效值 = `max(keepRounds, MIN_KEEP_ROUNDS)`，最小 5）/ 保留目标（旧口径）
  * @param {unknown} protectedMessage
  * @param {number} [workingSetRecentRounds] 工作集地板（#608）
  * @param {{ targetTokens?: number, headMessages?: any[],
@@ -361,21 +373,15 @@ export function selectFoldedRounds(
   // ── ② 新口径（issue #873）：按 token 目标折，从最老一轮逐轮加入，一旦满足目标立刻停 ──────
   // `keepRounds` 是**保留下限**（最近 keepRounds 轮永不折），不是「折到只剩这么多」。
   //
-  // 「至少留 1 轮」是**硬下限**（issue #873 验收阻断①）：`keepRounds: 0` 表示宿主显式选了
-  // 「不额外保留」，但**目标不可达**时（head 本身已超目标）仍必须留恰好 1 轮——否则
-  // `keepFloor = rounds.length` 会把**所有轮**折光，把语义表写死的「目标不可达时不许把
-  // 所有轮折光」变成「全部失忆」（一次失忆 → 全部失忆）。留一轮保证折叠后仍有一份
-  // **非摘要的原始轮次**在场。
-  //
-  // 实现上这是一个**上界**（`keepFloor ≤ len-1`，可折的永远是最老 `keepFloor` 轮）而不是
-  // `Math.max(1, …)`：`keepFloor` 是「可折轮数」的边界，`keepRounds: 0` 时 `len-keepRounds = len`
-  // 会把**全部**轮划为可折（正是本 bug）。取 `min(len-keepRounds, len-1)` 同时守住两条下限：
-  // `keepRounds≥１` 时等于旧的 `len-keepRounds`（留 keepRounds 轮），`keepRounds: 0` 时收缩到
-  // `len-1`（留恰好 1 轮），`len === 1` 时收缩到 `0`（一轮都不折）。
-  const keepFloor = Math.max(
-    0,
-    Math.min(rounds.length - keepRounds, rounds.length - 1),
-  );
+  // 硬下限是 `MIN_KEEP_ROUNDS`（issue #873 用户裁决「留 1 轮等于没留」）：**有效保留下限 =
+  // `max(keepRounds, MIN_KEEP_ROUNDS)`**。`keepRounds: 0`（或 1–4）⇒ 实际按 5 算；`keepRounds: 6`
+  // （默认）⇒ 仍 6。`keepFloor = max(0, len - effectiveKeep)` 是「可折轮数」的上界：`rounds.length
+  // <= effectiveKeep` ⇒ `keepFloor = 0` ⇒ 一轮都不折（没有可折的），交给 enforce-size 安全层。这条
+  // **替代**上一版的「至少留 1 轮」补丁（`min(len-keepRounds, len-1)`）——那版只保证留 1 轮，正是
+  // 用户否决的「留 1 轮等于没留」，不再需要 `Math.max(1, …)` 那种收缩。目标不可达时折到 `keepFloor`
+  // 为止 ⇒ 恰好留 `effectiveKeep` 轮（`keepRounds: 0` + 10 轮 ⇒ 留 5，不是 1、不是 10）。
+  const effectiveKeep = Math.max(keepRounds, MIN_KEEP_ROUNDS);
+  const keepFloor = Math.max(0, rounds.length - effectiveKeep);
   /** @type {any[]} */ const headMessages = Array.isArray(target?.headMessages) ? target.headMessages : [];
   // 摘要开销上界由调用方声明（issue #873 验收阻断②）：`number | ((foldedCount)=>number)`；
   // 缺席 ⇒ `0`（= 调用方声明这次折叠没有摘要开销）。本函数不再自己调机械摘要去猜。
