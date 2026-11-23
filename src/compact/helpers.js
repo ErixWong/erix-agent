@@ -294,8 +294,11 @@ export const MIN_KEEP_ROUNDS = 5;
  *      rounds.length - keepRounds` ⇒ 不可折），但它**不再是「折到只剩这么多」的目标**。
  *      判据口径与 `budget-fit.js` 的 `fits()` 一致（`估算 + estimateTokens(摘要) <= 阈值`）。
  *      摘要文本这一层还没生成 ⇒ 由调用方**声明**摘要开销上界 `target.summaryOverheadTokens`
- *      （`number | ((foldedCount)=>number)`），语义「这次折叠最多带进多少 token 的摘要」；缺席 ⇒
- *      按 `0` 处理（= 调用方声明没有摘要开销）。为何改接口而不是在本函数里猜（issue #873
+ *      （`number | ((foldedCount, foldedIndexes)=>number)`），语义「这次折叠最多带进多少 token 的摘要」；缺席 ⇒
+ *      按 `0` 处理（= 调用方声明没有摘要开销）。回调的第二参 `foldedIndexes` 是**此刻实际选中**的轮索引
+ *      （升序）：选择器折的不是连续前缀（保护轮 / 连续性块 / 工作集地板会被跳过），只给轮数会被回调
+ *      当成「前 N 轮」重建摘要 ⇒ 估算对象与实际被折轮次不符（issue #873，PR #893 copilot ②）。
+ *      为何改接口而不是在本函数里猜（issue #873
  *      验收阻断②）：三策略摘要来源各不相同（`fold-llm` 是模型写的、生成前拿不到长度；
  *      `fold-statistical` 是机械摘要但还拼 stubs / navigation / recovery hint / anchors；
  *      `sliding-window` 不往输入里 prepend 摘要），用「机械摘要」估 `fold-llm` 会**低估**（模型
@@ -309,8 +312,9 @@ export const MIN_KEEP_ROUNDS = 5;
  * @param {unknown} protectedMessage
  * @param {number} [workingSetRecentRounds] 工作集地板（#608）
  * @param {{ targetTokens?: number, headMessages?: any[],
- *   summaryOverheadTokens?: number | ((foldedCount: number) => number) }} [target]
- *   按 token 目标折的入参；`targetTokens` 非正数 ⇒ 退回旧口径；`summaryOverheadTokens` = 摘要开销上界（缺席 ⇒ `0`）
+ *   summaryOverheadTokens?: number | ((foldedCount: number, foldedIndexes: number[]) => number) }} [target]
+ *   按 token 目标折的入参；`targetTokens` 非正数 ⇒ 退回旧口径；`summaryOverheadTokens` = 摘要开销上界（缺席 ⇒ `0`；
+ *   回调形态拿到的第二参是**实际选中**的轮索引，不是前缀）
  * @returns {{ folded: any[], retained: any[], foldedIndexes: number[] }}
  */
 export function selectFoldedRounds(
@@ -401,10 +405,20 @@ export function selectFoldedRounds(
   const hardFoldable = (round, index) => index < keepFloor && foldable(round);
   // 摘要开销：按调用方声明的上界取（`foldedCount` 是当前已折轮数）；非函数值直接取数。
   // 缺席 / 非正数 ⇒ `0`。开销只在真有轮被折时才计入（未折 ⇒ 无摘要）。
+  // 第二参是**此刻实际选中**的轮索引（issue #873 PR #893 copilot ②）：选中集合在循环里只增不改
+  // （`foldedSet.add(index)` 不会改动已选索引），所以按升序重筛一遍 `foldedSet` 就是当前集合；
+  // 只传轮数会让回调把它当「前 N 轮」，而中间被保护 / 连续性块那些轮其实被保留了。
+  const selectedRoundIndexes = () => {
+    /** @type {number[]} */ const indexes = [];
+    for (let index = 0; index < rounds.length; index += 1) {
+      if (foldedSet.has(index)) indexes.push(index);
+    }
+    return indexes;
+  };
   const summaryOverhead = (count) => {
     if (count <= 0) return 0;
     const value = typeof summaryOverheadTokens === "function"
-      ? summaryOverheadTokens(count)
+      ? summaryOverheadTokens(count, selectedRoundIndexes())
       : summaryOverheadTokens;
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
   };

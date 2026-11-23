@@ -1259,21 +1259,34 @@ export function createFoldStatisticalStrategy(options = {}) {
           headMessages: head,
           // 摘要开销估算 = 本策略**实际会拼出来的那份**机械摘要，走同一个生产函数
           // `summarizeFoldedPayload`（内含 inventory / stubs / navigation record / recovery hint /
-          // anchors），用 `estimateTokens` 估长度（issue #873 验收阻断②）。`foldedCount` 是当前已折
-          // 轮数；从最老 `count` 轮重建（选择器就是折最老的轮）。旧版只传 `{from,to,count}` 的占位串。
-          summaryOverheadTokens: (foldedCount) => {
+          // anchors），用 `estimateTokens` 估长度（issue #873 验收阻断②）。旧版只传 `{from,to,count}`
+          // 的占位串。
+          // issue #873 修复②（copilot 拦下的第 ② 条）：选择器折的**不是连续前缀**——`protectedMessage`
+          // / 连续性块 / 工作集地板都会让中间轮被保留——所以重建必须按回调第二参 `foldedIndexes`
+          //（= 此刻真被选中的轮索引）；旧版 `rounds.slice(0, count)` 会把没被折的轮算进摘要、
+          // 又把真被折的轮漏掉，估算对象与实际被折轮次不符（可能低估也可能高估）。
+          summaryOverheadTokens: (foldedCount, foldedIndexes) => {
             if (foldedCount <= 0) return 0;
-            const estFolded = rounds.slice(0, foldedCount).flatMap((round) => round.messages);
+            const indexes = Array.isArray(foldedIndexes)
+              ? foldedIndexes.filter((index) => Number.isSafeInteger(index)
+                && index >= 0
+                && index < rounds.length)
+              : Array.from({ length: Math.min(foldedCount, rounds.length) }, (_, index) => index);
+            if (indexes.length === 0) return 0;
+            const estFolded = indexes.flatMap((index) => rounds[index].messages);
+            // 范围句与生产路径同一个口径（`roundRangeForIndexes`：`roundOffset` / `roundNumbers`）。
+            const estRange = roundRangeForIndexes(indexes, settings.roundOffset, settings.roundNumbers)
+              ?? { from: 1, to: indexes.length };
             const estAnchorsEnabled = settings.anchors !== false;
             const estAnchorClamp = settings.anchors === false
               ? {}
               : (settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {});
             const text = summarizeFoldedPayload(estFolded, {
-              from: 1,
-              to: foldedCount,
-              count: foldedCount,
+              from: estRange.from,
+              to: estRange.to,
+              count: indexes.length,
               stubs: [...new Set(collectTtlFoldStubs(estFolded))],
-              navigationRecord: buildFoldNavigationRecord(estFolded, { from: 1, to: foldedCount }),
+              navigationRecord: buildFoldNavigationRecord(estFolded, estRange),
               recoveryHint: settings.recoveryHint,
               noteTools: settings.noteTools,
               ...(estAnchorsEnabled ? { anchors: extractAnchors(estFolded, estAnchorClamp) } : {}),
