@@ -355,7 +355,22 @@ export function selectFoldedRounds(
 
   // ── ② 新口径（issue #873）：按 token 目标折，从最老一轮逐轮加入，一旦满足目标立刻停 ──────
   // `keepRounds` 是**保留下限**（最近 keepRounds 轮永不折），不是「折到只剩这么多」。
-  const keepFloor = Math.max(0, rounds.length - keepRounds);
+  //
+  // 「至少留 1 轮」是**硬下限**（issue #873 验收阻断①）：`keepRounds: 0` 表示宿主显式选了
+  // 「不额外保留」，但**目标不可达**时（head 本身已超目标）仍必须留恰好 1 轮——否则
+  // `keepFloor = rounds.length` 会把**所有轮**折光，把语义表写死的「目标不可达时不许把
+  // 所有轮折光」变成「全部失忆」（一次失忆 → 全部失忆）。留一轮保证折叠后仍有一份
+  // **非摘要的原始轮次**在场。
+  //
+  // 实现上这是一个**上界**（`keepFloor ≤ len-1`，可折的永远是最老 `keepFloor` 轮）而不是
+  // `Math.max(1, …)`：`keepFloor` 是「可折轮数」的边界，`keepRounds: 0` 时 `len-keepRounds = len`
+  // 会把**全部**轮划为可折（正是本 bug）。取 `min(len-keepRounds, len-1)` 同时守住两条下限：
+  // `keepRounds≥１` 时等于旧的 `len-keepRounds`（留 keepRounds 轮），`keepRounds: 0` 时收缩到
+  // `len-1`（留恰好 1 轮），`len === 1` 时收缩到 `0`（一轮都不折）。
+  const keepFloor = Math.max(
+    0,
+    Math.min(rounds.length - keepRounds, rounds.length - 1),
+  );
   /** @type {any[]} */ const headMessages = Array.isArray(target?.headMessages) ? target.headMessages : [];
   const mechanicalSummary = typeof target?.mechanicalSummary === "function"
     ? target.mechanicalSummary
