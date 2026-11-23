@@ -105,10 +105,10 @@ function makeFoldLlmProvider({ toolTurns = 8, summaryBytes = 400 } = {}) {
 async function runFoldLlmChain({
   runId,
   toolTurns = 8,
-  budgetTokens = 1000,
+  budgetTokens = 2400,
   seedBytes = 1500,
   toolBytes = 600,
-  summaryBytes = 400,
+  summaryBytes = 1200,
   store = createMemoryTranscriptStore(),
   // 判据 1b/1c 要换一个**对抗性**摘要器（把 `priorSummary` 原文续写进输出），其余一切不变。
   provider,
@@ -185,13 +185,13 @@ test("#566-0 加不加 increment，父键逐字节相同（`text` 仍是累计�
 test("#566-1 连续两折之后，第 1 折的增量与第 1 折当时逐字相同（不是被第 2 折改写过的版本）", async () => {
   // 「第 1 折当时」= 只跑到第 1 折的那次 run（同一份脚本、同一份种子、同一预算 ⇒ 第 1 折的
   // 输入逐字相同）。「第 2 折之后」= 同一脚本多跑两轮。两者第 1 折的增量必须逐字相等。
-  // issue #873（旧语义→新语义）：旧语义每折折到够预算 ⇒ 本夹具第 4 轮首折、第 6 轮二折（见
-  // `runFoldLlmChain` 顶部注释）。新语义每折只降到 `0.65×budget` 且 `keepRounds: 0` 留 1 轮硬下限 ⇒
-  // 同样的 `toolTurns: 4` 会折 2 次（首折后很快二次越线）。故把「只跑到第 1 折」的短链从 4 收到
-  // 3（实测恰 1 折）；长链 `toolTurns: 8` 仍 ≥ 2 折。不可变断言逐字不变：两份 run 共用同一份种子/预算，
-  // 第 1 折确定逐字相同（append-only），只调了短链的轮数使前置「恰好 1 折」重新成立。
-  const oneFold = await runFoldLlmChain({ runId: "566-immutable-a", toolTurns: 3 });
-  const twoFolds = await runFoldLlmChain({ runId: "566-immutable-b", toolTurns: 8 });
+  // issue #873（MIN_KEEP_ROUNDS=5）：`keepRounds: 0` 按有效下限 5 算 ⇒ 只有 >5 轮共存才会真折。
+  // 旧预算 1000 下每轮 tool_result≈223 tok，第 3–4 轮就超预算——但下限拦到第 6 轮，且 0.65×1000
+  // =650 在「保 5 轮」下不可达 ⇒ 每轮只折 1 轮、累计体小、不达 2048 夹断阈值。预算抬到 2400（>5×轮
+  // cost/0.65）使 0.65 目标可达 ⇒ 一次折多轮、累计体（1200B 摘要）不被预算余量夹断 ⇒ 与机械增量字节数脱钩；
+  // 相应把各夹具 toolTurns 抬到 >8 以在更高预算下仍产 ≥2 折。不可变/append-only 断言逐字未动。
+  const oneFold = await runFoldLlmChain({ runId: "566-immutable-a", toolTurns: 9 });
+  const twoFolds = await runFoldLlmChain({ runId: "566-immutable-b", toolTurns: 13 });
   assert.equal(oneFold.folds.length, 1, `前置：短链必须恰好折一次（实测 ${oneFold.folds.length}）`);
   assert.ok(twoFolds.folds.length >= 2, `前置：长链必须折两次以上（实测 ${twoFolds.folds.length}）`);
   assert.ok(oneFold.provider.summaryCalls() >= 1, "前置：走的是真摘要器那条路（否则没有累计体）");
@@ -259,7 +259,7 @@ function priorSectionOf(request) {
  * 对抗性 fake provider：摘要器把收到的 `priorSummary` **原文续写**进输出，再另起一行写自己的特征串
  * `PRIOR_ECHO_MARK_<n>` ⇒ 第 n 折的 `compactedSummary` 里必然混着第 n-1 折的历史。
  */
-function makePriorEchoProvider({ toolTurns = 8 } = {}) {
+function makePriorEchoProvider({ toolTurns = 13 } = {}) {
   let turns = 0;
   let summaries = 0;
   const requests = [];
@@ -297,8 +297,8 @@ function makePriorEchoProvider({ toolTurns = 8 } = {}) {
 
 /** 对抗性夹具下跑两折，返回账本里的折叠记录（按轮号升序）。 */
 async function runPriorEchoChain(runId) {
-  const provider = makePriorEchoProvider({ toolTurns: 8 });
-  const result = await runFoldLlmChain({ runId, toolTurns: 8, provider });
+  const provider = makePriorEchoProvider({ toolTurns: 13 });
+  const result = await runFoldLlmChain({ runId, toolTurns: 13, provider });
   return { ...result, provider };
 }
 
@@ -348,7 +348,7 @@ test("#566-1c 对抗性夹具下，第 2 折的 increment.from/to 是本折自�
 
 test("#566-2 不需要 diff 两份累计快照，就能拿到第 k 折的 from/to/rounds/text", async () => {
   const store = createMemoryTranscriptStore();
-  const { folds } = await runFoldLlmChain({ runId: "566-read", store, toolTurns: 10 });
+  const { folds } = await runFoldLlmChain({ runId: "566-read", store, toolTurns: 14 });
   assert.ok(folds.length >= 2, `前置：至少两折（实测 ${folds.length}）`);
 
   const ranges = new Set();
@@ -398,7 +398,7 @@ test("#566-3 累计体被 2048 前缀夹断时，本折增量仍完整可读", a
   // issue #657：夹断的**来源**变了——改前累计体里混着原任务正文，几乎必然超上限；改后它是纯累计
   // 摘要，只有**摘要自己**长过上限才会夹断。所以本格把摘要器调大（2600 字节）来造同一个现场：
   // 要测的东西（「累计侧被夹断 ⇒ 增量侧仍完整可读」）与判据一字未动。
-  const { folds } = await runFoldLlmChain({ runId: "566-truncate", toolTurns: 8, summaryBytes: 2600 });
+  const { folds } = await runFoldLlmChain({ runId: "566-truncate", toolTurns: 13, summaryBytes: 2600 });
   assert.ok(folds.length >= 2, `前置：至少两折（实测 ${folds.length}）`);
   const truncated = folds.filter(({ facts }) => facts.truncated === true);
   assert.ok(truncated.length >= 1,
@@ -434,7 +434,7 @@ test("#566-3 累计体被 2048 前缀夹断时，本折增量仍完整可读", a
   // issue #657 之前这里读的是**同一个 run** 的第 1 折（那时累计体含任务正文，第 1 折 2034 字节、
   // 第 2 折起夹断）；那个「第 1 折还没超」只是任务正文长度的副产物，不是判据要的性质。改成
   // 「同一夹具、只调摘要大小」之后，量的仍然是「夹断只发生在累计侧，且两者是两个写者」。
-  const small = await runFoldLlmChain({ runId: "566-truncate-small", toolTurns: 8 });
+  const small = await runFoldLlmChain({ runId: "566-truncate-small", toolTurns: 13 });
   const first = small.folds[0];
   assert.equal(first.facts.truncated, undefined, "对照：摘要器 400 字节时累计体不超上限（不夹断）");
   assert.equal(first.facts.text.includes("LLM_SUMMARY_1"), true,
@@ -551,7 +551,7 @@ test("#566-5 增量不进请求组装：有增量 vs 无增量，请求消息流
 // ---- 判据 6：账本体积有上界 ------------------------------------------------------
 
 test("#566-6 每折增量 ≤ FOLDED_FACTS_MAX_BYTES ⇒ 100 折 ≈ 200 KB/会话", async () => {
-  const { folds } = await runFoldLlmChain({ runId: "566-budget", toolTurns: 8 });
+  const { folds } = await runFoldLlmChain({ runId: "566-budget", toolTurns: 13 });
   assert.ok(folds.length >= 2, `前置：至少两折（实测 ${folds.length}）`);
   let total = 0;
   for (const { round, facts } of folds) {
