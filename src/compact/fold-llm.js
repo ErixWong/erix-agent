@@ -54,8 +54,11 @@ function withRecoveryHint(summary, recoveryHint) {
   return `${summary}\n## 恢复提示\n${recoveryHint}`;
 }
 
-// 机械保真层（锚点索引 / 逐字引用 / 反向信号）在尺寸截断之后追加，
-// 所以摘要预算削不掉它；没有抽到任何内容时不输出空小节。
+// 机械保真层（锚点索引 / 逐字引用 / 反向信号）在尺寸截断**之前**追加（issue #873 修复①）：
+// 整份摘要（模型正文 + 恢复提示 + 这一层）随后一起过 `enforceSummarySize(summaryBudget)`，
+// 所以声明给选择器的 `summaryOverheadTokens: summaryBudget` 是**真上界**——旧顺序在夹断之后
+// 追加，保真层削不掉且让最终摘要**大于**声明值，选择器会过早停折、落点高于 0.65×预算。
+// 没有抽到任何内容时不输出空小节。
 // anchors:false 时跳过锚点节（其余保真层不变，向后兼容 0.7.0 关闭形态）。
 function appendFoldFidelity(summary, foldedPayload, anchorSettings, onLayer) {
   const fidelity = buildFoldFidelitySection(foldedPayload, { anchors: anchorSettings });
@@ -156,6 +159,12 @@ function priorityForHeading(heading) {
   if (heading.includes("主题词")) return 1;
   if (heading.includes("已验证项")) return 2;
   if (heading.includes("已改文件")) return 3;
+  // issue #873 修复① 的配套：机械保真层节（锚点索引 / 用户逐字引用）现在**在**摘要预算内，
+  // 它必须排在五节合同**之后**被剪：它是机械可重抽的（原文还在归档里），而合同节是模型写的、
+  // 剪了就没了。不给这一档的话，它与「阶段」同为第 4 档、按 index 先后反而让合同节先死
+  //（#469-C ①「默认预算装得下五节」会因此破防）。
+  if (heading.includes("锚点索引")) return 5;
+  if (heading.includes("用户最新未解决输入")) return 5;
   return 4;
 }
 
@@ -332,9 +341,11 @@ export function createFoldLlmStrategy({
           targetTokens,
           headMessages: head,
           // 摘要开销 = 本策略配置的摘要上限（`maxSummaryTokens` 解析后的 `summaryBudget`）。
-          // 依据：`fold-llm` 的摘要是**模型写的**，生成前拿不到长度，但 `callSummarizerWithBound`
-          // 会把模型摘要限长到 `maxSummaryTokens`（超限即 `truncateWholeSummary` 夹断）⇒ 模型
-          // 摘要 ≤ 该上限，用它作开销上界成立（issue #873 验收阻断②：旧版拿机械摘要估会低估）。
+          // 依据：`fold-llm` 的摘要是**模型写的**，生成前拿不到长度，但定稿处会把「模型摘要 +
+          // 恢复提示 + 机械保真层」**整体**限长到 `summaryBudget`（`enforceSummarySize`，超限即
+          // 分节修剪 + `truncateWholeSummary` 夹断）⇒ 实际进消息的摘要 ≤ 该上限，用它作开销
+          // **上界**成立（issue #873 验收阻断②：旧版拿机械摘要估会低估；copilot 拦下的第 ① 条：
+          // 保真层曾在夹断之后追加，声明值只是下界、不是上界）。
           summaryOverheadTokens: summaryBudget,
         },
       );
@@ -436,14 +447,19 @@ export function createFoldLlmStrategy({
           ...(navigationRecord === undefined ? {} : { navigationRecord }),
           ...(fallbackAnchors === undefined ? {} : { anchors: fallbackAnchors }),
         });
-        const compactedSummary = appendFoldFidelity(
-          enforceSummarySize(
+        // issue #873（copilot 拦下的第 ① 条）：**保真层先拼、尺寸后管**。最终进消息的摘要
+        //（模型正文 + 恢复提示 + 机械保真层）整体受同一个 `summaryBudget` 约束 ⇒ 本函数上面
+        // 传给 `selectFoldedRounds` 的 `summaryOverheadTokens: summaryBudget` 是真上界。
+        // 旧顺序（先 `enforceSummarySize` 后 `appendFoldFidelity`）让实际进消息的摘要大于声明值
+        // ⇒ 选择器过早停折，落点高于 `0.65 × budgetTokens`。
+        const compactedSummary = enforceSummarySize(
+          appendFoldFidelity(
             withRecoveryHint(summary, recoveryHint),
-            summaryBudget,
+            foldedPayload,
+            settings.anchors,
             settings.onLayer,
           ),
-          foldedPayload,
-          settings.anchors,
+          summaryBudget,
           settings.onLayer,
         );
         // ③ 的续写基底：记下这次真进了上下文的那份（下一轮折叠的「上一份」）。

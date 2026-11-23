@@ -1,7 +1,9 @@
 // 折叠摘要的机械保真层（#10 锚点索引 + #11 用户最新未解决输入 / 反向信号）。
 //
-// 这一层的内容全部由引擎机械抽取，不经 LLM 改写，统一追加在 LLM 摘要（尺寸截断）之后，
-// 所以摘要预算削不掉它。来源是 foldedPayload 的原文——被折轮次里已经离开上下文的那部分。
+// 这一层的内容全部由引擎机械抽取，不经 LLM 改写。issue #873 修复①起它被拼在尺寸截断
+// **之前**（`src/compact/fold-llm.js` 的 `appendFoldFidelity` → `enforceSummarySize`），整份摘要
+// 一起受 `summaryBudget` 约束——预算紧时本节会被修剪到只剩标题，而不是像旧顺序那样躲在
+// 预算外。来源是 foldedPayload 的原文——被折轮次里已经离开上下文的那部分。
 
 import { extractAnchors } from "./anchors.js";
 import { isRealUser } from "./helpers.js";
@@ -174,7 +176,8 @@ function userInputSection(quote, warningLine) {
 }
 
 /**
- * Build the mechanical fidelity block appended after the LLM summary.
+ * Build the mechanical fidelity block spliced into the fold summary
+ * (before the size enforcement — issue #873 fix ①).
  *
  * @param {object[]} foldedPayload Raw folded messages (before summarization).
  * @param {{anchors?: false | {maxPerKind?: number, maxChars?: number}}} [options]
