@@ -203,8 +203,11 @@ test("B3 r=0.5：边界两侧各一格（101580 不折 / 101581 折）", async (
   assert.equal(above.firstRound.length, 1, "101581 > 101580.5");
 });
 
-test("B4 r=0.5 是**真的**折：两轮历史 102k + keepRounds 0 ⇒ foldedRounds / tokensAfter 都动；同一份历史不传 r ⇒ 不折", async () => {
-  const messages = historyFor(102000);
+test("B4 r=0.5 是**真的**折：两轮历史 160k（> 折叠目标 0.65×budget）+ keepRounds 0 ⇒ foldedRounds / tokensAfter 都动；同一份历史不传 r ⇒ 不折", async () => {
+  // issue #873：折叠目标现在是 `预算 × 0.65`（=132054），不再由 keepRounds 定。夹具必须在目标**之上**
+  // 才会真折（旧语义下 keepRounds:0 会折到只剩 0 轮，102k 也折；新语义只折到目标）。
+  // 取 160k：既 > 目标 132054（⇒ 真折），又 < 预算 203161（⇒ 不传 r 的基线仍不折）。
+  const messages = historyFor(160000);
   const total = estimateMessageTokens(messages);
   assert.ok(total > HALF_THRESHOLD, `夹具必须已在阈值之上，实得 ${total}`);
 

@@ -291,10 +291,10 @@ export const FOLD_TARGET_RATIO = 0.65;
  * @param {number} keepRounds 保留下限（新口径）/ 保留目标（旧口径）
  * @param {unknown} protectedMessage
  * @param {number} [workingSetRecentRounds] 工作集地板（#608）
- * @param {{ targetTokens?: number, headMessages?: object[],
- *   mechanicalSummary?: (foldedMessages: object[], count: number) => string }} [target]
+ * @param {{ targetTokens?: number, headMessages?: any[],
+ *   mechanicalSummary?: (foldedMessages: any[], count: number) => string }} [target]
  *   按 token 目标折的入参；`targetTokens` 非正数 ⇒ 退回旧口径
- * @returns {{ folded: object[], retained: object[], foldedIndexes: number[] }}
+ * @returns {{ folded: any[], retained: any[], foldedIndexes: number[] }}
  */
 export function selectFoldedRounds(
   rounds,
@@ -314,16 +314,17 @@ export function selectFoldedRounds(
   const foldable = (round) => !roundHoldsContinuityBlock(round)
     && !round.messages.some((message) => isProtectedMessage(message, protectedMessage));
 
-  const targetTokens = Number.isFinite(target?.targetTokens) && target.targetTokens > 0
-    ? target.targetTokens
+  const rawTargetTokens = target?.targetTokens;
+  const targetTokens = Number.isFinite(rawTargetTokens) && rawTargetTokens > 0
+    ? rawTargetTokens
     : undefined;
 
   if (targetTokens === undefined) {
     // ── ① 旧口径（逐字保留，反向证 A）：折到只剩 keepRounds 轮 ────────────────────────────
     const countTarget = Math.max(0, rounds.length - keepRounds);
-    const folded = [];
-    const retained = [];
-    const foldedIndexes = [];
+    /** @type {any[]} */ const folded = [];
+    /** @type {any[]} */ const retained = [];
+    /** @type {number[]} */ const foldedIndexes = [];
 
     rounds.forEach((round, index) => {
       if (folded.length < countTarget && index < floorIndex && foldable(round)) {
@@ -355,17 +356,17 @@ export function selectFoldedRounds(
   // ── ② 新口径（issue #873）：按 token 目标折，从最老一轮逐轮加入，一旦满足目标立刻停 ──────
   // `keepRounds` 是**保留下限**（最近 keepRounds 轮永不折），不是「折到只剩这么多」。
   const keepFloor = Math.max(0, rounds.length - keepRounds);
-  const headMessages = Array.isArray(target?.headMessages) ? target.headMessages : [];
+  /** @type {any[]} */ const headMessages = Array.isArray(target?.headMessages) ? target.headMessages : [];
   const mechanicalSummary = typeof target?.mechanicalSummary === "function"
     ? target.mechanicalSummary
     : null;
 
   // `estimateMessageTokens` 逐消息可加 ⇒ 折后估算 = 起手总量（head + 全部轮次）逐轮减去被折轮次。
-  const roundTokens = rounds.map((round) => estimateMessageTokens(round.messages));
+  /** @type {number[]} */ const roundTokens = rounds.map((round) => estimateMessageTokens(round.messages));
   let afterBase = estimateMessageTokens(headMessages);
   for (const tokens of roundTokens) afterBase += tokens;
 
-  const foldedSet = new Set();
+  /** @type {Set<number>} */ const foldedSet = new Set();
   const foldableToken = (round, index) => index < keepFloor
     && index < floorIndex
     && foldable(round);
@@ -374,7 +375,7 @@ export function selectFoldedRounds(
   const hardFoldable = (round, index) => index < keepFloor && foldable(round);
   const summaryOverhead = () => {
     if (mechanicalSummary === null || foldedSet.size === 0) return 0;
-    const foldedMessages = [];
+    /** @type {any[]} */ const foldedMessages = [];
     for (const index of foldedSet) foldedMessages.push(...rounds[index].messages);
     const text = mechanicalSummary(foldedMessages, foldedSet.size);
     return typeof text === "string" && text !== "" ? estimateTokens(text) : 0;
@@ -396,9 +397,9 @@ export function selectFoldedRounds(
     if (index >= 0) foldedSet.add(index);
   }
 
-  const folded = [];
-  const retained = [];
-  const foldedIndexes = [];
+  /** @type {any[]} */ const folded = [];
+  /** @type {any[]} */ const retained = [];
+  /** @type {number[]} */ const foldedIndexes = [];
   rounds.forEach((round, index) => {
     if (foldedSet.has(index)) {
       folded.push(round);

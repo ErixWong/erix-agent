@@ -31,7 +31,7 @@ test("compaction hooks, system summaries, protected rounds, and image cleanup ar
     stripHistoricalImages: true,
     onBeforeFold: (payload) => before.push(payload),
     onAfterFold: (payload) => after.push(payload),
-  }).compact(messages, { keepRounds: 1, budgetTokens: 10_000 });
+  }).compact(messages, { keepRounds: 1 });
 
   assert.equal(before.length, 1);
   assert.equal(after.length, 1);
