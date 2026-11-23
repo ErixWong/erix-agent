@@ -155,7 +155,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 ```
 <sessionDir>/
 ├── <runId>.jsonl                    # 每轮记录（含 judge 决策字段、runState、工具输出归档）
-├── <runId>.state.json / .snapshot.json / .status.json   # 引擎自己的 run-state / 快照 / 状态
+├── <runId>.state.json / .status.json                # 引擎自己的 run-state / 终态
+├── <runId>.recovery.jsonl / .partial.jsonl          # 恢复行账本 / 未完成轮次的部分写（引擎写，续跑靠这些 + 上面的 .jsonl）
+# 注：run snapshot（旧 `<runId>.snapshot.json`）已随 0.33.0 退役，引擎既不写也不读
 └── outputs/<runId>/
     └── judge.log                    # judge 决策 JSONL + 末行 run_outcome 终局汇总
 ```
@@ -706,8 +708,10 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 - **不是自动续跑**：进程退出 / `/reload` 之后没有任何东西会自己把 run 拉起来，得宿主（或模型）再发一次
   `resume`。本层只提供通道与坐标。
-- **崩溃现场的重放由引擎决定**：文件 store 会写 run snapshot 与 `<runId>.state.json`，所以「跑到一半被
-  杀掉」的 run 续跑时，引擎的 `restoreResume` 会自己接回在飞工具与折叠状态。本层**不额外造**任何
+- **崩溃现场的重放由引擎决定**：文件 store 会写 transcript 账本（`<runId>.jsonl`）、run-state（`<runId>.state.json`）
+  与恢复行（`<runId>.recovery.jsonl`），所以「跑到一半被
+  杀掉」的 run 续跑时，引擎的 `restoreResume`（`src/loop/resume-manager.js`）会从账本 + run-state + 恢复行
+  重建在飞工具与折叠状态（run snapshot 已于 0.33.0 退役，引擎不再靠它）。本层**不额外造**任何
   续跑语义，也不保证每一次都能接回——接不接回是引擎的判据，不是本层的开关。
 - **`cwd` 不会自动记住**（transcript / runId 坐标）：续跑的工作目录要么宿主传，要么来自 `status.json`；
   两处都没有就报 `bad_params` 并点名要 `cwd`（猜一个目录去继续跑旧账本比报错更糟）。
@@ -771,7 +775,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 ```
 
 - **可选值只有四个**：`xhigh` / `medium` / `low` / `none`（逐个打真请求实测）。**不写 = 服务端默认 = `xhigh`**（relay 的 400 文案原文就写着 `Supported types are xhigh (default), medium, and low`）。
-- **写错不是静默忽略，是整单硬失败**：`high` / `minimal` / `auto` 被 **400 拒**，抛的是 `KitError code=invalid_request status=400 `**`retryable=false`**——因为不可重试，本扩展传的 `retry: { attempts: 2 }`（`erix-run-core.js:980`）**根本不触发**，**第 1 轮就死单**。
+- **写错不是静默忽略，是整单硬失败**：`high` / `minimal` / `auto` 被 **400 拒**，抛的是 `KitError code=invalid_request status=400 `**`retryable=false`**——因为不可重试，本扩展传的 `retry: { attempts: 2 }`（`erix-run-core.js`，grep `attempts`）**根本不触发**，**第 1 轮就死单**。
 - **与 pi 侧的对应关系**（同一个 relay，解释了两边为什么可比）：pi 的 `models.json` 里 `thinkingLevelMap: {"high":"xhigh","max":null,"xhigh":null}` —— pi 的 high 上线就是 `xhigh`，medium/low 原样透传（relay 认这两个）。**所以「pi 的 high」与「erix 不设」是同一档**，不是两档。
 - **代价参考**（pi 侧会话日志的 usage，两张同规模单）：`xhigh` 平均 **671** reasoning token/请求、单次请求中位 **12.5s**；`medium` 平均 **294**、中位 **8.9s**。**要不要降是宿主的选择，本扩展不代替你定。**
 
@@ -817,7 +821,8 @@ system prompt 也复用 `buildCliToolsSystemPrompt()`，再叠加「交付物落
 ## 边界：不得依赖 `bin/`（已知缺口，本单只立规则）
 
 **现状**：内层工具面里的 `exec`（以及 `buildCliToolsSystemPrompt`）**只能**从 `bin/tools.js` 拿——
-`src/tools/index.js` 的公共导出只有 registry / file-tools / notes / skills loader，
+`src/tools/index.js` 的公共导出是 registry / file-tools / notes / skills loader 再加一整组 `delegation/*`
+（派生簿记与 `createDelegateTool` 等共 21 个名字，见 `src/tools/index.js`），里面没有 `exec`，
 `grep 'name: "exec"' src/` 为空；而 `bin/` 在 `AGENTS.md` §1 里被定位为「验证器/调试器，不是产品重点」。
 于是宿主想给内层 run 一个能跑命令的工具，就只能 `import <libRoot>/bin/tools.js`
 （`erix-run-core.js` 里那一处硬编码，也是 `lib_missing` 报错里「找不到内置工具装配」的来源）。

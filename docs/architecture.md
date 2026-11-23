@@ -560,7 +560,7 @@ createSlidingWindowStrategy(options = {})
 createFoldStatisticalStrategy(options = {})
 createFoldLlmStrategy({
   summarizer,
-  maxSummaryTokens = 800,
+  maxSummaryTokens = 1400, // DEFAULT_SUMMARY_MAX_TOKENS in src/compact/fold-llm.js
   ...options
 })
 ```
@@ -814,71 +814,13 @@ and the consequence are recorded in the issue #746 work report.
 
 ## 4. Source layout
 
-```text
-src/
-├── index.js                  # Public root exports
-├── assembly.js               # AssemblyPort validation and port-to-options conversion
-├── run-state.js              # Bounded deterministic and semantic run state
-├── tokens.js                 # Dependency-free token estimates
-├── loop/                     # Orchestration core
-│   ├── orchestrator.js       # runToolLoop main loop (round loop, wrapup, governance wiring)
-│   ├── provider-runner.js    # Provider call, retry, and snapshot rollback
-│   ├── run-snapshot-executor.js# Pre/post tool checkpoints and per-round aggregate gate
-│   ├── budget.js             # Budget validation and state cloning helpers
-│   ├── aggregate-budget.js   # Per-round aggregate output gate (issue #32)
-│   ├── tool-result-ttl.js    # Request-view TTL folding for old tool results
-│   ├── termination.js        # Termination reason classification
-│   ├── resume-manager.js     # Resume restore and run-state application
-│   ├── error-ledger.js       # Repeated-error accounting
-│   ├── messages.js           # Message/block helpers (tool-result merging, text extraction)
-│   ├── reflection.js         # Reflection prompts and decision parsing
-│   ├── task-brief.js         # Task brief selection for judge/reflection/wrapup
-│   ├── abort.js              # Abort-signal helpers
-│   └── block-helpers.js      # Block access helpers
-├── providers/
-│   ├── anthropic.js          # Anthropic Messages requests and streaming
-│   ├── errors.js             # KitError and provider error classification
-│   ├── openai.js             # OpenAI chat/completions requests and streaming
-│   ├── payload.js            # Provider payload options and timeout resolution
-│   └── timeout.js            # Request and stream timeout coordination
-├── messages/
-│   ├── anthropic.js          # Canonical <-> Anthropic conversion and SSE assembly
-│   ├── canonical.js          # Canonical blocks and OpenAI conversion
-│   ├── openai-normalization.js # OpenAI usage/stopReason normalization and stream accumulator
-│   └── rounds.js             # Message validation and round grouping
-├── compact/
-│   ├── budget.js             # computeBudget
-│   ├── enforce-size.js       # Deterministic field pruning
-│   ├── fold-llm.js           # LLM-backed whole-round folding
-│   ├── fold-statistical.js   # Deterministic whole-round folding
-│   ├── anchors.js            # Mechanical anchor extraction (paths/SHAs/issues/URLs/errors)
-│   ├── fold-fidelity.js      # Verbatim user-input quotes and reverse-signal detection
-│   ├── helpers.js            # Shared folding selection and hook helpers
-│   ├── sliding-window.js     # Whole-round sliding-window folding
-│   └── pipeline.js           # Six-layer compaction registry declaration (order, fallback chain, per-layer stats)
-├── store/
-│   ├── file.js               # JSONL transcript, run-state, and recovery-row store
-│   ├── memory.js             # In-process transcript, run-state, and recovery-row store
-│   └── notes.js              # Host-side notes store
-├── config/
-│   ├── api-key.js            # Direct, environment, and file key resolution
-│   ├── env.js                # Environment-backed model configuration
-│   ├── json-file.js          # JSON-file-backed model configuration
-│   └── static.js              # Static model configuration
-├── reflection/
-│   ├── governor.js           # Deterministic continuation and stop decisions
-│   ├── judge.js              # Objective timeline and judge parsing
-│   ├── l0.js                 # Objective tool-result facts and summary parsing
-│   └── wrapup.js             # End-of-turn JSON parsing and normalization
-├── skills/
-│   └── loader.js             # Skill-package discovery, validation, assembly (issue #197)
-└── tools/
-    ├── file-tools.js         # Canonical file tools: readFile/searchText/rg/grep/tree/edit/writeFile (issue #184)
-    ├── index.js              # erix-agent/tools subpath exports
-    ├── notes.js              # createBuiltinNotesTools assembler (executors/executeTool/lifecycle/semanticStateProvider)
-    ├── providers.js          # Static, JSON-file, and composite ToolProvider
-    └── registry.js            # Code-owned executor/schema registry
-```
+The authoritative, current source tree lives in the **Module map** section of
+`README.md`: `npm run check:docs` reconciles that inventory item-by-item against
+`src/`, so this document keeps a single pointer instead of a second tree that
+would drift out of date. The responsibilities of each area are described in the
+interface sections above (Providers, runToolLoop, compaction, TranscriptStore,
+and the tool-provider / registry section). The structural facts stated below do
+not depend on individual file additions or removals.
 
 The root export is `src/index.js`; the optional reference tools are exported
 through the `erix-agent/tools` subpath — `createFileTools` and the skills-loader

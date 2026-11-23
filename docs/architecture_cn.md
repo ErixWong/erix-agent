@@ -380,7 +380,7 @@ createSlidingWindowStrategy(options = {})
 createFoldStatisticalStrategy(options = {})
 createFoldLlmStrategy({
   summarizer,
-  maxSummaryTokens = 800,
+  maxSummaryTokens = 1400, // src/compact/fold-llm.js 的 DEFAULT_SUMMARY_MAX_TOKENS
   ...options
 })
 ```
@@ -468,71 +468,10 @@ createToolRegistry({ executors, schemas }) => {
 
 上面那份清单是**登记过的清单**，不是「所有提示位都已干净」：第 4 条那个宿主位点（`examples/pi-extension/erix-run-core.js` 的 `buildSystemPrompt` 调 `buildCliToolsSystemPrompt` 时不传 `notes`）**已知仍未接工具面门**——它的内层 run 可以 `notes: false`，那条提示词于是仍会提到场上不存在的 `note_*`。修法是一行（把内层工具面推成 `notes` 传进去），但宿主不在 `src/` 与 `bin/` 的出口面上，本支没动它；坐标与后果记在 issue #746 的工作报告里。## 4. 源码布局
 
-```text
-src/
-├── index.js                  # 公共根导出
-├── assembly.js               # AssemblyPort 校验与 port→options 转换
-├── run-state.js              # 有界的确定性与语义运行状态
-├── tokens.js                 # 无依赖的 token 估算
-├── loop/                     # 编排核心
-│   ├── orchestrator.js       # runToolLoop 主循环（轮循环、wrapup、治理接线）
-│   ├── provider-runner.js    # provider 调用、重试与快照回滚
-│   ├── run-snapshot-executor.js# 工具前后检查点与单轮聚合闸门
-│   ├── budget.js             # 预算校验与状态克隆辅助函数
-│   ├── aggregate-budget.js   # 单轮聚合输出闸门（issue #32）
-│   ├── tool-result-ttl.js    # 旧工具结果的 request-view TTL 折叠（issue #32）
-│   ├── termination.js        # 终态归类
-│   ├── resume-manager.js     # 断点恢复与 run-state 应用
-│   ├── error-ledger.js       # 重复错误记账
-│   ├── messages.js           # 消息/block 辅助函数（tool-result 合并、文本抽取）
-│   ├── reflection.js         # 反思提示与决策解析
-│   ├── task-brief.js         # judge/reflection/wrapup 的任务简报选取
-│   ├── abort.js              # 中止信号辅助函数
-│   └── block-helpers.js      # block 访问辅助函数
-├── providers/
-│   ├── anthropic.js          # Anthropic Messages 请求与流式传输
-│   ├── errors.js             # KitError 与提供器错误分类
-│   ├── openai.js             # OpenAI chat/completions 请求与流式传输
-│   ├── payload.js            # 提供器 payload 选项与超时解析
-│   └── timeout.js            # 请求与流式超时协调
-├── messages/
-│   ├── anthropic.js          # 规范 <-> Anthropic 转换与 SSE 组装
-│   ├── canonical.js          # 规范块与 OpenAI 转换
-│   ├── openai-normalization.js # OpenAI usage/stopReason 归一化与流聚合器
-│   └── rounds.js             # 消息校验与轮次分组
-├── compact/
-│   ├── budget.js             # computeBudget
-│   ├── enforce-size.js       # 确定性字段裁剪
-│   ├── fold-llm.js           # LLM 驱动的整轮折叠
-│   ├── fold-statistical.js   # 确定性的整轮折叠
-│   ├── anchors.js            # 机械锚点抽取（路径/SHA/issue/URL/错误行）
-│   ├── fold-fidelity.js      # 用户输入逐字引用与反向信号检测
-│   ├── helpers.js            # 共享的折叠选择与钩子辅助函数
-│   ├── sliding-window.js     # 整轮滑动窗口折叠
-│   └── pipeline.js           # 六层压缩注册表声明（顺序、fallback 链、逐层统计）
-├── store/
-│   ├── file.js               # JSONL transcript、run-state 与 recovery rows 存储
-│   ├── memory.js             # 进程内 transcript、run-state 与 recovery rows 存储
-│   └── notes.js              # 宿主侧 notes 存储
-├── config/
-│   ├── api-key.js            # 直接、环境和文件密钥解析
-│   ├── env.js                # 基于环境的模型配置
-│   ├── json-file.js          # 基于 JSON 文件的模型配置
-│   └── static.js              # 静态模型配置
-├── reflection/
-│   ├── governor.js           # 确定性的续接与停止决策
-│   ├── judge.js              # 客观时间线与 judge 解析
-│   ├── l0.js                 # 客观工具结果事实与摘要解析
-│   └── wrapup.js             # 回合结束 JSON 解析与规范化
-├── skills/
-│   └── loader.js             # 技能包发现 / 校验 / 装配（issue #197）
-└── tools/
-    ├── file-tools.js         # 文件工具规范实现：readFile/searchText/rg/grep/tree/edit/writeFile（issue #184）
-    ├── index.js               # erix-agent/tools 子路径导出
-    ├── notes.js               # createBuiltinNotesTools 装配器（executors/executeTool/lifecycle/semanticStateProvider）
-    ├── providers.js           # static、JSON-file 和 composite ToolProvider
-    └── registry.js             # 由代码拥有的执行器/schema 注册表
-```
+权威、最新的源码树在 `README_cn.md` 的**模块地图**一节里：`npm run check:docs` 会逐条
+拿那份清单与 `src/` 对账，所以本文只留一个指针，不再画第二棵会过期的树。各区域的职责在上面的
+接口章节里描述（Providers、runToolLoop、压缩、TranscriptStore，以及 tool-provider /
+registry 那节）。下面这些结构性事实稳定、不随单个文件的增删而失效。
 
 根导出是 `src/index.js`；可选的参考工具通过 `erix-agent/tools` 子路径导出——`createFileTools` 与技能 loader 符号都在其中，而包根两个都不带。当前目录树特意不包含 `src/providers/index.js`；`src/skills/` 只发 `loader.js`（没有 `src/skills/index.js`，也没有 `./skills` 子路径导出）。
 

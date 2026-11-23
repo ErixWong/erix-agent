@@ -30,7 +30,7 @@ flowchart LR
     PROV -- "⑤ 规范响应（Block + stopReason + usage）" --> LOOP
     LOOP -- "⑥ tool_use → 结构化执行对象" --> TOOLS
     TOOLS -- "⑦ tool_result（is_error 归一）" --> LOOP
-    LOOP -- "⑧ 每轮 appendRound / 工具前后 run snapshot" --> STORE
+    LOOP -- "⑧ 每轮 appendRound（账本）+ saveRunState" --> STORE
     LOOP -- "⑨ round judge 评估 end_turn / 定期工具审计" --> JUDGE
     JUDGE -- "⑩ 裁决：放行 / 拦截 / 纠偏" --> LOOP
     LOOP -- "⑪ 终稿核验" --> GUARD
@@ -66,9 +66,9 @@ flowchart TB
     subgraph core["loop/ 编排核心"]
         ORC["orchestrator.js<br/>runToolLoop 主循环：轮循环 + wrapup 解析"]
         PRV["provider-runner.js<br/>调用 / 重试 / 快照回滚"]
-        CPE["run-snapshot-executor.js<br/>工具前后检查点 + 单轮聚合闸门"]
+        CPE["run-snapshot-executor.js<br/>执行工具块 + judge 拦截审计 + 单轮聚合闸门"]
         BUD["budget.js<br/>aggregate-budget.js<br/>预算与单轮输出闸门"]
-        TERM["termination.js<br/>终态归类（11 种 reason）"]
+        TERM["termination.js<br/>终态归类（10 种 reason）"]
         RESM["resume-manager.js<br/>断点恢复 + run-state 校验"]
         ELG["error-ledger.js<br/>重复错误记账"]
         TBR["task-brief.js / reflection.js / messages.js<br/>任务简报 / 治理提示 / 消息操作"]
@@ -100,9 +100,9 @@ flowchart TB
     end
 
     subgraph store2["store/ 档案"]
-        TS["TranscriptStore 端口<br/>必需 appendRound + load；<br/>可选 run-snapshot/run-state（ADR-002，issue #78）"]
+        TS["TranscriptStore 端口<br/>必需 appendRound + load；<br/>可选 run-state / 恢复行 / 探针（ADR-002，issue #78）"]
         MEM["memory.js<br/>进程内 Map（参考实现）"]
-        FIL["file.js<br/>JSONL + state + run snapshot（参考实现）"]
+        FIL["file.js<br/>JSONL + run-state + status + 恢复行（参考实现）"]
         NSTORE["store/notes.js<br/>NotesStore（run 级要点）"]
     end
 
@@ -170,11 +170,11 @@ flowchart TB
 
 ### 要点
 
-- **纯 ESM、零 npm 依赖**：只 import `node:` 内置模块 + 相对路径；编排核心 2500 行集中在一个 `orchestrator.js`，周边模块按职责切小文件，依赖单向指向（compact/reflection/store/tools 不反向依赖 loop）
+- **纯 ESM、零 npm 依赖**：只 import `node:` 内置模块 + 相对路径；编排核心集中在一个 `orchestrator.js`（行数不写死，用 `wc -l` 现查），周边模块按职责切小文件，依赖单向指向（compact/reflection/store/tools 不反向依赖 loop）
 - **编排核心（`src/loop/`）是心脏**：主循环、provider 调用、检查点执行、预算、终态、恢复、错误记账全部在这里被组装；`src/reflection/` 与 `src/compact/` 是由 loop 驱动的“决策/变换”模块、只被 loop 调用——governor/judge 提示构造是纯函数，fold-llm/wrapup 可调用注入的 summarizer/evaluator（外部调用，绝不硬编码）
 - **消息层是唯一协议适配点**：内部只有一套 CanonicalMessage/Block；OpenAI 与 Anthropic 双向转换 + 流式聚合都在 `src/messages/` + `src/providers/`，新增协议只需加一对适配器
 - **CLI 不是产品**：`bin/` 是校验器/调试器（chat 单发 + repl 交互 + MCP/技能/final-guard 实现），真正验收面是外部 erix-bench 无头 harness；CLI 的 archive/输出捕获行为不属于库契约
-- **`erix-agent/tools` 是可选子路径**：工具注册表、工具 provider（static/json-file/composite）——宿主可按需取用，不是隐式安装进 runToolLoop 的工具集（recall 已退役，issue #36）
+- **`erix-agent/tools` 是可选子路径**：工具注册表、文件工具、笔记工具、技能 loader、以及派生工具（`createDelegateTool` + roster/capacity/notify 簿记）。旧的工具 provider（static/json-file/composite）已随 0.31 bundle 退役、不再是发布面（`src/tools/index.js` 不导出）——宿主可按需取用，不是隐式安装进 runToolLoop 的工具集（recall 已退役，issue #36）
 
 ---
 
@@ -200,7 +200,7 @@ sequenceDiagram
 
     rect rgb(240, 255, 240)
     Note over L,S: 阶段 1 —— 恢复（仅 config.run.resume=true）
-    L->>S: load(runId) + loadLatestRunSnapshot + loadRunState
+    L->>S: load(runId) + loadRunState + listRecoveryRows
     S-->>L: 消息 / pending tool_use / 运行状态
     Note over L: 按原序重放 pending 工具调用<br/>（副作用幂等由宿主保证）
     end
@@ -215,10 +215,10 @@ sequenceDiagram
     alt stopReason = tool_use
         L->>J: 每 judgeIntervalRound（默认 10）次真实工具执行 → 透明审计下一次调用
         J-->>L: done:false 拦截并回审计结果 / off_track 加方向提示 / 放行
-        L->>S: run snapshot（pre-tool）——失败则 sideEffect=not_started，不执行
+        L->>S: （执行前不写盘——持久化只发生在 executeTool 之后）
         L->>T: executeTool({id, name, input, context, signal})
         T-->>L: tool_result（大输出归档为 stub，模型只见摘要）
-        L->>S: run snapshot（post-tool）+ appendRound（幂等去重）
+        L->>S: appendRecoveryRow（tool-executed）+ appendRound（幂等去重）
     else stopReason = end_turn
         L->>L: wrapup JSON 解析（done:true → 收尾；false → 注入继续）
         L->>J: round judge 评估 end_turn（独立或共享 provider）
@@ -239,14 +239,14 @@ sequenceDiagram
     Note over H,S: 阶段 4 —— 结果与事件流
     L-->>H: result{finalText, termination, verification, usage, compactionStats}
     L-->>H: 全程事件 onRound / onDelta / onToolCall / onUsage / onJudge / onEvent
-    Note over S: 档案完整：每轮 JSONL + 折叠载荷 + run snapshot + run-state<br/>——宿主可对账、回放、审计
+    Note over S: 档案完整：每轮 JSONL + 折叠载荷 + 恢复行 + run-state<br/>——宿主可对账、回放、审计
     end
 ```
 
 ### 要点
 
-- **阶段 0 是 fail-fast 契约**：未知选项（含拼写近似提示）、缺*必需*方法（`appendRound`/`load`）、策略键非法全部在调 provider 之前抛错——宿主集成错误不可能拖到运行期才炸。缺*可选* capability（run snapshot / run-state）不抛错：引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），run 照常执行（issue #78）
-- **阶段 2 的工具路径带审计与检查点**：拦截 judge 只拦“写路径”（readFile/tree/rg/note_read/note_list 只读工具豁免）；pre-tool checkpoint 失败直接阻断执行，post-tool 失败标记 `executed_uncommitted` 但结果保留
+- **阶段 0 是 fail-fast 契约**：未知选项（含拼写近似提示）、缺*必需*方法（`appendRound`/`load`）、策略键非法全部在调 provider 之前抛错——宿主集成错误不可能拖到运行期才炸。缺*可选* capability（run-state / 恢复行）不抛错：引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），run 照常执行（issue #78）
+- **阶段 2 的工具路径带 judge 审计**：拦截 judge 只拦“写路径”（readFile/tree/rg/searchText/note_read/note_list 只读工具豁免）；执行前不再有 checkpoint 写盘——executeTool 之后落一条 `tool-executed` 恢复行作执行证据，尚未提交进账本的结果标记 `executed_uncommitted` 但保留
 - **max_tokens 截断在同轮内续写**：reasoning 模型推理过长触发截断时最多续 3 次（`config.run.maxTokenContinuations`），续写前若已超预算先压缩——不会把预算耗死在截断循环（issue #11）
 - **阶段 3 只有 `verified` 能当"已核验"用**：`skipped`/`unverified`/`error` 都要求宿主自行处理；guard 自身报错/超时也**不算** verified
 - **阶段 4 的 result.transcript 只是内存快照**：权威档案在 `TranscriptStore`；两者刻意分离，宿主可换 DB 后端（实现两个必需方法 + 需要的可选 capability 即可，见 ADR-002、issue #78）
@@ -305,7 +305,7 @@ flowchart TD
 
 | 层（注册表顺序） | 触发条件 | 粒度 | 进入模型/档案的产物 |
 |---|---|---|---|
-| `ttl` | 每次 provider attempt；配置允许且结果估算 token 达到 `minTokens`：`currentRound - erixRound >= ttl` 时折为句柄，`age === ttl - 1` 时只追加预警。错误结果、`note_`/`todo_`、缺少轮号的旧结果保守不折。其 `triggered` 只统计实际折叠的 `tool_result` 数量，不统计仅预警的请求 | 单个 `tool_result` | 仅请求视图中的 `【已折叠·TTL】`句柄，含工具/入参片段、估算 token、读取轮、取回提示；可附 `导航` digest 与 JSON `骨架`。临界前一轮只追加 TTL 预警。`ctx.messages`、run snapshot、round archive 保留全文 |
+| `ttl` | 每次 provider attempt；配置允许且结果估算 token 达到 `minTokens`：`currentRound - erixRound >= ttl` 时折为句柄，`age === ttl - 1` 时只追加预警。错误结果、`note_`/`todo_`、缺少轮号的旧结果保守不折。其 `triggered` 只统计实际折叠的 `tool_result` 数量，不统计仅预警的请求 | 单个 `tool_result` | 仅请求视图中的 `【已折叠·TTL】`句柄，含工具/入参片段、估算 token、读取轮、取回提示；可附 `导航` digest 与 JSON `骨架`。临界前一轮只追加 TTL 预警。`ctx.messages`、round archive 保留全文 |
 | `slidingWindow` | 预算超限且没有选定整轮策略（包括已配置策略但其 `shouldCompact()` 返回 false），或选定策略完成后本地估算/API 输入投影仍超限；兜底使用 `keepRounds: 0` | 整轮（assistant + 配对 `tool_result`） | 保留 head/受保护轮与近期轮；被折轮原文进入 `foldedPayload`，可把 `stubFor` 结果追加到 head，并生成有界 `navigationRecord` |
 | `foldStatistical` | `config.folding.context.strategy` 主动要求压缩且策略名为 `fold-statistical` | 整轮 | 带折叠轮范围、工具足迹、存根、恢复提示、导航记录的确定性摘要；`foldedPayload` 与摘要分离保存 |
 | `foldLlm` | `config.folding.context.strategy` 主动要求压缩且策略名为 `fold-llm` | 整轮 | 注入的 summarizer 生成摘要；摘要先过 `enforceSize`，失败时是**终局错误**（`summarizer_failed`，issue #661），不再降级统计摘要；随后可追加机械保真段；原文仍在 `foldedPayload` |
@@ -363,7 +363,7 @@ flowchart TD
   非负节省量（保真层不以增加的 token 冒充节省）。这些统计是有界保留而非无限
   历史：`normalizeCompactionStats` 保留最近 32 条；run-state 序列化超出大小
   上限时再缩至最近 8 条。每条统计同时挂在返回结果、当前 run-state、
-  checkpoint/round archive 与 `onEvent({ type: "compaction" })` 事件上，便于
+  round archive 与 `onEvent({ type: "compaction" })` 事件上，便于
   宿主按层查询。
 
 ---
@@ -372,9 +372,9 @@ flowchart TD
 
 > 目标：进程被杀、provider 挂了、容器被回收之后，run 能从断点继续，且副作用不重复。
 
-- **双检查点夹住工具执行**：pre-tool checkpoint 落盘"我将执行这个 tool_use"；post-tool 落盘"已执行 + 结果"。pre-tool 失败 → `sideEffect: "not_started"`，**阻断执行**；post-tool 失败 → `executed_uncommitted`，结果保留但明确标记未提交
-- **恢复 = 按原序重放 pending tool_use**：resume 加载消息 + 最新 run snapshot + run-state，把 snapshot 之后未完成的工具调用重新交给 `executeTool`。**引擎保证顺序与记账，不保证副作用幂等**——宿主必须让有副作用的 executeTool 实现幂等（契约明示，不是隐藏假设）
-- **持久化两档语义**：配了 store 默认 `required`（只验必需 `appendRound`/`load`；可选 run-snapshot/run-state 方法缺失 → 单条 `persistence_capability_degraded` 降级，不报错；已实现的方法写入走重试策略，耗尽 → `persistence_failed` 终止）；显式 `none` 则全旁路。存档写不进 = 明确终止，绝不"假装存档成功"继续跑
+- **恢复行记录执行证据**（issue #769，取代已退役的 run snapshot / 旧「检查点」面）：`executeTool` 返回后向恢复行通道追加一条 `tool-executed` 行，于是在结果行落盘前崩溃也留有「这个 tool_use 执行过了」的证据；工具执行前后**没有** checkpoint 写盘，`sideEffect` 由「是否已执行」推导（`executed_uncommitted` vs `not_started`）
+- **恢复 = 按原序重放 pending tool_use**：resume 加载账本（消息）+ run-state + 恢复行，把未完成的 pending 工具调用重新交给 `executeTool`，跳过恢复行已证明执行过的 `tool_use`。**引擎保证顺序与记账，不保证副作用幂等**——宿主必须让有副作用的 executeTool 实现幂等（契约明示，不是隐藏假设）
+- **持久化两档语义**：配了 store 默认 `required`（只验必需 `appendRound`/`load`；可选 run-state / 恢复行 方法缺失 → 单条 `persistence_capability_degraded` 降级，不报错；已实现的方法写入走重试策略，耗尽 → `persistence_failed` 终止）；显式 `none` 则全旁路。存档写不进 = 明确终止，绝不"假装存档成功"继续跑
 - **run-state 有界且确定性**：`run-state.js` 维护工具统计、折叠计数、预算提示等确定性状态（`RUN_STATE_MAX_CHARS` 上限），resume 时校验版本与形状，损坏则标记不可用而**不**静默沿用；`lowBudgetPrompted` 这类"本次预算"状态不跨 resume 继承
 
 ---
@@ -384,10 +384,10 @@ flowchart TD
 > 目标：无头场景没人盯着，引擎要自己能发现"跑偏了/卡住了/该收尾了"——但治理只给**建议与纠偏**，越权决策不做。
 
 - **round judge（end_turn 评估）**：模型说"做完了"不等于做完。独立（或共享）provider 用客观时间线（工具调用、文件足迹、L0 事实）评估终稿，`done:true` 且 `confidence ≥ 0.7` 才判 `judge_done`；否则注入纠偏消息续跑。解析失败/评估器错误**降级**到普通 governor，连续失败 3 次后停用 judge——治理故障永远不把 run 卡死
-- **工具透明审计（intercept）**：每 `judgeIntervalRound` 次真实工具执行（默认 **10**；`config.run.reflection.judgeIntervalRound` 或 `ERIX_JUDGE_INTERVAL` 可覆盖，`orchestrator.js:799-813`），审计下一次调用：`done:false` 拦截原执行并把审计结果当 tool_result 还给模型（模型得到“为什么不该这么做”而不是静默失败）；`off_track` 不拦工具，只给下一轮上下文加方向提示。`env ERIX_NO_ROUND_JUDGE=1` 可独立关轮判
-- **只读工具豁免**：readFile / tree / rg / note_read / note_list 被拦净收益为负（实测拦 readFile 反而漏缺陷）——审计对这类调用直接放行，写路径（exec/writeFile/mcp 等）维持拦截语义
+- **工具透明审计（intercept）**：每 `judgeIntervalRound` 次真实工具执行（默认 **10**；`config.run.reflection.judgeIntervalRound` 或 `ERIX_JUDGE_INTERVAL` 可覆盖——解析处在 `runToolLoop` 选项解析段，grep `judgeIntervalRound`），审计下一次调用：`done:false` 拦截原执行并把审计结果当 tool_result 还给模型（模型得到“为什么不该这么做”而不是静默失败）；`off_track` 不拦工具，只给下一轮上下文加方向提示。`env ERIX_NO_ROUND_JUDGE=1` 可独立关轮判
+- **只读工具豁免**：readFile / tree / rg / searchText / note_read / note_list 被拦净收益为负（实测拦 readFile 反而漏缺陷）——审计对这类调用直接放行，写路径（exec/writeFile/mcp 等）维持拦截语义
 - **governor 是确定性的**：纯函数、无副作用，输入信号（停滞 streak、无工具 streak、错误重复数、剩余时间、扩预算次数）输出续/停/收尾动作。硬预算到期前以"引导收尾"软着陆（注入 wrap-up 提示），而非硬杀
-- **自适应预算**：越过 reflection 触发点（`nearLimit`，轮数 ≥ `effectiveMaxRounds` 的 80%）后 governor 进入扩轮考虑——真正扩轮需要 judge 裁决（`extend:true` + plan）：`effectiveMaxRounds += extensionStep`（默认 32，上限 `maxRoundsCap`），最多 `maxExtensions` 次——长任务不被初始轮数拍死，也不会无限膨胀
+- **自适应预算**：越过 reflection 触发点（`nearLimit`，轮数 ≥ `effectiveMaxRounds` 的 80%）后 governor 进入扩轮考虑——真正扩轮需要 judge 裁决（`extend:true` + plan）：`effectiveMaxRounds += extensionStep`（`extensionStep` 默认 `Math.max(8, Math.floor(config.run.maxRounds * 0.5))`——默认 `config.run.maxRounds = 8` 时即 8——扩后封顶 `maxRoundsCap`），最多 `maxExtensions` 次——长任务不被初始轮数拍死，也不会无限膨胀
 - **nearLimit 扩轮（round 与 intercept 路径共用）**：`nearLimit` 时携带 `extend`/`extendReason`/`plan` 的 judge 裁决进入 `governor.decideWithEvaluation`（`governor.js:135-179`）：`extend:true` → `effectiveMaxRounds += extensionStep`，plan 注入为 continuation user 消息；判 `off_track`（打转模式）→ `extend+redirect`（换思路）；`extend:false` → 收敛 nudge；超时守卫则只跑完剩余轮次不扩轮。intercept 审计在工具途中命中 nearLimit 时把决策回传，轮末走同一路径（`run-snapshot-executor` → `interceptJudgeDecision` → `decideWithEvaluation`）
 
 ---
@@ -406,7 +406,7 @@ flowchart TB
     subgraph archive["档案（每 run 一份）"]
         JSONL["<runId>.jsonl<br/>每轮记录：消息 + foldedPayload + toolOutputs"]
         ST["<runId>.state.json<br/>run-state"]
-        CK["<runId>.snapshot.json<br/>最新 run snapshot<br/>（旧 .checkpoint.json 读取兼容）"]
+        CK["<runId>.recovery.jsonl + <runId>.partial.jsonl<br/>tool-executed / partial-text 恢复行<br/>（run snapshot 文件已退役 RETIRED：不写不读）"]
     end
 
     subgraph surfaces["消费通道"]
@@ -426,10 +426,10 @@ flowchart TB
 
 ### 要点
 
-- **大输出不爆上下文**：`config.run.outputHygiene`（默认 limit 4096）把超长 tool_result 原文存进 round 记录的 `toolOutputs`，模型只见 stub + 指针；单轮合计还有聚合闸门（`aggregate-budget`）兜底——档案在，上下文不炸
+- **大输出不爆上下文**：`config.run.outputHygiene`（默认 limit = 宿主 `contextWindowTokens` 的 15%，夹在 [8192, 100000]；无窗口时才 4096）把超长 tool_result 原文存进 round 记录的 `toolOutputs`，模型只见 stub + 指针；单轮合计还有聚合闸门（`aggregate-budget`）兜底——档案在，上下文不炸
 - **取回走 note-first（ADR-016 退休补充，issue #36）**：要点趁在场 `note_take` 外置；之后 `note_list → note_read` 取回。recall / bounded-recall 协议已退役——笔记是模型策划的高信号内容，优于对归档原文的模糊检索；未记录且无法确定性重算的值，正确动作是省略而非猜测（bench 实测：四 run 中 recall 2/0/6/0 次，笔记闭环 31 写/21 读完全替代）
-- **档案仍可由宿主直接读**：round 记录 / toolOutputs / run snapshot 完整落盘，宿主（DB 后端）可对账与审计——只是不再向模型暴露 recall 取回通道
-- **file store 是参考实现**：JSONL 每行一条记录、修复缺尾换行、隔离残缺尾部片段；约定**单写者**（每 runId 每进程一份），跨进程锁在契约之外——DB 后端（touwaka 等宿主）实现同一套契约即可替换（必需 `appendRound`/`load` + 可选 run-snapshot/run-state capability）
+- **档案仍可由宿主直接读**：round 记录 / toolOutputs / 恢复行 完整落盘，宿主（DB 后端）可对账与审计——只是不再向模型暴露 recall 取回通道
+- **file store 是参考实现**：JSONL 每行一条记录、修复缺尾换行、隔离残缺尾部片段；约定**单写者**（每 runId 每进程一份），跨进程锁在契约之外——DB 后端（touwaka 等宿主）实现同一套契约即可替换（必需 `appendRound`/`load` + 可选 run-state / 恢复行 capability）
 
 ---
 
@@ -456,7 +456,7 @@ flowchart TB
 |---|---|
 | 为什么坚持零 npm 依赖？ | 宿主多是嵌入式/审计敏感场景（app_container、touwaka），依赖第三方框架 = 把供应链风险与版本churn转嫁给每个宿主。纯 ESM + `node:` 内置让"包含第三方框架churn"这条需求由引擎一次买断。代价是 SSE 解析、token 估算自己写——用契约测试锁住行为。 |
 | 为什么内部要一套规范消息模型，而不是透传 OpenAI/Anthropic？ | 双协议只是当下现实，不是架构中心。规范 Block 层让 compaction/judge 只面向一种结构；新增协议 = 加一对适配器，不动引擎。`validateMessages` 在每次 provider 调用前断言协议不变量。 |
-| 为什么 checkpoint 要在工具前后各打一次？ | 只打 pre：执行后崩溃则"说了要做、不知道做了没"。只打 post：执行前崩溃则丢失"将执行"意图。双检查点让恢复端精确区分 `not_started`（安全重放）与 `executed_uncommitted`（不可盲目重放），把幂等责任边界划清。 |
+| 为什么用恢复行记录执行证据，而不是在工具前后各打一次 checkpoint？ | 旧的工具前后双 run snapshot 已退役（0.33.0）：执行前后没有 checkpoint 写盘。改为执行后追加一条 `tool-executed` 恢复行，恢复端仍能精确区分 `not_started`（安全重放）与 `executed_uncommitted`（不可盲目重放），把幂等责任边界划清。 |
 | judge 拦截会不会拖慢/误拦正常工具调用？ | 审计有 30s 超时、错误/超时一律**降级为直接执行**（fail-open 执行、fail-closed 治理）；只读工具整类豁免；`off_track` 只提示不拦截。治理故障的路径永远回到"没有 judge 的普通循环"。 |
 | LLM 生成的折叠摘要不可信怎么办？ | 三层防守：① 摘要在进上下文前过确定性 `enforceSize`；② 锚点索引/用户输入引用是机械抽取、不经 LLM；③ 折叠预警提示趁在场 `note_take` 记录要点，之后经 note_list/note_read 取回，未记录的值不声明。摘要只损失“叙述”，不损失“事实”。 |
 | resume 能保证副作用恰好一次吗？ | 不能，且契约明说：引擎保证顺序、记账与检查点语义；"执行了但没提交"的副作用是否重放，只有宿主知道（转账不能重放、读文件可以）。宿主须让 executeTool 幂等。把"恰好一次"包装成引擎能力是谎言，所以不做。 |
