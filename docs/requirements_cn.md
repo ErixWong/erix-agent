@@ -91,8 +91,8 @@
 | # | 需求 | 状态与实现 |
 |---|---|---|
 | FR-5.1 | 定义标准工具 schema；由适配器负责协议序列化；执行保留在宿主 | **已交付。** `ToolSchema` 使用 `inputSchema`；`canonicalToolsToOpenAI` 和 `canonicalToAnthropicRequest` 分别为各 provider 序列化它，而 `executeTool` 仍是循环注入的执行边界。 |
-| FR-5.2 | 提供可选的 `erix-agent/tools` 子路径，其中包含工具注册表和工具 provider | **已交付。** `package.json` 将 `./tools` 导出到 `src/tools/index.js`，后者导出工具注册表和工具 provider。这些功能均为可选，不会自动安装为循环工具；不再包含路径牢笼或文件工具助手。 |
-| FR-5.3 | 让工具定义可插拔（`static` / `json-file` / `composite`，DB 在消费方项目中）；让执行器注册表归代码所有，并在不匹配时 fail closed | **已交付。** `src/tools/providers.js` 实现三个 provider，`src/tools/registry.js` 将执行器保存在代码所有的 map 中，校验输入，合并 provider schema 覆盖项，并在 provider 指定不可用执行器时抛出 `tool_unknown_executor`。未包含 DB provider。 |
+| FR-5.2 | 提供可选的 `erix-agent/tools` 子路径，其中包含工具注册表和工具 provider | **已交付。** `package.json` 将 `./tools` 导出到 `src/tools/index.js`，后者导出工具注册表（以及文件工具、notes、技能 loader 与 `delegation/*` 那一组）。这些功能均为可选，不会自动安装为循环工具；不再包含路径牢笼或文件工具助手。 |
+| FR-5.3 | 让工具定义可插拔（`static` / `json-file` / `composite`，DB 在消费方项目中）；让执行器注册表归代码所有，并在不匹配时 fail closed | **注册表已交付；可插拔 provider 工厂已退役。** `src/tools/registry.js` 将执行器保存在代码所有的 map 中，校验输入，合并 provider schema 覆盖项，并在 provider 指定不可用执行器时抛出 `tool_unknown_executor`。三个 provider 工厂（`static` / `json-file` / `composite`）随 0.31 bundle 退役：`ToolProvider` 现在是一个由宿主自建的 duck-typed `{ listTools(sel) }` 对象（见 `docs/architecture.md` §3.6）。`src/tools/providers.js` 文件仍在树里，但已不在发布面上——`src/tools/index.js` 与包根都不重新导出它（只有 `test/tools/providers.test.js` 导入它），所以宿主不得依赖它。未包含 DB provider。 |
 
 ## 4. 分期与实现状态
 
@@ -130,7 +130,7 @@
 
 - `examples/` 是一等集成界面。仓库当前包含 exec demo、memory benchmark 和 provenance reproduction 覆盖；未来消费方应能够按照可运行示例操作，而缺少某个里程碑专属的对话或审计 demo 不能被当作已实现能力。参考 demo 将执行保留在消费方一侧。
 - 存储演进顺序是先 memory，再 JSONL file，使完整生命周期只依赖文件系统即可运行。未交付 MariaDB 或其他数据库适配器；消费方项目根据自身 schema 和基础设施实现 `TranscriptStore` 与 `ModelConfigProvider`。
-- 没有运行时依赖、没有构建步骤，除了内置的 `node --test` runner 外也不要求开发依赖。
+- 没有运行时依赖；测试只用内置的 `node --test` runner。有一个 `prepack` 构建步骤（`prepack` 跑 `scripts/build-types.mjs` 生成随包发布的 `.d.ts` 声明），且只有这个构建带开发依赖（`typescript` 与 `@types/node`，issue #213）；运行时本身不导入任何东西。
 - 仓库文件不得包含 key 或 token。配置适配器将 `apiKeyEnv` 和 `apiKeyFile` 间接引用视为一等机制；直接的 `apiKey` 值可以作为配置输入接受，但不得提交。
 - 压缩、TTL 折叠、重试、协议适配、检查点/恢复、反思和 notes 行为均由 `node --test` 测试锁定，provider 测试使用 mock `fetch`。外部消费方迁移和真实 relay 行为需要各自的测试。
 - 通过公开 npm package `erix-agent` 分发。
