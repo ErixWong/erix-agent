@@ -31,6 +31,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { estimateMessageTokens } from "../src/tokens.js";
 import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -316,15 +317,35 @@ test("#438 ⑥ 折叠摘要那一发（900/50）落在**当轮** `record.engineU
   });
   const { rounds, capabilities } = collectRounds();
 
+  // issue #873 MIN_KEEP_ROUNDS=5 夹具重调（契约断言逐字不动）：有效保留下限
+  // `max(keepRounds:0, 5) = 5` ⇒ `keepFloor = len - 5`。旧夹具只有 head + 1 轮历史
+  // （round-1 request len≤2）⇒ `keepFloor=0` ⇒ fold-llm 一轮都折不动 ⇒ 退到 sliding-window
+  // 兵底（不调摘要器）⇒ `summaryCalls=0`。改为：用 `config.input.messages` 预置 **8 轮**纯文本历史
+  // （head + 8 轮，无 tool_use）。`budgetTokens` 取 `estimateMessageTokens(initialMessages) + 300`：
+  // round 1 估算（含引擎注入的 run-state 那一轮）**仍 ≤ 预算** ⇒ `shouldCompact` 与 `overBudget` 都假
+  // ⇒ 本轮不进折叠分支（无摘要、round 1 无 engineUsage）；round 1 的 `tool_use` + **大 tool_result**
+  // （4000 字≈1k token）把 round-2 request 推过预算 ⇒ `shouldCompact` 真 ⇒ 跑配置策略 fold-llm（非兵底），
+  // `len - 5 ≥ 3` 的 `keepFloor` 足够 ⇒ 真折一轮、恰一次 fold-llm 摘要（落 round 2）、留 ≥5 轮。
+  const initialMessages = [
+    { role: "user", content: [{ type: "text", text: `start ${"y".repeat(600)}` }] },
+  ];
+  for (let i = 0; i < 8; i += 1) {
+    const role = i % 2 === 0 ? "assistant" : "user";
+    initialMessages.push({ role, content: [{ type: "text", text: `seed-round-${i} ${"w".repeat(400)}` }] });
+  }
+  const budgetTokens = estimateMessageTokens(initialMessages) + 300;
+
   const result = await runDirect({
     ...BASE,
     provider,
     capabilities,
     maxRounds: 2,
     reflection: false,
-    initialUserMessage: `start ${"y".repeat(600)}`,
-    executeTool: async () => `tool output ${"z".repeat(400)}`,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } } },
+    executeTool: async () => `tool output ${"z".repeat(4000)}`,
+    config: {
+      input: { messages: initialMessages },
+      folding: { context: { budgetTokens, keepRounds: 0, strategy: "fold-llm" } },
+    },
   });
 
   // 前置：这一格必须**真的**发生过一次折叠摘要（否则下面的断言是空断言）。
