@@ -60,21 +60,33 @@ function seedTextFor(target) {
 }
 
 /**
- * 两轮历史（user / assistant / user），总估算 ≈ `target`。
+ * 八轮历史（head user + 8 轮纯文本），总估算 ≈ `target`。
  *
- * 用途是 B4：`keepRounds: 0` 时头部那一轮**真的**被折掉，于是「提前折」有 `foldedRounds` 可断言，
+ * 用途是 B4：`keepRounds: 0` 时最老几轮**真的**被折掉，于是「提前折」有 `foldedRounds` 可断言，
  * 而不只是「事件出现了」。
+ *
+ * issue #873 MIN_KEEP_ROUNDS=5 夹具重调：旧夹具只有 2 轮（head 之外），有效保留下限
+ * `max(keepRounds:0, 5) = 5` ⇒ `keepFloor = max(0, 2-5) = 0` ⇒ 一轮都折不动。改为 head 之外 8 轮
+ * （无 tool_use，逐条即一轮），总量按 `target` 均摊。落点：目标 = 0.65×budget = 132054，预算
+ * 203161 ⇒ 总内容 ~160k（132054 < 160k < 203161），r=0.5 阈值 101580.5 触发折叠、不传 r 时 < 预算
+ * 不折（baseline 契约）；折到 ≤132054 从最老侧折 ~2 轮即可，keepFloor = 8-5 = 3 够折 ⇒ 留 ≥6 轮
+ * （≥5）；`noted` 标记放保留侧第 5 轮（index 5 ≥ keepFloor）⇒ 不被折走。
  *
  * @param {number} target
  * @returns {Array<{role: string, content: Array<{type: string, text: string}>}>}
  */
 function historyFor(target) {
-  const half = seedTextFor(Math.floor(target / 2));
-  return [
-    { role: "user", content: [{ type: "text", text: half }] },
-    { role: "assistant", content: [{ type: "text", text: "noted" }] },
-    { role: "user", content: [{ type: "text", text: half }] },
-  ];
+  const roundCount = 8;
+  const perRound = Math.max(1000, Math.floor(target / roundCount));
+  const notedRound = 5;
+  const body = seedTextFor(perRound);
+  const messages = [{ role: "user", content: [{ type: "text", text: "seed" }] }];
+  for (let i = 0; i < roundCount; i += 1) {
+    const role = i % 2 === 0 ? "assistant" : "user";
+    const text = i === notedRound ? `noted ${body}` : body;
+    messages.push({ role, content: [{ type: "text", text }] });
+  }
+  return messages;
 }
 
 /**
