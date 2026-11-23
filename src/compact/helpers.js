@@ -6,7 +6,7 @@
 // `continuity-block.js` 只依赖 `../tokens.js` 与 `./pending-tool-result.js`，两者都不碰 `compact/`。
 // 方向也不是「compact 依赖 loop 的编排面」——它是一个**叶子谓词**，与 `isProtectedMessage` 同族。
 import { isContinuityMessage } from "../loop/continuity-block.js";
-import { estimateMessageTokens } from "../tokens.js";
+import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 // issue #741：笔记可用性的判定住在 TTL 模块（那里是工具面/账本证据的原点），本模块只负责
 // 据此选措辞。方向是单向的：`tool-result-ttl.js` 只依赖 `node:crypto` + `../tokens.js`，不反向 import
 // compact，所以这条边不成环（与本文件已有的 `../loop/continuity-block.js` 同一类叶依赖）。
@@ -253,13 +253,56 @@ function roundHoldsContinuityBlock(round) {
   return messages.some(isContinuityMessage);
 }
 
+/**
+ * 折叠目标占预算的比例（issue #873）。折后**本地估算（含摘要块开销）≤ 预算 × 本比例**。
+ *
+ * 为什么是 `0.65` 而不是 `0.6` / `0.7`：
+ *   · **落点粒度是「一整轮」**，一轮通常占预算 2–5%。取 0.65 让实际落点落在 **60–65%**：
+ *     目标定在 0.65 时，最后一次「刚好跨过目标」的那一轮把估算从 0.65 以上拉到 0.65 以下，
+ *     落在 0.60–0.65 这一段；若目标定 0.6，落点会更低、信息更少；定 0.7 则常常「折一轮就过头、
+ *     不折又超目标」，反复抖动。
+ *   · 0.65 还保证**一次折叠至少买回 ~5 轮**：按平均轮大小 ~2.4k / 预算 65k 估算，折到 0.65 释放
+ *     ~22.7k ≈ 9 轮的余量；即便按最坏单轮口径也留得下 5 轮不触发下一次折叠，避免「折一次跑两轮又
+ *     折」的锯齿。
+ *
+ * 它**只决定「折多少」**，不决定「什么时候折」（触发口径仍是 `foldAtRatio`，默认 1.0）。
+ */
+export const FOLD_TARGET_RATIO = 0.65;
+
+/**
+ * 选「折哪些轮」。两种口径：
+ *
+ *   ① **旧口径（`target.targetTokens` 缺席 / 非正数）**：折到只剩 `keepRounds` 轮
+ *      （`target = rounds.length - keepRounds`）。库消费者直接调 `compact`（不传 `budgetTokens`）
+ *      逐字走这一支——这是 issue #873 的**反向证 A**：没有预算就没有「折到某比例」可言。
+ *
+ *   ② **新口径（`target.targetTokens` 为正数，issue #873）**：从**最老**一轮开始逐轮加入 folded，
+ *      **一旦**「折后估算（head + 保留轮）+ 摘要块开销 ≤ targetTokens」**立刻停**（不许折得比需要
+ *      更多）。此时 `keepRounds` 降级为**保留下限**：最近 `keepRounds` 轮永不折（`index >=
+ *      rounds.length - keepRounds` ⇒ 不可折），但它**不再是「折到只剩这么多」的目标**。
+ *      判据口径与 `budget-fit.js` 的 `fits()` 一致（`估算 + estimateTokens(摘要) <= 阈值`），
+ *      不造第二套估算：摘要文本这一层还没生成 ⇒ 由调用方传 `target.mechanicalSummary`（机械摘要
+ *      口径），用同一个 `estimateTokens` 估它的长度。
+ *
+ * 目标不可达（可折轮次被 `keepRounds` 硬下限或工作集地板吃满、仍高于目标）⇒ 折到地板为止、
+ * **不把所有轮折光**；`budgetUnreachable` 仍由引擎既有的 enforce-size 口径如实上报（本函数不改它）。
+ *
+ * @param {object[]} rounds
+ * @param {number} keepRounds 保留下限（新口径）/ 保留目标（旧口径）
+ * @param {unknown} protectedMessage
+ * @param {number} [workingSetRecentRounds] 工作集地板（#608）
+ * @param {{ targetTokens?: number, headMessages?: object[],
+ *   mechanicalSummary?: (foldedMessages: object[], count: number) => string }} [target]
+ *   按 token 目标折的入参；`targetTokens` 非正数 ⇒ 退回旧口径
+ * @returns {{ folded: object[], retained: object[], foldedIndexes: number[] }}
+ */
 export function selectFoldedRounds(
   rounds,
   keepRounds,
   protectedMessage,
   workingSetRecentRounds = 0,
+  target = {},
 ) {
-  const target = Math.max(0, rounds.length - keepRounds);
   // issue #608：**工作集地板**。最近 `workingSetRecentRounds` 个带 `tool_result` 的轮次是模型
   // 当下正在用的东西（「工作集」），**优先**不折它们——与 #588（悬空 `tool_use` ⇒ 推迟压缩）同族。
   // `0` = 关闭（默认），由引擎在 `compactOptions` 里显式开成 `WORKING_SET_RECENT_ROUNDS`。
@@ -270,34 +313,100 @@ export function selectFoldedRounds(
   const floorIndex = workingSetFloorIndex(rounds, workingSetRecentRounds);
   const foldable = (round) => !roundHoldsContinuityBlock(round)
     && !round.messages.some((message) => isProtectedMessage(message, protectedMessage));
+
+  const targetTokens = Number.isFinite(target?.targetTokens) && target.targetTokens > 0
+    ? target.targetTokens
+    : undefined;
+
+  if (targetTokens === undefined) {
+    // ── ① 旧口径（逐字保留，反向证 A）：折到只剩 keepRounds 轮 ────────────────────────────
+    const countTarget = Math.max(0, rounds.length - keepRounds);
+    const folded = [];
+    const retained = [];
+    const foldedIndexes = [];
+
+    rounds.forEach((round, index) => {
+      if (folded.length < countTarget && index < floorIndex && foldable(round)) {
+        folded.push(round);
+        foldedIndexes.push(index);
+      } else {
+        retained.push(round);
+      }
+    });
+
+    // ── 进度保证（issue #608）：地板是偏好，不是死锁 ──────────────────────────────────
+    // 若地板把**所有**可折轮次都挡住了（`folded` 为空，而调用方确实要求折：`target > 0`）⇒ 照旧折
+    // **最老的那一轮**。调用方（引擎）是在「这一发请求已经超预算」时才要求折的，一次都不折等于把
+    // 超预算的请求原样发出去，而安全层随后会整轮丢掉——比「折掉工作集」更差（连摘要都没有）。
+    // 连续性块 / `protectedMessage` 仍然不在此列：它们不是「地板挡住了」，是**不可折**。
+    if (folded.length === 0 && countTarget > 0) {
+      const index = rounds.findIndex((round) => foldable(round));
+      if (index >= 0) {
+        folded.push(rounds[index]);
+        foldedIndexes.push(index);
+        const retainedIndex = retained.indexOf(rounds[index]);
+        if (retainedIndex >= 0) retained.splice(retainedIndex, 1);
+      }
+    }
+
+    return { folded, retained, foldedIndexes };
+  }
+
+  // ── ② 新口径（issue #873）：按 token 目标折，从最老一轮逐轮加入，一旦满足目标立刻停 ──────
+  // `keepRounds` 是**保留下限**（最近 keepRounds 轮永不折），不是「折到只剩这么多」。
+  const keepFloor = Math.max(0, rounds.length - keepRounds);
+  const headMessages = Array.isArray(target?.headMessages) ? target.headMessages : [];
+  const mechanicalSummary = typeof target?.mechanicalSummary === "function"
+    ? target.mechanicalSummary
+    : null;
+
+  // `estimateMessageTokens` 逐消息可加 ⇒ 折后估算 = 起手总量（head + 全部轮次）逐轮减去被折轮次。
+  const roundTokens = rounds.map((round) => estimateMessageTokens(round.messages));
+  let afterBase = estimateMessageTokens(headMessages);
+  for (const tokens of roundTokens) afterBase += tokens;
+
+  const foldedSet = new Set();
+  const foldableToken = (round, index) => index < keepFloor
+    && index < floorIndex
+    && foldable(round);
+  // 进度保证用：只受 keepRounds 硬下限约束、**不受**工作集地板约束的可折判定（与旧口径一致——
+  // 旧口径里进度保证也只折 `keepRounds` 之外的轮，工作集地板才是可被它覆盖的偏好）。
+  const hardFoldable = (round, index) => index < keepFloor && foldable(round);
+  const summaryOverhead = () => {
+    if (mechanicalSummary === null || foldedSet.size === 0) return 0;
+    const foldedMessages = [];
+    for (const index of foldedSet) foldedMessages.push(...rounds[index].messages);
+    const text = mechanicalSummary(foldedMessages, foldedSet.size);
+    return typeof text === "string" && text !== "" ? estimateTokens(text) : 0;
+  };
+
+  for (let index = 0; index < rounds.length; index += 1) {
+    // 目标已满足 ⇒ 立刻停（不许折得比需要更多）。判据与 `budget-fit.js` 的 `fits()` 同口径。
+    if (afterBase + summaryOverhead() <= targetTokens) break;
+    if (!foldableToken(rounds[index], index)) continue; // 工作集地板 / keepRounds 下限 / 不可折 ⇒ 保留
+    foldedSet.add(index);
+    afterBase -= roundTokens[index];
+  }
+
+  // 进度保证（#608）：什么都没折、却仍高于目标（工作集地板挡住了全部可折轮）⇒ 折最老那一轮，
+  // **覆盖工作集地板**，但 `keepRounds` 内的轮是硬下限、永不折。折光可折轮次仍高于目标 ⇒ 不触发
+  // 这里（`foldedSet` 非空），保持「折到地板为止」。
+  if (foldedSet.size === 0 && afterBase > targetTokens) {
+    const index = rounds.findIndex((round, i) => hardFoldable(round, i));
+    if (index >= 0) foldedSet.add(index);
+  }
+
   const folded = [];
   const retained = [];
   const foldedIndexes = [];
-
   rounds.forEach((round, index) => {
-    if (folded.length < target && index < floorIndex && foldable(round)) {
+    if (foldedSet.has(index)) {
       folded.push(round);
       foldedIndexes.push(index);
     } else {
       retained.push(round);
     }
   });
-
-  // ── 进度保证（issue #608）：地板是偏好，不是死锁 ──────────────────────────────────────
-  // 若地板把**所有**可折轮次都挡住了（`folded` 为空，而调用方确实要求折：`target > 0`）⇒ 照旧折
-  // **最老的那一轮**。调用方（引擎）是在「这一发请求已经超预算」时才要求折的，一次都不折等于把
-  // 超预算的请求原样发出去，而安全层随后会整轮丢掉——比「折掉工作集」更差（连摘要都没有）。
-  // 连续性块 / `protectedMessage` 仍然不在此列：它们不是「地板挡住了」，是**不可折**。
-  if (folded.length === 0 && target > 0) {
-    const index = rounds.findIndex((round) => foldable(round));
-    if (index >= 0) {
-      folded.push(rounds[index]);
-      foldedIndexes.push(index);
-      const retainedIndex = retained.indexOf(rounds[index]);
-      if (retainedIndex >= 0) retained.splice(retainedIndex, 1);
-    }
-  }
-
   return { folded, retained, foldedIndexes };
 }
 
