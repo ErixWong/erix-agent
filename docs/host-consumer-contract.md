@@ -3881,7 +3881,7 @@ Within one round, exactly one mechanism gets to decide, in this order
    points — `decideRoundAction` (`src/reflection/governor.js`) and
    `decideWithEvaluation` (`src/reflection/governor.js`). Because
    `continuationExhausted` is checked before the `cap` mapping to
-   `max_rounds_cap` (`src/loop/termination.js:119`), a `cap` stop caused by truncated output
+   `max_rounds_cap` (`terminationReasonForAction` in `src/loop/termination.js`), a `cap` stop caused by truncated output
    reports `continuation_exhausted`, never `max_rounds_cap`.
 2. **stall stop** — the stall branch of `decideRoundAction` (`src/reflection/governor.js`) — above the wrap-up and
    repeated-error nudges on purpose, so a low-priority nudge cannot starve a
