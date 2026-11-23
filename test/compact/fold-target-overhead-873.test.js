@@ -16,6 +16,7 @@ import { groupIntoRounds } from "../../src/messages/rounds.js";
 import { estimateMessageTokens, estimateTokens } from "../../src/tokens.js";
 import {
   FOLD_TARGET_RATIO,
+  MIN_KEEP_ROUNDS,
   collectTtlFoldStubs,
   selectFoldedRounds,
 } from "../../src/compact/helpers.js";
@@ -62,14 +63,35 @@ function placeholderOverhead(foldedCount) {
 }
 
 // ── 阻断 ① 的三条判据（纯选择器单元测试）────────────────────────────────────────────
-test("阻断①：keepRounds=0 + 目标不可达（targetTokens=1）⇒ 留恰好 1 轮，不是折光", () => {
-  const { head, rounds } = groupIntoRounds(roundFixture(5));
-  const { folded } = selectFoldedRounds(rounds, 0, undefined, 0, {
+test("阻断①（判据 7）：keepRounds=0 + 目标不可达 + 多轮 ⇒ 恰好留 5 轮（不是 1、不是全折）", () => {
+  const { head, rounds } = groupIntoRounds(roundFixture(10)); // 19 轮，远大于下限 5
+  assert.ok(rounds.length > MIN_KEEP_ROUNDS);
+  const { folded, retained } = selectFoldedRounds(rounds, 0, undefined, 0, {
     targetTokens: 1,
     headMessages: head,
   });
-  assert.equal(folded.length, rounds.length - 1);
-  assert.ok(folded.length < rounds.length, "目标不可达时不许把所有轮折光");
+  assert.equal(retained.length, MIN_KEEP_ROUNDS);
+  assert.equal(folded.length, rounds.length - MIN_KEEP_ROUNDS);
+  assert.notEqual(retained.length, 1, "用户裁决：留 1 轮等于没留");
+  assert.notEqual(retained.length, rounds.length, "必须真的折掉一些，不是一轮不折");
+});
+
+test("下限：keepRounds 0/1–4 一律抬到 5；轮数 ≤ 有效下限 ⇒ 一轮都不折", () => {
+  assert.equal(MIN_KEEP_ROUNDS, 5);
+  const { head, rounds } = groupIntoRounds(roundFixture(10));
+  for (const keepRounds of [0, 1, 4]) {
+    const { retained } = selectFoldedRounds(rounds, keepRounds, undefined, 0, {
+      targetTokens: 1, headMessages: head,
+    });
+    assert.equal(retained.length, MIN_KEEP_ROUNDS, `keepRounds=${keepRounds} 应被抬到 ${MIN_KEEP_ROUNDS}`);
+  }
+  // roundFixture(3) ⇒ 5 轮，恰好等于有效下限 ⇒ 没有可折的 ⇒ 一轮不折。
+  const small = groupIntoRounds(roundFixture(3));
+  assert.equal(small.rounds.length, MIN_KEEP_ROUNDS);
+  const { folded } = selectFoldedRounds(small.rounds, 0, undefined, 0, {
+    targetTokens: 1, headMessages: small.head,
+  });
+  assert.equal(folded.length, 0, "轮数 ≤ 有效下限时一轮都不折");
 });
 
 test("阻断①：keepRounds=6 仍留 6 轮（不被这条改坏）", () => {
