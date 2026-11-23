@@ -6,7 +6,7 @@
 // `continuity-block.js` 只依赖 `../tokens.js` 与 `./pending-tool-result.js`，两者都不碰 `compact/`。
 // 方向也不是「compact 依赖 loop 的编排面」——它是一个**叶子谓词**，与 `isProtectedMessage` 同族。
 import { isContinuityMessage } from "../loop/continuity-block.js";
-import { estimateMessageTokens, estimateTokens } from "../tokens.js";
+import { estimateMessageTokens } from "../tokens.js";
 // issue #741：笔记可用性的判定住在 TTL 模块（那里是工具面/账本证据的原点），本模块只负责
 // 据此选措辞。方向是单向的：`tool-result-ttl.js` 只依赖 `node:crypto` + `../tokens.js`，不反向 import
 // compact，所以这条边不成环（与本文件已有的 `../loop/continuity-block.js` 同一类叶依赖）。
@@ -280,9 +280,14 @@ export const FOLD_TARGET_RATIO = 0.65;
  *      **一旦**「折后估算（head + 保留轮）+ 摘要块开销 ≤ targetTokens」**立刻停**（不许折得比需要
  *      更多）。此时 `keepRounds` 降级为**保留下限**：最近 `keepRounds` 轮永不折（`index >=
  *      rounds.length - keepRounds` ⇒ 不可折），但它**不再是「折到只剩这么多」的目标**。
- *      判据口径与 `budget-fit.js` 的 `fits()` 一致（`估算 + estimateTokens(摘要) <= 阈值`），
- *      不造第二套估算：摘要文本这一层还没生成 ⇒ 由调用方传 `target.mechanicalSummary`（机械摘要
- *      口径），用同一个 `estimateTokens` 估它的长度。
+ *      判据口径与 `budget-fit.js` 的 `fits()` 一致（`估算 + estimateTokens(摘要) <= 阈值`）。
+ *      摘要文本这一层还没生成 ⇒ 由调用方**声明**摘要开销上界 `target.summaryOverheadTokens`
+ *      （`number | ((foldedCount)=>number)`），语义「这次折叠最多带进多少 token 的摘要」；缺席 ⇒
+ *      按 `0` 处理（= 调用方声明没有摘要开销）。为何改接口而不是在本函数里猜（issue #873
+ *      验收阻断②）：三策略摘要来源各不相同（`fold-llm` 是模型写的、生成前拿不到长度；
+ *      `fold-statistical` 是机械摘要但还拼 stubs / navigation / recovery hint / anchors；
+ *      `sliding-window` 不往输入里 prepend 摘要），用「机械摘要」估 `fold-llm` 会**低估**（模型
+ *      摘要可能长得多 ⇒ 估算说 ≤ 65%、实际超），故本函数不再自己猜，开销由调用方声明。
  *
  * 目标不可达（可折轮次被 `keepRounds` 硬下限或工作集地板吃满、仍高于目标）⇒ 折到地板为止、
  * **不把所有轮折光**；`budgetUnreachable` 仍由引擎既有的 enforce-size 口径如实上报（本函数不改它）。
@@ -292,8 +297,8 @@ export const FOLD_TARGET_RATIO = 0.65;
  * @param {unknown} protectedMessage
  * @param {number} [workingSetRecentRounds] 工作集地板（#608）
  * @param {{ targetTokens?: number, headMessages?: any[],
- *   mechanicalSummary?: (foldedMessages: any[], count: number) => string }} [target]
- *   按 token 目标折的入参；`targetTokens` 非正数 ⇒ 退回旧口径
+ *   summaryOverheadTokens?: number | ((foldedCount: number) => number) }} [target]
+ *   按 token 目标折的入参；`targetTokens` 非正数 ⇒ 退回旧口径；`summaryOverheadTokens` = 摘要开销上界（缺席 ⇒ `0`）
  * @returns {{ folded: any[], retained: any[], foldedIndexes: number[] }}
  */
 export function selectFoldedRounds(
@@ -372,9 +377,9 @@ export function selectFoldedRounds(
     Math.min(rounds.length - keepRounds, rounds.length - 1),
   );
   /** @type {any[]} */ const headMessages = Array.isArray(target?.headMessages) ? target.headMessages : [];
-  const mechanicalSummary = typeof target?.mechanicalSummary === "function"
-    ? target.mechanicalSummary
-    : null;
+  // 摘要开销上界由调用方声明（issue #873 验收阻断②）：`number | ((foldedCount)=>number)`；
+  // 缺席 ⇒ `0`（= 调用方声明这次折叠没有摘要开销）。本函数不再自己调机械摘要去猜。
+  const summaryOverheadTokens = target?.summaryOverheadTokens;
 
   // `estimateMessageTokens` 逐消息可加 ⇒ 折后估算 = 起手总量（head + 全部轮次）逐轮减去被折轮次。
   /** @type {number[]} */ const roundTokens = rounds.map((round) => estimateMessageTokens(round.messages));
@@ -388,17 +393,19 @@ export function selectFoldedRounds(
   // 进度保证用：只受 keepRounds 硬下限约束、**不受**工作集地板约束的可折判定（与旧口径一致——
   // 旧口径里进度保证也只折 `keepRounds` 之外的轮，工作集地板才是可被它覆盖的偏好）。
   const hardFoldable = (round, index) => index < keepFloor && foldable(round);
-  const summaryOverhead = () => {
-    if (mechanicalSummary === null || foldedSet.size === 0) return 0;
-    /** @type {any[]} */ const foldedMessages = [];
-    for (const index of foldedSet) foldedMessages.push(...rounds[index].messages);
-    const text = mechanicalSummary(foldedMessages, foldedSet.size);
-    return typeof text === "string" && text !== "" ? estimateTokens(text) : 0;
+  // 摘要开销：按调用方声明的上界取（`foldedCount` 是当前已折轮数）；非函数值直接取数。
+  // 缺席 / 非正数 ⇒ `0`。开销只在真有轮被折时才计入（未折 ⇒ 无摘要）。
+  const summaryOverhead = (count) => {
+    if (count <= 0) return 0;
+    const value = typeof summaryOverheadTokens === "function"
+      ? summaryOverheadTokens(count)
+      : summaryOverheadTokens;
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
   };
 
   for (let index = 0; index < rounds.length; index += 1) {
     // 目标已满足 ⇒ 立刻停（不许折得比需要更多）。判据与 `budget-fit.js` 的 `fits()` 同口径。
-    if (afterBase + summaryOverhead() <= targetTokens) break;
+    if (afterBase + summaryOverhead(foldedSet.size) <= targetTokens) break;
     if (!foldableToken(rounds[index], index)) continue; // 工作集地板 / keepRounds 下限 / 不可折 ⇒ 保留
     foldedSet.add(index);
     afterBase -= roundTokens[index];

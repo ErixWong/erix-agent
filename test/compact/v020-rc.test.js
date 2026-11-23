@@ -31,7 +31,11 @@ test("compaction hooks, system summaries, protected rounds, and image cleanup ar
     stripHistoricalImages: true,
     onBeforeFold: (payload) => before.push(payload),
     onAfterFold: (payload) => after.push(payload),
-  }).compact(messages, { keepRounds: 1 });
+  }).compact(messages, {
+    // issue #873：本用例测的是**无预算的旧口径**（不传 `budgetTokens` ⇒ 选择器逐字退回按 `keepRounds`
+    // 计数折）；本用例验的是 hooks / system 摘要 / 保护轮 / 图片清理，与折叠目标比例无关，故保持旧口径。
+    keepRounds: 1,
+  });
 
   assert.equal(before.length, 1);
   assert.equal(after.length, 1);

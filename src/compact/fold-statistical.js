@@ -1,6 +1,6 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { summarizeToolCall } from "../loop/tool-result-ttl.js";
-import { estimateMessageTokens } from "../tokens.js";
+import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import {
   ANCHOR_SECTION_HEADING,
   clampAnchorSection,
@@ -1257,10 +1257,29 @@ export function createFoldStatisticalStrategy(options = {}) {
         {
           targetTokens,
           headMessages: head,
-          // 机械摘要长度估算（与 `budget-fit.js` 的 `fits()` 同口径）。
-          mechanicalSummary: (foldedMessages, count) => summarizeFoldedPayload(foldedMessages, {
-            from: 1, to: count, count,
-          }),
+          // 摘要开销估算 = 本策略**实际会拼出来的那份**机械摘要，走同一个生产函数
+          // `summarizeFoldedPayload`（内含 inventory / stubs / navigation record / recovery hint /
+          // anchors），用 `estimateTokens` 估长度（issue #873 验收阻断②）。`foldedCount` 是当前已折
+          // 轮数；从最老 `count` 轮重建（选择器就是折最老的轮）。旧版只传 `{from,to,count}` 的占位串。
+          summaryOverheadTokens: (foldedCount) => {
+            if (foldedCount <= 0) return 0;
+            const estFolded = rounds.slice(0, foldedCount).flatMap((round) => round.messages);
+            const estAnchorsEnabled = settings.anchors !== false;
+            const estAnchorClamp = settings.anchors === false
+              ? {}
+              : (settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {});
+            const text = summarizeFoldedPayload(estFolded, {
+              from: 1,
+              to: foldedCount,
+              count: foldedCount,
+              stubs: [...new Set(collectTtlFoldStubs(estFolded))],
+              navigationRecord: buildFoldNavigationRecord(estFolded, { from: 1, to: foldedCount }),
+              recoveryHint: settings.recoveryHint,
+              noteTools: settings.noteTools,
+              ...(estAnchorsEnabled ? { anchors: extractAnchors(estFolded, estAnchorClamp) } : {}),
+            });
+            return estimateTokens(text);
+          },
         },
       );
       const foldedPayload = cloneFoldPayload(

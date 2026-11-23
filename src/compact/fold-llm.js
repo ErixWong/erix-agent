@@ -331,11 +331,11 @@ export function createFoldLlmStrategy({
         {
           targetTokens,
           headMessages: head,
-          // 机械摘要长度估算（与 `budget-fit.js` 的 `fits()` 同口径）；LLM 摘要的真实长度由
-          // `maxSummaryTokens` 夹住，这一层只用机械口径估目标。
-          mechanicalSummary: (foldedMessages, count) => summarizeFoldedPayload(foldedMessages, {
-            from: 1, to: count, count,
-          }),
+          // 摘要开销 = 本策略配置的摘要上限（`maxSummaryTokens` 解析后的 `summaryBudget`）。
+          // 依据：`fold-llm` 的摘要是**模型写的**，生成前拿不到长度，但 `callSummarizerWithBound`
+          // 会把模型摘要限长到 `maxSummaryTokens`（超限即 `truncateWholeSummary` 夹断）⇒ 模型
+          // 摘要 ≤ 该上限，用它作开销上界成立（issue #873 验收阻断②：旧版拿机械摘要估会低估）。
+          summaryOverheadTokens: summaryBudget,
         },
       );
       const foldedPayload = cloneFoldPayload(

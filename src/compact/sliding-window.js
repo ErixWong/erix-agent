@@ -58,10 +58,9 @@ export function createSlidingWindowStrategy(options = {}) {
         {
           targetTokens,
           headMessages: head,
-          // 机械摘要长度估算（判据口径与 `budget-fit.js` 的 `fits()` 一致，用同一个 `estimateTokens`）。
-          mechanicalSummary: (foldedMessages, count) => summarizeFoldedPayload(foldedMessages, {
-            from: 1, to: count, count,
-          }),
+          // 摘要开销 = `0`：`sliding-window` 不往模型输入里 prepend 摘要（`foldedSummaryText`
+          // 只落账，不进 `compactedMessages`）⇒ 折叠不额外带进摘要 token（issue #873 验收阻断②）。
+          summaryOverheadTokens: 0,
         },
       );
       const foldedPayload = cloneFoldPayload(
