@@ -29,6 +29,7 @@ import {
   WORKING_SET_RECENT_ROUNDS,
   selectFoldedRounds,
   suggestedBudgetTokens,
+  MIN_KEEP_ROUNDS,
   workingSetRoundIndexes,
   workingSetTokens,
 } from "../../src/compact/helpers.js";
@@ -194,7 +195,7 @@ test("#608-1d 真引擎（**显式开**地板）：批量取数 + 工作集 > �
   // 形状：前两轮是**很小**的结果（让历史能攒到 4 轮），后两轮是**很大**的结果（工作集 > 预算）。
   // 这样折叠决策时才**真的有更老的轮次可折**——那是地板唯一的可观测面（否则进度保证会照旧折一轮）。
   const provider = createFakeProvider([
-    ...Array.from({ length: 6 }, (_unused, index) => paragraphToolStep(index + 1)),
+    ...Array.from({ length: 8 }, (_unused, index) => paragraphToolStep(index + 1)),
     endTurn(),
   ]);
   /** @type {{foldedPayload: object[], messages: object[]}[]} */
@@ -202,9 +203,9 @@ test("#608-1d 真引擎（**显式开**地板）：批量取数 + 工作集 > �
   await runEngine({
     runId: "s608-floor",
     provider,
-    budgetTokens: 1000,
+    budgetTokens: 3000,
     keepRounds: 0,
-    maxRounds: 9,
+    maxRounds: 12,
     // issue #612：地板已是 opt-in ⇒ 这一格必须**显式开**（只调开关写法，判据一个字没删）。
     workingSetRecentRounds: WORKING_SET_RECENT_ROUNDS,
     executeTool: async ({ input }) => (
@@ -311,7 +312,7 @@ test("#612-1b 默认关 ⇒ selectFoldedRounds 与 #608 之前的 3 参调用逐
 test("#612-1c 默认关的真引擎：工作集里的 tool_result 照旧被折走（= #608 之前的行为，地板真的不在）", async () => {
   // 夹具与 #608-1d 逐字相同，**只差开关**：不传 `workingSetRecentRounds` ⇒ 地板关。
   const provider = createFakeProvider([
-    ...Array.from({ length: 6 }, (_unused, index) => paragraphToolStep(index + 1)),
+    ...Array.from({ length: 8 }, (_unused, index) => paragraphToolStep(index + 1)),
     endTurn(),
   ]);
   /** @type {{foldedPayload: object[], messages: object[]}[]} */
@@ -319,9 +320,9 @@ test("#612-1c 默认关的真引擎：工作集里的 tool_result 照旧被折�
   await runEngine({
     runId: "s612-default-engine",
     provider,
-    budgetTokens: 1000,
+    budgetTokens: 3000,
     keepRounds: 0,
-    maxRounds: 9,
+    maxRounds: 12,
     executeTool: async ({ input }) => (
       input.index <= 2 ? `tiny-${input.index}` : paragraph(input.index)
     ),
@@ -350,11 +351,18 @@ test("#612-1c 默认关的真引擎：工作集里的 tool_result 照旧被折�
     )}）`);
   for (const entry of withOlderRounds) {
     const foldedJson = JSON.stringify(entry.foldedPayload);
-    // 反向断言（与 #608-1d 镜像）：地板关时，**最近那一轮**的 tool_result 也在被折之列。
-    const newest = entry.results[entry.results.length - 1];
-    assert.equal(foldedJson.includes(newest), true,
-      `默认关时工作集必须照旧被折（= #608 之前）：${newest.slice(0, 40)}…`);
+    // #873 MIN_KEEP_ROUNDS=5（旧语义副产物，已按规则改）：地板关时旧断言写死「最近那一轮也被折」
+    // = 旧 `keepRounds:0`「折到只剩 0 轮」的副产物。新口径下最后 MIN_KEEP_ROUNDS(=5) 轮是**硬保留
+    // 下限**（keepFloor），与地板开关无关 ⇒ 最近那一轮恒不折。地板关的真可观测面变成「折到
+    // keepFloor 边界」：边界那一轮（倒数第 MIN_KEEP_ROUNDS+1 轮）仍被折，保留下限内（倒数第
+    // MIN_KEEP_ROUNDS 轮）不折——这正是地板不再起额外作用、折叠只看保留下限的证据。
     assert.equal(foldedJson.includes(entry.results[0]), true, "更老的轮次当然也在被折之列");
+    const keepBoundary = entry.results[entry.results.length - MIN_KEEP_ROUNDS - 1];
+    const firstRetained = entry.results[entry.results.length - MIN_KEEP_ROUNDS];
+    assert.equal(foldedJson.includes(keepBoundary), true,
+      `地板关时折到 keepFloor 边界：倒数第 ${MIN_KEEP_ROUNDS + 1} 轮必须被折：${keepBoundary.slice(0, 40)}…`);
+    assert.equal(foldedJson.includes(firstRetained), false,
+      `保留下限内（倒数第 ${MIN_KEEP_ROUNDS} 轮）不得被折：${firstRetained.slice(0, 40)}…`);
   }
 });
 
