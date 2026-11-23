@@ -3101,6 +3101,12 @@ What a host can observe, and what it must not conclude:
 - **It can be folded away.** The notice is the newest round, so the default `keepRounds` keeps it
   unfolded; with an aggressive compaction configuration (e.g. `keepRounds: 0`) it can be folded into the
   summary in the very same turn, in which case the model reads the summary and not the notice.
+  **Folding depth is budget-relative, not round-count relative (issue #873):** `selectFoldedRounds`
+  (`src/compact/helpers.js`) folds the **oldest** rounds first and stops as soon as the local estimate
+  (including the fold-summary overhead) is at or below `FOLD_TARGET_RATIO` (0.65) of `budgetTokens`; the
+  working-set floor and the progress guarantee may override that. `keepRounds` is a **retention floor** (the
+  most recent `keepRounds` rounds are never folded), **not** a "fold until only N rounds remain" target. When
+  `budgetTokens` is absent, folding falls back to the retention count (the unchanged legacy behavior).
 
 ### Same-key payload conflicts (issue #326)
 
