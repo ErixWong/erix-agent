@@ -3,6 +3,40 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Changed
+- **Folding depth is now budget-relative, not round-count relative, and it can never fold below
+  five rounds (issue #873).** `selectFoldedRounds` (`src/compact/helpers.js`) used to compute its
+  target as `rounds.length - keepRounds`, so `keepRounds` was silently a **destination** rather than
+  a floor: a 25-round run under a 65k budget folded to 6 rounds and came back at ~14% of the budget,
+  which then needed ~5 more folds to climb back to the trigger — each of them a summarizer call. All
+  three strategies (`fold-llm` / `fold-statistical` / `sliding-window`) share that helper, so all
+  three inherited the shape. The target is now **tokens**: fold until the retained rounds fit
+  `FOLD_TARGET_RATIO` (0.65) of `budgetTokens`, one round at a time, stopping at the first round
+  whose removal would cross the target — a fold therefore buys back ~5 rounds of headroom instead of
+  a fraction of one. `keepRounds` is a **retention floor** again, and its **minimum effective value
+  is 5** (`MIN_KEEP_ROUNDS`): `keepRounds: 0` means "keep the floor", not "fold everything" — a run
+  with five rounds or fewer folds nothing and is left to the size-enforcement layer. Two further
+  boundaries: the fold-target branch takes the summarizer's own cost as a **caller-declared**
+  `summaryOverheadTokens` (the summary text does not exist yet when the target is computed, so
+  guessing it low would make the estimate optimistic by exactly the summary size), and
+  `foldWithinBudget`'s fallback re-computes its increment body over the union so the key and the text
+  stay consistent when it appends rounds. Trigger (`foldAtRatio`, default `1.0`) is untouched. Pins:
+  `test/compact/fold-target-overhead-873.test.js` (target landing, `keepRounds: 0` + unreachable
+  target ⇒ exactly 5 retained, `keepRounds: 6` ⇒ 6, overhead declared per strategy). (PR #893)
+- **折叠深度改成按预算算，且再也不会折到五轮以下（issue #873）。** `selectFoldedRounds`
+  （`src/compact/helpers.js`）过去把目标算成 `rounds.length - keepRounds`，于是 `keepRounds` 悄悄
+  变成了**终点**而不是下限：25 轮、65k 预算的 run 被折到 6 轮，回落到预算的 ~14%，要再折 ~5 次
+  才重新碰到触发线，每一次都是一发摘要调用。三个策略共用这个函数，所以三个都继承了这个形状。
+  目标现在按 **token** 算：逐轮折叠直到留下的轮次落进 `FOLD_TARGET_RATIO`（0.65）× `budgetTokens`，
+  在「再折一轮就会越过目标」的那一轮停下——一次折叠买回的是 ~5 轮的余量，而不是零点几轮。
+  `keepRounds` 重新成为**保留下限**，且**最小有效值是 5**（`MIN_KEEP_ROUNDS`）：`keepRounds: 0`
+  意味着「按最小下限保留」，不是「折光」——五轮及以下的 run 一轮都不折，交给尺寸控制层。另外两条
+  边界：按目标折的那条分支把摘要器自身的开销当作**调用方声明**的 `summaryOverheadTokens`（算目标的
+  时候摘要文本还不存在，猜小了就会让估算正好少算一份摘要），`foldWithinBudget` 的兜底在追加轮次时
+  按并集重算增量正文，使键与正文保持一致。触发口径（`foldAtRatio`，默认 `1.0`）未动。钉住用例：
+  `test/compact/fold-target-overhead-873.test.js`（目标落点、`keepRounds: 0` + 目标不可达 ⇒ 恰好留
+  5 轮、`keepRounds: 6` ⇒ 留 6、三策略各自声明摘要开销）。(PR #893)
+
 ## [0.34.0] - 2026-11-23
 
 ### Changed
