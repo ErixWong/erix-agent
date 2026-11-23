@@ -117,8 +117,9 @@ function createProvider({ summaryText = SEED_SUMMARY } = {}) {
         };
       }
       mainRequests.push(request);
-      // 第一步先要工具（否则单轮就结束、上下文根本长不到触发折叠）。
-      const wantTool = mainRequests.length === 1;
+      // 先连续要几轮工具（#873 MIN_KEEP_ROUNDS=5：旧「只第一轮要工具」⇒ len≤2<5 ⇒ 折不动；
+      // 补到 6 个工具轮让历史长过 5 轮，预算 1200 下策略才真折并落账）。
+      const wantTool = mainRequests.length <= 6;
       return {
         content: wantTool
           ? [{ type: "tool_use", id: "work-1", name: "work", input: { path: "src/a.js" } }]
@@ -139,8 +140,8 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
     provider: first,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-    maxRounds: 3,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } }, run: { completion: false } },
+    maxRounds: 14,
+    config: { folding: { context: { budgetTokens: 1200, keepRounds: 0, strategy: "fold-llm" } }, run: { completion: false } },
     store,
     runId,
   });
@@ -161,9 +162,9 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
     config: {
       // #498 S3 A21：`maxRounds` 退役扁平写法（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
       // #530：`reflection` 也退役了扁平写法（家 `config.run.reflection`），同样并进这棵 `run` 子树。
-      run: { resume: true, runId, maxRounds: 3, completion: false, reflection: false },
+      run: { resume: true, runId, maxRounds: 6, completion: false, reflection: false },
       metadata: { task: "继续" },
-      folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens: 1200, keepRounds: 1, strategy: "fold-llm" } },
     },
   });
 
