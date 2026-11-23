@@ -312,7 +312,11 @@ test("#469-② 真引擎（fold-llm + 空串摘要器）：run 以 summarizer_fa
     completion: false,
     wrapup: false,
     stallDetection: false,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 0 } } },
+    // issue #873（旧语义→新语义）：`keepRounds: 0` 不再把唯一一轮折光。预算小到只有一轮在场
+    // 时就超 ⇒ 配置策略守那 1 轮、折 0 轮、不调摘要器 ⇒ 本例测不到「摘要器失败⇒run failed」。
+    // 提到 2000 让第一次超预算发生在已有 ≥3 轮在场时（单轮 tool_result ≈600 token），
+    // 配置策略才真的折最老轮并调摘要器。断言逐字未动。
+    config: { folding: { context: { budgetTokens: 2000, keepRounds: 0 } } },
   }).then(
     () => assert.fail("摘要器失败必须让 run 以 failed 终局（不许静默跑完）"),
     (error) => error,
