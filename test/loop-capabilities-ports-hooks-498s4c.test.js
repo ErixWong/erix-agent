@@ -141,15 +141,18 @@ function toolScript(rounds) {
   ];
 }
 
-/** 一次真的发生折叠的 run（预算极小 + 不保留轮次）。 */
+/**
+ * 一次真的发生折叠的 run（#873 MIN_KEEP_ROUNDS=5：有效保留下限 5 ⇒ 旧「预算 1 + 轮 4」下 len≤4<5
+ * ⇒ 策略折 0、只有安全层丢轮 ⇒ stubFor 的桩不进入折叠摘要。正解：历史先长过 5 轮再由策略折，
+ * 同时每轮有实质内容使总量明显超预算）。*/
 function foldingRun(extra = {}) {
   return runDirect({
-    provider: createFakeProvider(toolScript(6)),
-    executeTool: async () => "tool output",
+    provider: createFakeProvider(toolScript(14)),
+    executeTool: async () => `tool output ${"z".repeat(80)}`,
     initialUserMessage: "go",
     wrapup: false,
-    maxRounds: 4,
-    config: { folding: { context: { budgetTokens: 1, keepRounds: 0 } }, run: { completion: false } },
+    maxRounds: 16,
+    config: { folding: { context: { budgetTokens: 400, keepRounds: 0 } }, run: { completion: false } },
     ...extra,
   });
 }
@@ -601,15 +604,17 @@ test("C7 行为证据：onBeforeFold / onAfterFold / stubFor 在折叠时、onRe
 test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、两侧不等价 ⇒ 恰一条冲突、等价 ⇒ 零", async () => {
   // ① 数据形态（`string`）住 config，且真的生效：受保护的消息在折叠中保留。
   const dataRun = await runToolLoop({
-    provider: createFakeProvider(toolScript(6)),
+    provider: createFakeProvider(toolScript(10)),
     executeTool: async () => "tool output",
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
     // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { run: { maxRounds: 4, completion: false }, input: { wrapup: false, messages: [
+    // #873 MIN_KEEP_ROUNDS=5：旧 maxRounds 4 下 len≤4<5 ⇒ 策略不折 ⇒ 保护/赢家观察不到；抬到 10 轮
+    // + 预算 500 让历史长过 5 轮再由策略折（受保护消息存活 / 桩与提示进摘要）。
+    config: { run: { maxRounds: 14, completion: false }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "user" } } },
+    ] }, folding: { context: { budgetTokens: 500, keepRounds: 1, protectedMessage: "user" } } },
   });
   assert.equal(
     dataRun.messages.some((message) => JSON.stringify(message.content).includes("PROTECTED-TASK")),
@@ -618,15 +623,16 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   );
   // ② 函数形态住 hooks，行为等价。
   const functionRun = await runToolLoop({
-    provider: createFakeProvider(toolScript(6)),
+    provider: createFakeProvider(toolScript(10)),
     executeTool: async () => "tool output",
     capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
     // **same** `config` tree. #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { run: { maxRounds: 4, completion: false }, input: { wrapup: false, messages: [
+    // #873 MIN_KEEP_ROUNDS=5：同上，10 轮 + 预算 500 让策略真折。
+    config: { run: { maxRounds: 14, completion: false }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ] }, folding: { context: { budgetTokens: 300, keepRounds: 1 } } },
+    ] }, folding: { context: { budgetTokens: 500, keepRounds: 1 } } },
   });
   assert.equal(
     functionRun.messages.some((message) => JSON.stringify(message.content).includes("PROTECTED-TASK")),
@@ -637,15 +643,16 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   // ③ 两侧都给了**不等价**的值 ⇒ 恰一条 `config_override_conflict`，path 点名该旋钮的配置侧路径。
   const events = [];
   const conflictRun = await runToolLoop({
-    provider: createFakeProvider(toolScript(6)),
+    provider: createFakeProvider(toolScript(10)),
     executeTool: async () => "tool output",
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
     // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { run: { maxRounds: 4, completion: false }, input: { wrapup: false, messages: [
+    // #873 MIN_KEEP_ROUNDS=5：同上，10 轮 + 预算 500 让策略真折（冲突观察不依赖折，但保持同形状）。
+    config: { run: { maxRounds: 14, completion: false }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "system" } } },
+    ] }, folding: { context: { budgetTokens: 500, keepRounds: 1, protectedMessage: "system" } } },
     capabilities: { hooks: { protectedMessage: () => false } },
     onEvent: (event) => { events.push(event); },
   });
@@ -662,15 +669,16 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   // 用户轮守卫会保留最近一轮用户消息，与它无关）。
   const winnerEvents = [];
   const winnerRun = await runToolLoop({
-    provider: createFakeProvider(toolScript(6)),
+    provider: createFakeProvider(toolScript(10)),
     executeTool: async () => "tool output ".repeat(20),
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
     // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { run: { maxRounds: 4, completion: false }, input: { wrapup: false, messages: [
+    // #873 MIN_KEEP_ROUNDS=5：同上；预算 900（target=585）实测在 len>5 处真折，FUNC-HINT 进摘要。
+    config: { run: { maxRounds: 14, completion: false }, input: { wrapup: false, messages: [
       { role: "user", content: "task" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
+    ] }, folding: { context: { budgetTokens: 900, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
     capabilities: { hooks: { recoveryHint: () => "FUNC-HINT" } },
     onEvent: (event) => { winnerEvents.push(event); },
   });
@@ -703,18 +711,20 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   // `config` tree instead of letting the caller replace it wholesale (a replaced `config` would drop
   // `config.input.messages` and the run would start without a seed history).
   const hinted = (extra = {}) => runToolLoop({
-    provider: createFakeProvider(toolScript(6)),
+    provider: createFakeProvider(toolScript(10)),
     executeTool: async () => "tool output ".repeat(20),
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`).
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
+    // #873 MIN_KEEP_ROUNDS=5：旧 maxRounds 4 ⇒ len≤4<5 ⇒ fold-statistical 折 0 ⇒ 提示不进摘要；
+    // 10 轮 + 预算 900（target=585）实测在 len>5 处真折，DATA-HINT / FUNC-HINT 均进摘要。
     config: {
-      run: { maxRounds: 4, completion: false },
+      run: { maxRounds: 14, completion: false },
       input: { wrapup: false, messages: [
         { role: "user", content: "task" },
         { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
       ] },
       folding: { context: {
-        budgetTokens: 300,
+        budgetTokens: 900,
         keepRounds: 1,
         strategy: "fold-statistical",
         ...(extra.context ?? {}),
