@@ -5594,7 +5594,9 @@ Rules a host can code against:
 `executeTool` entry point — a host that registers `File tool registration` above
 gets it with zero extra wiring. It exists because the tool surface previously had
 only `writeFile{path, content}`: a three-line change cost a full re-typed file
-(`src/loop/orchestrator.js` at 3277 lines ≈ 33k output tokens), and that rewrite
+(a big file such as `src/loop/orchestrator.js` — its line and token totals grow with the
+source, so measure the current size with `wc -l` rather than trusting a remembered figure),
+and that rewrite
 can itself be cut off by the model's own output budget — `continuation_exhausted`
 is a first-class terminal reason in this library. `edit` moves the cost of "change
 a small span" from file-size to diff-size.
@@ -5955,14 +5957,17 @@ inference, keyword guessing, or similarity rules to it.
 
 - `result.unpersisted: Entry[]` — the authoritative record of persistence
   failures during the run. Default: `[]`.
-- `result.completionErrors: []` — reserved for completion-phase failures
-  (wired in a later step); default `[]`.
+- `result.completionErrors: []` — a reserved field that `runToolLoop` currently
+  always returns empty (see the `completionErrors: []` written on the result in
+  `src/loop/termination.js`); completion-phase teardown failures are collected on the CLI
+  side, not here. Default `[]`.
 
 An `Entry` is one of:
 
 - `persistence_error`: `{ kind, port, operation, phase?, fatal, error: {name, message, phase?}, ts }`
-  where `port` is `"transcript"` (today; `"resource"`/`"notes"` arrive with
-  their integration steps). `error` is normalized to `{name, message}` with
+  where `port` is `"transcript"` or `"notes"` — **both are in use today** (`notes` is reported
+  by the notes-store failure path in `src/tools/notes.js` and by the `onFoldSummary` delivery
+  failure in `src/loop/orchestrator.js`). `error` is normalized to `{name, message}` with
   the message capped at 500 chars (bounds the result payload; stack traces
   are dropped). **Additive since issue #439:** `error.phase` is preserved
   when the thrown error carries one (a non-empty string, whitespace collapsed
@@ -6108,7 +6113,11 @@ visible marker, and the shortfall is stated in the block itself rather than left
 ## Host steer at the turn boundary — `capabilities.hooks.nextUserTurn` (issue #753 C1)
 
 - **The slot.** `capabilities.hooks.nextUserTurn` is a **synchronous** function called as
-  `({ runId, state, round }) => string | null | undefined`. A `hooks` group value must be a function —
+  `({ runId, round, rounds, usage }) => string | null | undefined` (the argument built at
+  `nextUserTurnHook(...)` in `src/loop/orchestrator.js`): `round` is the boundary being asked about,
+  `rounds` is a reference to `runLoopState.rounds` (the completed-round records so far) and `usage` is a
+  snapshot copy of `runLoopState.usage`. There is **no `state` key** — a host that reads `state` here gets
+  `undefined`, so the steer context must be taken from `rounds` / `usage`, not from a `state` object. A `hooks` group value must be a function —
   the `capabilities` schema (`src/loop/capabilities-namespace.js`) rejects anything else with the usual
   unknown/conflict accounting, so a string typed straight into the slot is an error, not a silent steer.
   A returned value must be a string, `null`, or `undefined`.

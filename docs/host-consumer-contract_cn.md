@@ -4418,7 +4418,7 @@ CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `e
 `edit` 是同一个 `definitions` 数组、同一个 `executeTool` 入口里的**第二个写工具**——
 已经按上面「文件工具注册」接线的宿主，零额外接线就拿到它。它存在的理由：工具面此前
 只有 `writeFile{path, content}`，改三行就得重打整份文件（`src/loop/orchestrator.js`
-3277 行 ≈ 33k 输出 token），而这次整写本身还可能被模型自己的输出预算切断——
+这类大文件——它的行数与 token 数随源码增长，现测尺寸请跑 `wc -l`，别信记住的数字），而这次整写本身还可能被模型自己的输出预算切断——
 `continuation_exhausted` 在本库是一等的终止原因。`edit` 把「改一小段」的成本从
 整文件量级降到 diff 量级。
 
@@ -4677,12 +4677,14 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 `runToolLoop` 结果带两个恒定存在的账本字段：
 
 - `result.unpersisted: Entry[]` —— run 期间持久化失败的权威记录。默认 `[]`。
-- `result.completionErrors: []` —— 预留给收尾阶段失败（在后续步骤接线）；默认 `[]`。
+- `result.completionErrors: []` —— 一个预留字段，`runToolLoop` 当前恒返回空（见
+  `src/loop/termination.js` 里写在结果上的 `completionErrors: []`）；收尾阶段的拆销失败在 CLI 侧收集，不在这里。默认 `[]`。
 
 `Entry` 取值之一：
 
 - `persistence_error`：`{ kind, port, operation, phase?, fatal, error: {name, message, phase?}, ts }`，
-  其中今天 `port` 为 `"transcript"`；`"resource"`/`"notes"` 随各自接入步骤出现。`error`
+  其中 `port` 为 `"transcript"` 或 `"notes"`——**两者今天都在用**（`notes` 由 `src/tools/notes.js` 的 notes-store 失败
+  路径与 `src/loop/orchestrator.js` 的 `onFoldSummary` 交付失败上报）。`error`
   归一化为 `{name, message}`，message 截断到 500 字符（约束 result 体积；丢弃堆栈）。
   **issue #439 起的加法面：** 错误对象自带 `phase` 时原样保留（非空字符串，压平空白并截到
   32 字符——与 run-state 投影的 `safeText(entry.phase, 32)` 同一口径）；取不到就**完全没有
@@ -4796,7 +4798,10 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 ## 轮边界的主机转向——`capabilities.hooks.nextUserTurn`（issue #753 C1）
 
 - **槽位。** `capabilities.hooks.nextUserTurn` 是一个**同步**函数，调用形式为
-  `({ runId, state, round }) => string | null | undefined`。`hooks` 组的值必须是函数——`capabilities`
+  `({ runId, round, rounds, usage }) => string | null | undefined`（参数在 `src/loop/orchestrator.js` 的
+  `nextUserTurnHook(...)` 处构造）：`round` 是被询问的边界，`rounds` 是指向 `runLoopState.rounds`（已完成的轮记录）
+  的引用，`usage` 是 `runLoopState.usage` 的快照拷贝。**根本没有 `state` 键**——宿主在这里读 `state` 会拿到
+  `undefined`，所以转向所需的上下文要从 `rounds` / `usage` 取，而不是从一个 `state` 对象取。`hooks` 组的值必须是函数——`capabilities`
   名字空间（`src/loop/capabilities-namespace.js`）对非函数一律走常规的未知/冲突账目，所以往这一格里填个
   字符串是**报错**，不是默默转向。返回值必须是字符串、`null` 或 `undefined`。
 - **什么时候问宿主。** 每个轮边界一次，位置在 `runToolLoop`（`src/loop/orchestrator.js`）主循环里
