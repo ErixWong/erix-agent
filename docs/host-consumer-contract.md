@@ -590,7 +590,10 @@ with a flat twin, and the suite proves it by **derivation** rather than by count
 many leaves the group has today": the criterion is about the mapping, not about the count. The
 third station is derived in both directions too: the keys with **no nested home** (`configPathForOption`
 and `capabilitiesPathForOption` both `undefined`) are exactly `TOP_LEVEL_SURFACE_OPTION_NAMES` plus the
-two containers — **12** after #527, up from 11 before it, with `tools` as the added member. Re-adding
+two containers — so its size is exactly `TOP_LEVEL_SURFACE_OPTION_NAMES.length + 2` and it grows only
+when a permanent top-level option is added (measure it against those two lists rather than trusting a
+remembered integer: today that is thirteen, the eleven members of the list plus `config` and
+`capabilities`). Re-adding
 the `config.input.tools` leaf makes the self-check red and names the key, which is the reverse proof
 that the account is live rather than a copied expectation.
 
@@ -1513,9 +1516,10 @@ Behaviour carriers are not data, so 0.28.0 gives them their own container. It ha
 added the third one so that a behaviour carrier that used to live in a nested shell slot has a real
 destination): `capabilities.hooks` for host callbacks, `capabilities.checks` for deliverables checks,
 and `capabilities.ports` for the infrastructure / strategy implementations the engine dereferences.
-The **sixteen** host callbacks — `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`,
+The **eighteen** host callbacks — `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`,
 `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`,
-`finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor` — are enumerated in
+`finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor`, `continuityProvider`,
+`nextUserTurn` — are enumerated in
 `CAPABILITY_HOOK_NAMES` (`src/loop/capabilities-namespace.js`), and the group table
 `CAPABILITIES_NAMESPACE_SCHEMA` (`src/loop/capabilities-namespace.js`) is its single hand-written
 source: the alias map `CAPABILITIES_ALIAS_PATHS` (`src/loop/capabilities-namespace.js`) is derived
@@ -1525,7 +1529,7 @@ one registered exception described below (eleven leaves that never were top-leve
 
 | namespace | members |
 | --- | --- |
-| `capabilities.hooks` | 18 members — **16 callbacks** (listed below) **plus the two polymorphic knobs** `protectedMessage` / `recoveryHint` (function form here, data form stays in `config.folding.context`):  `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor` — plus the **function form** of the two polymorphic knobs, `protectedMessage` and `recoveryHint` |
+| `capabilities.hooks` | 20 members — **18 callbacks** (listed below) **plus the two polymorphic knobs** `protectedMessage` / `recoveryHint` (function form here, data form stays in `config.folding.context`):  `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor`, `continuityProvider`, `nextUserTurn` — plus the **function form** of the two polymorphic knobs, `protectedMessage` and `recoveryHint` |
 | `capabilities.checks` | `deliverables` (each entry `{ name, check }`; `check` is a function, `name` is a label) |
 | `capabilities.ports` | `sleepImpl`, `judgeProvider`, `strategy` — see “`capabilities.ports`” below |
 
@@ -1780,8 +1784,7 @@ conversion, the OpenAI stream accumulator, and the Anthropic stream assembler al
 two protocols cannot drift apart here. The strict entry point is untouched: `parseModelJson`
 still repairs nothing (see its own section) — repair exists only on the tool-argument path.
 
-When the arguments still do not parse, the default (`invalidArguments: "reject"`, a member of
-`RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`）) is to **not execute the tool at
+When the arguments still do not parse, the default (`invalidArguments: "reject"`, whose canonical home is `config.run.invalidArguments`（`src/loop/config-namespace.js`）after the A11 slice retired the flat top-level spelling) is to **not execute the tool at
 all**. The engine
 returns an `is_error` `tool_result` whose content is the parser's own verdict, assembled by
 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）: the parser's words, the
@@ -1804,9 +1807,12 @@ that comes back — are pinned by `deepEqual` tests.
 
 ## Observer callback errors (issue #173)
 
-Nine host callbacks observe a run: the eight event channels `onEvent`, `onRound`,
+Ten host callbacks share this isolation path: the eight event channels `onEvent`, `onRound`,
 `onToolResult`, `onJudge`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`,
-plus the error account itself (`onObserverError`). **A throw in any of them is
+plus the error account itself (`onObserverError`), plus the host-steer hook `nextUserTurn`
+(added after this rule landed, by issue #753: a throw or a non-string return there is reported
+as `channel: "nextUserTurn"` and only skips that round — it never changes the outcome).
+**A throw in any of them is
 reported and the run continues** — one uniform consequence. Before this change the
 same fault had three different outcomes: a throwing `onEvent`, `onRound`, or
 `onToolResult` killed the run with `termination.reason: "failed"`, the streaming
@@ -3170,11 +3176,13 @@ plans, incidental primary-key scan order, or accidental `filesort` behavior.
 
 `src/loop/resume-manager.js` rebuilds state in the order returned by `load()`
 and does not sort records again. This order controls not only `messages`, but
-also governor history (`:101-109`), round-0 seed messages used for
-`taskBriefSource` (`:88-90`), and the order-sensitive placement of a recovered
+also governor history (the `ctx.governorState` rebuild in
+`src/loop/resume-manager.js`), round-0 seed messages used for
+`taskBriefSource` (the `seedRecords` / `seedMessages` filter feeding
+`ctx.taskBriefSource` in `src/loop/resume-manager.js`), and the order-sensitive placement of a recovered
 tool result next to its assistant row plus the `dedupKey`/shape-based
-engine-vs-host row classification (`:114-200`, `insertRecoveredToolResult` /
-`hasHostPreWriteShape`). A typical tie is the previous engine
+engine-vs-host row classification (`insertRecoveredToolResult` /
+`hasHostPreWriteShape` in `src/loop/resume-manager.js`). A typical tie is the previous engine
 round at `round=max` followed by a pre-written user row at the same round,
 because `appendUserTurn` deliberately reuses the maximum round. Reversing
 those rows places the new user message before the previous engine turn and
@@ -3812,11 +3820,11 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`isEndTurn` (`src/loop/orchestrator.js`)), mapped at `terminationReasonForAction` (`src/loop/termination.js`). **Since issue #473** it also requires that the judged round produced a **deliverable** (`text`) block, or that the model's own envelope did not say `done:false` — see step 6 of the round chain above. **Since issue #865** a `text` block that is a textualized tool call is **not** such a deliverable block | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `DEFAULT_REFLECTION_MIN_ROUNDS` (`src/loop/reflection.js`)) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
 | `no_tool` | governance stop `noTool` (`src/reflection/governor.js`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`stallWindow` (`src/loop/orchestrator.js`)), streak accumulation (`stallStreak` (`src/loop/orchestrator.js`)), stop in `decideRoundAction` (`src/reflection/governor.js`) with `STALL_STREAK_LIMIT` = 3 (`src/reflection/governor.js`), mapped at `terminationReasonForAction` (`src/loop/termination.js`) | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved — the ordering lives in `decideRoundAction` (`src/reflection/governor.js`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
-| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:119`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
-| `max_rounds_cap` | (a) governance stop `cap` from `decideWithEvaluation` (`src/reflection/governor.js`) when the limit is near and extension is not allowed; (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, tail handling at `3189-3207`) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
+| `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, the token-continuation loop that reads it); governance stop `cap` (`src/reflection/governor.js`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:119`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
+| `max_rounds_cap` | (a) governance stop `cap` from `decideWithEvaluation` (`src/reflection/governor.js`) when the limit is near and extension is not allowed; (b) the round loop simply runs out (`runToolLoop` at `src/loop/orchestrator.js`, its tail after the last round) | (a) budget boundary, below stall; (b) runs after the last round, before any post-stop guard verdict stands | `maxRounds` (required option); extension headroom via `reflection:{maxExtensions, maxRoundsCap, extensionStep}` (`termination` at `src/loop/orchestrator.js`); `ERIX_NO_REFLECTION=1` disables auto-reflection | **resume or accept-partial**: use the multi-turn resume contract to continue, otherwise book the partial result and alert; `truncated:true` |
 | `final_guard_unverified` | a configured `finalGuard` ran and could not certify: non-continuable stop (`FINAL_GUARD_NON_CONTINUABLE_REASONS` (`src/loop/termination.js`)), revision limit (`finalGuardRetryLimit` (`src/loop/orchestrator.js`)), or the budget-exhaustion tail (`forceFinalIfNeeded` (`src/loop/termination.js`)). Only reachable for the six guard-eligible reasons listed in `FINAL_GUARD_TERMINATION_REASONS` (`src/loop/termination.js`) and only when `finalGuard` is a function (`src/loop/orchestrator.js`) | strictly **post-stop**: it replaces the reason after forced wrap-up and guard evaluation, never during round governance | omit `finalGuard` entirely (then `verification` is `skipped` / `no_final_guard` (`src/loop/orchestrator.js`)); `finalGuardMaxRetries` moves the revision limit (default 2, `budgetRounds` at `src/loop/orchestrator.js`) | **do not consume as a verified fact**: `verification.status === "unverified"` (`non_continuable` / `max_retries`). Route to human review or the test system |
 | `aborted` | the terminal `fail` (`src/loop/orchestrator.js`) path while the host signal is aborted | overrides failure classification on the throw path — the signal is checked first. Since issue #173 a host callback cannot reach this row by throwing: `signal.abort()` is the only callback-side trigger, and the issue #180 payload rule above still applies to it. Since issue #282 the same check also runs at the head of the terminal `stop` branch and again before `finish(reason)`, so a pre-terminal value-added call (round judge / final guard) can no longer rewrite a user abort into `judge_done` or `final_guard_unverified` — see "Value-added calls before the terminal decision (issue #282)" | nothing to disable: the trigger is the host's own `AbortSignal` | **bill, do not auto-retry**: read `error.usage` / `error.rounds` / `error.finalText` (issue #180) and `termination.partial`; the user asked for this stop. A **silent** run is no longer guaranteed to land here: since issue #441 the CLI wires the engine's retryable phase deadlines, so silence ends `failed` / `errorCode: "timeout"` once the retries are exhausted (see "Silence is a retryable deadline"); this row now means the signal was really aborted — by the host, or by the idle watchdog when no phase deadline could fire. When the watchdog is the one that fired, the payload still rides on the thrown error under `code: "idle_timeout"` (issue #440, see "The CLI's idle kill keeps the payload") |
-| `failed` | any error thrown inside the run lifecycle, via `fail` (`src/loop/orchestrator.js`), loop catch at `3576-3580`, with `termination.errorCode` passed through by `withErrorCode` (`src/loop/termination.js`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
+| `failed` | any error thrown inside the run lifecycle, via `fail` (`src/loop/orchestrator.js`), the round-loop catch that funnels into `fail`, with `termination.errorCode` passed through by `withErrorCode` (`src/loop/termination.js`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
 | `persistence_failed` | same `fail` (`src/loop/orchestrator.js`) path, selected when the error carries persistence info, which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
 **An empty `content` array is not the same fact on the two sides of a turn.** On the **user**
@@ -3846,7 +3854,7 @@ configured, a `verified` verdict is not available to them, because a guard
 |---|---|---|---|
 | `verified` | the configured guard accepted this final answer | — (no reason field) | `0` |
 | `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js`); CLI guard `no_capture_evidence` (`bin/final-guard.js`) / `no_extractable_candidates` (`bin/final-guard.js`) | `4` |
-| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js`), `max_retries` (`3547-3551`) | `2` |
+| `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js`), `max_retries` (the `finalGuardRetries >= finalGuardRetryLimit` branch in `src/loop/orchestrator.js`) | `2` |
 | `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error`, both resolved by `errorReason` (`src/loop/termination.js`) | `3` |
 
 `exitCodeForVerification` returns `0` for any other status, including a missing
@@ -3873,7 +3881,7 @@ Within one round, exactly one mechanism gets to decide, in this order
    points — `decideRoundAction` (`src/reflection/governor.js`) and
    `decideWithEvaluation` (`src/reflection/governor.js`). Because
    `continuationExhausted` is checked before the `cap` mapping to
-   `max_rounds_cap` (`src/loop/termination.js:119`), a `cap` stop caused by truncated output
+   `max_rounds_cap` (`terminationReasonForAction` in `src/loop/termination.js`), a `cap` stop caused by truncated output
    reports `continuation_exhausted`, never `max_rounds_cap`.
 2. **stall stop** — the stall branch of `decideRoundAction` (`src/reflection/governor.js`) — above the wrap-up and
    repeated-error nudges on purpose, so a low-priority nudge cannot starve a
@@ -5586,7 +5594,9 @@ Rules a host can code against:
 `executeTool` entry point — a host that registers `File tool registration` above
 gets it with zero extra wiring. It exists because the tool surface previously had
 only `writeFile{path, content}`: a three-line change cost a full re-typed file
-(`src/loop/orchestrator.js` at 3277 lines ≈ 33k output tokens), and that rewrite
+(a big file such as `src/loop/orchestrator.js` — its line and token totals grow with the
+source, so measure the current size with `wc -l` rather than trusting a remembered figure),
+and that rewrite
 can itself be cut off by the model's own output budget — `continuation_exhausted`
 is a first-class terminal reason in this library. `edit` moves the cost of "change
 a small span" from file-size to diff-size.
@@ -5947,14 +5957,17 @@ inference, keyword guessing, or similarity rules to it.
 
 - `result.unpersisted: Entry[]` — the authoritative record of persistence
   failures during the run. Default: `[]`.
-- `result.completionErrors: []` — reserved for completion-phase failures
-  (wired in a later step); default `[]`.
+- `result.completionErrors: []` — a reserved field that `runToolLoop` currently
+  always returns empty (see the `completionErrors: []` written on the result in
+  `src/loop/termination.js`); completion-phase teardown failures are collected on the CLI
+  side, not here. Default `[]`.
 
 An `Entry` is one of:
 
 - `persistence_error`: `{ kind, port, operation, phase?, fatal, error: {name, message, phase?}, ts }`
-  where `port` is `"transcript"` (today; `"resource"`/`"notes"` arrive with
-  their integration steps). `error` is normalized to `{name, message}` with
+  where `port` is `"transcript"` or `"notes"` — **both are in use today** (`notes` is reported
+  by the notes-store failure path in `src/tools/notes.js` and by the `onFoldSummary` delivery
+  failure in `src/loop/orchestrator.js`). `error` is normalized to `{name, message}` with
   the message capped at 500 chars (bounds the result payload; stack traces
   are dropped). **Additive since issue #439:** `error.phase` is preserved
   when the thrown error carries one (a non-empty string, whitespace collapsed
@@ -6100,7 +6113,11 @@ visible marker, and the shortfall is stated in the block itself rather than left
 ## Host steer at the turn boundary — `capabilities.hooks.nextUserTurn` (issue #753 C1)
 
 - **The slot.** `capabilities.hooks.nextUserTurn` is a **synchronous** function called as
-  `({ runId, state, round }) => string | null | undefined`. A `hooks` group value must be a function —
+  `({ runId, round, rounds, usage }) => string | null | undefined` (the argument built at
+  `nextUserTurnHook(...)` in `src/loop/orchestrator.js`): `round` is the boundary being asked about,
+  `rounds` is a reference to `runLoopState.rounds` (the completed-round records so far) and `usage` is a
+  snapshot copy of `runLoopState.usage`. There is **no `state` key** — a host that reads `state` here gets
+  `undefined`, so the steer context must be taken from `rounds` / `usage`, not from a `state` object. A `hooks` group value must be a function —
   the `capabilities` schema (`src/loop/capabilities-namespace.js`) rejects anything else with the usual
   unknown/conflict accounting, so a string typed straight into the slot is an error, not a silent steer.
   A returned value must be a string, `null`, or `undefined`.
@@ -6657,8 +6674,10 @@ and each family must still be present in the tree (T4). Adding an event type wit
 therefore reddens that test — the defect this ticket is about cannot be introduced silently.
 
 **Three names in the table are not engine emissions.** `assistant_delta` and `tool_call_delta` are
-the spellings a host writes into its own column: a whole-repo scan of `src/`, `bin/` and
-`examples/` finds zero occurrences of either string (T6), while the engine's own names are `delta`
+the spellings a host writes into its own column: a scan of `src/`, `bin/` and
+`examples/` finds zero occurrences of either string **outside this table file** — T6's haystack
+filters out `src/loop/event-tiers.js` itself, the one place the two host-side spellings legitimately
+appear (the registered alias strings); the engine's own names are `delta`
 and `tool_call`. `judge` names the `onJudge` **channel**, whose record has no `type` field at all.
 They are registered in `HOST_SIDE_EVENT_TYPE_NAMES` so `eventTierOf("assistant_delta")` resolves to
 the same tier as `delta`, and the table refuses a registered alias whose target has a different tier
@@ -6790,9 +6809,12 @@ DELETE FROM run_events
   it back off a capture, never off a manifest). There is no `delta` / `tool_call` /
   `reasoning_delta` read anywhere in `bin/final-guard*.js`. Deleting `stream` rows cannot change a
   verdict.
-- **Recall: nothing to read.** Bounded recall is retired in this repo — `recall` does not appear
-  anywhere in `src/`, and the store's read surface is `load`, `loadRawRows`, `loadRunState`, and
-  `loadRunStateStatus`. A host still on 0.6.x
+- **Recall: nothing to read.** Bounded recall is retired in this repo — there is no recall read
+  method on the store; its read surface is `load`, `loadRawRows`, `loadRunState`, and
+  `loadRunStateStatus`. (The identifier `recall` still appears in `src/` — as the note-evidence
+  parameter of the tool-result TTL retrieval hint: `resolveNoteRecall` in `src/loop/note-prompt-hint.js`
+  and the `recall` option in `src/loop/tool-result-ttl.js` — but none of those is a recall read surface.)
+  A host still on 0.6.x
   bounded recall has its own read surface, and this section says nothing about it: the tiers are
   facts about the engine's emission side.
 - The one read side that *does* lose something is a host replaying fragments into its own UI. Read
@@ -6924,7 +6946,7 @@ records must remain unchanged.
 >
 > **The continuation base is ledger-scoped (issue #469, host ruling A):** on a resumed run the first fold is seeded from the ledger, using the same "pick the alternative that covers the current watermark" rule the read-side trim uses (`pickCoveringFoldSummary` first, then `record.foldedFacts`; both the nested `foldedRoundRange.{from,to}` and the flat `{from,to}` shapes are accepted). Priority is contractual: **explicit call argument > strategy construction option > in-run closure > ledger seed**, so a non-resumed run — or one where no fact covers the watermark — is byte-for-byte what it was before. `compactionStats[].foldSummary` gains `priorSummaryOrigin: "ledger" | "in-run"` (no base ⇒ no key, the family's "no fact, no key" rule). The reuse fingerprint **includes the base**, so the first fold of a resumed run recomputes once instead of silently ignoring the seeded base (deliberate trade: one fewer cache hit beats a silently dropped thread).
 >
-> **The five-section summary contract is self-consistent by default (issue #469, host audit C):** `maxSummaryTokens` now defaults to `1400`, which is what a five-section summary of ~150 CJK characters per section actually costs (~1335 tokens measured); at the old `800` the contract only held for ~80 characters per section, so a compliant model answer was silently cut down to two of five sections. When the budget *is* tight, sections are pruned **lowest priority first and the heading is kept** (`## 标题` + a `[已修剪]` body) — a lost skeleton is harder to diagnose than lost prose, and the next fold's summarizer would not even know the section existed. Priority is now: `## 下一步` / `## 恢复提示` and `## 主题词面包屑` first, then `## 已验证项`, then `## 已改文件`. **`foldSummary.finishReason` value domain:** it is passed through as the provider normalized it (`end_turn`, `max_tokens`, `stop_sequence`, …); `max_tokens` means the summary itself was truncated by the model's output budget and is **not** a complete summary. Hosts must treat an unknown value as "unknown", never as "fine".
+> **The multi-section summary contract is self-consistent by default (issue #469, host audit C):** `maxSummaryTokens` now defaults to `1400`, which is what a summary carrying the full set of sections the prompt guide asks for (`## 阶段 / ## 已改文件 / ## 已验证项 / ## 下一步 / ## 主题词面包屑 / ## 教训与坑`, plus the appended `## 恢复提示`; roughly 150 CJK characters per section) actually costs (~1335 tokens measured); at the old `800` the budget only held for ~80 characters per section, so a compliant model answer was silently cut down to a couple of sections. When the budget *is* tight, sections are pruned **lowest priority first and the heading is kept** (`## 标题` + a `[已修剪]` body) — a lost skeleton is harder to diagnose than lost prose, and the next fold's summarizer would not even know the section existed. Priority is now: `## 下一步` / `## 恢复提示` and `## 主题词面包屑` first, then `## 已验证项`, then `## 已改文件`. **`foldSummary.finishReason` value domain:** it is passed through as the provider normalized it (`end_turn`, `max_tokens`, `stop_sequence`, …); `max_tokens` means the summary itself was truncated by the model's output budget and is **not** a complete summary. Hosts must treat an unknown value as "unknown", never as "fine".
 >
 > **The fold summarizer call itself (issue #469 ①②③, erix-station ruling 2026-10-26).** Three boundaries are contractual, not configurable defaults. **(1) Thinking is explicitly off:** the request carries `reasoning_effort: "none"` **and** `enable_thinking: false` **and** `chat_template_kwargs: {"thinking": false}` — never relying on the model's default (a real run still produced 584 `reasoning_token` with `reasoning_effort` alone). A provider that rejects unknown fields may opt out with `thinkingMode: "inherit"`. **(2) 30 s is the deadline of the whole summarizer step, not of each attempt:** the remaining budget is handed to every attempt as `timeoutMs`, so the context-window self-heal retry shares the same 30 s; with less than 2 s left no retry happens and `budgetExhausted` is recorded. **A timeout is never retried.** **(3) Input scope is fixed:** only the rounds being folded **plus the previous fold summary** (the continuation base, separately budgeted at 24 KB, head-truncated and flagged as `priorSummaryTruncated`) — live, unfolded context is never fed (that is double spend *and* it invites the summary to restate what the model can still see). The folded window is capped at **48 KB** in bytes and trimmed by **whole rounds**, oldest first, never mid-round; the separate token guard derived from `budgetTokens` is the last line of defence against the model window and **may** drop individual oldest messages, so the 48 KB cap must not be read as "rounds are never split". Both layers leave an omission note.
 | `foldedPayloadMeta` | display / forensics | `{ messages, bytes, capBytes, droppedMessages, droppedBytes, dedupedMessages, dedupedBytes }` — how much of the fold this archive actually carries, plus `rejectedByHost: true` when the host bounded the single record, the engine dropped the archive and retried. Advisory; safe to render as a "archive truncated" caption. |
@@ -7468,11 +7490,14 @@ The same shape covers the rest; only the second argument differs:
 ### Suite inventory (issue #183)
 
 "Harness" is what the suite runs against: your factory (host-side) or the
-packaged engine (upstream-side, i.e. a pure drift sentinel).
+packaged engine (upstream-side, i.e. a pure drift sentinel). The per-suite test counts below are
+re-derivable — register the suite's contract function under `node --test` (a memory store for the
+store suites, the package entry for the sentinels) and read the TAP `# tests` line; they move when a
+case is added, so recount rather than trusting the printed figure.
 
 | suite | what it asserts | yours to satisfy | upstream-internal detail it also pins |
 |---|---|---|---|
-| `transcript-store.js` (28 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, the paired probe tier, and the same-key idempotency/conflict tier (issue #326: same payload replays — including drifted top-level `ts`/`round` and reordered fields — are no-ops, a differing payload rejects with `code` `dedup_payload_conflict`, array order and host-owned fields count as payload, and the fallback `roundKey`/`<runId>:round:<n>` keys are covered), and \u2014 since issue #739 \u2014 the **optional-capability guard ledger**: every optional group (run-state, `loadRunStateStatus`, `loadRawRows`, the #157 probes) is guarded cell by cell and cross-checked by one accounting case per label, so absent means \u201cjumped over **and recorded as skipped**\u201d while present means \u201cevery guarded cell reached its assertions and the methods were really called\u201d \u2014 a store providing only the required tier passes the whole suite, and an implementation that quietly drops an optional method it used to have goes red instead of hiding inside the guard) | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance, the `dedup_payload_conflict` code |
+| `transcript-store.js` (26 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, the paired probe tier, and the same-key idempotency/conflict tier (issue #326: same payload replays — including drifted top-level `ts`/`round` and reordered fields — are no-ops, a differing payload rejects with `code` `dedup_payload_conflict`, array order and host-owned fields count as payload, and the fallback `roundKey`/`<runId>:round:<n>` keys are covered), and \u2014 since issue #739 \u2014 the **optional-capability guard ledger**: every optional group (run-state, `loadRunStateStatus`, `loadRawRows`, the #157 probes) is guarded cell by cell and cross-checked by one accounting case per label, so absent means \u201cjumped over **and recorded as skipped**\u201d while present means \u201cevery guarded cell reached its assertions and the methods were really called\u201d \u2014 a store providing only the required tier passes the whole suite, and an implementation that quietly drops an optional method it used to have goes red instead of hiding inside the guard) | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance, the `dedup_payload_conflict` code |
 | `notes-store.js` (9 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, the `limit` threshold (more than 200 stored records: a given limit clamps to exactly 200, an illegal limit throws), `revoke`'s observable disappearance with the `expectedState`/`expectedUpdatedAt` guards, and — since issue #265 — rejection of an empty `filters.state` array and an unknown `filters.source`, `revoked_at`/`revoke_reason` visible on a revoke tombstone, and `purge` scanning scopes (not records) with `before` only shrinking the window | the port surface and the record/guard semantics. Since issue #183 the split between upstream mandate and host policy is explicit: the port mandates observable disappearance (tombstone **or** physical delete) and leaves record expiry to the host, while the one-writer last-write-wins behaviour is the file adapter's own business and is no longer asserted here. The #265 additions only assert typedef-promised behaviour, but they are new assertions on a published surface: a host adapter that ignored one of them goes red after the bump | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`, `/positive safe integer/`, `/filters\.state/`, `/filters\.source/`), retention/purge timing |
 | `notes-store.js` → `notesStoreCasContract` (1 test, optional; issue #183) | concurrent same-key writers: at most one may fail, a failure must be a thrown error rather than a silent drop, and the winner is the record that stays readable in its full shape | compare-and-swap hosts only, and only in addition to `notesStoreContract` — this sub-suite is deliberately weaker than the retired last-write-wins assertion, so passing it says nothing about a store that serializes writers | the two payload contents it happens to exercise (`left`/`right`), not any conflict error text |
 | `assembly-port.js` (5 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider on the **direct** route, `assemblyPortOptions(port, { provider })` is rejected at startup on the **override channel** (issue #498), and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port, direct route), the override-channel conflict text, the startup-validation error text |
@@ -7480,7 +7505,7 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 | `model-config-provider.js` (4 tests) | `resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer stated **per provider shape** (issue #518): a slot-map provider (static / json-file) must **throw**, naming the unknown slot and listing the available ones, never falling back to default, while a single-config provider returns the same config under any slot name — that is a shape difference, not an unknown-slot fallback to default | your provider's slot resolution and key materialisation, plus its mandatory unknown-slot shape declaration | nothing engine-side: it never loads the engine |
 | `engine-api.js` (6 tests) | the package entry exports `appendUserTurn` and `projectTranscriptForDisplay` as functions, `parseReflectionDecision` returning an object tagged with its `via` source (issue #305), `parseModelJson` with three distinguishable failure states and no `value` on failure (issue #307), `normalizeModelJson` (async, with a fallback) kept distinct from the synchronous L0 `parseModelJson` (issue #406), and the slot→provider constructors `loadModelSlot` + `createProviderForSlot` (issue #406 C-a); `appendUserTurn` also completes one pre-write against a minimal store stub (including the `dedupKey`/`roundKey` shape and that the pre-write feeds the display projection) | nothing — this is an entry-surface sentinel; it goes red when an upstream bump renames or drops engine API | the exact pre-write record shape (`round: 0`, `dedupKey`, `roundKey`, `ts`) |
 | `termination-payload.js` (4 tests) | a `failed` terminal outcome carries `termination.errorCode` (classification passthrough, `unknown` fallback), an abort throws with `usage`/`rounds`/`finalText` and `termination.partial`, cumulative usage is attributed per round, and the success path keeps its old shape (no `errorCode`/`partial`/`usage` appearing out of nowhere) | nothing directly — it is your host-side decision table's regression net (issue #170 / #176 / #180) | the stubbed provider script, the zero-vs-missing-field rule for `usage` |
-| `tool-result-envelope.js` (26 tests) | the field ownership of every `tool_result` the engine builds, asserted against `TOOL_RESULT_CONTRACT` itself: the protocol fields stay at the top level, engine facts only appear under `erix`, host extensions appear only under `metadata` (no host key is flattened to the top level any more, and none of the retired top-level names may reappear), all six executor return forms carry `toolCallKey`/`round`/`durationMs`, interception and interrupted replay carry **no** `durationMs` and no `round`, a replayed completed result is returned with its original values (`durationMs` never recomputed, the executor never re-invoked), the stream fragment, the `tool_use` block, the `tool_result` and the projection all carry one identity key, the provider pairing id is never rewritten, and the projection omits `toolCallKey`/`durationMs` for pre-issue-#284 records instead of inventing them | nothing — the fact surface is engine-owned, so this is a pure drift sentinel (it also fails if the constant itself is trimmed) | the stubbed provider/judge scripts and the run-snapshot shapes it hand-writes, the `tc_` key format, the fact that the loop forwards no `tool_call` event to `onEvent` |
+| `tool-result-envelope.js` (28 tests) | the field ownership of every `tool_result` the engine builds, asserted against `TOOL_RESULT_CONTRACT` itself: the protocol fields stay at the top level, engine facts only appear under `erix`, host extensions appear only under `metadata` (no host key is flattened to the top level any more, and none of the retired top-level names may reappear), all six executor return forms carry `toolCallKey`/`round`/`durationMs`, interception and interrupted replay carry **no** `durationMs` and no `round`, a replayed completed result is returned with its original values (`durationMs` never recomputed, the executor never re-invoked), the stream fragment, the `tool_use` block, the `tool_result` and the projection all carry one identity key, the provider pairing id is never rewritten, and the projection omits `toolCallKey`/`durationMs` for pre-issue-#284 records instead of inventing them | nothing — the fact surface is engine-owned, so this is a pure drift sentinel (it also fails if the constant itself is trimmed) | the stubbed provider/judge scripts and the run-snapshot shapes it hand-writes, the `tc_` key format, the fact that the loop forwards no `tool_call` event to `onEvent` |
 
 ### Wiring rule for hosts
 
@@ -7499,7 +7524,7 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 ## Ledger recovery rows — two extra `.jsonl` files per run (issue #769, #827 slice 3)
 
 The append-only ledger now writes **two files per run** next to the existing `<dir>/<runId>.jsonl`:
-`<dir>/<runId>.recovery.jsonl` (**events**: `tool-executed`, append-only, never rewritten) and
+`<dir>/<runId>.recovery.jsonl` (**events**: `tool-executed` and `tool-result-unledgered`, append-only, never rewritten) and
 `<dir>/<runId>.partial.jsonl` (**the slot**: `partial-text`, always 0 or 1 line, whole-file rewrite).
 **Splitting them is issue #827 slice 3**: while both channels shared one file, every slot rewrite
 re-copied every event line (measured: 200 tool rows = 45,204 B, and 300 commits in one round
@@ -7508,14 +7533,20 @@ re-wrote 12.9 MB cumulatively). Now a slot rewrite touches only that one line (�
 one line is still exactly one round, and nothing moved out of it (message bodies included).
 
 - `kind: "recovery"` — the discriminator a host filters on. Both files together carry only *recovery rows*.
-  Two events exist today:
-  `recoveryEvent: "tool-executed"` (carries `toolUseId`) and `recoveryEvent: "partial-text"` (carries `text`
+  Two kinds of line and three events exist today:
+  `recoveryEvent: "tool-executed"` (carries `toolUseId`), `recoveryEvent: "tool-result-unledgered"`
+  (carries `toolUseId` plus a full `toolResult` object and `notYetLedgered: true` — the fallback row the
+  engine appends when a tool result could not be committed to the message ledger, so the result content
+  survives instead of only the tool identity; built by `buildUnledgeredToolResultRecoveryRow` and appended
+  through `appendRecoveryRow` in `src/loop/orchestrator.js`, then read back by
+  `readUnledgeredToolResultRecoveryRows`), and `recoveryEvent: "partial-text"` (carries `text`
   itself: **the complete accumulated text as it stood at that moment — not truncated, not capped** — the
   engine hands the whole string to the row, and there is **no** `textLength` field either, so a consumer that
   wants a length counts the
   string; the row deliberately carries no derived number).
 - Which line lives in which file is part of the contract (`partialSlotPath` / `recoveryRowsPath` in
-  `src/store/file.js` derive both names — do not hard-code the suffixes): `tool-executed` → `.recovery.jsonl`,
+  `src/store/file.js` derive both names — do not hard-code the suffixes): `tool-executed` and
+  `tool-result-unledgered` → `.recovery.jsonl`,
   `partial-text` → `.partial.jsonl`. `listRecoveryRows` **merges both files** and the order it returns is fixed:
   event lines first (in append order), then the slot line. Readers select by `recoveryEvent` and do not depend on
   that order, but a host reading the file directly does — so it may not change. For a ledger written **before**

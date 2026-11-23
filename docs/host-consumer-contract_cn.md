@@ -475,7 +475,8 @@ A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决�
 （`test/loop-input-keys-slice-498s3a18.test.js` 的 N 段）。这就是为什么没有人需要复述「组里今天有几个
 叶子」：判据说的是**映射**，不是条数。第三站也双向派生：**两个家都没有**的键（`configPathForOption` 与
 `capabilitiesPathForOption` 都返回 `undefined`）恰好等于 `TOP_LEVEL_SURFACE_OPTION_NAMES` 加两个容器——
-#527 之后是 **12**（之前 11），新增的成员就是 `tools`。把 `config.input.tools` 叶子加回去会让自检变红
+所以它的长度正好是 `TOP_LEVEL_SURFACE_OPTION_NAMES.length + 2`，只在新增一个永久顶层选项时才增长（对着
+这两张表现测，别信记住的整数：今天是十三，即名单的十一个成员加上 `config` 与 `capabilities`）。把 `config.input.tools` 叶子加回去会让自检变红
 并点名该键，这就是「账目在跑、不是抄的期望值」的反向证。
 
 **这三个词还活在另外六张面上，本片一张都没动。** 整词 grep `system` / `tools` / `wrapup` 捞出来的远不止
@@ -1238,18 +1239,19 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 为的是不让 `hooks` 变成口袋；issue #498 S4c 加了第三组，为的是让「住在壳里嵌套槽中的行为载体」
 有一个**真实归宿**）：`capabilities.hooks` 装宿主回调，`capabilities.checks` 装交付物判据，
 `capabilities.ports` 装引擎会解引用/调用的基础设施与策略实现。
-**16 个**宿主回调——`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、
+**18 个**宿主回调——`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、
 `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、
-`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`——逐个写在
+`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`、`continuityProvider`、
+`nextUserTurn`——逐个写在
 `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）里，分组表
 `CAPABILITIES_NAMESPACE_SCHEMA`（`src/loop/capabilities-namespace.js`）是它唯一手写的来源：别名表
 `CAPABILITIES_ALIAS_PATHS`（`src/loop/capabilities-namespace.js`）从它派生，与 `config` 的别名表
 派生方式逐字相同——所以 `capabilities.hooks.onEvent` 与扁平 `onEvent` 是同一个键（别名 = schema
-路径，叶子名逐字等于扁平选项名）——唯一登记的例外见下面第五条（9 个**从来不是**顶层选项的叶子）。
+路径，叶子名逐字等于扁平选项名）——唯一登记的例外见下面第五条（11 个**从来不是**顶层选项的叶子）。
 
 | 命名空间 | 成员 |
 | --- | --- |
-| `capabilities.hooks` | 18 个成员 —— **16 个回调**（下方逐个列出）**加两个形态多态旋钮** `protectedMessage` / `recoveryHint`（函数形态在这里、数据形态留在 `config.folding.context`）：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`——外加两个形态多态旋钮的**函数形态**：`protectedMessage`、`recoveryHint` |
+| `capabilities.hooks` | 20 个成员 —— **18 个回调**（下方逐个列出）**加两个形态多态旋钮** `protectedMessage` / `recoveryHint`（函数形态在这里、数据形态留在 `config.folding.context`）：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`、`continuityProvider`、`nextUserTurn`——外加两个形态多态旋钮的**函数形态**：`protectedMessage`、`recoveryHint` |
 | `capabilities.checks` | `deliverables`（每项 `{ name, check }`；`check` 是函数、`name` 是标签） |
 | `capabilities.ports` | `sleepImpl`、`judgeProvider`、`strategy`——见下面「`capabilities.ports`」那一节 |
 
@@ -1453,8 +1455,8 @@ promise，与经 `runToolLoop` 进来时逐字相同。
 Anthropic 流式组装**三处共用**的那一份，所以两条协议在这里不可能各长一套。严格入口一字未动：
 `parseModelJson` 仍然不做任何 repair（见它自己那一节）——修复只存在于工具引数这条路上。
 
-修完仍然解析不出来时，默认行为（`invalidArguments: "reject"`，白名单成员见
-`RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`））是**根本不执行这个工具**。引擎返回一条 `is_error` 的
+修完仍然解析不出来时，默认行为（`invalidArguments: "reject"`，A11 片退役扁平顶层拼写后其新家为
+`config.run.invalidArguments`（`src/loop/config-namespace.js`））是**根本不执行这个工具**。引擎返回一条 `is_error` 的
 `tool_result`，正文由 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）拼出来：
 解析器原话、**从 1 开始数的**字符位置与它附近的一小段原文、以及按该工具自己的 `inputSchema` 渲染的
 正确形状示例。后面那句指示是「只改参数写法、重发同一次调用」——不换工具，也不凭猜测补内容。这条结果带
@@ -1471,9 +1473,11 @@ Anthropic 流式组装**三处共用**的那一份，所以两条协议在这里
 
 ## 观察者回调抛错（issue #173）
 
-宿主共有九个回调在观察一个 run：八个事件通道 `onEvent`、`onRound`、`onToolResult`、
+宿主共有十个回调共用这条隔离路径：八个事件通道 `onEvent`、`onRound`、`onToolResult`、
 `onJudge`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`，加上错账户本身
-（`onObserverError`）。**其中任何一个抛错，都是「记一笔、继续跑」**——后果只有一种。
+（`onObserverError`），再加上宿主转向钩子 `nextUserTurn`（本规则落地之后由 issue #753 加入：
+它抛错或返回非字符串会以 `channel: "nextUserTurn"` 记一笔、只跳过当轮——绝不改终局）。
+**其中任何一个抛错，都是「记一笔、继续跑」**——后果只有一种。
 改动之前同一类故障有三种后果：`onEvent`、`onRound`、`onToolResult` 抛错会以
 `termination.reason: "failed"` 杀掉整个 run，流式通道经 `onObserverError` 上报，而
 `onJudge` 消失在一个裸 `catch {}` 里。
@@ -2541,10 +2545,12 @@ JS 字符串、`2.5`、`null`，或者压根没这个键——抛 `TypeError`：
 `filesort` 的偶然结果。
 
 `src/loop/resume-manager.js` 按 `load()` 返回顺序重建状态，且不对记录二次排序。受顺序
-影响的不只是 `messages`，还包括 governor history（`:101-109`）、供
-`taskBriefSource` 使用的 round 0 seed 消息（`:88-90`），以及对顺序敏感的补跑结果插入（把恢复出的结果插到其
-assistant 行旁）与按 `dedupKey`/形状的引擎-宿主归属判别（`:114-200`，
-`insertRecoveredToolResult` / `hasHostPreWriteShape`）。典型平局是上一段引擎轮处于 `round=max`，预写 user
+影响的不只是 `messages`，还包括 governor history（`src/loop/resume-manager.js` 里的
+ `ctx.governorState` 重建）、供
+ `taskBriefSource` 使用的 round 0 seed 消息（喂给 `ctx.taskBriefSource` 的 `seedRecords` / `seedMessages` 过滤，均在
+ `src/loop/resume-manager.js`），以及对顺序敏感的补跑结果插入（把恢复出的结果插到其
+ assistant 行旁）与按 `dedupKey`/形状的引擎-宿主归属判别（`insertRecoveredToolResult` /
+ `hasHostPreWriteShape`，均在 `src/loop/resume-manager.js`）。典型平局是上一段引擎轮处于 `round=max`，预写 user
 行也处于同一 round——因为 `appendUserTurn` 刻意复用最大 round。若这两行顺序反转，新用户
 消息就会排在上一段引擎轮之前，改变消息序列语义。
 
@@ -3017,11 +3023,11 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`isEndTurn`（`src/loop/orchestrator.js`）），映射在 `terminationReasonForAction`（`src/loop/termination.js`）。**issue #473 起**还要求被判的那一轮产出了**交付物**（`text`）块，或模型自己的信封没有写 `done:false`——见上文轮内链条第 6 步；**issue #865 起**，一段内容是被文本化的工具调用的 `text` 块**不算**这种交付物块 | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`DEFAULT_REFLECTION_MIN_ROUNDS`（`src/loop/reflection.js`）） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
 | `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`stallWindow`（`src/loop/orchestrator.js`））叠加 streak 累加（`stallStreak`（`src/loop/orchestrator.js`）），stop 在 `decideRoundAction`（`src/reflection/governor.js`），`STALL_STREAK_LIMIT` = 3（`src/reflection/governor.js`），映射在 `terminationReasonForAction`（`src/loop/termination.js`） | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死——这个排序就在 `decideRoundAction`（`src/reflection/governor.js`）里 | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
-| `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:119`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
-| `max_rounds_cap` | (a) `decideWithEvaluation`（`src/reflection/governor.js`）的治理层 stop `cap`：接近上限且不允许扩轮；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，收尾在 `3189-3207`） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
+| `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，读它的 token 补全循环）；治理层 stop `cap`（`src/reflection/governor.js`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:119`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
+| `max_rounds_cap` | (a) `decideWithEvaluation`（`src/reflection/governor.js`）的治理层 stop `cap`：接近上限且不允许扩轮；(b) 轮循环自然跑完（`runToolLoop`，`src/loop/orchestrator.js`，最后一轮之后的收尾） | (a) 预算边界，在 stall 之下；(b) 在最后一轮之后、任何停止后核验结论生效之前 | `maxRounds`（必需选项）；扩轮余量走 `reflection:{maxExtensions, maxRoundsCap, extensionStep}`（`termination`，`src/loop/orchestrator.js`）；`ERIX_NO_REFLECTION=1` 关掉自动 reflection | **续跑或按部分交付记账**：用多轮续跑契约继续，否则拿部分结果记账并告警；`truncated:true` |
 | `final_guard_unverified` | 配了 `finalGuard` 且它没能认证：不可续跑降级（`FINAL_GUARD_NON_CONTINUABLE_REASONS`（`src/loop/termination.js`））、修订次数触顶（`finalGuardRetryLimit`（`src/loop/orchestrator.js`））、或轮循环跑完的收尾（`forceFinalIfNeeded`（`src/loop/termination.js`））。只对 6 个 guard 适用 reason 生效（名单在 `FINAL_GUARD_TERMINATION_REASONS`（`src/loop/termination.js`）），且仅当 `finalGuard` 是函数（`src/loop/orchestrator.js`） | 严格位于 stop 之后的**后阶段**：它替换 reason，不介入轮内治理 | 整体不传 `finalGuard`（此时 `verification` 为 `skipped` / `no_final_guard`（`src/loop/orchestrator.js`））；`finalGuardMaxRetries` 调修订上限（默认 2，`budgetRounds`，`src/loop/orchestrator.js`） | **不得当已验事实消费**：`verification.status === "unverified"`（`non_continuable` / `max_retries`）。转人工复核或测试系统 |
 | `aborted` | 终局 `fail`（`src/loop/orchestrator.js`）路径且宿主 signal 已 abort | 在抛错路径上压过失败分类——信号先被检查。issue #173 之后，宿主回调无法靠抛错抵达本行：`signal.abort()` 是回调侧唯一的触发器，上面那条 issue #180 载荷规则对它照常生效。issue #282 之后，同一个检查也跑到终局 `stop` 分支的入口以及 `finish(reason)` 之前，因此「终局前的增值调用」（end-turn judge / finalGuard）再也不能把用户的中止改写成 `judge_done` 或 `final_guard_unverified`——见「终局前的增值调用在中止时的行为（issue #282）」 | 没有可关项：触发者是宿主自己的 `AbortSignal` | **记账，不自建重跑**：读 `error.usage` / `error.rounds` / `error.finalText`（issue #180）与 `termination.partial`；是用户要停的。**静默** run 不再必然落到这一行：issue #441 之后 CLI 接上了引擎的可重试相位截止，静默在重试用尽后以 `failed` / `errorCode: "timeout"` 收尾（见「静默是一条可重试的截止」）；本行现在的含义是「信号真的被 abort 了」——宿主动的手，或者没有任何相位截止能先响时 idle 看门狗动的手；看门狗动的手时，载荷仍以 `code: "idle_timeout"` 挂在抛出的错误上（issue #440，见「CLI 的 idle 判死保留载荷」） |
-| `failed` | run 生命周期内抛出的任意错误，经 `fail`（`src/loop/orchestrator.js`），循环 catch 在 `3576-3580`，并透传 `termination.errorCode`（由 `withErrorCode`（`src/loop/termination.js`）挂上）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
+| `failed` | run 生命周期内抛出的任意错误，经 `fail`（`src/loop/orchestrator.js`），汇进 `fail` 的那个轮循环 catch，并透传 `termination.errorCode`（由 `withErrorCode`（`src/loop/termination.js`）挂上）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
 | `persistence_failed` | 同一个 `fail`（`src/loop/orchestrator.js`）路径，在错误携带持久化信息时被选中，并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
 
 **空的 `content` 数组在轮的两侧不是同一个事实。** **user** 侧 `content: []` 是**块数组**里唯一一种
@@ -3046,7 +3052,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
 |---|---|---|---|
 | `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
 | `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js`）；CLI guard 的 `no_capture_evidence`（`bin/final-guard.js`）/ `no_extractable_candidates`（`bin/final-guard.js`） | `4` |
-| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js`）、`max_retries`（`3547-3551`） | `2` |
+| `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js`）、`max_retries`（`src/loop/orchestrator.js` 里 `finalGuardRetries >= finalGuardRetryLimit` 那一支） | `2` |
 | `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js`）决出 | `3` |
 
 `exitCodeForVerification` 对其他任何 status（包括根本没有 `verification` 对象）都返回
@@ -4412,7 +4418,7 @@ CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `e
 `edit` 是同一个 `definitions` 数组、同一个 `executeTool` 入口里的**第二个写工具**——
 已经按上面「文件工具注册」接线的宿主，零额外接线就拿到它。它存在的理由：工具面此前
 只有 `writeFile{path, content}`，改三行就得重打整份文件（`src/loop/orchestrator.js`
-3277 行 ≈ 33k 输出 token），而这次整写本身还可能被模型自己的输出预算切断——
+这类大文件——它的行数与 token 数随源码增长，现测尺寸请跑 `wc -l`，别信记住的数字），而这次整写本身还可能被模型自己的输出预算切断——
 `continuation_exhausted` 在本库是一等的终止原因。`edit` 把「改一小段」的成本从
 整文件量级降到 diff 量级。
 
@@ -4671,12 +4677,14 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 `runToolLoop` 结果带两个恒定存在的账本字段：
 
 - `result.unpersisted: Entry[]` —— run 期间持久化失败的权威记录。默认 `[]`。
-- `result.completionErrors: []` —— 预留给收尾阶段失败（在后续步骤接线）；默认 `[]`。
+- `result.completionErrors: []` —— 一个预留字段，`runToolLoop` 当前恒返回空（见
+  `src/loop/termination.js` 里写在结果上的 `completionErrors: []`）；收尾阶段的拆销失败在 CLI 侧收集，不在这里。默认 `[]`。
 
 `Entry` 取值之一：
 
 - `persistence_error`：`{ kind, port, operation, phase?, fatal, error: {name, message, phase?}, ts }`，
-  其中今天 `port` 为 `"transcript"`；`"resource"`/`"notes"` 随各自接入步骤出现。`error`
+  其中 `port` 为 `"transcript"` 或 `"notes"`——**两者今天都在用**（`notes` 由 `src/tools/notes.js` 的 notes-store 失败
+  路径与 `src/loop/orchestrator.js` 的 `onFoldSummary` 交付失败上报）。`error`
   归一化为 `{name, message}`，message 截断到 500 字符（约束 result 体积；丢弃堆栈）。
   **issue #439 起的加法面：** 错误对象自带 `phase` 时原样保留（非空字符串，压平空白并截到
   32 字符——与 run-state 投影的 `safeText(entry.phase, 32)` 同一口径）；取不到就**完全没有
@@ -4790,7 +4798,10 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 ## 轮边界的主机转向——`capabilities.hooks.nextUserTurn`（issue #753 C1）
 
 - **槽位。** `capabilities.hooks.nextUserTurn` 是一个**同步**函数，调用形式为
-  `({ runId, state, round }) => string | null | undefined`。`hooks` 组的值必须是函数——`capabilities`
+  `({ runId, round, rounds, usage }) => string | null | undefined`（参数在 `src/loop/orchestrator.js` 的
+  `nextUserTurnHook(...)` 处构造）：`round` 是被询问的边界，`rounds` 是指向 `runLoopState.rounds`（已完成的轮记录）
+  的引用，`usage` 是 `runLoopState.usage` 的快照拷贝。**根本没有 `state` 键**——宿主在这里读 `state` 会拿到
+  `undefined`，所以转向所需的上下文要从 `rounds` / `usage` 取，而不是从一个 `state` 对象取。`hooks` 组的值必须是函数——`capabilities`
   名字空间（`src/loop/capabilities-namespace.js`）对非函数一律走常规的未知/冲突账目，所以往这一格里填个
   字符串是**报错**，不是默默转向。返回值必须是字符串、`null` 或 `undefined`。
 - **什么时候问宿主。** 每个轮边界一次，位置在 `runToolLoop`（`src/loop/orchestrator.js`）主循环里
@@ -5229,7 +5240,9 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 本工单要治的那个缺陷没法静默地混进来。
 
 **表里有三个名字不是引擎发射。** `assistant_delta` 与 `tool_call_delta` 是宿主写进自己那一列的拼写：
-整仓扫 `src/`、`bin/`、`examples/` 两个字符串都是零命中（T6），引擎自己的名字是 `delta` 与 `tool_call`。
+整仓扫 `src/`、`bin/`、`examples/`，除本表文件外两个字符串都是零命中——T6 的扫描集把
+`src/loop/event-tiers.js` 自己排除在外，而那两个宿主拼法止在这一处合法出现（登记的别名串）；
+引擎自己的名字是 `delta` 与 `tool_call`。
 `judge` 指的是一个 **`onJudge` 通道**，那条记录里压根没有 `type` 字段。三者都登在
 `HOST_SIDE_EVENT_TYPE_NAMES` 里，所以 `eventTierOf("assistant_delta")` 与 `delta` 落在同一档；而载入期
 自检会拒掉「登记的别名与被替名字不同档」这种写法。工单要求的分类**一处没改**：`tool_call_delta` /
@@ -5347,8 +5360,10 @@ DELETE FROM run_events
   `legacy: true` 是 guard **写在自己 capture 对象上的标记**（`archiveSourceTarget` 从 capture 上读它，
   从不从清单上读）。`bin/final-guard*.js` 里没有任何一处读 `delta` / `tool_call` /
   `reasoning_delta`。删 `stream` 行不可能改变核验结论。
-- **recall：没有可读的东西。** bounded recall 在本仓已退役 —— `src/` 里根本不出现 `recall`，
-  store 的读面是 `load`、`loadRawRows`、`loadRunState` 与 `loadRunStateStatus`。还挂在 0.6.x bounded
+- **recall：没有可读的东西。** bounded recall 在本仓已退役 —— store 上**没有** recall 读方法；
+  它的读面是 `load`、`loadRawRows`、`loadRunState` 与 `loadRunStateStatus`。（标识符 `recall` 仍会出现在
+  `src/` 里——作为工具结果 TTL 检索提示的笔记证据参数：`src/loop/note-prompt-hint.js` 的 `resolveNoteRecall`
+  与 `src/loop/tool-result-ttl.js` 的 `recall` 选项——但这些都不是 recall 读面。）还挂在 0.6.x bounded
   recall 上的宿主有自己的读面，本节对它不说任何话：
   分级说的是引擎发射侧的事实。
 - 真正会丢东西的读面只有一个：把碎片重放进自己 UI 的宿主。所以下手前先读，或者接受上面那个退化 ——
@@ -5456,7 +5471,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 >
 > **续写基底按账本作用域播（issue #469，宿主裁决 A）：** resume 出来的 run 第一次折叠从**账本**播种，取源与读侧裁剪同一条规则（先 `pickCoveringFoldSummary`，再 `record.foldedFacts`；嵌套 `foldedRoundRange.{from,to}` 与平铺 `{from,to}` 两种形状都收）。优先级是契约：**显式调用参数 > 策略构造参数 > in-run 闭包 > 账本播种**——非 resume、或挑不出覆盖水位线的事实时，行为逐字退回今天。`compactionStats[].foldSummary` 增 `priorSummaryOrigin: "ledger" | "in-run"`（没有基底就不写键，与家族其余键同口径）。复用指纹**包含基底**：resume 后第一次折叠会重算一次而不是无声忽略播进来的基底（有意的取舍：宁可少命中一格，也不无声丢脉络）。
 >
-> **五节摘要在默认配置下自洽（issue #469，宿主审计 C 片）：** `maxSummaryTokens` 默认改为 `1400`——五节、每节约 150 个中文字实际要 ~1,335 token（实测）；旧默认 `800` 只容得下每节 ~80 字，于是**合规的模型输出会被无声剪成五节里的两节**。预算真的紧时，裁剪**从最低档开始且保留标题**（`## 标题` + `[已修剪]` 正文）——骨架消失比正文丢失更难诊断，下一次折叠的摘要器连「曾经有这一节」都看不到。优先级现在是：`## 下一步` / `## 恢复提示` 与 `## 主题词面包屑` 同列第一档，然后 `## 已验证项`，再 `## 已改文件`。**`foldSummary.finishReason` 的值域：** 按 provider 归一后原样透出（`end_turn`、`max_tokens`、`stop_sequence` …）；`max_tokens` 表示摘要本身被模型输出预算截断、**不是完整摘要**。宿主遇到未知值必须按「未知」处理，不得当「正常」。
+> **多节摘要在默认配置下自洽（issue #469，宿主审计 C 片）：** `maxSummaryTokens` 默认改为 `1400`——一份带齐摘要提示词所要求的全部分节（`## 阶段 / ## 已改文件 / ## 已验证项 / ## 下一步 / ## 主题词面包屑 / ## 教训与坑`，外加附上的 `## 恢复提示`）、每节约 150 个中文字，实际要 ~1,335 token（实测）；旧默认 `800` 只容得下每节 ~80 字，于是**合规的模型输出会被无声剪得只剩寥寥几节**。预算真的紧时，裁剪**从最低档开始且保留标题**（`## 标题` + `[已修剪]` 正文）——骨架消失比正文丢失更难诊断，下一次折叠的摘要器连「曾经有这一节」都看不到。优先级现在是：`## 下一步` / `## 恢复提示` 与 `## 主题词面包屑` 同列第一档，然后 `## 已验证项`，再 `## 已改文件`。**`foldSummary.finishReason` 的值域：** 按 provider 归一后原样透出（`end_turn`、`max_tokens`、`stop_sequence` …）；`max_tokens` 表示摘要本身被模型输出预算截断、**不是完整摘要**。宿主遇到未知值必须按「未知」处理，不得当「正常」。
 >
 > **摘要调用本身（issue #469 ①②③，erix-station 2026-10-26 裁决）。** 三条边界属于契约、不是可调默认值。**①思考显式关：** 请求同时带 `reasoning_effort: "none"`、`enable_thinking: false`、`chat_template_kwargs: {"thinking": false}`——绝不靠模型默认值（真机只带前者仍产出 584 个 `reasoning_token`）；不接受未知字段的上游可用 `thinkingMode: "inherit"` 退回旧形状。**②30 s 是整条摘要步骤的死线、不是每次尝试的：** 剩余预算按 `timeoutMs` 下发给每一次尝试，所以超窗自愈重试与首发共享同一条 30 s；剩余不足 2 s 就不再重试并记 `budgetExhausted`。**超时永不重试。** **③输入范围固定：** 只喂**被折走的轮次** + **上一份折叠摘要**（续写基底，单独计 24 KB，超了从头部截并标记 `priorSummaryTruncated`）；未折走的活上下文一概不喂（那是重复付费，而且会诱导摘要去复述模型仍看得见的东西）。被折窗口本身以**字节** 48 KB 为上限，按**整轮**从旧到新截，绝不截断单轮中部；另有一层由 `budgetTokens` 同源推出的 **token 护栏**作为模型窗口的最后一道防线，它**可能**丢单条最旧消息，所以「48 KB 那顶帽子」不能读成「轮永远不会被切开」。两层都留省略注。
 | `foldedPayloadMeta` | 展示 / 取证 | `{ messages, bytes, capBytes, droppedMessages, droppedBytes, dedupedMessages, dedupedBytes }`——这份归档实际携带了本次折叠的多少，外加 `rejectedByHost: true`（宿主对单条记录定界、引擎剥掉归档重试后拿下的那条）。咨询性字段；可渲染为“归档已夹断”的标注。 |
@@ -5872,7 +5887,7 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 
 | 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
 |---|---|---|---|
-| `transcript-store.js`（28 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束），以及 \u2014\u2014 issue #739 起 \u2014\u2014 **可选能力守卫账本**：每个可选能力组（run-state、`loadRunStateStatus`、`loadRawRows`、#157 探针）都逐格设守卫，并由每个 label 一条收尾用例核对：缺席 = \u201c跳过**且逐格记为 skipped**\u201d，在场 = \u201c每个守卫格都跑到断言且方法真的被调过\u201d \u2014\u2014 只实现必需面的 store 能整套通过，而悄悄删掉某个原本有的可选实现会红，不再躲在守卫里） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
+| `transcript-store.js`（26 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束），以及 \u2014\u2014 issue #739 起 \u2014\u2014 **可选能力守卫账本**：每个可选能力组（run-state、`loadRunStateStatus`、`loadRawRows`、#157 探针）都逐格设守卫，并由每个 label 一条收尾用例核对：缺席 = \u201c跳过**且逐格记为 skipped**\u201d，在场 = \u201c每个守卫格都跑到断言且方法真的被调过\u201d \u2014\u2014 只实现必需面的 store 能整套通过，而悄悄删掉某个原本有的可选实现会红，不再躲在守卫里） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
 | `notes-store.js`（9 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错）、带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失，以及 issue #265 新增：空 `filters.state` 数组与非法 `filters.source` 必须拒、revoke 墓碑上 `revoked_at`/`revoke_reason` 可见、`purge` 的 `scanned` 是 scope 数且 `before` 只能缩小窗口 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言。#265 新增只断言 typedef 早已承诺的行为，但它们是发布面上的新断言：宿主适配器曾静默忽略其中任何一条，升级后就会冒新红 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`、`/filters\.state/`、`/filters\.source/`）、保留期/purge 时机 |
 | `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
 | `assembly-port.js`（5 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项在**直连路线**上覆盖端口自带的 provider，`assemblyPortOptions(port, { provider })` 在**覆盖通道**上被启动期拒绝（issue #498），缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（直连路线上显式选项胜过端口）、覆盖通道的冲突文案、启动校验的错误文案 |
@@ -5894,18 +5909,21 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 ## 恢复行 —— 每本 run 多出两份 `.jsonl`（issue #769、#827 第 3 刀）
 
 append-only 账本现在在既有的 `<dir>/<runId>.jsonl` 旁边**每本 run 多写两份文件**：
-`<dir>/<runId>.recovery.jsonl`（**事件**：`tool-executed`，只追加、永不改写）与
+`<dir>/<runId>.recovery.jsonl`（**事件**：`tool-executed` 与 `tool-result-unledgered`，只追加、永不改写）与
 `<dir>/<runId>.partial.jsonl`（**那个槽**：`partial-text`，恒为 0 或 1 行，整文件重写）。
 **拆成两份就是 #827 第 3 刀**：两个通道同住一份文件时，每次槽重写都要把全部事件行重抄一遍
 （实测 200 条工具行 = 45,204 B，一轮 300 次提交 ⇒ 累计重写 12.9 MB）；分流之后一次重写只碰
 那一条行（≈ 2.2 KB），**事件文件不再被改写**。**轮记录那份一个字节都没变**——仍然是一行恰好一轮，
 正文也还在原处，没有任何东西从它里面搬走。
 
-- `kind: "recovery"` —— 宿主就按这个字段筛。两份文件加起来只装**恢复行**。今天有两种事件：
-  `recoveryEvent: "tool-executed"`（带 `toolUseId`）
+- `kind: "recovery"` —— 宿主就按这个字段筛。两份文件加起来只装**恢复行**。今天有两类行、三种事件：
+  `recoveryEvent: "tool-executed"`（带 `toolUseId`）、`recoveryEvent: "tool-result-unledgered"`
+  （带 `toolUseId` 加一份完整的 `toolResult` 对象与 `notYetLedgered: true` —— 引擎在工具结果没能提交进消息账本时追加的兜底行，
+  让结果内容留下来而不只剩工具身份；由 `src/loop/orchestrator.js` 里的 `buildUnledgeredToolResultRecoveryRow` 构造、经
+  `appendRecoveryRow` 追加，再由 `readUnledgeredToolResultRecoveryRows` 读回），
   与 `recoveryEvent: "partial-text"`（只带 `text` 本身：**那一刻的完整累计正文 — 不截断、不设上限**；引擎把整段串原样交给这一行，而且**没有** `textLength` 这一项，要长度自己数——恢复行刻意不带任何派生数字）。
 - 哪一条行住在哪一份文件里是契约的一部分（两份名字都由 `src/store/file.js` 里的
-  `partialSlotPath` / `recoveryRowsPath` 现场推——不要把后缀写成字面量）：`tool-executed` → `.recovery.jsonl`，
+  `partialSlotPath` / `recoveryRowsPath` 现场推——不要把后缀写成字面量）：`tool-executed` 与 `tool-result-unledgered` → `.recovery.jsonl`，
   `partial-text` → `.partial.jsonl`。`listRecoveryRows` **合并两份文件**，返回顺序写死：先事件行（落盘序），
   再槽行。读侧按 `recoveryEvent` 筛、不依赖这个顺序，但直接读文件的宿主依赖 ⇒ 它不许改。
   **分流前**写的旧数据：残在 `.recovery.jsonl` 里的 `partial-text` 行仍从那里返回——旧账本依旧读得动，
