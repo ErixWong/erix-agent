@@ -253,6 +253,20 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
       }],
       stopReason: "tool_use",
     },
+    // issue #873 MIN_KEEP_ROUNDS=5：有效保留下限 5 ⇒ keepFloor = len - 5，旧夹具 head + 3 轮 ⇒
+    // keepFloor=0 ⇒ fold-statistical 一轮都折不动 ⇒ 验不到「两次折叠 + 存根去重」。补 8 轮 exec
+    // 把轮数抬到 head + 10 轮（>5）；配合下面抬高的预算，让折叠（fold-statistical.shouldCompact 与
+    // sliding-window 兑底共用同一 est>budget 门）要集齐 ≥6 轮才首次跨预算 ⇒ 配置的 fold-statistical
+    // 真的能折（而非因轮数 ≤ 下限被兑底抢走）⇒ 后续多个请求都带 [本 run 状态]。
+    ...Array.from({ length: 8 }, (_, i) => ({
+      content: [{
+        type: "tool_use",
+        id: `s4-extra-${String(i)}`,
+        name: "exec",
+        input: { command: `head -c 3000 /dev/zero | tr '\\0' 'e'` },
+      }],
+      stopReason: "tool_use",
+    })),
     {
       content: [{
         type: "tool_use",
@@ -277,7 +291,10 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
   // issue #614：同上——显式点名统计策略（本场景验的是两次统计折叠之间的存根去重）。
   const context = buildCompactionContext(
     { compaction: "fold-statistical" },
-    1200,
+    // 抬高预算（旧 1200）：让 est>budget 的首次触发落在 ≥6 轮之后（实测：每轮 exec 输出被
+    // 截小，预算需抬到这个量级才能集齐 >MIN_KEEP_ROUNDS 的轮数），使配置的 fold-statistical
+    // 自己折（而非被 sliding-window 兑底）。
+    5000,
     ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
     (message) => buildCaptureStub(message),
   );
@@ -289,7 +306,7 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
       initialUserMessage: "执行并重复一次非幂等命令，然后写文件。",
       tools: cliTools.tools,
       executeTool,
-      maxRounds: 4,
+      maxRounds: 13,
       completion: false,
       wrapup: false,
       reflection: false,
