@@ -590,7 +590,10 @@ with a flat twin, and the suite proves it by **derivation** rather than by count
 many leaves the group has today": the criterion is about the mapping, not about the count. The
 third station is derived in both directions too: the keys with **no nested home** (`configPathForOption`
 and `capabilitiesPathForOption` both `undefined`) are exactly `TOP_LEVEL_SURFACE_OPTION_NAMES` plus the
-two containers — **12** after #527, up from 11 before it, with `tools` as the added member. Re-adding
+two containers — so its size is exactly `TOP_LEVEL_SURFACE_OPTION_NAMES.length + 2` and it grows only
+when a permanent top-level option is added (measure it against those two lists rather than trusting a
+remembered integer: today that is thirteen, the eleven members of the list plus `config` and
+`capabilities`). Re-adding
 the `config.input.tools` leaf makes the self-check red and names the key, which is the reverse proof
 that the account is live rather than a copied expectation.
 
@@ -1513,9 +1516,10 @@ Behaviour carriers are not data, so 0.28.0 gives them their own container. It ha
 added the third one so that a behaviour carrier that used to live in a nested shell slot has a real
 destination): `capabilities.hooks` for host callbacks, `capabilities.checks` for deliverables checks,
 and `capabilities.ports` for the infrastructure / strategy implementations the engine dereferences.
-The **sixteen** host callbacks — `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`,
+The **eighteen** host callbacks — `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`,
 `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`,
-`finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor` — are enumerated in
+`finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor`, `continuityProvider`,
+`nextUserTurn` — are enumerated in
 `CAPABILITY_HOOK_NAMES` (`src/loop/capabilities-namespace.js`), and the group table
 `CAPABILITIES_NAMESPACE_SCHEMA` (`src/loop/capabilities-namespace.js`) is its single hand-written
 source: the alias map `CAPABILITIES_ALIAS_PATHS` (`src/loop/capabilities-namespace.js`) is derived
@@ -1525,7 +1529,7 @@ one registered exception described below (eleven leaves that never were top-leve
 
 | namespace | members |
 | --- | --- |
-| `capabilities.hooks` | 18 members — **16 callbacks** (listed below) **plus the two polymorphic knobs** `protectedMessage` / `recoveryHint` (function form here, data form stays in `config.folding.context`):  `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor` — plus the **function form** of the two polymorphic knobs, `protectedMessage` and `recoveryHint` |
+| `capabilities.hooks` | 20 members — **18 callbacks** (listed below) **plus the two polymorphic knobs** `protectedMessage` / `recoveryHint` (function form here, data form stays in `config.folding.context`):  `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor`, `continuityProvider`, `nextUserTurn` — plus the **function form** of the two polymorphic knobs, `protectedMessage` and `recoveryHint` |
 | `capabilities.checks` | `deliverables` (each entry `{ name, check }`; `check` is a function, `name` is a label) |
 | `capabilities.ports` | `sleepImpl`, `judgeProvider`, `strategy` — see “`capabilities.ports`” below |
 
@@ -1780,8 +1784,7 @@ conversion, the OpenAI stream accumulator, and the Anthropic stream assembler al
 two protocols cannot drift apart here. The strict entry point is untouched: `parseModelJson`
 still repairs nothing (see its own section) — repair exists only on the tool-argument path.
 
-When the arguments still do not parse, the default (`invalidArguments: "reject"`, a member of
-`RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`）) is to **not execute the tool at
+When the arguments still do not parse, the default (`invalidArguments: "reject"`, whose canonical home is `config.run.invalidArguments`（`src/loop/config-namespace.js`）after the A11 slice retired the flat top-level spelling) is to **not execute the tool at
 all**. The engine
 returns an `is_error` `tool_result` whose content is the parser's own verdict, assembled by
 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）: the parser's words, the
@@ -1804,9 +1807,12 @@ that comes back — are pinned by `deepEqual` tests.
 
 ## Observer callback errors (issue #173)
 
-Nine host callbacks observe a run: the eight event channels `onEvent`, `onRound`,
+Ten host callbacks share this isolation path: the eight event channels `onEvent`, `onRound`,
 `onToolResult`, `onJudge`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`,
-plus the error account itself (`onObserverError`). **A throw in any of them is
+plus the error account itself (`onObserverError`), plus the host-steer hook `nextUserTurn`
+(added after this rule landed, by issue #753: a throw or a non-string return there is reported
+as `channel: "nextUserTurn"` and only skips that round — it never changes the outcome).
+**A throw in any of them is
 reported and the run continues** — one uniform consequence. Before this change the
 same fault had three different outcomes: a throwing `onEvent`, `onRound`, or
 `onToolResult` killed the run with `termination.reason: "failed"`, the streaming

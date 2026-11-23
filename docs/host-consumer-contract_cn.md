@@ -475,7 +475,8 @@ A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决�
 （`test/loop-input-keys-slice-498s3a18.test.js` 的 N 段）。这就是为什么没有人需要复述「组里今天有几个
 叶子」：判据说的是**映射**，不是条数。第三站也双向派生：**两个家都没有**的键（`configPathForOption` 与
 `capabilitiesPathForOption` 都返回 `undefined`）恰好等于 `TOP_LEVEL_SURFACE_OPTION_NAMES` 加两个容器——
-#527 之后是 **12**（之前 11），新增的成员就是 `tools`。把 `config.input.tools` 叶子加回去会让自检变红
+所以它的长度正好是 `TOP_LEVEL_SURFACE_OPTION_NAMES.length + 2`，只在新增一个永久顶层选项时才增长（对着
+这两张表现测，别信记住的整数：今天是十三，即名单的十一个成员加上 `config` 与 `capabilities`）。把 `config.input.tools` 叶子加回去会让自检变红
 并点名该键，这就是「账目在跑、不是抄的期望值」的反向证。
 
 **这三个词还活在另外六张面上，本片一张都没动。** 整词 grep `system` / `tools` / `wrapup` 捞出来的远不止
@@ -1238,18 +1239,19 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 为的是不让 `hooks` 变成口袋；issue #498 S4c 加了第三组，为的是让「住在壳里嵌套槽中的行为载体」
 有一个**真实归宿**）：`capabilities.hooks` 装宿主回调，`capabilities.checks` 装交付物判据，
 `capabilities.ports` 装引擎会解引用/调用的基础设施与策略实现。
-**16 个**宿主回调——`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、
+**18 个**宿主回调——`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、
 `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、
-`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`——逐个写在
+`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`、`continuityProvider`、
+`nextUserTurn`——逐个写在
 `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）里，分组表
 `CAPABILITIES_NAMESPACE_SCHEMA`（`src/loop/capabilities-namespace.js`）是它唯一手写的来源：别名表
 `CAPABILITIES_ALIAS_PATHS`（`src/loop/capabilities-namespace.js`）从它派生，与 `config` 的别名表
 派生方式逐字相同——所以 `capabilities.hooks.onEvent` 与扁平 `onEvent` 是同一个键（别名 = schema
-路径，叶子名逐字等于扁平选项名）——唯一登记的例外见下面第五条（9 个**从来不是**顶层选项的叶子）。
+路径，叶子名逐字等于扁平选项名）——唯一登记的例外见下面第五条（11 个**从来不是**顶层选项的叶子）。
 
 | 命名空间 | 成员 |
 | --- | --- |
-| `capabilities.hooks` | 18 个成员 —— **16 个回调**（下方逐个列出）**加两个形态多态旋钮** `protectedMessage` / `recoveryHint`（函数形态在这里、数据形态留在 `config.folding.context`）：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`——外加两个形态多态旋钮的**函数形态**：`protectedMessage`、`recoveryHint` |
+| `capabilities.hooks` | 20 个成员 —— **18 个回调**（下方逐个列出）**加两个形态多态旋钮** `protectedMessage` / `recoveryHint`（函数形态在这里、数据形态留在 `config.folding.context`）：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`、`continuityProvider`、`nextUserTurn`——外加两个形态多态旋钮的**函数形态**：`protectedMessage`、`recoveryHint` |
 | `capabilities.checks` | `deliverables`（每项 `{ name, check }`；`check` 是函数、`name` 是标签） |
 | `capabilities.ports` | `sleepImpl`、`judgeProvider`、`strategy`——见下面「`capabilities.ports`」那一节 |
 
@@ -1453,8 +1455,8 @@ promise，与经 `runToolLoop` 进来时逐字相同。
 Anthropic 流式组装**三处共用**的那一份，所以两条协议在这里不可能各长一套。严格入口一字未动：
 `parseModelJson` 仍然不做任何 repair（见它自己那一节）——修复只存在于工具引数这条路上。
 
-修完仍然解析不出来时，默认行为（`invalidArguments: "reject"`，白名单成员见
-`RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`））是**根本不执行这个工具**。引擎返回一条 `is_error` 的
+修完仍然解析不出来时，默认行为（`invalidArguments: "reject"`，A11 片退役扁平顶层拼写后其新家为
+`config.run.invalidArguments`（`src/loop/config-namespace.js`））是**根本不执行这个工具**。引擎返回一条 `is_error` 的
 `tool_result`，正文由 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）拼出来：
 解析器原话、**从 1 开始数的**字符位置与它附近的一小段原文、以及按该工具自己的 `inputSchema` 渲染的
 正确形状示例。后面那句指示是「只改参数写法、重发同一次调用」——不换工具，也不凭猜测补内容。这条结果带
@@ -1471,9 +1473,11 @@ Anthropic 流式组装**三处共用**的那一份，所以两条协议在这里
 
 ## 观察者回调抛错（issue #173）
 
-宿主共有九个回调在观察一个 run：八个事件通道 `onEvent`、`onRound`、`onToolResult`、
+宿主共有十个回调共用这条隔离路径：八个事件通道 `onEvent`、`onRound`、`onToolResult`、
 `onJudge`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`，加上错账户本身
-（`onObserverError`）。**其中任何一个抛错，都是「记一笔、继续跑」**——后果只有一种。
+（`onObserverError`），再加上宿主转向钩子 `nextUserTurn`（本规则落地之后由 issue #753 加入：
+它抛错或返回非字符串会以 `channel: "nextUserTurn"` 记一笔、只跳过当轮——绝不改终局）。
+**其中任何一个抛错，都是「记一笔、继续跑」**——后果只有一种。
 改动之前同一类故障有三种后果：`onEvent`、`onRound`、`onToolResult` 抛错会以
 `termination.reason: "failed"` 杀掉整个 run，流式通道经 `onObserverError` 上报，而
 `onJudge` 消失在一个裸 `catch {}` 里。
