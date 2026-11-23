@@ -50,6 +50,13 @@ export async function runMemoryBenchmark() {
     },
     { role: "assistant", content: "已记录该约定。" + filler("告警平台确认") },
     { role: "user", content: "继续补充监控面板的配置历史：" + filler("监控面板") },
+    // #873 MIN_KEEP_ROUNDS=5：旧夹具仅 ~4 轮 < 保留下限 5 ⇒ fold 一轮不折，「应真发生折叠/至少一
+    // 轮/token 降下来」全空转。补几轮纯文本填充历史（不带新 tool_use，足迹仍 recordFact×1），
+    // 让历史长过 5 轮、最早的 FACT 轮被策略真折；budget/keepRounds 不动（1 ⇒ 5）。
+    { role: "assistant", content: "面板已按阈值配好。" + filler("告警分发") },
+    { role: "user", content: "再看回测与回滚预案：" + filler("回滚流程") },
+    { role: "assistant", content: "回滚预案已归档。" + filler("发布审批") },
+    { role: "user", content: "最后归档一份运维手册。" + filler("手册维护") },
   ];
 
   const result = await strategy.compact(messages, {
