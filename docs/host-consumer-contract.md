@@ -6674,8 +6674,10 @@ and each family must still be present in the tree (T4). Adding an event type wit
 therefore reddens that test — the defect this ticket is about cannot be introduced silently.
 
 **Three names in the table are not engine emissions.** `assistant_delta` and `tool_call_delta` are
-the spellings a host writes into its own column: a whole-repo scan of `src/`, `bin/` and
-`examples/` finds zero occurrences of either string (T6), while the engine's own names are `delta`
+the spellings a host writes into its own column: a scan of `src/`, `bin/` and
+`examples/` finds zero occurrences of either string **outside this table file** — T6's haystack
+filters out `src/loop/event-tiers.js` itself, the one place the two host-side spellings legitimately
+appear (the registered alias strings); the engine's own names are `delta`
 and `tool_call`. `judge` names the `onJudge` **channel**, whose record has no `type` field at all.
 They are registered in `HOST_SIDE_EVENT_TYPE_NAMES` so `eventTierOf("assistant_delta")` resolves to
 the same tier as `delta`, and the table refuses a registered alias whose target has a different tier
@@ -6807,9 +6809,12 @@ DELETE FROM run_events
   it back off a capture, never off a manifest). There is no `delta` / `tool_call` /
   `reasoning_delta` read anywhere in `bin/final-guard*.js`. Deleting `stream` rows cannot change a
   verdict.
-- **Recall: nothing to read.** Bounded recall is retired in this repo — `recall` does not appear
-  anywhere in `src/`, and the store's read surface is `load`, `loadRawRows`, `loadRunState`, and
-  `loadRunStateStatus`. A host still on 0.6.x
+- **Recall: nothing to read.** Bounded recall is retired in this repo — there is no recall read
+  method on the store; its read surface is `load`, `loadRawRows`, `loadRunState`, and
+  `loadRunStateStatus`. (The identifier `recall` still appears in `src/` — as the note-evidence
+  parameter of the tool-result TTL retrieval hint: `resolveNoteRecall` in `src/loop/note-prompt-hint.js`
+  and the `recall` option in `src/loop/tool-result-ttl.js` — but none of those is a recall read surface.)
+  A host still on 0.6.x
   bounded recall has its own read surface, and this section says nothing about it: the tiers are
   facts about the engine's emission side.
 - The one read side that *does* lose something is a host replaying fragments into its own UI. Read
@@ -6941,7 +6946,7 @@ records must remain unchanged.
 >
 > **The continuation base is ledger-scoped (issue #469, host ruling A):** on a resumed run the first fold is seeded from the ledger, using the same "pick the alternative that covers the current watermark" rule the read-side trim uses (`pickCoveringFoldSummary` first, then `record.foldedFacts`; both the nested `foldedRoundRange.{from,to}` and the flat `{from,to}` shapes are accepted). Priority is contractual: **explicit call argument > strategy construction option > in-run closure > ledger seed**, so a non-resumed run — or one where no fact covers the watermark — is byte-for-byte what it was before. `compactionStats[].foldSummary` gains `priorSummaryOrigin: "ledger" | "in-run"` (no base ⇒ no key, the family's "no fact, no key" rule). The reuse fingerprint **includes the base**, so the first fold of a resumed run recomputes once instead of silently ignoring the seeded base (deliberate trade: one fewer cache hit beats a silently dropped thread).
 >
-> **The five-section summary contract is self-consistent by default (issue #469, host audit C):** `maxSummaryTokens` now defaults to `1400`, which is what a five-section summary of ~150 CJK characters per section actually costs (~1335 tokens measured); at the old `800` the contract only held for ~80 characters per section, so a compliant model answer was silently cut down to two of five sections. When the budget *is* tight, sections are pruned **lowest priority first and the heading is kept** (`## 标题` + a `[已修剪]` body) — a lost skeleton is harder to diagnose than lost prose, and the next fold's summarizer would not even know the section existed. Priority is now: `## 下一步` / `## 恢复提示` and `## 主题词面包屑` first, then `## 已验证项`, then `## 已改文件`. **`foldSummary.finishReason` value domain:** it is passed through as the provider normalized it (`end_turn`, `max_tokens`, `stop_sequence`, …); `max_tokens` means the summary itself was truncated by the model's output budget and is **not** a complete summary. Hosts must treat an unknown value as "unknown", never as "fine".
+> **The multi-section summary contract is self-consistent by default (issue #469, host audit C):** `maxSummaryTokens` now defaults to `1400`, which is what a summary carrying the full set of sections the prompt guide asks for (`## 阶段 / ## 已改文件 / ## 已验证项 / ## 下一步 / ## 主题词面包屑 / ## 教训与坑`, plus the appended `## 恢复提示`; roughly 150 CJK characters per section) actually costs (~1335 tokens measured); at the old `800` the budget only held for ~80 characters per section, so a compliant model answer was silently cut down to a couple of sections. When the budget *is* tight, sections are pruned **lowest priority first and the heading is kept** (`## 标题` + a `[已修剪]` body) — a lost skeleton is harder to diagnose than lost prose, and the next fold's summarizer would not even know the section existed. Priority is now: `## 下一步` / `## 恢复提示` and `## 主题词面包屑` first, then `## 已验证项`, then `## 已改文件`. **`foldSummary.finishReason` value domain:** it is passed through as the provider normalized it (`end_turn`, `max_tokens`, `stop_sequence`, …); `max_tokens` means the summary itself was truncated by the model's output budget and is **not** a complete summary. Hosts must treat an unknown value as "unknown", never as "fine".
 >
 > **The fold summarizer call itself (issue #469 ①②③, erix-station ruling 2026-10-26).** Three boundaries are contractual, not configurable defaults. **(1) Thinking is explicitly off:** the request carries `reasoning_effort: "none"` **and** `enable_thinking: false` **and** `chat_template_kwargs: {"thinking": false}` — never relying on the model's default (a real run still produced 584 `reasoning_token` with `reasoning_effort` alone). A provider that rejects unknown fields may opt out with `thinkingMode: "inherit"`. **(2) 30 s is the deadline of the whole summarizer step, not of each attempt:** the remaining budget is handed to every attempt as `timeoutMs`, so the context-window self-heal retry shares the same 30 s; with less than 2 s left no retry happens and `budgetExhausted` is recorded. **A timeout is never retried.** **(3) Input scope is fixed:** only the rounds being folded **plus the previous fold summary** (the continuation base, separately budgeted at 24 KB, head-truncated and flagged as `priorSummaryTruncated`) — live, unfolded context is never fed (that is double spend *and* it invites the summary to restate what the model can still see). The folded window is capped at **48 KB** in bytes and trimmed by **whole rounds**, oldest first, never mid-round; the separate token guard derived from `budgetTokens` is the last line of defence against the model window and **may** drop individual oldest messages, so the 48 KB cap must not be read as "rounds are never split". Both layers leave an omission note.
 | `foldedPayloadMeta` | display / forensics | `{ messages, bytes, capBytes, droppedMessages, droppedBytes, dedupedMessages, dedupedBytes }` — how much of the fold this archive actually carries, plus `rejectedByHost: true` when the host bounded the single record, the engine dropped the archive and retried. Advisory; safe to render as a "archive truncated" caption. |

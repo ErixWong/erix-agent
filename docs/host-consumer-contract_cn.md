@@ -5240,7 +5240,9 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 本工单要治的那个缺陷没法静默地混进来。
 
 **表里有三个名字不是引擎发射。** `assistant_delta` 与 `tool_call_delta` 是宿主写进自己那一列的拼写：
-整仓扫 `src/`、`bin/`、`examples/` 两个字符串都是零命中（T6），引擎自己的名字是 `delta` 与 `tool_call`。
+整仓扫 `src/`、`bin/`、`examples/`，除本表文件外两个字符串都是零命中——T6 的扫描集把
+`src/loop/event-tiers.js` 自己排除在外，而那两个宿主拼法止在这一处合法出现（登记的别名串）；
+引擎自己的名字是 `delta` 与 `tool_call`。
 `judge` 指的是一个 **`onJudge` 通道**，那条记录里压根没有 `type` 字段。三者都登在
 `HOST_SIDE_EVENT_TYPE_NAMES` 里，所以 `eventTierOf("assistant_delta")` 与 `delta` 落在同一档；而载入期
 自检会拒掉「登记的别名与被替名字不同档」这种写法。工单要求的分类**一处没改**：`tool_call_delta` /
@@ -5358,8 +5360,10 @@ DELETE FROM run_events
   `legacy: true` 是 guard **写在自己 capture 对象上的标记**（`archiveSourceTarget` 从 capture 上读它，
   从不从清单上读）。`bin/final-guard*.js` 里没有任何一处读 `delta` / `tool_call` /
   `reasoning_delta`。删 `stream` 行不可能改变核验结论。
-- **recall：没有可读的东西。** bounded recall 在本仓已退役 —— `src/` 里根本不出现 `recall`，
-  store 的读面是 `load`、`loadRawRows`、`loadRunState` 与 `loadRunStateStatus`。还挂在 0.6.x bounded
+- **recall：没有可读的东西。** bounded recall 在本仓已退役 —— store 上**没有** recall 读方法；
+  它的读面是 `load`、`loadRawRows`、`loadRunState` 与 `loadRunStateStatus`。（标识符 `recall` 仍会出现在
+  `src/` 里——作为工具结果 TTL 检索提示的笔记证据参数：`src/loop/note-prompt-hint.js` 的 `resolveNoteRecall`
+  与 `src/loop/tool-result-ttl.js` 的 `recall` 选项——但这些都不是 recall 读面。）还挂在 0.6.x bounded
   recall 上的宿主有自己的读面，本节对它不说任何话：
   分级说的是引擎发射侧的事实。
 - 真正会丢东西的读面只有一个：把碎片重放进自己 UI 的宿主。所以下手前先读，或者接受上面那个退化 ——
@@ -5467,7 +5471,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 >
 > **续写基底按账本作用域播（issue #469，宿主裁决 A）：** resume 出来的 run 第一次折叠从**账本**播种，取源与读侧裁剪同一条规则（先 `pickCoveringFoldSummary`，再 `record.foldedFacts`；嵌套 `foldedRoundRange.{from,to}` 与平铺 `{from,to}` 两种形状都收）。优先级是契约：**显式调用参数 > 策略构造参数 > in-run 闭包 > 账本播种**——非 resume、或挑不出覆盖水位线的事实时，行为逐字退回今天。`compactionStats[].foldSummary` 增 `priorSummaryOrigin: "ledger" | "in-run"`（没有基底就不写键，与家族其余键同口径）。复用指纹**包含基底**：resume 后第一次折叠会重算一次而不是无声忽略播进来的基底（有意的取舍：宁可少命中一格，也不无声丢脉络）。
 >
-> **五节摘要在默认配置下自洽（issue #469，宿主审计 C 片）：** `maxSummaryTokens` 默认改为 `1400`——五节、每节约 150 个中文字实际要 ~1,335 token（实测）；旧默认 `800` 只容得下每节 ~80 字，于是**合规的模型输出会被无声剪成五节里的两节**。预算真的紧时，裁剪**从最低档开始且保留标题**（`## 标题` + `[已修剪]` 正文）——骨架消失比正文丢失更难诊断，下一次折叠的摘要器连「曾经有这一节」都看不到。优先级现在是：`## 下一步` / `## 恢复提示` 与 `## 主题词面包屑` 同列第一档，然后 `## 已验证项`，再 `## 已改文件`。**`foldSummary.finishReason` 的值域：** 按 provider 归一后原样透出（`end_turn`、`max_tokens`、`stop_sequence` …）；`max_tokens` 表示摘要本身被模型输出预算截断、**不是完整摘要**。宿主遇到未知值必须按「未知」处理，不得当「正常」。
+> **多节摘要在默认配置下自洽（issue #469，宿主审计 C 片）：** `maxSummaryTokens` 默认改为 `1400`——一份带齐摘要提示词所要求的全部分节（`## 阶段 / ## 已改文件 / ## 已验证项 / ## 下一步 / ## 主题词面包屑 / ## 教训与坑`，外加附上的 `## 恢复提示`）、每节约 150 个中文字，实际要 ~1,335 token（实测）；旧默认 `800` 只容得下每节 ~80 字，于是**合规的模型输出会被无声剪得只剩寥寥几节**。预算真的紧时，裁剪**从最低档开始且保留标题**（`## 标题` + `[已修剪]` 正文）——骨架消失比正文丢失更难诊断，下一次折叠的摘要器连「曾经有这一节」都看不到。优先级现在是：`## 下一步` / `## 恢复提示` 与 `## 主题词面包屑` 同列第一档，然后 `## 已验证项`，再 `## 已改文件`。**`foldSummary.finishReason` 的值域：** 按 provider 归一后原样透出（`end_turn`、`max_tokens`、`stop_sequence` …）；`max_tokens` 表示摘要本身被模型输出预算截断、**不是完整摘要**。宿主遇到未知值必须按「未知」处理，不得当「正常」。
 >
 > **摘要调用本身（issue #469 ①②③，erix-station 2026-10-26 裁决）。** 三条边界属于契约、不是可调默认值。**①思考显式关：** 请求同时带 `reasoning_effort: "none"`、`enable_thinking: false`、`chat_template_kwargs: {"thinking": false}`——绝不靠模型默认值（真机只带前者仍产出 584 个 `reasoning_token`）；不接受未知字段的上游可用 `thinkingMode: "inherit"` 退回旧形状。**②30 s 是整条摘要步骤的死线、不是每次尝试的：** 剩余预算按 `timeoutMs` 下发给每一次尝试，所以超窗自愈重试与首发共享同一条 30 s；剩余不足 2 s 就不再重试并记 `budgetExhausted`。**超时永不重试。** **③输入范围固定：** 只喂**被折走的轮次** + **上一份折叠摘要**（续写基底，单独计 24 KB，超了从头部截并标记 `priorSummaryTruncated`）；未折走的活上下文一概不喂（那是重复付费，而且会诱导摘要去复述模型仍看得见的东西）。被折窗口本身以**字节** 48 KB 为上限，按**整轮**从旧到新截，绝不截断单轮中部；另有一层由 `budgetTokens` 同源推出的 **token 护栏**作为模型窗口的最后一道防线，它**可能**丢单条最旧消息，所以「48 KB 那顶帽子」不能读成「轮永远不会被切开」。两层都留省略注。
 | `foldedPayloadMeta` | 展示 / 取证 | `{ messages, bytes, capBytes, droppedMessages, droppedBytes, dedupedMessages, dedupedBytes }`——这份归档实际携带了本次折叠的多少，外加 `rejectedByHost: true`（宿主对单条记录定界、引擎剥掉归档重试后拿下的那条）。咨询性字段；可渲染为“归档已夹断”的标注。 |
