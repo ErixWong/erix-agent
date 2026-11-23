@@ -5887,7 +5887,7 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 
 | 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
 |---|---|---|---|
-| `transcript-store.js`（28 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束），以及 \u2014\u2014 issue #739 起 \u2014\u2014 **可选能力守卫账本**：每个可选能力组（run-state、`loadRunStateStatus`、`loadRawRows`、#157 探针）都逐格设守卫，并由每个 label 一条收尾用例核对：缺席 = \u201c跳过**且逐格记为 skipped**\u201d，在场 = \u201c每个守卫格都跑到断言且方法真的被调过\u201d \u2014\u2014 只实现必需面的 store 能整套通过，而悄悄删掉某个原本有的可选实现会红，不再躲在守卫里） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
+| `transcript-store.js`（26 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束），以及 \u2014\u2014 issue #739 起 \u2014\u2014 **可选能力守卫账本**：每个可选能力组（run-state、`loadRunStateStatus`、`loadRawRows`、#157 探针）都逐格设守卫，并由每个 label 一条收尾用例核对：缺席 = \u201c跳过**且逐格记为 skipped**\u201d，在场 = \u201c每个守卫格都跑到断言且方法真的被调过\u201d \u2014\u2014 只实现必需面的 store 能整套通过，而悄悄删掉某个原本有的可选实现会红，不再躲在守卫里） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
 | `notes-store.js`（9 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错）、带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失，以及 issue #265 新增：空 `filters.state` 数组与非法 `filters.source` 必须拒、revoke 墓碑上 `revoked_at`/`revoke_reason` 可见、`purge` 的 `scanned` 是 scope 数且 `before` 只能缩小窗口 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言。#265 新增只断言 typedef 早已承诺的行为，但它们是发布面上的新断言：宿主适配器曾静默忽略其中任何一条，升级后就会冒新红 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`、`/filters\.state/`、`/filters\.source/`）、保留期/purge 时机 |
 | `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
 | `assembly-port.js`（5 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项在**直连路线**上覆盖端口自带的 provider，`assemblyPortOptions(port, { provider })` 在**覆盖通道**上被启动期拒绝（issue #498），缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（直连路线上显式选项胜过端口）、覆盖通道的冲突文案、启动校验的错误文案 |
@@ -5909,18 +5909,21 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 ## 恢复行 —— 每本 run 多出两份 `.jsonl`（issue #769、#827 第 3 刀）
 
 append-only 账本现在在既有的 `<dir>/<runId>.jsonl` 旁边**每本 run 多写两份文件**：
-`<dir>/<runId>.recovery.jsonl`（**事件**：`tool-executed`，只追加、永不改写）与
+`<dir>/<runId>.recovery.jsonl`（**事件**：`tool-executed` 与 `tool-result-unledgered`，只追加、永不改写）与
 `<dir>/<runId>.partial.jsonl`（**那个槽**：`partial-text`，恒为 0 或 1 行，整文件重写）。
 **拆成两份就是 #827 第 3 刀**：两个通道同住一份文件时，每次槽重写都要把全部事件行重抄一遍
 （实测 200 条工具行 = 45,204 B，一轮 300 次提交 ⇒ 累计重写 12.9 MB）；分流之后一次重写只碰
 那一条行（≈ 2.2 KB），**事件文件不再被改写**。**轮记录那份一个字节都没变**——仍然是一行恰好一轮，
 正文也还在原处，没有任何东西从它里面搬走。
 
-- `kind: "recovery"` —— 宿主就按这个字段筛。两份文件加起来只装**恢复行**。今天有两种事件：
-  `recoveryEvent: "tool-executed"`（带 `toolUseId`）
+- `kind: "recovery"` —— 宿主就按这个字段筛。两份文件加起来只装**恢复行**。今天有两类行、三种事件：
+  `recoveryEvent: "tool-executed"`（带 `toolUseId`）、`recoveryEvent: "tool-result-unledgered"`
+  （带 `toolUseId` 加一份完整的 `toolResult` 对象与 `notYetLedgered: true` —— 引擎在工具结果没能提交进消息账本时追加的兜底行，
+  让结果内容留下来而不只剩工具身份；由 `src/loop/orchestrator.js` 里的 `buildUnledgeredToolResultRecoveryRow` 构造、经
+  `appendRecoveryRow` 追加，再由 `readUnledgeredToolResultRecoveryRows` 读回），
   与 `recoveryEvent: "partial-text"`（只带 `text` 本身：**那一刻的完整累计正文 — 不截断、不设上限**；引擎把整段串原样交给这一行，而且**没有** `textLength` 这一项，要长度自己数——恢复行刻意不带任何派生数字）。
 - 哪一条行住在哪一份文件里是契约的一部分（两份名字都由 `src/store/file.js` 里的
-  `partialSlotPath` / `recoveryRowsPath` 现场推——不要把后缀写成字面量）：`tool-executed` → `.recovery.jsonl`，
+  `partialSlotPath` / `recoveryRowsPath` 现场推——不要把后缀写成字面量）：`tool-executed` 与 `tool-result-unledgered` → `.recovery.jsonl`，
   `partial-text` → `.partial.jsonl`。`listRecoveryRows` **合并两份文件**，返回顺序写死：先事件行（落盘序），
   再槽行。读侧按 `recoveryEvent` 筛、不依赖这个顺序，但直接读文件的宿主依赖 ⇒ 它不许改。
   **分流前**写的旧数据：残在 `.recovery.jsonl` 里的 `partial-text` 行仍从那里返回——旧账本依旧读得动，
