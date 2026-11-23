@@ -59,11 +59,12 @@ function createFakeProvider({ summaryText = LONG_SUMMARY, summaryChat } = {}) {
   return provider;
 }
 
-/** 多轮折叠：每轮都产出一段足够长的历史，`keepRounds:0` ⇒ 每轮都折。
- * issue #873：budget 从 300 提到 450——旧值下引擎第 1 轮就触发压缩但只有 1 轮在场，
- * 新语义 keepRounds:0 留 1 不折⇒fold-llm 根本不调摘要器。450 > 1轮(364) ⇒第 1 轮不触发，
- * <2轮(524) ⇒隔一轮触发一次；maxRounds 同步提到 6 保证累计能折≥两次（续写基底/默认对齐等
- * 断言需要两次）。 */
+/** 多轮折叠：每轮都产出一段足够长的历史。
+ * issue #873 MIN_KEEP_ROUNDS=5：有效保留下限 = max(keepRounds,5)，`keepRounds:0` ⇒ 实际按 5 算。
+ * 旧注释（450 > 1轮 ⇒隔一轮触发）是加 MIN_KEEP_ROUNDS 之前的口径，已失效：新口径下预算 450
+ * 会被 `sliding-window` 兜底抢先整轮丢（len≤5 ⇒策略折 0）。正解是**抬预算让历史先长过 5 轮再折**：
+ * budget 提到 1500（target=975）~150 token/轮 ⇒ 长到数轮首次超⇒折；maxRounds 同步提到 16 保证
+ * 累计能折≥两次（续写基底/默认对齐等断言需要两次，实测 13 轮时恰好 2 次摘要且第二次带基底）。 */
 function runFolding(provider, context, extra = {}) {
   // #498 S3（`tuning` A5）：扁平 `maxTokens` 已退役（家 = `config.tuning.maxTokens`）。本函数是这一族
   // 格子的**唯一** run 装配点，所以「run 级输出预算」在夹具里收成一个 `tuning` 入参，由它并进
@@ -74,11 +75,11 @@ function runFolding(provider, context, extra = {}) {
     provider,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-    maxRounds: 6,
+    maxRounds: 16,
     completion: false,
     wrapup: false,
     config: {
-      folding: { context: { budgetTokens: 450, keepRounds: 0, strategy: "fold-llm", ...context } },
+      folding: { context: { budgetTokens: 1500, keepRounds: 0, strategy: "fold-llm", ...context } },
       ...(tuning === undefined ? {} : { tuning }),
     },
     store: createMemoryTranscriptStore(),
@@ -213,7 +214,9 @@ test("#469-B1 传了就真生效：maxSummarizerInputBytes 极小 ⇒ 按整轮�
   const provider = createFakeProvider();
   // 折叠输入得真的超过上限才谈得上「丢整轮」：这里把工具输出放大到 6 KB/轮。
   const bigToolOutput = async ({ id }) => `tool output for ${id} ${"z".repeat(6000)}`;
-  const result = await runFolding(provider, { maxSummarizerInputBytes: 512 }, {
+  // MIN_KEEP_ROUNDS=5：~1500 token/轮下历史长过 5 轮需预算很大；实测 12000 下折叠会一次含多轮、
+  // 极小字节上限才能「丢整轮」（较低预算单轮折不足多轮，不触发丢轮）。
+  const result = await runFolding(provider, { maxSummarizerInputBytes: 512, budgetTokens: 12000 }, {
     executeTool: bigToolOutput,
   });
   const stats = (result.compactionStats ?? []).filter((stat) => stat.foldSummary !== undefined);
@@ -225,7 +228,7 @@ test("#469-B1 传了就真生效：maxSummarizerInputBytes 极小 ⇒ 按整轮�
   );
   // 同一形状不传旋钮 ⇒ 不得有丢弃痕迹（证明上一条不是恒真）。
   const baselineProvider = createFakeProvider();
-  const baseline = await runFolding(baselineProvider, {}, { executeTool: bigToolOutput });
+  const baseline = await runFolding(baselineProvider, { budgetTokens: 12000 }, { executeTool: bigToolOutput });
   const baselineStats = (baseline.compactionStats ?? [])
     .filter((stat) => stat.foldSummary !== undefined);
   assert.equal(
