@@ -22,6 +22,7 @@ import {
   resolveFoldRecoveryHint,
   resolveRecoveryHint,
   selectFoldedRounds,
+  FOLD_TARGET_RATIO,
   isRealUser,
 } from "./helpers.js";
 
@@ -1242,12 +1243,25 @@ export function createFoldStatisticalStrategy(options = {}) {
       const keep = normalizedKeepRounds(
         optionValue(callOptions, options, "keepRounds", undefined),
       );
+      // issue #873：折多少由**预算比例**定（`FOLD_TARGET_RATIO`）；无预算⇒ targetTokens undefined ⇒ 旧行为。
+      const budgetTokens = optionValue(callOptions, options, "budgetTokens", undefined);
+      const targetTokens = Number.isFinite(budgetTokens) && budgetTokens > 0
+        ? budgetTokens * FOLD_TARGET_RATIO
+        : undefined;
       const { folded, retained, foldedIndexes } = selectFoldedRounds(
         rounds,
         keep,
         settings.protectedMessage,
         // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
         settings.workingSetRecentRounds,
+        {
+          targetTokens,
+          headMessages: head,
+          // 机械摘要长度估算（与 `budget-fit.js` 的 `fits()` 同口径）。
+          mechanicalSummary: (foldedMessages, count) => summarizeFoldedPayload(foldedMessages, {
+            from: 1, to: count, count,
+          }),
+        },
       );
       const foldedPayload = cloneFoldPayload(
         folded.flatMap((round) => round.messages),

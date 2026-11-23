@@ -9,6 +9,7 @@ import {
   appendFoldStubsToHead,
   selectFoldedRounds,
   resolveFoldStubs,
+  FOLD_TARGET_RATIO,
 } from "./helpers.js";
 import { buildFoldNavigationRecord, summarizeFoldedPayload } from "./fold-statistical.js";
 
@@ -42,12 +43,26 @@ export function createSlidingWindowStrategy(options = {}) {
       const keepRounds = normalizedKeepRounds(
         optionValue(callOptions, options, "keepRounds", undefined),
       );
+      // issue #873：折多少由**预算比例**定（`FOLD_TARGET_RATIO`），不再由 `keepRounds` 定。
+      // 无预算（未定义 / 非正数）⇒ `targetTokens` 为 undefined ⇒ 选择器逐字退回旧行为（折到 keepRounds）。
+      const budgetTokens = optionValue(callOptions, options, "budgetTokens", undefined);
+      const targetTokens = Number.isFinite(budgetTokens) && budgetTokens > 0
+        ? budgetTokens * FOLD_TARGET_RATIO
+        : undefined;
       const { folded, retained, foldedIndexes } = selectFoldedRounds(
         rounds,
         keepRounds,
         settings.protectedMessage,
         // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
         settings.workingSetRecentRounds,
+        {
+          targetTokens,
+          headMessages: head,
+          // 机械摘要长度估算（判据口径与 `budget-fit.js` 的 `fits()` 一致，用同一个 `estimateTokens`）。
+          mechanicalSummary: (foldedMessages, count) => summarizeFoldedPayload(foldedMessages, {
+            from: 1, to: count, count,
+          }),
+        },
       );
       const foldedPayload = cloneFoldPayload(
         folded.flatMap((round) => round.messages),

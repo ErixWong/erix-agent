@@ -80,7 +80,16 @@ export async function foldWithinBudget(strategy, messages, options = {}) {
   // 上界是 `rounds.length`（= 一轮都不折）：调用方是「已经超预算」才会进来，但「预算充裕」那一格
   // （库消费者直接调 / 估算器与真实用量有偏差）必须能如实返回「没折」，不许强行折一轮。
   const maxKeep = rounds.length;
-  const compact = (keepRounds) => strategy.compact(messages, withKeepRounds(options, keepRounds));
+  // issue #873：本模块自己按 keepRounds **逐轮探**、并拿**外层** `budgetTokens` 跑 `fits()`——它要的是
+  // 「折到装得下预算」，与策略新引入的「折到预算×`FOLD_TARGET_RATIO`」是两个不同的目标。为不把
+  // 策略的新目标掺进这一发探轮（那会让 `keep` 的二分失效、把 `foldWithinBudget` 的语义改掉），转发
+  // 给 `strategy.compact` 的选项里**删掉 `budgetTokens`** ⇒ 策略逐字退回旧行为（按 keepRounds 计数折）。
+  // `fits()` 读的仍是下面闭包里的 `budgetTokens`，与转发无关。
+  const compact = (keepRounds) => {
+    const probe = withKeepRounds(options, keepRounds);
+    delete probe.budgetTokens;
+    return strategy.compact(messages, probe);
+  };
   // 「够用」= 折后的估算 + 摘要块自己的开销都装进预算（摘要也是模型要读的 token）。
   const fits = (result) => !Number.isFinite(budgetTokens)
     || result.tokensAfter + summaryTokens(result) <= budgetTokens;

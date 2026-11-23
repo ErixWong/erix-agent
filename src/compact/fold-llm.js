@@ -22,6 +22,7 @@ import {
   resolveRecoveryHint,
   runFoldHook,
   selectFoldedRounds,
+  FOLD_TARGET_RATIO,
 } from "./helpers.js";
 
 export function createSummarizerPromptGuide(recoveryHint) {
@@ -315,6 +316,11 @@ export function createFoldLlmStrategy({
       const keep = normalizedKeepRounds(
         optionValue(callOptions, options, "keepRounds", undefined),
       );
+      // issue #873：折多少由**预算比例**定（`FOLD_TARGET_RATIO`）；无预算⇒ targetTokens undefined ⇒ 旧行为。
+      const budgetTokens = optionValue(callOptions, options, "budgetTokens", undefined);
+      const targetTokens = Number.isFinite(budgetTokens) && budgetTokens > 0
+        ? budgetTokens * FOLD_TARGET_RATIO
+        : undefined;
       const { folded, retained, foldedIndexes } = selectFoldedRounds(
         rounds,
         keep,
@@ -322,6 +328,15 @@ export function createFoldLlmStrategy({
         // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
         // #614 之后本策略是 CLI 默认 ⇒ 漏传就等于宿主显式开的地板在默认路径上被静默忽略。
         settings.workingSetRecentRounds,
+        {
+          targetTokens,
+          headMessages: head,
+          // 机械摘要长度估算（与 `budget-fit.js` 的 `fits()` 同口径）；LLM 摘要的真实长度由
+          // `maxSummaryTokens` 夹住，这一层只用机械口径估目标。
+          mechanicalSummary: (foldedMessages, count) => summarizeFoldedPayload(foldedMessages, {
+            from: 1, to: count, count,
+          }),
+        },
       );
       const foldedPayload = cloneFoldPayload(
         folded.flatMap((round) => round.messages),
