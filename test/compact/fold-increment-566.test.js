@@ -185,7 +185,12 @@ test("#566-0 加不加 increment，父键逐字节相同（`text` 仍是累计�
 test("#566-1 连续两折之后，第 1 折的增量与第 1 折当时逐字相同（不是被第 2 折改写过的版本）", async () => {
   // 「第 1 折当时」= 只跑到第 1 折的那次 run（同一份脚本、同一份种子、同一预算 ⇒ 第 1 折的
   // 输入逐字相同）。「第 2 折之后」= 同一脚本多跑两轮。两者第 1 折的增量必须逐字相等。
-  const oneFold = await runFoldLlmChain({ runId: "566-immutable-a", toolTurns: 4 });
+  // issue #873（旧语义→新语义）：旧语义每折折到够预算 ⇒ 本夹具第 4 轮首折、第 6 轮二折（见
+  // `runFoldLlmChain` 顶部注释）。新语义每折只降到 `0.65×budget` 且 `keepRounds: 0` 留 1 轮硬下限 ⇒
+  // 同样的 `toolTurns: 4` 会折 2 次（首折后很快二次越线）。故把「只跑到第 1 折」的短链从 4 收到
+  // 3（实测恰 1 折）；长链 `toolTurns: 8` 仍 ≥ 2 折。不可变断言逐字不变：两份 run 共用同一份种子/预算，
+  // 第 1 折确定逐字相同（append-only），只调了短链的轮数使前置「恰好 1 折」重新成立。
+  const oneFold = await runFoldLlmChain({ runId: "566-immutable-a", toolTurns: 3 });
   const twoFolds = await runFoldLlmChain({ runId: "566-immutable-b", toolTurns: 8 });
   assert.equal(oneFold.folds.length, 1, `前置：短链必须恰好折一次（实测 ${oneFold.folds.length}）`);
   assert.ok(twoFolds.folds.length >= 2, `前置：长链必须折两次以上（实测 ${twoFolds.folds.length}）`);
