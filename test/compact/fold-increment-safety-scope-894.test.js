@@ -32,21 +32,31 @@
 //   的差异不改变措辞），所以只能靠上面这两条**观察面**区分；不写它们，「只修 ⓪」的人会把
 //   ③ 的红误读成 ⓪ 的红。
 //
-// ── 变异格（改动方向一旦被改坏，哪一格会红）────────────────────────────────────────────
+// ── 这是**过渡期**修法（口径已批 #898，不是永久机制）────────────────────────────────
+// 本格钉的这条触发路径靠的是 `protectedMessage` 钩子，而该机制已批退役（#898，前置是
+// `recall_read` 先落地）。⇒ 退役完成后这条路径**不可达**，本格与 `orchestrator.js` 里那段
+// 快照逻辑（`incrementFoldedPayload` 三元组）**一起删掉**。
+// ⚠ 现在**不能**在代码里写「这里不可能读到安全层追加的内容」——那是假话：CLI 至今仍然设着
+//   `bin/config.js:431` 的 `protectedMessage: isRealUser`，这条路径今天还活着（实测探针 commit
+//   `2c5ad310`）。过渡期的做法就是把两种读者分开（见下「反向证 A」那一格），而不是删机制。
+// ⇒ 也正因为机制即将消失，**账本形状一字不动**：不新增轮记录键、不新增枚举值或统计键
+//   （给一个即将不存在的机制再加一层可观测面 = 过度设计）。这条「不新增」本身钉在
+//   格子 3 的 `PREFIX_RECORD_KEYS` 上（实测改动前后的轮记录键集必须逐字相同）。
+//
+// ── 变异格（改动方向一旦被改坏，哪一格会红）────────────────────────────────
 //   M1 快照取点太晚（在安全层之后才切，或干脆不切、继续读全量 `foldedPayload`）
 //      ⇒ 格子 1 与格子 2 同时红（正文重新含 `PROCTOOL_R7`）。
 //   M2 只切 ⓪、不切 ③ ⇒ 格子 1 绿、**格子 2 红**（这一格存在的唯一理由）。
 //   M3 只切 ③、不切 ⓪ ⇒ 格子 1 红、格子 2 绿。
 //   M4 把归档 `buildFoldedRecordArchive` 或折叠身份 `foldSummaryFingerprint` 也改成读快照
 //      ⇒ **格子 3** 红（契约面被拿去做内部自洽：`foldId` 变了、归档里再没有安全层降级的原文）。
-//   M5 新键 `safetyDowngrade` 的轮号取错源（数数组下标 / 用全 run 轮号 / 用折叠区间），
-//      或「无事实也写键」（写 `[]` / `0`）⇒ **格子 4** 红。
-//   M6 字节上界硬编码（不复用 `FOLDED_FACTS_MAX_BYTES`）⇒ 格子 4 的尺寸断言会漂移；
-//      上界口径与本仓其余折叠事实同源于 `src/compact/fold-summary-journal.js`。
+//   M5 顺手往轮记录加了新键（例如「安全层降级了几轮」那类新事实）
+//      ⇒ **格子 3** 的 `PREFIX_RECORD_KEYS` 红（过渡期只改内存侧的读者，账本形状不动）。
 //
-// 夹具蓝本：上一轮取证探针 `test/compact/probe-894-reference.txt`（本文件照它改写，断言方向反过来，
-// 蓝本本身不进主干）。零真实 LLM、内存 store（不碰 `~/.erix` / `~/.pi`）、数值一律现算
-// （`estimateMessageTokens`），只有「反向证 A」那两个归档摘要值是修复前登记的常量（见该格注释）。
+// 夹具蓝本：上一轮取证探针（本文件照它改写：`buildRun` / `collect` / `findQ1` / `findLeak` 与三轮
+// 工具轮、受保护消息的构造都是抄它的，只是**断言方向反过来**；蓝本本体不进主干）。
+// 零真实 LLM、内存 store（不碰 `~/.erix` / `~/.pi`）、数值一律现算
+// （`estimateMessageTokens`），只有「反向证 A」那几个归档形状常量是修复前登记的（见该格注释）。
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -54,10 +64,8 @@ import test from "node:test";
 import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
 import {
   FOLDED_FACTS_INCREMENT_KEY,
-  FOLDED_FACTS_MAX_BYTES,
   FOLDED_FACTS_RECORD_FIELD,
   foldSummaryFingerprint,
-  stableFingerprint,
 } from "../../src/compact/fold-summary-journal.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { estimateMessageTokens } from "../../src/tokens.js";
@@ -220,20 +228,46 @@ async function assertIncrementStaysInsideItsOwnRange({ label, runId, strategy, b
     + `（rounds=${increment.rounds}）之外的轮次，实测越界轮=${JSON.stringify(outside)}`);
 }
 
-// ── 格子 3 的常量：修复前（基点 e3b91fbb，未改源码）登记的归档摘要 ──────────────────────
-// 折叠身份 `foldId` 与轮记录归档 `foldedPayload` 里带一个每次进程随机的 `toolCallKey`，
-// ⇒ 不能硬编码原始 sha256，必须先递归剔掉 `toolCallKey` 再取 `stableFingerprint`
-// （归一化后的值在本夹具里跨进程稳定，已连跑两次 diff 证实）。
-// 这两个常量的来源 = 修复前跑同一夹具（(a) 与 (b) 归档同一份）实测所得：
-//   fingerprint `sha256:ad7da330d36ac60e331fdf83` / bytes 5534 / 条数 13（末条 = 第 7 轮
-//   assistant(`PROCTOOL_R7`)，正是安全层追加进总 `foldedPayload` 的那一条）。
-// 「修复前后逐字相同」= 这两格断言的是**契约面**：归档内容、以及由归档算出的折叠身份，
-// 都不许因为内部自洽修复而变化（快照只喂增量）。
-const PREFIX_ARCHIVE_DIGEST = {
-  fingerprint: "sha256:ad7da330d36ac60e331fdf83",
-  bytes: 5534,
+// ── 格子 3 的常量：修复前（基点 e3b91fbb，未改源码）登记的归档形状 ────────────────────
+// 为什么不硬编码归档的 sha256：实测本夹具的归档**跨进程偶发漂移**（同一夹具跑 20+ 次，
+// 条数恒 13、字节量恒 5534、工具名序列恒同，但把每进程随机的 `toolCallKey` 递归剔掉后
+// 的 `stableFingerprint` 仍偶发不同）⇒ 拿一个写死的摘要当判据会把引擎自己那份随机字段
+// 误报成本刀的红（实测 `node --test` 8 次跑出 4 次假红）。因此这里钉**结构**：
+// 条数 + 每条的工具名（顺序即归档顺序）+ 安全层那条在场。这三条足以钉死变异 M4
+// （归档改读快照 ⇒ 条数变 12、末条 `PROCTOOL_R7` 消失），且不依赖任何随机字段。
+// 修复前实测（(a) 与 (b) 归档同一份）：13 条，末条 = 第 7 轮 assistant(`PROCTOOL_R7`)，
+// 正是安全层追加进总 `foldedPayload` 的那一条。
+const PREFIX_ARCHIVE_SHAPE = {
   count: 13,
+  toolNames: [
+    "tool_R1", "", "tool_R2", "", "tool_R3", "", "tool_R4", "", "tool_R5", "",
+    "tool_R6", "", "PROCTOOL_R7",
+  ],
 };
+
+// 修复前（同一夹具、未改源码）轮记录的**键集**：过渡期修法只拆内存侧的读者，账本形状
+// 一字不动 ⇒ 不新增轮记录键、不新增枚举值或统计键（理由见文件头「过渡期」那一段：
+// #898 即将退役 `protectedMessage`）。连同写入顺序一起钉：多一个键就红。
+const PREFIX_RECORD_KEYS = [
+  "round",
+  "roundKey",
+  "dedupKey",
+  "ts",
+  "response",
+  "usage",
+  "textPreview",
+  "toolUses",
+  "summary",
+  "l0facts",
+  "runStateMeta",
+  "compactionStats",
+  "folded",
+  "foldedPayload",
+  "foldedPayloadMeta",
+  "foldedRoundRange",
+  "foldedFacts",
+  "messages",
+];
 
 // 随机量 `toolCallKey` 不参与比对（其余逐字保留）。
 function stripVolatile(value) {
@@ -284,14 +318,17 @@ test("#894 反向证A（不改契约）：foldId 仍由全量归档算出、轮�
     const fold = records.find((record) => record?.[FOLDED_FACTS_RECORD_FIELD] !== undefined);
     assert.ok(fold, `${label} 夹具前提：本轮记录里有折叠事实`);
     const archive = fold.foldedPayload ?? [];
-    const normalized = stripVolatile(archive);
 
-    assert.equal(stableFingerprint(normalized), PREFIX_ARCHIVE_DIGEST.fingerprint,
-      `${label} 反向证A：轮记录归档内容必须与修复前逐字相同（快照不得改读归档）`);
-    assert.equal(Buffer.byteLength(JSON.stringify(normalized), "utf8"), PREFIX_ARCHIVE_DIGEST.bytes,
-      `${label} 反向证A：归档字节量必须与修复前相同`);
-    assert.equal(archive.length, PREFIX_ARCHIVE_DIGEST.count,
-      `${label} 反向证A：归档条数必须与修复前相同（安全层降级的原文仍要留在归档里，不丢证据）`);
+    // 归档内容：读的是**全量**（第 1–6 轮 + 安全层追加的第 7 轮那条），不是增量快照。
+    assert.equal(archive.length, PREFIX_ARCHIVE_SHAPE.count,
+      `${label} 反向证A：归档条数必须与修复前相同（改读快照 ⇒ 少一条 ⇒ 这一格红）`);
+    assert.deepEqual(archive.map((message) => (
+      (Array.isArray(message?.content) ? message.content : [])
+        .filter((block) => block?.type === "tool_use")
+        .map((block) => String(block?.name ?? ""))
+        .join(",")
+    )), PREFIX_ARCHIVE_SHAPE.toolNames,
+      `${label} 反向证A：归档每条的工具名（顺序=归档顺序）必须与修复前逐字相同`);
     assert.ok(JSON.stringify(stripVolatile(archive)).includes("PROCTOOL_R7"),
       `${label} 反向证A：被安全层降级的那条必须**仍在归档里**（增量不写它 ≠ 丢掉它）`);
 
@@ -301,58 +338,15 @@ test("#894 反向证A（不改契约）：foldId 仍由全量归档算出、轮�
       roundRange: fold.foldedRoundRange ?? null,
       recoveryHint: null,
     }), `${label} 反向证A：foldId 仍由全量 foldedPayload 算出（改读快照 ⇒ 这一格红）`);
+
+    // 账本形状：轮记录键集与写入顺序逐字不变（过渡期只拆内存侧读者，不新增任何账本面）。
+    assert.deepEqual(Object.keys(fold), PREFIX_RECORD_KEYS,
+      `${label} 反向证A：轮记录键集必须与修复前逐字相同（新增任何轮记录键 ⇒ 这一格红）`);
   }
 });
 
-// ── 格子 4：反向证 B —— 新键 `safetyDowngrade` 的语义 ─────────────────────────────────
-test("#894 反向证B（新键语义）：safetyDowngrade.rounds = 被降级消息所在轮号；无降级 ⇒ 键不存在", async () => {
-  for (const { label, runId, strategy } of [
-    {
-      label: "(a) fold-llm",
-      runId: "p894-a-foldllm",
-      strategy: createFoldLlmStrategy({ summarizer: async () => `## 阶段\nLLM_SUMMARY\n${"s".repeat(200)}` }),
-    },
-    { label: "(b) 默认滑窗", runId: "p894-b-default", strategy: undefined },
-  ]) {
-    const { records } = await runFixture({ label, runId, strategy });
-    const fold = records.find((record) => record?.[FOLDED_FACTS_RECORD_FIELD] !== undefined);
-    assert.ok(fold, `${label} 夹具前提：本轮记录里有折叠事实`);
-    assert.ok("safetyDowngrade" in fold,
-      `${label} 反向证B：protectedDowngraded>0 的格子必须写 safetyDowngrade 键`);
-    const safetyDowngrade = fold.safetyDowngrade;
-
-    // 被降级的只有第 7 轮那条 assistant(`PROCTOOL_R7`)（实测 protectedDowngraded=1）。
-    assert.deepEqual(safetyDowngrade.rounds, [7],
-      `${label} 反向证B：rounds 必须是被降级消息**所在的那一轮**（实测被降级 = 第 7 轮）`);
-    assert.equal(safetyDowngrade.count, 1, `${label} 反向证B：count = 被降级条数`);
-    assert.ok(!("budgetUnreachable" in safetyDowngrade),
-      `${label} 反向证B：安全层没报 budgetUnreachable ⇒ 不许写这个键（无事实不写键）`);
-
-    // 语义反面对照：既不是「全 run 的轮号」，也不是「折叠区间」。
-    const foldRange = fold.foldedRoundRange;
-    assert.ok(safetyDowngrade.rounds.every((round) => round > foldRange.to),
-      `${label} 反向证B：轮号必须落在折叠区间 [${foldRange.from},${foldRange.to}] **之外**（受保护轮没被折）`);
-    assert.ok(safetyDowngrade.rounds.length < TOOL_TURNS,
-      `${label} 反向证B：不许把全 run 的轮号写成 rounds`);
-
-    // 字节上界沿用折叠事实那一套口径（同一个常量，不许硬编码）。
-    assert.ok(Buffer.byteLength(JSON.stringify(safetyDowngrade), "utf8") <= FOLDED_FACTS_MAX_BYTES,
-      `${label} 反向证B：safetyDowngrade 必须受 FOLDED_FACTS_MAX_BYTES 约束`);
-  }
-
-  // 「无事实 ⇒ 无键」那一格：受保护消息**自身** > 预算 ⇒ 安全层早退保留它、一条没降级。
-  const { records, compactions } = await runFixture({
-    label: "(c) 受保护消息自身超预算",
-    runId: "p894-c-exceeds",
-    strategy: undefined,
-    budgetTokens: 2000,
-    protectedAssistantBytes: 6000,
-  });
-  const exceeds = compactions.find((compaction) => compaction.budgetUnreachable === "protected_message_exceeds_budget");
-  assert.ok(exceeds, "(c) 夹具前提：出现 budgetUnreachable=protected_message_exceeds_budget");
-  assert.equal(exceeds.protectedDowngraded ?? 0, 0, "(c) 夹具前提：protectedDowngraded=0（安全层一条没降级）");
-  const fold = records.find((record) => record?.[FOLDED_FACTS_RECORD_FIELD] !== undefined);
-  assert.ok(fold, "(c) 夹具前提：这一格照样有折叠（foldedRounds>0），只是没有安全层降级");
-  assert.ok(!("safetyDowngrade" in fold),
-    "(c) 反向证B：protectedDowngraded=0 ⇒ safetyDowngrade 键必须**不存在**（不是 [] / 0）");
-});
+// ── 原「反向证 B」= 新键 `safetyDowngrade` 的语义格：按 #898 口径**取消**（不是没写完）──────
+// 它要钉的是「安全层降级了哪几轮」这个**新轮记录键**。但 `protectedMessage` 已批退役（#898，
+// 前置是 `recall_read` 先落地），给一个即将不存在的机制再加一层可观测面就是过度设计。
+// ⇒ 本刀**账本形状一字不动**：不新增轮记录键、不新增枚举值、不新增统计键；「不许新增」这件事
+//   由上面格子 3 的 `PREFIX_RECORD_KEYS` 钉住（正面钉「没有新键」比原来那条断言更贴本刀意图）。
