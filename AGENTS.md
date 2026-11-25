@@ -56,8 +56,7 @@ points at (e.g. `npm run check:docs`);
 - **Type ratchets** (`check:types` / `check:types:strict`, issues #214 / #417): the root tier accepts debt against
   `BASELINE_ROOT = 98` (baseline constant **98**, the accepted debt measured 98 errors) in
   `scripts/type-check-ratchet.mjs`: above it ⇒ exit 1, equal ⇒ green, below ⇒ green plus a "you may lower the baseline" hint, so the total never rises;
-  per-file counts and host reachability come from `--verbose`. Historical readings (142 / 185 / 218 / 226 / 261)
-  are history, not current state. `--with-tools` widens the union to `./tools`
+  per-file counts and host reachability come from `--verbose`. `--with-tools` widens the union to `./tools`
   (baseline **133** / 28 files); `check:types:strict` re-runs it with `--strict` against its own baselines, blocks,
   and **both tiers drop in one commit**. ⚠ **Delete the generated declarations before running a ratchet**
   (`find src -name '*.d.ts' -delete`): while they sit next to their sources, `tsc` resolves `./x.js` to the sibling
@@ -74,10 +73,7 @@ points at (e.g. `npm run check:docs`);
   `pi-subagents:src/runs/background/async-execution.js:4` — and the repo name must be registered in
   `EXTERNAL_REPO_PREFIXES` in `scripts/docs-drift-check.mjs` (unregistered names are red; registered names nobody
   references are red too). **An unprefixed path is a path in this repository and must resolve here.**
-- **Anchors**: four gate-owned numbers are the only truth on this page — `BASELINE_ROOT = 98`, the symbol-anchor
-  floor `SYMBOL_ANCHOR_MIN_UNIQUE = 249` (only-up: falling below it is red — anchor degeneration being caught), the
-  bare-line ratchet `BARE_LINE_REF_BASELINE = 6` (only-down), and the anchor-face floor
-  `REF_SCAN_DOCS_MINIMUM = 53`. Docs must not lean on bare line numbers: point at a symbol with its file
+- **Anchors**: docs must not lean on bare line numbers: point at a symbol with its file
   (`` `symbol` (`path`) ``), never at `path:123`. The measurement log lives in
   `docs/maintenance/symbol-anchor-ledger.md`. Read `#docs-anchors` before adding or moving an anchor.
 
