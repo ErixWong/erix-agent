@@ -1,172 +1,68 @@
 #!/usr/bin/env node
 /**
- * 常驻变异样本表的核对器 / 刷表器 / 真跑器（issue #257 T7）。
+ * 变异样本真跑器 / 反向证（issue #257 T7；表核对随 #906 撤走）。
  *
  * 病根：#257 那张「测试边界真实性」大单的 T1–T6、T8 都已落地，只剩 T7——各刀**手工做过**的变异
  * （`messages` 数组身份、`retryable` 映射、4xx `code` 分类、`state-view` 活引用、`sessionScanPrefix`
  * 哈希式）验完就散了：证据只活在当时的会话里，下一次重构没有任何东西会因此变红。本脚本把那些变异
- * 固化成 `test/mutation-samples.md` 里的一张表，并给出三种模式：
+ * 固化成 `scripts/mutation-samples.mjs` 里的一份清单（只钉语义），并给出两种模式：
  *
- *   · `--verify <表>`：**验表**。逐条把表里的「真值锚点」拿回真树重算（行号 / 锚点 sha256 / 命中数），
- *     不一致 ⇒ exit 1 并点名。**不改任何文件**。CI 的阻塞门禁 `npm run check:mutation` 跑的就是它。
- *   · `--sync <表>`：**刷表**。第 4/5/6 列（行 / 锚点 sha256 / 命中）与合计行由真树重算重写 ——
- *     这是**唯一合法**的改表方式；手改这三个数字 = 伪造，`--verify` 会当场红。
- *     表里已有**重复样本**（同一锚点文件 + 同一被变异行）时**拒绝写入**：只刷派生列修不了这个病。
- *   · `--run <表>`：**真跑**。逐条把变异写进真文件、跑该条的捕获者、要求它**红且红在该报的那条断言上**，
- *     再还原、再跑一遍要求**绿**。这一条是「闸咬得住」的**唯一**机器证据：`--verify` 只证明表与树
- *     对得上，证明不了「改了真值真会红」。`npm run check:mutation:run` 跑的就是它。
- *   · `--self-test`：上面三种模式的**反向证**，全部跑在**内存夹具**上（不落盘、不碰真树）：
- *     改坏一处必须红、不改必须绿、`--sync` 能且只能改派生列、重复样本红并点名两条编号、
- *     `--sync` 拒绝写入重复表、删掉重复⇒绿、变异没落上也必须判红（#210 R2 惯例）。
+ *   · `--run`：**真跑**。逐条把变异写进真文件、跑该条的捕获者、要求它**红且红在该报的那条断言上**，
+ *     再还原、再跑一遍要求**绿**。这一条是「闸咬得住」的**唯一**机器证据，`npm run check:mutation:run`
+ *     跑的就是它。
+ *   · `--self-test`：上面这条判据的**反向证**，全部跑在**内存夹具**上（不落盘、不碰真树）：
+ *     改坏一处必须红、不改必须绿、重复样本红并点名两条编号、变异没落上也必须判红（#210 R2 惯例）。
  *
- * 为什么要有 `--sync` / `--verify` 双模（照 `scripts/flat-count-inventory.mjs` 的先例）：一张「手写数字」
- * 的表在第一次真值漂移之后就没人敢信了 —— 分不清「表漂了」还是「数算错了」。派生列交给机器重算，
- * 人只写**样本定义**（哪一行、改成什么、谁该红），这样表既能长期维护，又不会退化成注释。
+ * 为什么不再有 `--verify` / `--sync`（#906）：过去这张表把**派生列**（行号 / 锚点 sha256 / 命中数）
+ * 也钉成抄件，于是每一次代码漂移都得跑 `--sync` 刷表、否则 `--verify` 红。代价的实证：一次行号漂移
+ * （表 764 / 树 765）让 `--verify` 红，而 `--run` 也跟着拒跑（拿漂了的表去真跑 = 把变异打在错地方）
+ * ——抄件一漂，真判据直接被自己拖死。清单只留语义、派生列不再钉，代码漂移就**不再要求刷表**：
+ * 行号由 `--run` 现读现用，锚点死没死由 `--run` 现场判定。恢复被删的旧表坐标：
+ * `git show 27e1cd8b:test/mutation-samples.md`。
  *
  * 判据为什么这样定（逐条都能被 `--self-test` 打红）：
- *   1. **锚点必须是整行、且在该文件里唯一。** 用「整行相等」而不是子串：行号才是可核对的东西，
- *      子串会随缩进 / 同行注释漂移；唯一性不成立时变异会打偏（改到第一个出现处，而捕获者验的是另一处），
- *      那种样本比没有样本更坏 —— 它会绿得理直气壮。
- *   2. **锚点 sha256 进表。** 手改锚点文本（把真值改宽 / 改窄）会让命中数照样是 1、行号照样对，
- *      只有摘要能抓住。摘要取前 12 位：够区分，又不至于让表难读。
- *   3. **期望红签名必须命中 `not ok` 行。** 只要求「非 0 退出」是不够的：语法错、模块找不到、基线本来
+ *   1. **锚点必须是整行、且在该文件里唯一。** 用「整行相等」而不是子串：子串会随缩进 / 同行注释漂移；
+ *      唯一性不成立时变异会打偏（改到第一个出现处，而捕获者验的是另一处），那种样本比没有样本更坏。
+ *   2. **期望红签名必须命中 `not ok` 行。** 只要求「非 0 退出」是不够的：语法错、模块找不到、基线本来
  *      就红，三种都会非 0。所以样本必须写清「该报的那条断言」，本脚本只在**失败行**（`not ok N - …`）
  *      里找它 —— 注意测试名在通过时也会以 `# Subtest:` / `ok N -` 出现，只认 `not ok` 才咬得住。
- *   4. **还原后必须绿。** 这一半是「红归因给变异」的前提：基线本身红的时候，变异后的红什么也不证明。
- *   5. **样本数有下限、id 必须连续。** 让闸变绿最省力的办法是删掉那条咬人的样本；下限挡住「删到 0」，
+ *      （这条**不许退化成「有红就行」**：红了但不是那条断言 = 失败。）
+ *   3. **还原后必须绿。** 这一半是「红归因给变异」的前提：基线本身红的时候，变异后的红什么也不证明。
+ *   4. **样本数有下限、id 必须连续。** 让闸变绿最省力的办法是删掉那条咬人的样本；下限挡住「删到 0」，
  *      连续 id 挡住「删中间一条、其余照旧」。
- *   6. **变异没落地 = 失败**（#210 R2）：锚点找不到时 `String.replace` 会**原样返回**，那时捕获者当然
+ *   5. **变异没落地 = 失败**（#210 R2）：锚点找不到时 `String.replace` 会**原样返回**，那时捕获者当然
  *      还是绿的 —— 若把它读成「变异被抓住」，整条判据就是恒真的。本脚本把它单独判成
  *      「变异没落地」，与「变异没被抓住」分开点名，因为两者的修法完全不同。
- *   7. **（锚点文件, 被变异行）不许重复**（#646 ④）：并行分支各自重排编号，并集里会造出同锚点、
- *      同一行的两条样本（只差编号与措辞）—— 删掉一条，闸的覆盖面一点不减，而「一条变异咬一条
- *      断言」的账面数量虚高。判据取**树里的行号**（唯一命中那一行）；`--verify` 红并点名两条编号，
- *      `--sync` 拒绝写入。
+ *   6. **（目标文件, 锚点）不许重复**（#646 ④ 的语义、#906 的更硬口径）：并行分支各自重排编号会造出
+ *      同一目标文件 + 同一锚点的两条样本（只差编号与措辞）—— 删掉一条，闸的覆盖面一点不减，而
+ *      「一条变异咬一条断言」的账面数量虚高。判据直接取 `(file, anchor)` 两个语义字段，不碰行号，
+ *      所以这条比原来更硬且不随代码漂移。
  *
- * 纪律：改动被样本锚定的 `src/` / `bin/` 真值 ⇒ `--verify` 红 ⇒ 跑 `--sync` 刷表（diff 里能看见
- * 行号与摘要变了），**不要手改**。新做过的变异值得常驻时，往表里加一行（id 重排、面写清），
- * 然后 `--sync` + `--run`。
+ * 纪律：改动被样本锚定的 `src/` / `bin/` 真值 ⇒ 锚点若已死，`--run` 会点名「样本死了」要人判
+ * （真值改了就改清单里的锚点，别改 `--run` 的判据）。新做过的变异值得常驻时，往清单里加一条
+ * （id 续排、面写清、写清该红在哪条断言上），然后 `--run`。
  */
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SAMPLES } from "./mutation-samples.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** 样本数下限（只许涨）：删一条样本让闸变绿，是这张表最容易的腐化方式。 */
+/** 样本数下限（只许涨）：删一条样本让闸变绿，是这份清单最容易的腐化方式。 */
 const MIN_SAMPLES = 8;
 
 /** 期望红签名的最短长度：比这更短的串（含空串）等于没有断言。 */
 const MIN_SIGNATURE_LENGTH = 4;
 
-/** 合计行的形状：`**合计 8 条样本 / 4 个目标文件 / 5 个捕获者**`（数字由 `--sync` 重算）。 */
-const SUMMARY_RE = /\*\*合计 (\d+) 条样本 \/ (\d+) 个目标文件 \/ (\d+) 个捕获者\*\*/u;
-
-/** 数据行的形状：`| M1 | …`。只认这个前缀，表头 / 分隔行 / 散文一律不碰。 */
-const ROW_RE = /^\|\s*M\d+\s*\|/u;
-
 const USAGE = [
   "用法：",
-  "  node scripts/mutation-sample-check.mjs --verify <表>       # 验表（CI 阻塞；不改文件）",
-  "  node scripts/mutation-sample-check.mjs --sync   <表>       # 刷表（唯一合法的改表方式）",
-  "  node scripts/mutation-sample-check.mjs --run    <表>       # 真跑：逐条变异 → 红 → 还原 → 绿",
-  "  node scripts/mutation-sample-check.mjs --self-test         # 三种模式的反向证（内存夹具）",
+  "  node scripts/mutation-sample-check.mjs --run        # 真跑：逐条变异 → 红在该报的断言上 → 还原 → 绿",
+  "  node scripts/mutation-sample-check.mjs --self-test  # 判据的反向证（内存夹具，不落盘、不碰真树）",
 ].join("\n");
 
-// ─────────────────────────────── 表 ↔ 文本 ───────────────────────────────
-
-/** 拆一行表格：`\|` 是单元格内的字面 `|`（锚点里的 `||` 全靠它），其余 `|` 是分隔符。 */
-function splitCells(line) {
-  const cells = [];
-  let cur = "";
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if (ch === "\\" && line[i + 1] === "|") {
-      cur += "|";
-      i += 1;
-      continue;
-    }
-    if (ch === "|") {
-      cells.push(cur);
-      cur = "";
-      continue;
-    }
-    cur += ch;
-  }
-  cells.push(cur);
-  if (cells.length && cells[0].trim() === "") cells.shift();
-  if (cells.length && cells[cells.length - 1].trim() === "") cells.pop();
-  return cells.map((c) => c.trim());
-}
-
-/** 单元格 → 值：剥掉一层反引号（代码列都写成 `` `…` ``），不剥别的。 */
-function cellValue(cell) {
-  if (cell.startsWith("`") && cell.endsWith("`") && cell.length >= 2) return cell.slice(1, -1);
-  return cell;
-}
-
-/** 值 → 单元格：`|` 转义 + 反引号包裹。派生列（数字 / 摘要）不需要反引号，由 `renderRow` 决定。 */
-function codeCell(value) {
-  return "`" + String(value).replace(/\|/g, "\\|") + "`";
-}
-
-function plainCell(value) {
-  return String(value).replace(/\|/g, "\\|");
-}
-
-/** 一行数据 → 行对象。列序固定：见 `test/mutation-samples.md` 的表头。 */
-function parseRow(line) {
-  const cells = splitCells(line);
-  if (cells.length !== 10) {
-    throw new Error(`表格列数不对（${cells.length} 列，应为 10 列）：${line}`);
-  }
-  return {
-    id: cellValue(cells[0]),
-    face: cellValue(cells[1]),
-    file: cellValue(cells[2]),
-    line: Number(cellValue(cells[3])),
-    sha: cellValue(cells[4]),
-    hits: Number(cellValue(cells[5])),
-    anchor: cellValue(cells[6]),
-    mutation: cellValue(cells[7]),
-    catcher: cellValue(cells[8]),
-    signature: cellValue(cells[9]),
-  };
-}
-
-function renderRow(row) {
-  return `| ${[
-    plainCell(row.id),
-    plainCell(row.face),
-    codeCell(row.file),
-    plainCell(row.line),
-    codeCell(row.sha),
-    plainCell(row.hits),
-    codeCell(row.anchor),
-    codeCell(row.mutation),
-    codeCell(row.catcher),
-    codeCell(row.signature),
-  ].join(" | ")} |`;
-}
-
-function parseTable(text) {
-  const rows = [];
-  let summary = null;
-  for (const line of text.split("\n")) {
-    if (ROW_RE.test(line)) rows.push(parseRow(line));
-    const m = line.match(SUMMARY_RE);
-    if (m) summary = { count: Number(m[1]), files: Number(m[2]), catchers: Number(m[3]) };
-  }
-  return { rows, summary };
-}
-
-// ─────────────────────────────── 真值派生 ───────────────────────────────
-
-function anchorSha(anchor) {
-  return createHash("sha256").update(anchor, "utf8").digest("hex").slice(0, 12);
-}
+// ─────────────────────────────── 真值命中 ───────────────────────────────
 
 /** 锚点在文件里的**整行**命中位置（1 基行号）。整行相等，见文件头判据 1。 */
 function lineHits(text, anchor) {
@@ -177,165 +73,83 @@ function lineHits(text, anchor) {
   return out;
 }
 
-/** 由真树重算一条样本的三个派生列（`--sync` 写、`--verify` 对）。 */
-function deriveRow(row, files) {
-  const text = files.read(row.file);
-  if (text === null) return { ...row, line: 0, hits: 0, sha: anchorSha(row.anchor) };
-  const hits = lineHits(text, row.anchor);
-  return { ...row, line: hits.length === 1 ? hits[0] : 0, hits: hits.length, sha: anchorSha(row.anchor) };
-}
-
-function summarize(rows) {
-  return {
-    count: rows.length,
-    files: new Set(rows.map((r) => r.file)).size,
-    catchers: new Set(rows.map((r) => r.catcher)).size,
-  };
-}
+// ─────────────────────────────── 重复样本 ───────────────────────────────
 
 /**
- * 重复样本：**同一锚点文件 + 同一被变异行**（#646 ④）。
+ * 重复样本：**同一目标文件 + 同一锚点**（#646 ④，#906 改取语义字段）。
  *
- * 合并两支持平行分支时最容易长出这种东西：两边各自重排编号，并集里就出现 `M4 ≡ M14` ——
- * 同锚点、同一行，只差编号与措辞。它让「一条变异咬一条断言」的账面数量虚高，而两条样本
- * 咬的是同一条断言（删掉一条，闸的覆盖面一点不减）。
- *
- * 判据用**树里的行号**（`lineHits` 唯一命中那一行），不用表里的派生列：表漂了是另一条判据的事，
- * 这里问的是「这两条变异到底会不会打在同一行上」。锚点已死 / 不唯一的行不参与（已由别的判据点名），
- * 免得一条死样本顺手制造一条假重复。
+ * 合并两支持平行分支时最容易长出这种东西：两边各自重排编号，并集里就出现 `M1 ≡ M9` —— 同锚点，
+ * 只差编号与措辞。它让「一条变异咬一条断言」的账面数量虚高，而两条样本咬的是同一条断言（删掉一条，
+ * 闸的覆盖面一点不减）。判据只取清单里的两个语义字段 `file` + `anchor`（#906：不再回树查行号，
+ * 所以既更硬、又不随代码漂移）。
  */
-function duplicatePairs(rows, files) {
-  const byLine = new Map();
-  for (const row of rows) {
-    const text = files.read(row.file);
-    if (text === null) continue;
-    const hits = lineHits(text, row.anchor);
-    if (hits.length !== 1) continue;
-    const key = `${row.file}\u0000${hits[0]}`;
-    if (!byLine.has(key)) byLine.set(key, []);
-    byLine.get(key).push({ id: row.id, file: row.file, line: hits[0] });
+function duplicatePairs(samples) {
+  const byKey = new Map();
+  for (const sample of samples) {
+    const key = `${sample.file}\u0000${sample.anchor}`;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push({ id: sample.id, file: sample.file, anchor: sample.anchor });
   }
-  return [...byLine.values()].filter((list) => list.length > 1);
+  return [...byKey.values()].filter((list) => list.length > 1);
 }
 
 /** 重复样本 → 一条红（点名每一条编号；超过两条时全部列出）。 */
 function duplicateProblem(list) {
   const ids = list.map((r) => r.id).join(" 与 ");
-  return `${ids}：重复样本——同一锚点文件 ${list[0].file} 的同一被变异行 ${list[0].line}`
+  return `${ids}：重复样本——同一目标文件 ${list[0].file} + 同一锚点 ${JSON.stringify(list[0].anchor)}`
     + "（重复样本让「一条变异咬一条断言」的账面数量虚高；删掉多余的并重排编号）";
 }
 
-// ─────────────────────────────── --verify ───────────────────────────────
+// ─────────────────────────────── 清单校验 ───────────────────────────────
 
 /**
- * 验表（纯函数：文件读取与表文本都可注入 —— `--self-test` 直接喂内存夹具）。
- * 返回问题清单，空数组 = 零处不一致。
+ * 校验清单（纯函数：文件读取与清单都可注入 —— `--self-test` 直接喂内存夹具）。
+ * 只校验**语义判据**（派生列已不存在，无需对账）：返回问题清单，空数组 = 零处不一致。
  */
-function verify({ files, tableText, minSamples = MIN_SAMPLES }) {
-  let rows;
-  let summary;
-  try {
-    ({ rows, summary } = parseTable(tableText));
-  } catch (error) {
-    // 表本身读不成（列数不对 / 数字列不是数字）：这是「真值读不到」，必须红而不是崩。
-    return [`表读不成：${error.message}`];
-  }
+function validateSamples({ files, samples, minSamples = MIN_SAMPLES }) {
   const problems = [];
 
-  if (rows.length < minSamples) {
-    problems.push(`样本数被削：现在 ${rows.length} 条，下限 ${minSamples} 条——删样本 / 整条跳过不算修好`);
+  if (samples.length < minSamples) {
+    problems.push(`样本数被削：现在 ${samples.length} 条，下限 ${minSamples} 条——删样本 / 整条跳过不算修好`);
   }
   const seen = new Set();
-  rows.forEach((row, index) => {
-    const where = `${row.id}（${row.file}）`;
-    if (seen.has(row.id)) problems.push(`${where}：id 重复`);
-    seen.add(row.id);
+  samples.forEach((sample, index) => {
+    const where = `${sample.id}（${sample.file}）`;
+    if (seen.has(sample.id)) problems.push(`${where}：id 重复`);
+    seen.add(sample.id);
     const expectedId = `M${index + 1}`;
-    if (row.id !== expectedId) {
+    if (sample.id !== expectedId) {
       problems.push(`${where}：id 不连续，第 ${index + 1} 条应为 ${expectedId}——`
         + "删掉中间一条却没重排，那条样本就会静默消失");
     }
-    if (!row.face) problems.push(`${where}：面 列为空（这张表存在的理由就是让人知道这条钉的是哪个行为面）`);
-    if (!row.anchor) problems.push(`${where}：锚点 列为空`);
-    if (!row.mutation) problems.push(`${where}：变异 列为空`);
-    if (row.anchor && row.anchor === row.mutation) {
+    if (!sample.face) problems.push(`${where}：面 字段为空（这份清单存在的理由就是让人知道这条钉的是哪个行为面）`);
+    if (!sample.anchor) problems.push(`${where}：锚点 字段为空`);
+    if (!sample.mutation) problems.push(`${where}：变异 字段为空`);
+    if (sample.anchor && sample.anchor === sample.mutation) {
       problems.push(`${where}：变异与锚点逐字相同——空变异不算样本（它永远不会红）`);
     }
-    if (row.signature.length < MIN_SIGNATURE_LENGTH) {
-      problems.push(`${where}：期望红签名太短（${JSON.stringify(row.signature)}）——`
+    if (sample.signature.length < MIN_SIGNATURE_LENGTH) {
+      problems.push(`${where}：期望红签名太短（${JSON.stringify(sample.signature)}）——`
         + `至少要 ${MIN_SIGNATURE_LENGTH} 个字符，否则「命中了」是巧合`);
     }
-    if (files.read(row.catcher) === null) {
-      problems.push(`${where}：捕获者 ${row.catcher} 不存在——样本没有闸可咬`);
+    if (files.read(sample.catcher) === null) {
+      problems.push(`${where}：捕获者 ${sample.catcher} 不存在——样本没有闸可咬`);
     }
-    const text = files.read(row.file);
+    const text = files.read(sample.file);
     if (text === null) {
       problems.push(`${where}：目标文件不存在`);
       return;
     }
-    const hits = lineHits(text, row.anchor);
+    const hits = lineHits(text, sample.anchor);
     if (hits.length === 0) {
-      problems.push(`DEAD_SAMPLE ${where}：锚点已不在该文件里（要人判：样本死了 —— 真值改了就改锚点再 --sync）`);
+      problems.push(`DEAD_SAMPLE ${where}：锚点已不在该文件里（要人判：样本死了 —— 真值改了就改清单里的锚点）`);
     } else if (hits.length > 1) {
       problems.push(`${where}：锚点在该文件里出现 ${hits.length} 次（变异会打偏，锚点必须唯一）`);
-    } else if (hits[0] !== row.line) {
-      // issue #802：红因分层——「表漂了」是派生列过期（跑 --sync 就好），与「锚点没了 / 变异打偏」
-      // 那种要人判的红必须能分开读，否则读的人只会以为闸坏了。
-      problems.push(`STALE_TABLE ${where}：行号 表 ${row.line} / 树 ${hits[0]}（派生列过期 ⇒ 跑 --sync，不许手改）`);
-    }
-    if (row.hits !== hits.length) {
-      problems.push(`STALE_TABLE ${where}：命中数 表 ${row.hits} / 树 ${hits.length}（派生列过期 ⇒ 跑 --sync）`);
-    }
-    const sha = anchorSha(row.anchor);
-    if (row.sha !== sha) {
-      problems.push(`${where}：锚点 sha256 表 ${row.sha} / 实算 ${sha}（手改数字 = 伪造；跑 --sync）`);
     }
   });
 
-  const derived = summarize(rows);
-  for (const list of duplicatePairs(rows, files)) problems.push(duplicateProblem(list));
-  if (!summary) {
-    problems.push("合计行缺失或形状变了（应为 `**合计 N 条样本 / N 个目标文件 / N 个捕获者**`）——"
-      + "没有合计行，删掉整张表也不会红");
-  } else if (summary.count !== derived.count
-    || summary.files !== derived.files
-    || summary.catchers !== derived.catchers) {
-    problems.push(`合计行 表 ${summary.count} 条 / ${summary.files} 个目标文件 / ${summary.catchers} 个捕获者`
-      + `，实算 ${derived.count} 条 / ${derived.files} 个目标文件 / ${derived.catchers} 个捕获者（跑 --sync）`);
-  }
+  for (const list of duplicatePairs(samples)) problems.push(duplicateProblem(list));
   return problems;
-}
-
-// ─────────────────────────────── --sync ───────────────────────────────
-
-/**
- * 刷表：只重写派生列（行 / 摘要 / 命中）与合计行的三个数字。
- * **手写列一个字都不碰**（面 / 锚点 / 变异 / 捕获者 / 签名）—— 那是样本定义，不是量出来的东西。
- * 返回新文本，不改文件（写盘由调用方做，内存夹具才测得了）。
- */
-function sync({ files, tableText }) {
-  const rows = parseTable(tableText).rows;
-  const derived = summarize(rows);
-  const duplicates = duplicatePairs(rows, files);
-  const out = [];
-  let touched = 0;
-  for (const line of tableText.split("\n")) {
-    if (ROW_RE.test(line)) {
-      const next = renderRow(deriveRow(parseRow(line), files));
-      if (next !== line) touched += 1;
-      out.push(next);
-      continue;
-    }
-    if (SUMMARY_RE.test(line)) {
-      const next = `**合计 ${derived.count} 条样本 / ${derived.files} 个目标文件 / ${derived.catchers} 个捕获者**`;
-      const replaced = line.replace(SUMMARY_RE, next);
-      if (replaced !== line) touched += 1;
-      out.push(replaced);
-      continue;
-    }
-    out.push(line);
-  }
-  return { text: out.join("\n"), touched, duplicates };
 }
 
 // ─────────────────────────────── --run ───────────────────────────────
@@ -361,60 +175,59 @@ function failingLineFor(output, signature) {
 
 /**
  * 逐条真跑（纯逻辑：文件读写与「跑一个捕获者」都可注入 —— 自测靠这个把裁决逻辑整条跑一遍，
- * 又不必真起进程、真写盘）。
+ * 又不必真起进程、真写盘）。清单直接收 JS 数组（`scripts/mutation-samples.mjs` 导出的 `SAMPLES`）。
  */
-function run({ files, tableText, runTest, minSamples = MIN_SAMPLES, onPass = () => {}, onPending = () => {} }) {
-  const tableProblems = verify({ files, tableText, minSamples });
-  if (tableProblems.length) {
-    return { tableProblems, results: [], problems: [] };
+function run({ files, samples, runTest, minSamples = MIN_SAMPLES, onPass = () => {}, onPending = () => {} }) {
+  const listProblems = validateSamples({ files, samples, minSamples });
+  if (listProblems.length) {
+    return { listProblems, results: [], problems: [] };
   }
-  const { rows } = parseTable(tableText);
   const results = [];
   const problems = [];
-  for (const row of rows) {
-    const original = files.read(row.file);
+  for (const sample of samples) {
+    const original = files.read(sample.file);
     if (original === null) {
-      problems.push(`${row.id}：目标文件不存在（验表刚过就没了？）`);
+      problems.push(`${sample.id}：目标文件不存在（校验刚过就没了？）`);
       continue;
     }
-    const applied = applyMutation(original, row.anchor, row.mutation);
+    const applied = applyMutation(original, sample.anchor, sample.mutation);
     if (applied.missed) {
-      problems.push(`${row.id}：变异没落地——${applied.missed}（#210 R2：打不上的变异不算通过）`);
+      problems.push(`${sample.id}：变异没落地——${applied.missed}（#210 R2：打不上的变异不算通过）`);
       continue;
     }
     let red;
     // `onPending` 把「待还原的文件与内容」交给调用方（真跑时由它挂信号钩子），
     // 这样「裁决逻辑」只此一份：真跑与自测走同一条路径。
-    onPending({ file: row.file, text: original });
+    onPending({ file: sample.file, text: original });
     try {
-      files.write(row.file, applied.text);
-      red = runTest(row.catcher);
+      files.write(sample.file, applied.text);
+      red = runTest(sample.catcher);
     } finally {
-      files.write(row.file, original);
+      files.write(sample.file, original);
       onPending(null);
     }
-    if (files.read(row.file) !== original) {
-      problems.push(`${row.id}：还原失败——${row.file} 的内容与变异前不一致，先停手（后续样本的结果不可信）`);
+    if (files.read(sample.file) !== original) {
+      problems.push(`${sample.id}：还原失败——${sample.file} 的内容与变异前不一致，先停手（后续样本的结果不可信）`);
       break;
     }
-    const green = runTest(row.catcher);
-    const hit = failingLineFor(red.output ?? "", row.signature);
+    const green = runTest(sample.catcher);
+    const hit = failingLineFor(red.output ?? "", sample.signature);
     if (red.status === 0) {
-      problems.push(`${row.id}：变异没被抓住——${row.catcher} 改完真值仍全绿（这条闸已经咬不住这个行为面）`);
+      problems.push(`${sample.id}：变异没被抓住——${sample.catcher} 改完真值仍全绿（这条闸已经咬不住这个行为面）`);
       continue;
     }
     if (!hit) {
-      problems.push(`${row.id}：红了，但不是该报的那条——输出里没有含 ${JSON.stringify(row.signature)} 的 "not ok" 行`);
+      problems.push(`${sample.id}：红了，但不是该报的那条——输出里没有含 ${JSON.stringify(sample.signature)} 的 "not ok" 行`);
       continue;
     }
     if (green.status !== 0) {
-      problems.push(`${row.id}：还原后仍红——基线本来就不干净，这条样本的红不能归因给变异`);
+      problems.push(`${sample.id}：还原后仍红——基线本来就不干净，这条样本的红不能归因给变异`);
       continue;
     }
-    results.push({ id: row.id, face: row.face, catcher: row.catcher, hit });
+    results.push({ id: sample.id, face: sample.face, catcher: sample.catcher, hit });
     onPass(results[results.length - 1]);
   }
-  return { tableProblems: [], results, problems };
+  return { listProblems: [], results, problems };
 }
 
 // ─────────────────────────────── 文件适配器 ───────────────────────────────
@@ -449,7 +262,7 @@ function memoryFiles(map) {
  * spawn `node --test` 时**钉死** reporter（issue #774）。
  *
  * Node 24 把 `node --test` 的默认 reporter 换成了 spec，而本脚本只认 `not ok N - <签名>`（通过时的
- * `ok N -` / `# Subtest:` 不算，见文件头第 3 条）。实测：同一棵树 `PATH=<node24> npm run check:mutation:run`
+ * `ok N -` / `# Subtest:` 不算，见文件头判据 2）。实测：同一棵树 `PATH=<node24> npm run check:mutation:run`
  * 会报「28 条样本没按预期咬住（0 条通过）」——不是样本失效，是 reporter 换了形状。
  * 常量单独放一处，自测里的 R1 / R1b 就盯它。
  */
@@ -490,58 +303,7 @@ function die(message) {
   process.exit(2);
 }
 
-function readTableOrDie(tablePath) {
-  try {
-    return fs.readFileSync(path.join(ROOT, tablePath), "utf8");
-  } catch (error) {
-    die(`读不到表 ${tablePath}：${error.message}\n${USAGE}`);
-    return "";
-  }
-}
-
-function mainVerify(tablePath) {
-  const tableText = readTableOrDie(tablePath);
-  const problems = verify({ files: realFiles(ROOT), tableText });
-  const { rows } = parseTable(tableText);
-  const derived = summarize(rows);
-  console.log(`mutation-sample-check --verify：${tablePath}`);
-  console.log(`  ${derived.count} 条样本 / ${derived.files} 个目标文件 / ${derived.catchers} 个捕获者`);
-  if (problems.length) {
-    for (const p of problems) console.log(`  ✗ ${p}`);
-    console.log(`mutation-sample-check: 失败 — ${problems.length} 处不一致（派生列由真树重算；刷表跑 --sync）`);
-    process.exitCode = 1;
-    return;
-  }
-  console.log("逐条：0 处不一致（行号 / 锚点 sha256 / 命中数 / 捕获者 / 合计行 / 重复样本）");
-  console.log("复跑：node scripts/mutation-sample-check.mjs --verify " + tablePath);
-}
-
-function mainSync(tablePath) {
-  const tableText = readTableOrDie(tablePath);
-  const files = realFiles(ROOT);
-  const { text, touched, duplicates } = sync({ files, tableText });
-  console.log(`mutation-sample-check --sync：${tablePath}`);
-  if (duplicates.length) {
-    for (const list of duplicates) console.log(`  ✗ ${duplicateProblem(list)}`);
-    console.log("mutation-sample-check: 拒绝写入——先把重复样本删掉并重排编号（重复样本会让一条变异咬一条断言的账面数量虚高；"
-      + "只刷派生列修不了这个病）");
-    process.exitCode = 1;
-    return;
-  }
-  if (text !== tableText) fs.writeFileSync(path.join(ROOT, tablePath), text);
-  console.log(`  改动 ${touched} 行（派生列由真树重算；手写列一个字都没碰）`);
-  const problems = verify({ files, tableText: text });
-  if (problems.length) {
-    for (const p of problems) console.log(`  ✗ ${p}`);
-    console.log("mutation-sample-check: 刷完仍有不一致 —— 上面这些不是派生列能修的（锚点死了 / 捕获者没了 / 变异与锚点相同）");
-    process.exitCode = 1;
-    return;
-  }
-  console.log("刷完复验：0 处不一致");
-}
-
-function mainRun(tablePath) {
-  const tableText = readTableOrDie(tablePath);
+function mainRun() {
   const files = realFiles(ROOT);
   // 真跑会临时改写**真文件**：被信号打断时也要还原，否则下一次 `npm test` 会莫名其妙红。
   let pending = null;
@@ -560,19 +322,19 @@ function mainRun(tablePath) {
   process.on("SIGTERM", () => restore("SIGTERM"));
 
   // 裁决逻辑只有一份（`run()`），这里只注入「真跑一个捕获者」「逐条打一行」「把待还原交给信号钩子」。
-  const { tableProblems, results, problems } = run({
+  const { listProblems, results, problems } = run({
     files,
-    tableText,
+    samples: SAMPLES,
     runTest: realRunTest,
     onPending: (next) => {
       pending = next;
     },
     onPass: (r) => console.log(`  ✓ ${r.id} ${r.face}：变异 → 红（${r.hit.trim()}）→ 还原 → 绿`),
   });
-  console.log(`mutation-sample-check --run：${tablePath}`);
-  if (tableProblems.length) {
-    for (const p of tableProblems) console.log(`  ✗ ${p}`);
-    console.log("mutation-sample-check --run: 表本身就不一致，先 --sync / 修表再真跑（拿漂了的表去真跑 = 把变异打在错误的行上）");
+  console.log("mutation-sample-check --run");
+  if (listProblems.length) {
+    for (const p of listProblems) console.log(`  ✗ ${p}`);
+    console.log("mutation-sample-check --run: 清单本身就不一致，先修样本再真跑（拿锚点已死的清单去真跑 = 把变异打在错地方）");
     process.exitCode = 1;
     return;
   }
@@ -586,10 +348,11 @@ function mainRun(tablePath) {
 }
 
 // ─────────────────────────────── --self-test ───────────────────────────────
-// 内存夹具：一棵假树（一个目标文件 + 一个捕获者）+ 一张按真渲染器生成的假表。
-// 每条用例靠**字符串变异**改假表 / 改假树，然后断言 `verify` / `sync` / `run` 的裁决；
-// 变异打不上（靶串不在夹具里）按 #210 R2 判**失败**，不许静默变绿。
-const MIN_SELF_TEST_CASES = 23;
+// 内存夹具：一棵假树（一个目标文件 + 一个捕获者）+ 一份按真清单形状造的假样本数组。
+// 每条用例靠**改清单字段 / 改假树**造坏，然后断言 `validateSamples` / `run` 的裁决；
+// 变异打不上（靶 id / 靶串不在夹具里）按 #210 R2 判**失败**，不许静默变绿。
+// #906：删掉 verify/sync 的派生列夹具（行号 / sha / 合计行）后，反向证的用例数下穿，地板随之重登。
+const MIN_SELF_TEST_CASES = 16;
 
 const FAKE_TARGET = "src/zz-selftest-target.js";
 const FAKE_CATCHER = "test/zz-selftest-catcher.test.js";
@@ -603,46 +366,63 @@ function fakeTree(n = MIN_SAMPLES) {
   ]);
 }
 
-function fakeRows(n = MIN_SAMPLES) {
-  return Array.from({ length: n }, (_, i) => {
-    const anchor = `const Z${i + 1} = ${i + 1};`;
-    return {
-      id: `M${i + 1}`,
-      face: `自测面 ${i + 1}`,
+function fakeSamples(n = MIN_SAMPLES) {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `M${i + 1}`,
+    face: `自测面 ${i + 1}`,
+    file: FAKE_TARGET,
+    anchor: `const Z${i + 1} = ${i + 1};`,
+    mutation: `const Z${i + 1} = ${i + 1}0;`,
+    catcher: FAKE_CATCHER,
+    signature: `自测签名 ${i + 1}`,
+  }));
+}
+
+/** 单条含 `||` 的样本（M6 那种）：验「锚点里的竖线在 JS 清单里逐字命中」，不需要任何转义回环。 */
+function pipeFixture() {
+  return {
+    tree: new Map([
+      [FAKE_TARGET, "if (a === 1 || b === 2) {\n"],
+      [FAKE_CATCHER, "// fake\n"],
+    ]),
+    samples: [{
+      id: "M1",
+      face: "含竖线的锚点",
       file: FAKE_TARGET,
-      line: i + 1,
-      sha: anchorSha(anchor),
-      hits: 1,
-      anchor,
-      mutation: `const Z${i + 1} = ${i + 1}0;`,
+      anchor: "if (a === 1 || b === 2) {",
+      mutation: "if (a === 1) {",
       catcher: FAKE_CATCHER,
-      signature: `自测签名 ${i + 1}`,
-    };
-  });
+      signature: "含竖线的签名",
+    }],
+  };
 }
 
-function fakeTable(rows = fakeRows()) {
-  const derived = summarize(rows);
-  return [
-    "# 假表（自测夹具）",
-    "",
-    "| # | 面 | 目标文件 | 行 | 锚点 sha256[:12] | 命中 | 锚点（单行真值） | 变异（改成） | 捕获者 | 期望红签名 |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-    ...rows.map(renderRow),
-    "",
-    `**合计 ${derived.count} 条样本 / ${derived.files} 个目标文件 / ${derived.catchers} 个捕获者**`,
-    "",
-  ].join("\n");
+/** 改一条样本的某个字段（靶 id / 靶字段找不到 = 变异没落上）。 */
+function mutateSample(samples, mutate) {
+  const next = samples.map((s) => ({ ...s }));
+  const target = next.find((s) => s.id === mutate.id);
+  if (!target) return { samples: next, missed: `清单里没有 ${mutate.id} 这一条` };
+  if (!(mutate.field in target)) return { samples: next, missed: `清单条目 ${mutate.id} 没有字段 ${mutate.field}` };
+  target[mutate.field] = mutate.to;
+  return { samples: next, missed: null };
 }
 
-/** 把变异落到假表文本上；返回 `{ text, missed }`，`missed` 非 null = 变异没落上。 */
-function mutateTable(text, mutate) {
-  const next = text.replace(mutate.from, () => mutate.to);
-  if (next === text) return { text, missed: `假表里找不到靶串 ${JSON.stringify(mutate.from)}` };
-  return { text: next, missed: null };
+/** 删一条样本（按编号）。 */
+function dropSample(samples, id) {
+  const kept = samples.filter((s) => s.id !== id);
+  return kept.length === samples.length ? { samples: kept, missed: `清单里没有 ${id} 这一条` } : { samples: kept, missed: null };
 }
 
-/** 把变异落到假树上（改文件内容 / 删文件 / 加一个文件）。 */
+/** 复制一条现有样本、换一个连续的新编号：同目标文件、同锚点 ⇒ 只差编号与措辞（造重复）。 */
+function duplicateSample(samples, { fromId, newId }) {
+  const next = samples.map((s) => ({ ...s }));
+  const src = next.find((s) => s.id === fromId);
+  if (!src) return { samples: next, missed: `清单里没有 ${fromId} 这一条` };
+  next.push({ ...src, id: newId });
+  return { samples: next, missed: null };
+}
+
+/** 把变异落到假树上（改文件内容 / 删文件）。 */
 function mutateTree(tree, mutate) {
   const next = new Map(tree);
   if (mutate.drop) {
@@ -663,18 +443,8 @@ const ALL_SIGNATURE_RED = Array.from({ length: MIN_SAMPLES }, (_, i) => `not ok 
 
 const SELF_TEST_CASES = [
   {
-    label: "① 干净表 + 干净树 ⇒ 0 处不一致（同时证明 parse ↔ render 回环：假表就是用 renderRow 生成的）",
+    label: "① 干净清单 + 干净树 ⇒ 0 处不一致（同时证明清单形状本身就是合法的）",
     expectClean: true,
-  },
-  {
-    label: "② 手改行号 ⇒ 红并点名该条（派生列只能由 --sync 改）",
-    mutateTable: { from: "| M3 | 自测面 3 | `src/zz-selftest-target.js` | 3 |", to: "| M3 | 自测面 3 | `src/zz-selftest-target.js` | 9 |" },
-    expect: [/^STALE_TABLE M3（src\/zz-selftest-target\.js）：行号 表 9 \/ 树 3/u],
-  },
-  {
-    label: "③ 手改锚点 sha256 ⇒ 红并点名该条（锚点文本被改宽/改窄时行号与命中数照样对，只有摘要抓得住）",
-    mutateTable: { from: `\`${anchorSha("const Z3 = 3;")}\``, to: "`000000000000`" },
-    expect: [/：锚点 sha256 表 000000000000 \/ 实算 [0-9a-f]{12}/u],
   },
   {
     label: "④ 锚点已不在树里（真值改名）⇒ 红「样本死了」，不许静默通过",
@@ -698,42 +468,23 @@ const SELF_TEST_CASES = [
   },
   {
     label: "⑧ 变异与锚点逐字相同（空变异）⇒ 红",
-    mutateTable: {
-      from: "| `const Z2 = 2;` | `const Z2 = 20;` |",
-      to: "| `const Z2 = 2;` | `const Z2 = 2;` |",
-    },
+    mutateSample: { id: "M2", field: "mutation", to: "const Z2 = 2;" },
     expect: [/^M2（src\/zz-selftest-target\.js）：变异与锚点逐字相同/u],
   },
   {
     label: "⑨ 期望红签名被削弱（空串）⇒ 红",
-    mutateTable: { from: "| `自测签名 4` |", to: "| `` |" },
+    mutateSample: { id: "M4", field: "signature", to: "" },
     expect: [/^M4（src\/zz-selftest-target\.js）：期望红签名太短/u],
   },
   {
-    label: "⑩ 删掉最后一条样本（8 → 7）⇒ 两处红：样本数下限 + 合计行（删行也会把合计弄漂）",
-    dropRow: "M8",
-    expect: [/样本数被削：现在 7 条，下限 8 条/u, /合计行 表 8 条/u],
-  },
-  {
-    label: "⑩b 删一条样本再 --sync 把合计刷对 ⇒ 仍然红在样本数下限（刷表修不了「少了一条」）",
-    dropRow: "M8",
-    syncFirst: true,
+    label: "⑩ 删掉最后一条样本（8 → 7）⇒ 红在样本数下限（删样本让闸变绿不算修好）",
+    dropSample: "M8",
     expect: [/样本数被削：现在 7 条，下限 8 条/u],
   },
   {
-    label: "⑪ id 不连续（删了中间一条却没重排）⇒ 红",
-    mutateTable: { from: "| M5 | 自测面 5 |", to: "| M55 | 自测面 5 |" },
+    label: "⑪ id 不连续（改了中间一条却没重排）⇒ 红",
+    mutateSample: { id: "M5", field: "id", to: "M55" },
     expect: [/^M55（src\/zz-selftest-target\.js）：id 不连续，第 5 条应为 M5/u],
-  },
-  {
-    label: "⑫ 合计行被手改 ⇒ 红（没有合计行，删掉整张表也不会红）",
-    mutateTable: { from: "**合计 8 条样本 / 1 个目标文件 / 1 个捕获者**", to: "**合计 9 条样本 / 1 个目标文件 / 1 个捕获者**" },
-    expect: [/合计行 表 9 条 \/ 1 个目标文件 \/ 1 个捕获者，实算 8 条/u],
-  },
-  {
-    label: "⑬ --sync 只改派生列：手改坏行号 ⇒ 先红，刷完复验必绿，且手写列（变异 / 签名）逐字未动",
-    mutateTable: { from: "| M2 | 自测面 2 | `src/zz-selftest-target.js` | 2 |", to: "| M2 | 自测面 2 | `src/zz-selftest-target.js` | 7 |" },
-    expectSyncRepairs: true,
   },
   {
     label: "⑭ applyMutation：锚点不在 ⇒ missed（变异没落地，不许当成「没变化=成功」；#210 R2）",
@@ -749,7 +500,7 @@ const SELF_TEST_CASES = [
     expect: [/^M1：变异没被抓住/u],
   },
   {
-    label: "⑰ run：红了但红在别的断言上 ⇒ 红「不是该报的那条」（非 0 退出不等于咬住）",
+    label: "⑰ run：红了但红在别的断言上 ⇒ 红「不是该报的那条」（非 0 退出不等于咬住；不许退化成「有红就行」）",
     runScript: {
       red: { status: 1, output: "not ok 1 - 别的断言\n" },
       green: { status: 0, output: "" },
@@ -765,13 +516,13 @@ const SELF_TEST_CASES = [
     expect: [/^M1：还原后仍红/u],
   },
   {
-    label: "⑲ run 先验表：真值已被改掉（锚点不在）⇒ 红「样本死了」，不许当「变异没落地也就没红」糊过去",
+    label: "⑲ run 先验清单：真值已被改掉（锚点不在）⇒ 红「样本死了」，不许当「变异没落地也就没红」糊过去",
     runTree: { file: FAKE_TARGET, from: "const Z1 = 1;", to: "const Z1 = 100;" },
     runScript: { red: { status: 0, output: "" }, green: { status: 0, output: "" } },
     expect: [/^DEAD_SAMPLE M1（src\/zz-selftest-target\.js）：锚点已不在该文件里/u],
   },
   {
-    label: "⑳ run：整条链对（变异 → 红在该报的断言上 → 还原 → 绿）⇒ 0 处问题、8 条全过",
+    label: "⑳ run 整条链对（变异 → 红在该报的断言上 → 还原 → 绿）⇒ 0 处问题、8 条全过",
     runScript: {
       red: { status: 1, output: ALL_SIGNATURE_RED },
       green: { status: 0, output: "" },
@@ -779,44 +530,23 @@ const SELF_TEST_CASES = [
     expectRunClean: true,
   },
   {
-    label: "㉑ run 先验表：表漂了就不真跑（拿漂了的表去真跑 = 把变异打在错误的行上）",
-    runTable: { from: "| M2 | 自测面 2 | `src/zz-selftest-target.js` | 2 |", to: "| M2 | 自测面 2 | `src/zz-selftest-target.js` | 7 |" },
-    runScript: { red: { status: 1, output: ALL_SIGNATURE_RED }, green: { status: 0, output: "" } },
-    expect: [/行号 表 7 \/ 树 2/u],
-  },
-  {
-    // 表格单元格里写不出裸 `|`（会把整行拆成多列），所以锚点里的 `||` 存成 `\\|\\|`，解析时还原。
-    // 这一例只放一条样本（`minSamples: 1`）：它考的是转义回环，不是样本数下限。
-    label: "㉒ 锚点里含 `|`（M6 那种 `||`）⇒ 渲染/解析回环后仍是同一个 `||`，验表绿（不转义会把整行拆散）",
-    pipeAnchor: true,
+    label: "㉑ 锚点里含 `||`（M6 那种）⇒ 在 JS 清单里逐字命中、验清单绿（清单不转义也不拆列，锚点就是真竖线）",
+    pipeSample: true,
     minSamples: 1,
     expectClean: true,
   },
   {
-    label: "㉓ 重复样本（同一锚点文件 + 同一被变异行，只差编号）⇒ 红并点名两条编号（#646 ④）",
-    duplicateRow: { fromId: "M1", newId: "M9" },
-    syncFirst: true,
-    expect: [/^M1 与 M9：重复样本——同一锚点文件 src\/zz-selftest-target\.js 的同一被变异行 1/u],
+    label: "㉒ 重复样本（同一目标文件 + 同一锚点，只差编号）⇒ 红并点名两条编号（#646 ④ / #906 语义口径）",
+    duplicateSample: { fromId: "M1", newId: "M9" },
+    expect: [/^M1 与 M9：重复样本——同一目标文件 src\/zz-selftest-target\.js \+ 同一锚点/u],
   },
   {
-    label: "㉔ --sync 拒绝留下重复样本：报出两条编号、不写表（只刷派生列修不了这个病）",
-    duplicateRow: { fromId: "M2", newId: "M9" },
-    expectSyncRejectsDuplicate: [/^M2 与 M9：重复样本/u],
-  },
-  {
-    label: "㉕ 删掉重复样本 ⇒ 绿（反向证的还原半边：重复是红的原因，不是树的底色）",
-    duplicateRow: { fromId: "M3", newId: "M9" },
-    dropRow: "M9",
-    syncFirst: true,
+    label: "㉓ 删掉重复样本 ⇒ 绿（反向证的还原半边：重复是红的原因，不是清单的底色）",
+    duplicateSample: { fromId: "M3", newId: "M9" },
+    dropSample: "M9",
     expectClean: true,
   },
 ];
-
-function dropRowFromTable(tableText, id) {
-  const lines = tableText.split("\n");
-  const kept = lines.filter((line) => !new RegExp(`^\\|\\s*${id}\\s*\\|`, "u").test(line));
-  return kept.length === lines.length ? { text: tableText, missed: `假表里没有 ${id} 这一行` } : { text: kept.join("\n"), missed: null };
-}
 
 function runSelfTest() {
   const failures = [];
@@ -833,8 +563,6 @@ function runSelfTest() {
       if (re.test("")) failures.push(`${who}：期望被削弱——正则 ${re} 连空串都匹配，等于没有断言`);
     }
     const hasExpectation = c.expectClean
-      || c.expectSyncRepairs
-      || c.expectSyncRejectsDuplicate
       || c.expectMutationMissed
       || c.expectMutationApplied
       || c.expectRunClean
@@ -844,118 +572,56 @@ function runSelfTest() {
 
   for (const c of SELF_TEST_CASES) {
     const who = c.label;
-    let tree = fakeTree();
-    let tableText = fakeTable();
+    let tree;
+    let samples;
+    if (c.pipeSample) {
+      ({ tree, samples } = pipeFixture());
+    } else {
+      tree = fakeTree();
+      samples = fakeSamples();
+    }
 
-    if (c.mutateTable) {
-      const m = mutateTable(tableText, c.mutateTable);
+    if (c.mutateSample) {
+      const m = mutateSample(samples, c.mutateSample);
       if (m.missed) {
-        failures.push(`${who}：变异没落上——${m.missed}（反向证自身失效：靶串已与假表脱节）`);
+        failures.push(`${who}：变异没落上——${m.missed}（反向证自身失效：靶已与清单脱节）`);
         continue;
       }
-      tableText = m.text;
+      samples = m.samples;
     }
-    if (c.duplicateRow) {
-      // 复制一条现有样本、换一个连续的新编号：同锚点、同被变异行 ⇒ 只差编号与措辞。
-      // 必须跑在 `dropRow` 之前：㉕「删掉重复 ⇒ 绿」先造出重复，再按编号删掉它。
-      const rows = parseTable(tableText).rows;
-      const src = rows.find((row) => row.id === c.duplicateRow.fromId);
-      if (!src) {
-        failures.push(`${who}：变异没落上——假表里没有 ${c.duplicateRow.fromId} 这一行（反向证自身失效）`);
+    if (c.duplicateSample) {
+      // 复制一条现有样本、换一个连续的新编号：同目标文件、同锚点 ⇒ 只差编号与措辞。
+      // 必须跑在 `dropSample` 之前：㉓「删掉重复 ⇒ 绿」先造出重复，再按编号删掉它。
+      const m = duplicateSample(samples, c.duplicateSample);
+      if (m.missed) {
+        failures.push(`${who}：变异没落上——${m.missed}（反向证自身失效）`);
         continue;
       }
-      const lines = tableText.split("\n");
-      const lastRow = lines.map((line, i) => (ROW_RE.test(line) ? i : -1)).filter((i) => i >= 0).pop();
-      lines.splice(lastRow + 1, 0, renderRow({ ...src, id: c.duplicateRow.newId }));
-      tableText = lines.join("\n");
+      samples = m.samples;
     }
-    if (c.dropRow) {
-      const d = dropRowFromTable(tableText, c.dropRow);
+    if (c.dropSample) {
+      const d = dropSample(samples, c.dropSample);
       if (d.missed) {
         failures.push(`${who}：变异没落上——${d.missed}`);
         continue;
       }
-      tableText = d.text;
+      samples = d.samples;
     }
     if (c.mutateTree) {
       const m = mutateTree(tree, c.mutateTree);
       if (m.missed) {
-        failures.push(`${who}：变异没落上——${m.missed}`);
+        failures.push(`${who}：变异没落上——${m.missed}（反向证自身失效：靶串已与假树脱节）`);
         continue;
       }
       tree = m.tree;
     }
-    if (c.pipeAnchor) {
-      tree = new Map([
-        [FAKE_TARGET, "if (a === 1 || b === 2) {\n"],
-        [FAKE_CATCHER, "// fake\n"],
-      ]);
-      tableText = [
-        "| # | 面 | 目标文件 | 行 | 锚点 sha256[:12] | 命中 | 锚点（单行真值） | 变异（改成） | 捕获者 | 期望红签名 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-        renderRow({
-          id: "M1",
-          face: "含竖线的锚点",
-          file: FAKE_TARGET,
-          line: 1,
-          sha: anchorSha("if (a === 1 || b === 2) {"),
-          hits: 1,
-          anchor: "if (a === 1 || b === 2) {",
-          mutation: "if (a === 1) {",
-          catcher: FAKE_CATCHER,
-          signature: "含竖线的签名",
-        }),
-        "",
-        "**合计 1 条样本 / 1 个目标文件 / 1 个捕获者**",
-        "",
-      ].join("\n");
-      if (!tableText.includes("\\|\\|")) {
-        failures.push(`${who}：渲染器没有转义锚点里的 \`|\` —— 那一行在 markdown 里会被拆成多列`);
-        continue;
-      }
-    }
 
     const files = memoryFiles(tree);
-    if (c.syncFirst) tableText = sync({ files, tableText }).text;
-    const problems = verify({ files, tableText, minSamples: c.minSamples ?? MIN_SAMPLES });
+    const problems = validateSamples({ files, samples, minSamples: c.minSamples ?? MIN_SAMPLES });
 
     if (c.expectClean) {
       if (problems.length) failures.push(`${who}：本该 0 处不一致，实测 ${problems.length} 处：\n      ${problems.join("\n      ")}`);
       else passed.push(`${who} → 0 处不一致`);
-      continue;
-    }
-
-    if (c.expectSyncRepairs) {
-      // 先确认「手改坏了 ⇒ 红」，再确认「--sync 刷完 ⇒ 绿」，最后确认手写列一个字没动。
-      if (!problems.length) {
-        failures.push(`${who}：漂了却没红——--sync 就没有存在必要了`);
-        continue;
-      }
-      const before = parseTable(tableText).rows;
-      const { text: synced } = sync({ files, tableText });
-      const after = parseTable(synced).rows;
-      const problemsAfter = verify({ files, tableText: synced });
-      const handWritten = ["id", "face", "file", "anchor", "mutation", "catcher", "signature"];
-      const handDiff = before
-        .flatMap((row, i) => handWritten.filter((k) => row[k] !== after[i]?.[k]).map((k) => `${row.id}.${k}`));
-      if (problemsAfter.length) {
-        failures.push(`${who}：--sync 之后仍不一致：\n      ${problemsAfter.join("\n      ")}`);
-      } else if (handDiff.length) {
-        failures.push(`${who}：--sync 动了手写列（${handDiff.join(", ")}）——刷表只许重算派生列`);
-      } else {
-        passed.push(`${who} → 手改坏 ⇒ 红；--sync ⇒ 绿；手写列逐字未动（${handWritten.length} 列 × ${after.length} 行）`);
-      }
-      continue;
-    }
-
-    if (c.expectSyncRejectsDuplicate) {
-      // 先确认「表里确实有重复」，再确认 --sync 把它报出来、不静默修（刷表只该动派生列）。
-      const { duplicates } = sync({ files, tableText });
-      const all = duplicates.map(duplicateProblem);
-      const missed = (c.expectSyncRejectsDuplicate ?? []).filter((re) => !all.some((p) => re.test(p)));
-      if (!duplicates.length) failures.push(`${who}：--sync 没报重复（重复样本会被刷成一张漂亮的绿表）`);
-      else if (missed.length) failures.push(`${who}：报了重复，但不是该报的形状（未命中 ${missed.map(String).join(" ; ")}）\n      实测：${all.join("\n      ")}`);
-      else passed.push(`${who} → --sync 报出 ${duplicates.length} 组重复并拒绝写入`);
       continue;
     }
 
@@ -976,14 +642,14 @@ function runSelfTest() {
     }
 
     if (c.runScript) {
-      let runTableText = tableText;
-      if (c.runTable) {
-        const m = mutateTable(runTableText, c.runTable);
+      let runSamples = samples;
+      if (c.runSample) {
+        const m = mutateSample(runSamples, c.runSample);
         if (m.missed) {
           failures.push(`${who}：变异没落上——${m.missed}`);
           continue;
         }
-        runTableText = m.text;
+        runSamples = m.samples;
       }
       let runTree = tree;
       if (c.runTree) {
@@ -1002,11 +668,11 @@ function runSelfTest() {
         calls += 1;
         return calls % 2 === 1 ? c.runScript.red : c.runScript.green;
       };
-      const outcome = run({ files: runFiles, tableText: runTableText, runTest });
-      const all = [...outcome.tableProblems, ...outcome.problems];
+      const outcome = run({ files: runFiles, samples: runSamples, runTest });
+      const all = [...outcome.listProblems, ...outcome.problems];
       if (c.expectRunClean) {
         if (all.length) failures.push(`${who}：本该 0 处问题，实测：\n      ${all.join("\n      ")}`);
-        else if (outcome.results.length !== 8) failures.push(`${who}：本该 8 条全部通过，实测 ${outcome.results.length} 条`);
+        else if (outcome.results.length !== MIN_SAMPLES) failures.push(`${who}：本该 ${MIN_SAMPLES} 条全部通过，实测 ${outcome.results.length} 条`);
         else passed.push(`${who} → ${outcome.results.length} 条全部按预期咬住`);
         continue;
       }
@@ -1049,7 +715,7 @@ function runSelfTest() {
     passed.push("R1b（reporter 钉的反向证）→ 把 tap 换成 spec 当场红并点名 argv");
   }
 
-  console.log("mutation-sample-check --self-test：内存夹具上的反向证（改坏 → 红、干净 → 绿、--sync 只改派生列、变异没落上也算失败）");
+  console.log("mutation-sample-check --self-test：内存夹具上的反向证（改坏 → 红、干净 → 绿、重复样本红并点名两条编号、变异没落上也算失败）");
   for (const p of passed) console.log(`  ✓ ${p}`);
   for (const f of failures) console.log(`  ✗ ${f}`);
   if (failures.length) {
@@ -1061,17 +727,12 @@ function runSelfTest() {
 
 // ─────────────────────────────── 入口 ───────────────────────────────
 
-const argv = process.argv.slice(2);
-const mode = argv[0] ?? "";
-const tablePath = argv[1] ?? "";
+const mode = process.argv.slice(2)[0] ?? "";
 
 if (mode === "--self-test") {
   runSelfTest();
-} else if (mode === "--verify" || mode === "--sync" || mode === "--run") {
-  if (!tablePath) die(`缺少表路径（${mode} 后面要跟表文件）\n${USAGE}`);
-  if (mode === "--verify") mainVerify(tablePath);
-  if (mode === "--sync") mainSync(tablePath);
-  if (mode === "--run") mainRun(tablePath);
+} else if (mode === "--run") {
+  mainRun();
 } else {
   die(USAGE);
 }
