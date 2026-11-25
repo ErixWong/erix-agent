@@ -38,8 +38,8 @@
 
 - **CI 只在 `workflow_dispatch` 上跑**：`main` 的门禁由 ruleset 承担（现值用
   `gh api repos/<owner>/<repo>/rulesets` 现查；今天它要求走 PR、且没有配任何 status check），所以唯一自动门禁是
-  发版前必跑的 `npm run release:day -- --stage preflight`。工作流文件刻意保留：`check:changelog` 与
-  `check:test-summary` 会读它验证步骤接线。恢复自动触发 ⇒ 先读 `#ci`，并按 ruleset 现值决定要不要配
+  发版前必跑的 `npm run release:day -- --stage preflight`。工作流文件刻意保留：`check:changelog` 会读它验证步骤接线。
+  恢复自动触发 ⇒ 先读 `#ci`，并按 ruleset 现值决定要不要配
   `required_status_checks`。`npm run soak` 仍然留在 CI 之外。
 - **闸的可复现性**：`check:docs` 与 `check:docs:strict` 必须在开发工作树里**和**在全新克隆里都 exit 0。需要
   `node_modules` 的闸在裸克隆里以 `Cannot find module 'typescript'` 失败，含义是**这道闸没能跑**，

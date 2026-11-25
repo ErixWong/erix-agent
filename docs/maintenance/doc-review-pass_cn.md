@@ -57,7 +57,6 @@ npm run docs:pass
 | `check:inventory` / `check:config-leaf-values` / `check:mutation` | 它们比的是**提交进库的表与树**——派生值，由探针重新生成。这里没有一处判散文；`--sync` 是唯一合法的更新路径。 |
 | `check:pack-links` | 随包 Markdown 的链接必须解析得到；随包 README 里一条死链是坏产物，不是过期句。 |
 | `check:changelog` | 碰到公开面的合并没有 CHANGELOG 条目是**缺记录**，不是措辞问题。 |
-| `check:test-summary` | 防的是「套件悄悄不跑了」（skip / 退出码），不是散文。 |
 
 以前挂在「docs」名下的其余一切——`check:docs` 的散文要求、中英处数普查、「这句必须存在」那几族——已由
 issue #802 删除。`check:docs` 仍然存在，作为**手动工具**（`npm run docs:pass`），只是不再拦任何东西。
