@@ -1,74 +1,39 @@
 #!/usr/bin/env node
-// agents-directive-scan.mjs — 阻塞门：**AGENTS 指令面**里不许出现「住在别处、会过期、且没有闸看守」的可变量
-// （工单 #642；家族照 `scripts/retired-spelling-scan.mjs`：名单从真值推、文件清单只取 `git ls-files`、
-//  文件按路径分类、`--strict` 与 `--strict --json` 共用同一份红集合、自带 `--self-test` 反向证）。
+// agents-directive-scan.mjs — 阻塞门：**AGENTS 指令面**的字节预算（issue #726 建，issue #909 收敛为只留这一条判据）
+// （家族照 `scripts/retired-spelling-scan.mjs`：文件清单只取 `git ls-files`、`--strict` 与 `--strict --json`
+//  共用同一份红集合、自带 `--self-test` 反向证、`--sync` / `--verify` 是派生预算表的唯一合法改法与验表）。
 //
-// 病根（#642 的原话）：`AGENTS.md` / `AGENTS_cn.md` 是**每次会话自动注入、模型不查证就照着执行**的那张面。
-// 写在这张面上的三类东西不是「记录旧」，而是**被执行成错的**：
+// #909 的裁决：这张闸原先挂着**三类文本启发式**（① 工单状态句、② 会过期的实测数抄件 / 手抄件上限表、
+// ③ 裸源码行号坐标），它们是「读文本猜语义」的判据——误报面大、例外表越滚越大。本票把它们连同各自的
+// `--sync` 路径与 `--self-test` 夹具一起删掉，**只留字节预算这一条**：它量的是真实的 context 成本。
+// `AGENTS.md` / `AGENTS_cn.md` 是每次会话自动注入、折叠不动的那张面，**每轮全额重发**，字节数就是它的代价。
 //
-//   ① **工单状态句**：`#N 已落地 / 已 closed / 待做 / 挂起`（英文 `landed / closed / pending / shipped` …）。
-//      状态句一旦写进指令面，它就变成**下一位的行动依据**：相信「已 closed」的人不会再去看参数面实况。
-//      只许 `见 issue #N` 形式的**出处引用**（不带状态）——那种写法天然不命中本门（射程要「状态词」）。
-//   ② **会过期的实测数**：`实测 1234 组` / `measured 87 declarations` 这类**抄件**。数字的正本各在代码里
-//      （`BASELINE_ROOT`、`SYMBOL_ANCHOR_MIN_UNIQUE`、`npm pack --dry-run --json`），抄件没有闸、正本有。
-//      正确写法是复现命令（`node scripts/docs-drift-check.mjs --verbose` 现读）。
-//      ⚠ 票面 ② 写的是「**带日期**的实测句」，而同一张票的验收又要求无日期的「实测 1234 组」也红 ——
-//      两处冲突，按更严的一边落地：日期只是这一类的**一种**形状，无日期反而更危险（它读起来就是现值），
-//      所以判据不要求日期。这条取舍写在 `--strict` 的报告里，也写在交付报告的「取证边界」里。
-//   ③ **裸源码行号坐标**：`src/loop/orchestrator.js:4372`。行号随上游重构整体位移，指到别的函数也照样「存在」。
-//      正确写法是符号锚点（`symbol` 与它的文件），行号一律丢掉（#286 的既有规矩）。
+// 有意的行为改变（#909）：写一句假版本号 / 过期抄件 / 裸坐标**不再报红**——那是「读文本猜语义」的活，
+// 交给 `check:docs` 的版本对账去管；本闸只认「这张面有多长」。
 //
-// 为什么这与 CHANGELOG 不同性质：CHANGELOG 里的旧数字没人执行，错了只是历史记录旧；AGENTS 里的旧数字
-// **会被执行**。所以本门的判定面只有 AGENTS 这一对，`docs/` 与 `CHANGELOG.md` 照扫照报、**不判定**
-// （票面 边界：不改历史文档；它们在 `git ls-files` 清单里，所以「分类」不是空话，也证明历史一侧确实不被判死）。
+// 为什么只量 AGENTS 这一对：它是 system prompt 的一部分、每轮重发；`docs/` 与 `CHANGELOG.md` 不在注入面里，
+// 不进预算。判定面 = `git ls-files` 出的 AGENTS 那一对（#560：只取清单，拒绝退回文件系统遍历）。
 //
-// 五条判据（每条都能被反向证打红，见 `--self-test`）：
-//   1. **分类**（`classify()`，纯路径，第一等公民）：`directive` = `AGENTS.md` / `AGENTS_cn.md`（判定）；
-//      `history` = 面上其余一切（`CHANGELOG.md` + `docs/**`，只计数、只报告）。未登记路径 ⇒ **directive**
-//      （未知分类不是免检：宁可多红一句，与 #560 的方向一致）。
-//   2. **命中**：只在**句子**里算（`sentenceOf()`：`。；！？` 与 `. ` 断句）——一条命中 = 一句里同时出现
-//      「工单号 + 状态词」（A 类）/「实测动词 + 数字」（B 类）/ 一个裸 `src/…js:N` 坐标（C 类）。
-//      只按 token 判、不按「这词看着像不像散文」判：判据必须是机械的，否则下一个读者没法复现。
-//   3. **例外必须是显式登记表 + 理由**（`EXEMPTIONS`），且**空转条目即红**（#210 R2）：一条例外在指令面上
-//      一处也没命中 ⇒ `IDLE`。今天登记三条，每条都是票面点名的合法类：
-//        · `gate-owned-constant`：常量真值住在门禁脚本里（`BASELINE_ROOT = 108` 那一类），AGENTS 只复述
-//          名字与值。本例外**当场对账**：句子里的 `NAME = N` 必须等于 `scripts/*.mjs` 里那个常量的**现值**
-//          （名字清单从源码推，不抄）。漂一格就不再放行 ⇒ 它不是一个免检通道，而是一条活的核对。
-//        · `historical-value-label`：句子自己标明是历史值（`Historical values` / `历史值` / `此前` /
-//          `before that`）。票面允许历史值句里的数字，但历史值不许当现值用——标签就是分界线。
-//        · `external-repo-coordinate`：带**登记过的**外部仓前缀（`<repo>:src/…js:N`）不是本仓坐标；仓名清单
-//          从 `scripts/docs-drift-check.mjs` 的 `EXTERNAL_REPO_PREFIXES` **现读**，清单外的仓名照样红。
-//   4. **字节预算**（`LENGTH_BUDGETS`，issue #726）：这张面是 system prompt 的一部分、**折叠不动它** ⇒
-//      每轮全额重发（2026-11-05 主 agent 在 relay 上**逐份**实测的比值是 **3.4 字节/token**）。
-//      #642 那把闸只看「面上有没有会过期的可变量」，**不看这张面有多长**，于是它一路长到 112,464 字节。
-//      长度本身因此成为一条判据：实测 > 预算 ⇒ 红（打印实测 / 预算 / 超量 / 折算 tokens）。
-//      预算**不是手填的数**，是从实测推出来的：`ceil512(实测) + 1024`（见 `budgetFor()`）——向上取整到
-//      512 字节是为了不让「多打一个空格」就红，`1024` 是给一次正当编辑留的余量（总余量 ≤ 512 + 1024）。
-//      `--sync` 是唯一合法的改法（它写的也是这个推出来的值），`--verify` 对任何「不等于推出来的那一格」
-//      判红（抄高抄低都红，双向），空转（预算行没有对应文件 / 预算写成 0）即红。
-//      折算比 `BYTES_PER_TOKEN = 3.4` **不是常数**（换模型/分词器/中英比例都会漂），只用于折算，不参与判定。
-//   5. **存量欠账**（`DEBT_CEILINGS`）：本票**只建闸、不清账**（票面原话：别一上来清零，那会让本批其他单的
-//      证据叙述变成回归）。所以每份指令面文件 × 每个类别钉一个**上限**：实测 > 上限 ⇒ 红（新写进去的
-//      可变量必须改成不变式/复现命令，或者显式抬上限并在报告里说明）；实测 < 上限 ⇒ 绿 + 提示
-//      「可下调至 N」（棘轮方向：清账永远不红，这与 `check:types` 同口径）；上限 > 0 而实测 = 0 ⇒ **红**
-//      （整条登记空转，与例外的 IDLE 同一条规矩）。
+// 判据（唯一一条，见 `--self-test`）：字节预算 = `ceil512(实测) + 1024`（`budgetFor()`）。
+//   · `--strict` 是棘轮：实测 > 预算 ⇒ 红，实测 ≤ 预算 ⇒ 绿（余量以内不红，这正是余量的用途）；
+//   · 空转即红：预算表里有行、面上却没这份文件（死条目），或预算被写成非正数（不可能成立）；
+//   · 面上有文件却没预算行 ⇒ 未登记红；
+//   · `--sync <文件>` 把预算重写成 `budgetFor(实测)`（唯一合法改法），`--verify <文件>` 逐格要求**等于**
+//     推出来的那一格（手改派生数 = 伪造，抄高抄低都是红，双向）。
 //
 // 退出码三档（与家族同构，语义不许混）：
 //   · `0` = 绿（红数为 0；或报告模式——那是给人读的视图，不是门）；
 //   · `1` = **指令面红了**（红数 > 0 且 `--strict`）；
-//   · `2` = **门自己坏了**（清单拿不到：git 不可用 / 不在仓库内 / 仓库顶层不是本脚本所在目录 / 清单为空 /
-//     推不出外部仓名单或门禁常量表）。
+//   · `2` = **门自己坏了**（清单拿不到：git 不可用 / 不在仓库内 / 仓库顶层不是本脚本所在目录 / 清单为空）。
 //
 // 用法：
 //   node scripts/agents-directive-scan.mjs                 # 全量报告，exit 0（人读视图）
 //   node scripts/agents-directive-scan.mjs --json           # 同一份事实的机器读法（含 `gate` 段）
 //   node scripts/agents-directive-scan.mjs --strict         # 门禁：红数 > 0 ⇒ exit 1；清单拿不到 ⇒ exit 2
 //   node scripts/agents-directive-scan.mjs --strict --json  # 同一道门，机器读法（红集合与退出码同源）
-//   node scripts/agents-directive-scan.mjs --self-test      # 反向证：**合成树夹具**上注入 `上限 − 实测 + 1` 条 ⇒ 红、还原 ⇒ 绿；
-//                                                          #   同一套用例在三种欠账形态（贴上限 / 余量 +1 / 余量 +5）下裁决必须相同
-//   node scripts/agents-directive-scan.mjs --sync   <文件>  # 刷上限表 + 字节预算表（**唯一合法**的改法；手改数字即红，issue #644 ②）
-//   node scripts/agents-directive-scan.mjs --verify <文件>  # 验两张表：逐格与实测比，不改文件；不一致 ⇒ exit 1 并点名
-//                                                          #   用法（门禁跑的是 `--strict` + 这一条）见 `npm run check:agents-directives`
+//   node scripts/agents-directive-scan.mjs --self-test      # 反向证：合成树夹具上「灌 2 KB 废话 ⇒ 红、还原 ⇒ 绿」等
+//   node scripts/agents-directive-scan.mjs --sync   <文件>  # 刷字节预算表（**唯一合法**的改法；手改数字即红）
+//   node scripts/agents-directive-scan.mjs --verify <文件>  # 验预算表：逐格与推出来的那一格比，不改文件；不一致 ⇒ exit 1
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -81,266 +46,16 @@ const ROOT = path.resolve(path.dirname(SELF_PATH), "..");
 // 旗标**不在模块顶层解析**（同家族 #575 A）：`runCli({ argv })` 每次运行自己解析，自测才能在同一进程里
 // 分别跑「带 --strict」与「不带 --strict」两条路。
 
-// ── 1. 射程三类（判据的**唯一**一份定义） ─────────────────────────────────────
-/** 类别 id → 人话（报告、JSON、报错文案共用一份，别在别处再抄一遍）。 */
-export const CATEGORIES = Object.freeze({
-  A: "工单状态句（`#N` + 状态词）",
-  B: "会过期的实测数（实测 / measured + 数字）",
-  C: "裸源码行号坐标（`src/…js:N`）",
-});
-
-/**
- * A 类的状态词。中文侧收票面点名的四个（已落地 / 已 closed / 待做 / 挂起）加同义的两个；
- * 英文侧收同一件事的说法——AGENTS.md 是英文的，只咬中文等于只咬半边（中英必须成对，判据也得成对）。
- *
- * 边界用显式字符类而不是 `\b`：`pendingToolUse` / `pendingTailToolUses` 是**符号名**，不是状态词，
- * `pending-` 后面接反引号才是状态叙述。`\b` 在中文里没有意义，两侧都靠字符类兜住。
- */
-const STATUS_RE = new RegExp([
-  "已\\s*落地", "已落地", "已交付", "已完成", "已合并", "已关闭", "已\\s*closed",
-  "待做", "待办", "挂起", "不再做",
-  "(?:^|[^\\w])(?:landed|closed|delivered|shipped|merged|pending|todo|on\\s+hold|in\\s+progress)(?:[^\\w]|$)",
-].join("|"), "i");
-
-/** B 类的实测动词（「抄件」的标记词）。 */
-const MEASURE_RE = /实测|复测|measured|re-measured/i;
-
-/** C 类的坐标：可选的 `<外仓名>:` 前缀 + `src/…js:` + 行号。 */
-const COORD_RE = /(?:([a-z][a-z0-9_-]{1,30}):)?(src\/[A-Za-z0-9_./-]*\.js):(\d+)/g;
-
-/** 历史值标签（`historical-value-label` 例外的判据；票面：历史值句里的数字放行，但历史值不许当现值用）。 */
-const HISTORICAL_MARKER = /历史值|历史记录|此前|再此前|before that|Historical values?|historical value|earlier counts|at that time|当时/i;
-
-/** 一句话里有没有工单号（`#123`）。 */
-const ISSUE_RE = /(?:^|[^\w&])#\d+\b/;
-
-/**
- * 把一行切成句子（带行号）。命中按句子算、不按行算：一行里可以既有一句合法的复现命令、又有一句状态断言。
- *
- * 断句规则（够用即可，不做 NLP）：`。；！？` 之后断；`. ` 之后断（`0.28.0` / `e.g.` 这类没有空格，不误断）。
- * Markdown 表格行没有句号 ⇒ 整行就是一句（宁可多红一句，方向与 #560 的「未知分类不是免检」一致）。
- */
-export function sentenceOf(line) {
-  const out = [];
-  let start = 0;
-  const push = (end) => {
-    if (end > start) out.push(line.slice(start, end));
-    start = end;
-  };
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if ("。；！？".includes(ch)) {
-      push(i + 1);
-      continue;
-    }
-    if ((ch === "." || ch === "!" || ch === "?") && /[ \t]/.test(line[i + 1] ?? "")) {
-      push(i + 1);
-    }
-  }
-  push(line.length);
-  return out.map((s) => s.trim()).filter((s) => s.length > 0);
-}
-
-/**
- * 一份文本的命中（纯函数：同一份判据被报告、JSON、自测三处共用）。
- *
- * @param {string} text
- * @returns {Array<{line: number, category: "A"|"B"|"C", text: string, sentence: string, prefix: string|null}>}
- */
-export function scanText(text) {
-  const hits = [];
-  text.split("\n").forEach((line, index) => {
-    const lineNo = index + 1;
-    for (const sentence of sentenceOf(line)) {
-      if (ISSUE_RE.test(sentence) && STATUS_RE.test(sentence)) {
-        hits.push({ line: lineNo, category: "A", text: sentence.match(ISSUE_RE)?.[0]?.trim() ?? "", sentence, prefix: null });
-      }
-      if (MEASURE_RE.test(sentence) && /\d/.test(sentence)) {
-        hits.push({ line: lineNo, category: "B", text: sentence.slice(0, 80), sentence, prefix: null });
-      }
-    }
-    for (const m of line.matchAll(COORD_RE)) {
-      const [raw, prefix, file, digits] = m;
-      const at = m.index ?? 0;
-      const before = at === 0 ? "" : line[at - 1];
-      // token 边界：`foo/src/x.js:1` 与 `pi-subagents:src/x.js:1` 里的 `src/` 不是本仓路径的开头
-      if (prefix === undefined && /[\w/.:-]/.test(before)) continue;
-      if (prefix !== undefined && /[\w/.:-]/.test(before)) continue;
-      hits.push({
-        line: lineNo,
-        category: "C",
-        text: raw,
-        sentence: line.trim(),
-        prefix: prefix ?? null,
-        file,
-        digits: Number(digits),
-      });
-    }
-  });
-  return hits;
-}
-
-// ── 2. 分类表（第一等公民，纯路径） ───────────────────────────────────────────
+// ── 1. 指令面（预算只量这两页） ───────────────────────────────────────────────
 /** 指令面：每次会话自动注入、模型不查证就照着执行的那一对文件（工单 #642）。 */
 export const DIRECTIVE_FILES = Object.freeze(["AGENTS.md", "AGENTS_cn.md"]);
 
+// ── 2. 字节预算判据（issue #726；#909 后本闸唯一的判据） ───────────────────────
 /**
- * 一份文件属于哪一档（纯路径，不看内容）。
+ * 折算比：字节 → token 的近似比值，**只用于给人看**，不参与任何判定。
  *
- * 两分沿用家族口径：
- *   · `directive` = **现状描述**（该改）：就是 AGENTS 这一对——它教的是「现在该怎么做」；
- *   · `history` = **历史记录**（正文一字不改）：面上其余一切（`CHANGELOG.md` + `docs/**`），写的是
- *     「当时发生的事」。票面 边界 明写本轮不改历史文档与契约，所以它们只计数、只报告，不进判据。
- *
- * **未登记路径 ⇒ `directive`**：未知分类不是免检（与 #560 拆掉 `out-of-scope` 同一条方向）。
- */
-export function classify(rel) {
-  // 指令面按**文件名形状**认，不是按一张写死的清单：`AGENTS_cn.md` 今天在册，将来多一份 `AGENTS_xx.md`
-  // 也自动进判定面（新语言的文件不许因为「没登记」而免检）。
-  if (/^AGENTS(?:_[a-z]{2})?\.md$/.test(rel)) {
-    return { kind: "directive", why: "指令面：每次会话自动注入、模型不查证就照着执行（issue #642 的判定面）" };
-  }
-  if (rel === "CHANGELOG.md") {
-    return { kind: "history", why: "历史记录：CHANGELOG 写的是当时发布/当时为真，没人照它执行（票面 边界）" };
-  }
-  if (rel.startsWith("docs/")) {
-    return { kind: "history", why: "历史/非指令面文档：docs/ 的正文是当时的记录（票面 边界：本轮不改），只计数不判定" };
-  }
-  // 面上剩下的一切（未登记路径）⇒ **directive**：未知分类不是免检（与 #560 拆掉 `out-of-scope` 同一方向）。
-  return { kind: "directive", why: "未登记路径 ⇒ 按指令面扫（未知分类不是免检：宁可多红一句）" };
-}
-
-// ── 3. 例外登记表（显式 + 理由；空转条目即红） ────────────────────────────────
-/**
- * 门禁常量表的对账（`gate-owned-constant` 例外的判据）。
- *
- * 一句话里出现 `NAME = N`（可带反引号），且 `NAME` 是 `scripts/*.mjs` 里**真的声明过**的数值常量：
- *   · `N` 等于源码现值 ⇒ 放行（这就是票面点名的合法例外：「常量 + 有门禁对账」）；
- *   · `N` 与现值不一致 ⇒ **不放行**（记成 `stale`，报告里点名——抄件过期了，它不该继续待在指令面上）；
- *   · 名字不是门禁常量 ⇒ 本例外不适用（`none`）。
- *
- * @param {string} sentence
- * @param {Map<string, {value: number, file: string}>} constants
- * @returns {{verdict: "ok"|"stale"|"none", name?: string, value?: number, truth?: number, file?: string}}
- */
-export function gateConstantVerdict(sentence, constants) {
-  for (const m of sentence.matchAll(/([A-Z][A-Z0-9_]{2,})\s*=\s*(\d[\d_]*)/g)) {
-    const truth = constants.get(m[1]);
-    if (truth === undefined) continue;
-    const value = Number(m[2].replace(/_/g, ""));
-    if (truth.value === value) return { verdict: "ok", name: m[1], value, truth: truth.value, constantFile: truth.file };
-    return { verdict: "stale", name: m[1], value, truth: truth.value, constantFile: truth.file };
-  }
-  return { verdict: "none" };
-}
-
-/**
- * 例外登记表。**每条都要有 `why`**（空泛的放行等于后门，#210 R2），且必须在指令面上真的命中至少一处
- * ——一处也没命中的条目是 `IDLE`（红）：那说明判据或登记已经空转，绿是假的。
- *
- * `matches(hit, ctx)` 只判「这一条命中算不算例外」，判词与红集合在 `gateVerdicts()` 里。
- */
-export const EXEMPTIONS = Object.freeze([
-  {
-    id: "gate-owned-constant",
-    categories: Object.freeze(["B"]),
-    why: "常量真值住在门禁脚本里（`BASELINE_ROOT = 108` 那一类），AGENTS 只复述名字与值；本例外**当场对账**"
-      + "——句子里的 `NAME = N` 必须等于 `scripts/*.mjs` 里那个常量的现值（名字清单从源码推），漂一格就不再放行",
-    matches: (hit, ctx) => gateConstantVerdict(hit.sentence, ctx.constants).verdict === "ok",
-  },
-  {
-    id: "historical-value-label",
-    categories: Object.freeze(["B"]),
-    why: "句子自己标明是历史值（`Historical values` / `历史值` / `此前` / `before that`）——票面允许历史值句里的"
-      + "数字，但历史值不许当现值用，所以只有带这层标签的句子放行",
-    matches: (hit) => HISTORICAL_MARKER.test(hit.sentence),
-  },
-  {
-    id: "external-repo-coordinate",
-    categories: Object.freeze(["C"]),
-    why: "带**登记过的**外部仓前缀（`<repo>:src/…js:N`）不是本仓坐标：路径属于另一个仓，本仓没有可核对的真值。"
-      + "仓名清单从 `scripts/docs-drift-check.mjs` 的 `EXTERNAL_REPO_PREFIXES` 现读，清单外的仓名照样红",
-    matches: (hit, ctx) => hit.prefix !== null && ctx.externalPrefixes.has(hit.prefix),
-  },
-]);
-
-/**
- * 存量欠账的上限（**本票只建闸、不清账**，票面原话：「别一上来清零」）。
- *
- * 方向是**棘轮**：实测 ≤ 上限 ⇒ 绿（并提示「可下调至 N」——清账永远不红，与 `check:types` 同口径）；
- * 实测 > 上限 ⇒ 红（新写进去的可变量必须改成不变式 / 复现命令，或者显式抬上限并在报告里说明）；
- * 上限 > 0 而实测 = 0 ⇒ 红（整条登记空转，与例外的 `IDLE` 同一条规矩）。
- *
- * 每一格的理由写在行尾注释里：**这批数是存量**（#642 之前就在 AGENTS 里），不是「这些是可变量所以合法」。
- *
- * @type {Readonly<Record<string, Readonly<Record<"A"|"B"|"C", number>>>>}
- */
-export const DEBT_CEILINGS = Object.freeze({
-  "AGENTS.md": Object.freeze({
-    // 20：`#N … landed` 的历史流水账（「again to 122 when #438's … section landed as an EN/CN pair」那一族）。
-    // 它们是**当时为真**的叙述，本票不清账（票面原话）；新写一句状态断言就会变成 21 ⇒ 红。
-    // 2026-10-31 波次 4 合入时 18 → 20：#375 与 #308 各自往符号锚点声称链加了一条**链项**
-    // （链项的既定句式就是「… landed as an EN/CN pair」，不是新写工单状态断言）。
-    // 抬上限的正当理由就是这一种：存量本身在长。真正该做的是把整条链搬出指令面（已记在 #642 残留）。
-    // 8：issue #644 ③ 就是那一刀——符号锚点声称链整条搬到 `docs/maintenance/symbol-anchor-ledger.md`，
-    // 指令面上只剩「常量 + 一句指针」⇒ 20 → 8（**清账**，不是放宽；剩下的 8 处是别的历史句）。
-    // 4：issue #650 清 B 类时把「可及 / 不可及」与棘轮逐轮流水账那两段整段删掉（改成「命令自己打印」），
-    // 其中 4 处是**顺带**命中的 A 类（「… landed as a side effect of …」那一族长句）⇒ 8 → 4。仍是**降**：
-    // 清的是那几段被删掉的句子本身，不是新写的状态断言。
-    A: 0,
-    // 25：`measured` 的抄件（命令表里的「measured 103 cases」「measured 0.1 s」与符号锚点那段流水账）。
-    // 与上同：本票只建闸，清账留给后续票；清到 24 ⇒ 绿 + 提示「可下调至 24」。
-    // 24：原登记 25。2026-10-31 合入 #429 / #286 时本面多出两处新抄件（导出清点句、裸行号句），
-    // 按扫描器自己的提示走**改写法**而非抬上限：两句都改成「数字由那条命令现算输出、不在本文抄」
-    // （见 commit）⇒ 实测回到 24，上限随之降到 24。再清一条就跟着降（它会打印「可把上限降到 N」）。
-    // 23：issue #417 把 `check:types:strict` 那一行从「只观测」改写成「strict 棘轮」时，把「实测 … exit 1」那处抄件
-    // 一并删了（它说的那件事——`types:build` 之后跑本命令会 exit 1——仍写在同一行里，只是不再带数字）⇒ 24 → 23。
-    // 14：指令面数字还债（2026-10-31 票 3）——自测例数（103/16）、变异样本条数与耗时（8×2/4.5 s）、
-    // 三次门禁耗时（0.1/1.8/~0.8 s）与三个派生计数（51 modules / 70 files / 87 declarations）全部改成
-    // 「由那条命令自己打印」的写法（一句数字都不再抄），实测 23 → 14；这是**降**，不是抬。
-    // 10：同一刀的下半截（issue #644 ③）——符号锚点那段流水账（「measured N groups / M occurrences」）
-    // 随链搬进账本 ⇒ 14 → 10。
-    // 0：issue #650 清账——剩下这 10 处逐句改成「命令自己打印」的写法（耗时、逐轮流水账、可及/不可及切分），
-    // 只留下**有机器锚点对账**的数（`baseline constant **107**` / `78 of the 107` / `baseline **142** / 29 files`
-    // / `= 107 + 19 + 16` / `**107 errors** with none present` / `.d.ts` 的 `90`，分别由 `check:docs` 的
-    // `BASELINE_CLAIM_RULES` 与 `check:pack-links` 的 `DECLARATION_CLAIM_PATTERNS` 逐处校着），
-    // 而这些数的句子已不再带测量动词 ⇒ 10 → 0。**上限 0 = 今后一处新抄件就红。**
-    B: 0,
-    // 0：今天一处裸坐标都没有（AGENTS 里唯一两处 `src/…js:N` 都带 `pi-subagents:` 前缀 ⇒ 走例外）。
-    C: 0,
-  }),
-  "AGENTS_cn.md": Object.freeze({
-    // 4：中文侧同一族历史流水账（「此前 issue #394 … 落成契约之后实测 109 组」），比英文侧少是因为
-    // 中文侧把「landed」写成了「落成 / 落地」而不是状态词。本票不清账。
-    // 1：issue #644 ③ 把整条链搬出指令面 ⇒ 4 → 1（清账，不是放宽）。
-    A: 0,
-    // 30：中文侧的实测抄件（符号锚点流水账比英文侧长，因为它把「此前 … 实测 N 组 / M 处」整条链留在文件里）。
-    // 29：与英文侧同一刀 —— 导出清点句与「84 唯一区间 − 4 处声明式豁免 = 80」那句改成不抄数 ⇒ 30 → 29。
-    // 28：issue #417 的中文侧同一刀 —— 命令表里那一行的「实测：… exit 1」抄件删掉，改写后的句子不带数字 ⇒ 29 → 28。
-    // 18：与英文侧同一刀（票 3）：自测例数、样本条数与耗时、门禁耗时、51 modules / 70 files / 87 declarations
-    // 三处派生计数改成「由命令打印」，实测 28 → 18。
-    // 11：与英文侧同一刀（issue #644 ③）——中文侧的流水账（「此前 … 实测 N 组 / M 处」整条链）搬进账本
-    // ⇒ 20 → 11。
-    // 0：issue #650 清账（中文侧与英文侧同一刀）——剩下的 11 处逐句改成「命令自己打印」的写法，
-    // 只留下由 `check:docs` 的 `BASELINE_CLAIM_RULES` 与 `check:pack-links` 逐处对账的数
-    // （`BASELINE_ROOT = 107` / `基线常量 **107**` / `107 个里有` / `基线 **142** / 29 个文件` / `= 107 + 19 + 16`
-    // / `无 \`.d.ts\` = 107 个错` / `.d.ts` 的 `90`）⇒ 11 → 0。**上限 0 = 今后一处新抄件就红。**
-    B: 0,
-    // 0：同上，一处裸坐标都没有。
-    C: 0,
-  }),
-});
-
-// ── 3b. 长度判据（issue #726：指令面的**字节预算**） ─────────────────────────
-/**
- * 字节 → token 的换算比：**3.4 字节/token**。
- *
- * 这是 **2026-11-05 主 agent 在 relay 上单独实测的比值**（每份文件各测一次，不是合并测的），
- * **不是常数**：换模型、换分词器、换文档形态（中英混排比例）都会漂。它只用来把「多少字节」翻成
- * 「每轮多贵」给人看；**判定永远按字节**，不按 token——拿一个会漂的比值当判据，就是再造一份会腐烂的清单。
- *
- * 先前那一版写的是 `3.67`：那是把两份文件**合并**测出来的比值（总字节 ÷ 总 tokens），偏保守，
- * 会把同一个字节数报贵（32,548 字节：3.67 报 8,869 tokens，3.4 报 9,573——差 704）。别再用它。
+ * 为什么写死一个数：折算只出现在报告里（「这一页 ≈ N tokens」），判据按字节算，所以这个数漂了不会
+ * 让任何一格变色。它来自 2026-11-05 主 agent 在 relay 上逐份实测的比值。
  */
 export const BYTES_PER_TOKEN = 3.4;
 
@@ -380,13 +95,13 @@ export function tokensOf(bytes) {
 }
 
 /**
- * 指令面每份文件的**字节预算**（issue #726 的长度判据）。
+ * 指令面每份文件的**字节预算**（issue #726 的长度判据，#909 后是本闸唯一的派生表）。
  *
  * 病根：#642 那把闸只看「面上有没有会过期的可变量」，**不看这张面有多长**——于是 AGENTS 一路长到
  * 112,464 字节（≈33k tokens），而它是 system prompt 的一部分、折叠不动它 ⇒ **每一轮都全额重发**。
  * 本闸是防复发的那一半：长度本身成为一条判据，超了就红。
  *
- * 纪律与 `DEBT_CEILINGS` 逐条同构（同一套理由，不重写第二份）：
+ * 纪律：
  *   · 预算**是派生态**：它由实测推出来（`budgetFor()` = `ceil512(实测) + 1024`），`--sync <文件>` 是
  *     **唯一合法**的改法；
  *   · `--verify <文件>` 逐格要求**等于推出来的那一格**，手改一个数字就红，**抄高抄低都是红**（双向）；
@@ -408,56 +123,15 @@ export const LENGTH_BUDGETS = Object.freeze({
   // 余量只剩 512 字节，而这一格是**按 512 一档**往上刷的 ⇒ 下一次再加一句就会顶穿 65,536
   // （#721 修的正是「预算闸说合法、注入面装不下」）。所以正解是往冷层搬，不是抬预算：
   // §4 清单对账的说明性材料搬进了 `docs/maintenance/command-reference.md#release-day`（#726/#727 同一先例）。
-  "AGENTS.md": 14336,
-  // 同上：实测 28,823 字节 ⇒ ceil512 = 29,184 ⇒ + 1024 = 30,208（中文侧瘦身前 100,591 字节）。
+  "AGENTS.md": 13824,
+  // 同上。⚠ 本表注释里的「实测 X ⇒ …」全是**历史链条**，不是现值：现值只有上面那两个数，由 `--sync` 从实测刷、
+  // 由 `--verify` 逐格对账（`--sync` 只改数字，从不改注释，所以注释里的数字必然过期——读它别当现值）。
   // issue #731 T7 中文侧同样回退（曾抬到 30,720）：两条闸互相知道的那道算的是 30,720 + 33,792，
   // 抬中文侧一样会把组合推过 65,536；说明性材料搬进 `docs/maintenance/command-reference_cn.md#release-day`。
-  "AGENTS_cn.md": 14336,
+  "AGENTS_cn.md": 13824,
 });
 
-// ── 4. 真值（名单从源码推，不抄） ─────────────────────────────────────────────
-/**
- * 门禁常量表：`scripts/*.mjs` 里 `const NAME = <整数>;` 形态的常量。
- *
- * 为什么从源码推：手抄一份「哪些常量有门禁对账」的名单，就是又造一份会腐烂的清单（#560 的病根）。
- * 只收全大写名字 + 纯整数（`0.05` 这类比率不收：它们几乎不会出现在「实测 N」句里，收了只是放宽面）。
- *
- * @param {Array<{file: string, text: string}>} sources
- * @returns {Map<string, {value: number, file: string}>}
- */
-export function gateConstantsFrom(sources) {
-  const out = new Map();
-  for (const { file, text } of sources) {
-    for (const m of text.matchAll(/^[ \t]*(?:export[ \t]+)?const[ \t]+([A-Z][A-Z0-9_]{2,})[ \t]*=[ \t]*(\d[\d_]*)[ \t]*;/gm)) {
-      if (!out.has(m[1])) out.set(m[1], { value: Number(m[2].replace(/_/g, "")), file });
-    }
-  }
-  return out;
-}
-
-/**
- * 外部仓前缀名单：从 `scripts/docs-drift-check.mjs` 的 `EXTERNAL_REPO_PREFIXES` **现读**（不抄）。
- *
- * 读不到就抛错（由 `runCli` 报 exit 2）：读不到意味着这条例外在空转，而空转的例外比没有例外更糟——
- * 它看起来在放行，其实放行的是「所有带冒号的东西」。
- *
- * @param {string} text `scripts/docs-drift-check.mjs` 的正文
- * @returns {Set<string>}
- */
-export function externalPrefixesFrom(text) {
-  const block = text.match(/const EXTERNAL_REPO_PREFIXES = new Map\(\[([\s\S]*?)\n\]\);/);
-  if (block === null) {
-    throw new Error("从 `scripts/docs-drift-check.mjs` 里抽不到 `EXTERNAL_REPO_PREFIXES = new Map([...])`——"
-      + "外部仓前缀这条例外失去真值来源（不许静默降级成「没有例外」）");
-  }
-  const names = new Set([...block[1].matchAll(/^\s*\["([^"]+)",/gm)].map((m) => m[1]));
-  if (names.size === 0) {
-    throw new Error("`EXTERNAL_REPO_PREFIXES` 抽出来是空的——那条例外会空转，拒绝继续");
-  }
-  return names;
-}
-
-// ── 5. 覆盖面（只取**入库**文件，清单 = `git ls-files`） ──────────────────────
+// ── 3. 覆盖面（只取**入库**文件，清单 = `git ls-files`） ──────────────────────
 /** 默认执行器：跑一次 git，返回 stdout（`root` 必须是仓库顶层，调用方先验过）。 */
 function defaultGit(args, root) {
   return execFileSync("git", args, {
@@ -478,20 +152,6 @@ function errorLine(error) {
 }
 
 /**
- * 扫描面的**显式** pathspec：AGENTS 那一对 + `CHANGELOG.md` + `docs/`。
- *
- * 为什么把 `docs/` 与 `CHANGELOG.md` 也列进来：它们是 `history` 那一档的**实物**。面里没有它们，
- * 「分类」就只是注释里的话（`history` 一份都没有 ⇒ 判据无法被反向证）；而且面必须显式列出，
- * **不是** `.`——扫描面不许偷偷变成整个仓库。
- *
- * @type {readonly string[]}
- */
-export const SCAN_PATHSPECS = Object.freeze([...DIRECTIVE_FILES, "CHANGELOG.md", "docs"]);
-
-/** 真值面：门禁常量与外部仓名单都从这里推（同样是显式 pathspec）。 */
-export const TRUTH_PATHSPECS = Object.freeze(["scripts"]);
-
-/**
  * 一份 pathspec 的**入库**文件清单（只取 `git ls-files`）。
  *
  * `git` 不可用 / 不在仓库内 / 仓库顶层不是本脚本所在目录 / 清单为空 ⇒ **抛错**，由 `runCli` 显式报
@@ -501,7 +161,7 @@ export const TRUTH_PATHSPECS = Object.freeze(["scripts"]);
  *   suffix?: string|null, what?: string}} [options]
  * @returns {string[]} 仓库相对路径，已去重排序
  */
-export function gitTrackedFiles({ root = ROOT, io, pathspecs = SCAN_PATHSPECS, suffix = ".md", what = "扫描清单" } = {}) {
+export function gitTrackedFiles({ root = ROOT, io, pathspecs = DIRECTIVE_FILES, suffix = ".md", what = "扫描清单" } = {}) {
   const exec = io?.exec ?? defaultGit;
   const refuse = (detail) => new Error(`${what}只取 \`git ls-files\`，但${detail}。${MANIFEST_REFUSAL}`);
 
@@ -542,12 +202,12 @@ export function gitTrackedFiles({ root = ROOT, io, pathspecs = SCAN_PATHSPECS, s
   return files;
 }
 
-// ── 6. 判定（「哪些命中算红」的**唯一**一份定义） ────────────────────────────
+// ── 4. 长度判据（#909 后本闸唯一的一份判据） ──────────────────────────────────
 /**
  * 长度判据（issue #726）：指令面每份文件的字节数 vs 预算。
  *
- * 方向与 `DEBT_CEILINGS` 逐条同构：超预算 ⇒ 红（新长出来的字节必须要么搬进冷层、要么跑 `--sync` 把预算抬上去
- * 并在报告里说明）；低于预算 ⇒ 绿 + 提示「可降到 N」（清账永不红）；`--verify` 另外要求**相等**。
+ * 方向是**棘轮**：超预算 ⇒ 红（新长出来的字节必须要么搬进冷层、要么跑 `--sync` 把预算抬上去并在报告里说明）；
+ * 低于预算 ⇒ 绿 + 提示「可降到 N」（清账永不红）；`--verify` 另外要求**相等**。
  *
  * 空转即红（两条）：预算表里有这一行、指令面上却没有这份文件（死条目，改名/删文件留下的）；
  * 预算被写成 0（文件至少有一个字节，0 这个格子永远不可能成立）。
@@ -574,8 +234,8 @@ export function lengthVerdicts({ measured, budgets = LENGTH_BUDGETS }) {
         tokens: tokensOf(bytes), budgetTokens: tokensOf(budget), overTokens: tokensOf(bytes - budget),
       });
     } else {
-      // 绿不等于「什么都不用说」：预算比推出来的那一格窄（但仍在实测之上）时提示可刷高，
-      // 比推出来的那一格宽时提示可刷低——两个方向都是「--sync 会把这一格写成 budgetFor(实测)」。
+      // 绿不等于「什么都不用说」：预算与推出来的那一格（`budgetFor(实测)`）不一致（但仍在实测之上）时提示，
+      // `--sync` 会把这一格写成 `budgetFor(实测)`——抄高抄低都提示，抄件在 `--verify` 才是红。
       const derived = budgetFor(bytes);
       if (budget !== derived) {
         downgradableBudget.push({ file, bytes, budget, derived, headroom: budget - bytes });
@@ -598,16 +258,12 @@ export function lengthVerdicts({ measured, budgets = LENGTH_BUDGETS }) {
     },
   };
 }
+
 /**
- * 把一次扫描折成「红数」与逐类明细。**文本分支与 `--json` 分支都只读这里**（同家族 #575 A 的病根：
+ * 把一次扫描折成「红数」与逐格明细。**文本分支与 `--json` 分支都只读这里**（同家族 #575 A 的病根：
  * 同一套判据写两遍、其中一遍没写全 ⇒ 假绿）。
  *
- * 红集合（八条，少一条就是假绿）：
- *   · `overCeiling`：指令面上某份文件某类的实测命中 > 登记上限（新写进去的可变量）；
- *   · `idleExemptions`：登记了却在指令面上一处也没命中的例外（空转条目，#210 R2）；
- *   · `idleCeilings`：上限 > 0 而实测 = 0 的欠账格（整条登记空转，同一条规矩）；
- *   · `unregistered`：指令面上有命中却没有登记上限的文件（新入指令面却忘了钉 ⇒ 与 `UNPINNED` 同族）；
- *   · `staleConstants`：`NAME = N` 里的 N 与门禁脚本里的现值不一致（抄件过期了，例外因此不放行）；
+ * #909 后红集合只剩三条（都来自 `lengthVerdicts`，少一条就是假绿）：
  *   · `overBudget`：指令面某份文件的字节数 > 预算（issue #726 的长度判据）；
  *   · `unregisteredBudget`：指令面上的文件没有字节预算行（新入指令面却忘了钉预算）；
  *   · `idleBudgets`：预算行没有对应文件（死条目）或预算被写成 0（不可能成立的格子）。
@@ -615,65 +271,20 @@ export function lengthVerdicts({ measured, budgets = LENGTH_BUDGETS }) {
  * `downgradableBudget` 不是红：预算与 `budgetFor(实测)` 不一致但仍在实测之上 ⇒ 绿 + 提示「--sync 会把这一格
  * 写成 N」。抄高抄低真正被拦在 `--verify`（双向红）——`--strict` 只负责「长度不许长过预算」这一条。
  *
- * @param {{report: Array<object>, exemptions: ReadonlyArray<object>, ceilings: Readonly<Record<string, object>>,
- *   staleConstants?: Array<object>, length?: object|null}} input
- * @returns {{overCeiling: Array<object>, idleExemptions: Array<object>, idleCeilings: Array<object>,
- *   unregistered: Array<object>, staleConstants: Array<object>, overBudget: Array<object>,
- *   unregisteredBudget: Array<object>, idleBudgets: Array<object>, red: number,
- *   counts: {overCeiling: number, idleExemptions: number, idleCeilings: number, unregistered: number,
- *     staleConstants: number, overBudget: number, unregisteredBudget: number, idleBudgets: number},
- *   downgradable: Array<object>, downgradableBudget: Array<object>}}
+ * @param {{length: object}} input
+ * @returns {{overBudget: Array<object>, unregisteredBudget: Array<object>, idleBudgets: Array<object>,
+ *   downgradableBudget: Array<object>, red: number,
+ *   counts: {overBudget: number, unregisteredBudget: number, idleBudgets: number}}}
  */
-export function gateVerdicts({ report, exemptions, ceilings, staleConstants = [], length = null }) {
-  const directive = report.filter((r) => r.kind === "directive");
-  const overCeiling = [];
-  const unregistered = [];
-  const downgradable = [];
-  const idleCeilings = [];
-  for (const entry of directive) {
-    const row = ceilings[entry.file];
-    for (const category of Object.keys(CATEGORIES)) {
-      const actual = entry.counts[category];
-      if (row === undefined) {
-        if (actual > 0) unregistered.push({ file: entry.file, category, actual });
-        continue;
-      }
-      const ceiling = row[category];
-      if (actual > ceiling) {
-        overCeiling.push({
-          file: entry.file, category, actual, ceiling,
-          lines: entry.hits.filter((h) => h.category === category && !h.exempt).map((h) => h.line),
-        });
-      } else if (actual < ceiling) {
-        downgradable.push({ file: entry.file, category, actual, ceiling });
-      }
-      if (ceiling > 0 && actual === 0) {
-        idleCeilings.push({ file: entry.file, category, ceiling });
-      }
-    }
-  }
-  const used = new Set(directive.flatMap((entry) => entry.hits.filter((h) => h.exempt).map((h) => h.exemption)));
-  const idleExemptions = exemptions
-    .filter((entry) => !used.has(entry.id))
-    .map((entry) => ({ id: entry.id, why: entry.why }));
-  const counts = {
-    overCeiling: overCeiling.length,
-    idleExemptions: idleExemptions.length,
-    idleCeilings: idleCeilings.length,
-    unregistered: unregistered.length,
-    staleConstants: staleConstants.length,
-    overBudget: length?.counts.overBudget ?? 0,
-    unregisteredBudget: length?.counts.unregisteredBudget ?? 0,
-    idleBudgets: length?.counts.idleBudgets ?? 0,
-  };
-  const red = Object.values(counts).reduce((n, v) => n + v, 0);
+export function gateVerdicts({ length }) {
+  const red = length.counts.overBudget + length.counts.unregisteredBudget + length.counts.idleBudgets;
   return {
-    overCeiling, idleExemptions, idleCeilings, unregistered, staleConstants, downgradable,
-    overBudget: length?.overBudget ?? [],
-    unregisteredBudget: length?.unregisteredBudget ?? [],
-    idleBudgets: length?.idleBudgets ?? [],
-    downgradableBudget: length?.downgradableBudget ?? [],
-    counts, red,
+    overBudget: length.overBudget,
+    unregisteredBudget: length.unregisteredBudget,
+    idleBudgets: length.idleBudgets,
+    downgradableBudget: length.downgradableBudget,
+    counts: length.counts,
+    red,
   };
 }
 
@@ -686,32 +297,22 @@ export function gateExitCode(gate, { strict }) {
   return gate.red === 0 ? 0 : 1;
 }
 
-// ── 7. 一次完整扫描（`root` / `io` 可注入 ⇒ 自测在临时树上跑真实路径） ────────
+// ── 5. 一次完整扫描（`root` / `io` 可注入 ⇒ 自测在临时树上跑真实路径） ────────
 /**
- * 扫一次：清单 → 分类 → 命中 → 例外 → 上限 → 判词。
+ * 扫一次：清单（`git ls-files`）→ 实测字节 → 长度判据。
  *
- * @param {{root?: string, io?: object, exemptions?: ReadonlyArray<object>, ceilings?: object,
- *   budgets?: Readonly<Record<string, number>>}} [options]
- * @returns {{manifest: string[], report: Array<object>, gate: object, constants: Map<string, object>,
- *   externalPrefixes: Set<string>, staleConstants: Array<object>, measuredBytes: Map<string, number>}}
+ * 预算只量**指令面**（issue #726）：`docs/` 与 `CHANGELOG.md` 不进预算，它们不是每轮重发的那张面。
+ * #909 后不再有分类 / 命中 / 例外 / 上限表——那三类文本启发式连同它们的真值名单（门禁常量表、外部仓前缀）
+ * 一起退账。
+ *
+ * @param {{root?: string, io?: object, budgets?: Readonly<Record<string, number>>}} [options]
+ * @returns {{manifest: string[], report: Array<object>, gate: object, budgets: object,
+ *   measuredBytes: Map<string, number>, length: object}}
  */
-export function scanDirectives({ root = ROOT, io, exemptions = EXEMPTIONS, ceilings = DEBT_CEILINGS,
-  budgets = LENGTH_BUDGETS } = {}) {
+export function scanDirectives({ root = ROOT, io, budgets = LENGTH_BUDGETS } = {}) {
+  // #560：只取 git manifest；git 拿不到 / 清单为空 ⇒ gitTrackedFiles 抛错，由 runCli 折成 exit 2。
   const manifest = gitTrackedFiles({ root, io });
-  const truthFiles = gitTrackedFiles({ root, io, pathspecs: TRUTH_PATHSPECS, suffix: ".mjs", what: "真值清单" });
-  const sources = truthFiles.map((file) => ({ file, text: readFileSync(path.join(root, file), "utf8") }));
-  const constants = gateConstantsFrom(sources);
-  if (constants.size === 0) {
-    throw new Error("`scripts/*.mjs` 里抽不到任何 `const NAME = <整数>;` 常量——`gate-owned-constant` 例外会空转");
-  }
-  const driftCheck = sources.find((s) => s.file === "scripts/docs-drift-check.mjs");
-  if (driftCheck === undefined) {
-    throw new Error("真值清单里没有 `scripts/docs-drift-check.mjs`——外部仓前缀名单没有真值来源");
-  }
-  const externalPrefixes = externalPrefixesFrom(driftCheck.text);
-
-  const ctx = { constants, externalPrefixes };
-  const staleConstants = [];
+  const measuredBytes = new Map();
   const report = [];
   for (const rel of manifest) {
     let text;
@@ -721,167 +322,35 @@ export function scanDirectives({ root = ROOT, io, exemptions = EXEMPTIONS, ceili
       throw new Error(`清单里的 ${rel} 读不到（${errorLine(error)}）：`
         + "`git ls-files` 列出的入库文件必须在盘上，否则扫描面与实际内容不符");
     }
-    const { kind, why } = classify(rel);
-    const hits = scanText(text).map((hit) => {
-      const exemption = exemptions.find((entry) => entry.categories.includes(hit.category) && entry.matches(hit, ctx));
-      return { ...hit, exempt: exemption !== undefined, exemption: exemption?.id ?? null };
-    });
-    // 抄件过期只在**指令面**上算红，且**独立于 B 类**：一句话里写着 `NAME = 999` 但没写「实测」，
-    // 它照样是一份过期抄件（判据不该靠另一个类别的词才醒）。`docs/` 与 `scripts/` 里的旧数字是历史注释，
-    // 没人照着执行，所以不进这里。
-    if (kind === "directive") {
-      text.split("\n").forEach((line, index) => {
-        for (const sentence of sentenceOf(line)) {
-          const verdict = gateConstantVerdict(sentence, constants);
-          if (verdict.verdict === "stale") staleConstants.push({ file: rel, line: index + 1, ...verdict });
-        }
-      });
-    }
-    const counts = Object.fromEntries(Object.keys(CATEGORIES).map((c) => [c, hits.filter((h) => h.category === c && !h.exempt).length]));
-    report.push({ file: rel, kind, why, hits, counts, bytes: Buffer.byteLength(text, "utf8") });
+    const bytes = Buffer.byteLength(text, "utf8");
+    measuredBytes.set(rel, bytes);
+    report.push({ file: rel, bytes });
   }
-  // 长度判据只量**指令面**（issue #726）：`docs/` 与 `CHANGELOG.md` 不进预算，它们不是每轮重发的那张面。
-  const measuredBytes = new Map(report.filter((entry) => entry.kind === "directive")
-    .map((entry) => [entry.file, entry.bytes]));
   const length = lengthVerdicts({ measured: measuredBytes, budgets });
-  const gate = gateVerdicts({ report, exemptions, ceilings, staleConstants, length });
-  return { manifest, report, gate, constants, externalPrefixes, staleConstants, exemptions, ceilings,
-    budgets, measuredBytes, length };
+  const gate = gateVerdicts({ length });
+  return { manifest, report, gate, budgets, measuredBytes, length };
 }
 
-// ── 8. 上限表的刷写与验表（`--sync` / `--verify`，家族口径） ────────────────
+// ── 6. 字节预算表的刷写与验表（`--sync` / `--verify`，家族口径） ──────────────
 /**
- * 为什么要有 `--sync`（issue #644 ②）：上限是**派生态**（实测值的钉子），但 #642 落地时它只能手改——
- * 两次调上限（25/30 → 24/29、18 → 20）都是人把扫描器输出手抄进 `DEBT_CEILINGS`，流程上没有任何东西能
- * 证明抄对了。而且抄**高**一位（24 → 42）在 `--strict` 下是**绿的**（棘轮方向只咬「实测 > 上限」），
- * 所以「手抄错」是这道门里唯一没有闸的东西。
+ * 为什么要有 `--sync`（issue #644 ②）：预算是**派生态**（实测值的钉子），但手改没有任何东西能证明抄对了，
+ * 而且抄**高**在 `--strict` 下是**绿的**（棘轮只咬「实测 > 预算」），所以「手抄错」是这道门里唯一没闸的东西。
  *
  * 家族标准（`scripts/flat-count-inventory.mjs` / `scripts/mutation-sample-check.mjs`）：
- *   · `--sync <文件>`：**刷表**。数字由实测重写 —— 这是**唯一合法**的改上限方式；
- *   · `--verify <文件>`：**验表**。逐格与实测比，**不改任何文件**；任一处不一致 ⇒ exit 1 并点名。
- * 两者都比 `--strict` 更紧：`--strict` 是棘轮（实测 ≤ 上限即绿，允许余量），`--sync` / `--verify`
- * 要求**相等**（表是量出来的，不是写出来的）⇒ 手抄高一位也红。棘轮方向本身不变：清账仍然是「跑
- * `--sync` 把上限降下来」，而不是「手改一个更小的数」。
+ *   · `--sync <文件>`：**刷表**。数字由实测重写 —— 这是**唯一合法**的改预算方式；
+ *   · `--verify <文件>`：**验表**。逐格与 `budgetFor(实测)` 比，**不改任何文件**；任一处不一致 ⇒ exit 1 并点名。
+ * 两者都比 `--strict` 更紧：`--strict` 是棘轮（实测 ≤ 预算即绿，允许余量），`--sync` / `--verify`
+ * 要求**相等**（表是量出来的，不是写出来的）⇒ 手抄高一位也红。
  *
- * 与 `flat-count-inventory` 那条已知坑的区别：**少传路径不是崩溃，是明确的用法错误**（exit 2 + 用法）。
- * 那一族的 `--sync` 少传路径会 `readFileSync(undefined)` 崩在 TypeError 上，读起来像门自己坏了；
- * 这里先校验参数、再碰文件系统。
- *
- * 刷不了的两种红（都不是「数值抄错」，所以 `--sync` 不许静默吞掉）：
- *   · 指令面上有这份文件、表里没有它的行 ⇒ 缺一条**理由注释**，那是人写的，`--sync` 不代笔；
- *   · 表里有这一行、指令面上没有这份文件 ⇒ 死条目（改名 / 删文件留下的），人决定删还是改回。
+ * 少传路径不是崩溃，是明确的用法错误（exit 2 + 用法）；先校验参数、再碰文件系统。
  */
-
-const DEBT_TABLE_USAGE = [
-  "用法：",
-  "  node scripts/agents-directive-scan.mjs                    # 全量报告（人读视图，exit 0）",
-  "  node scripts/agents-directive-scan.mjs --strict           # 门禁：红数 > 0 ⇒ exit 1；清单拿不到 ⇒ exit 2",
-  "  node scripts/agents-directive-scan.mjs --json             # 同一份事实的机器读法",
-  "  node scripts/agents-directive-scan.mjs --sync   <文件>    # 刷上限表 + 字节预算表（唯一合法的改法；文件里必须两张表都有）",
-  "  node scripts/agents-directive-scan.mjs --verify <文件>    # 验两张表（逐格与实测比；不改文件）",
-  "  node scripts/agents-directive-scan.mjs --self-test        # 反向证（合成树夹具 × 三种欠账形态，含字节预算）",
+const BUDGET_TABLE_USAGE = [
+  "用法：node scripts/agents-directive-scan.mjs --sync <文件>   # 刷字节预算表（唯一合法改法）",
+  "      node scripts/agents-directive-scan.mjs --verify <文件> # 验字节预算表（逐格 = ceil512(实测) + 1024）",
+  "目标必须是本仓内含 `export const LENGTH_BUDGETS = Object.freeze({ ... })` 的源文件（通常是本脚本自身）。",
 ].join("\n");
 
-/** `DEBT_CEILINGS` 那一块在源码里的位置（抽不到就抛错：#164 口径，不许静默降级）。 */
-function debtBlockOf(text) {
-  const m = /(export const DEBT_CEILINGS = Object\.freeze\(\{)([\s\S]*?)(\n\}\);)/.exec(text);
-  if (m === null) {
-    throw new Error("这份文件里抽不到 `export const DEBT_CEILINGS = Object.freeze({ … });`——"
-      + "上限表不是这个形状，`--sync` / `--verify` 没有可对账的真值（拒绝静默成功）");
-  }
-  return { head: m[1], body: m[2], tail: m[3], start: m.index, end: m.index + m[0].length };
-}
-
-/** 表里的一行：`  "AGENTS.md": Object.freeze({ … }),`。 */
-const DEBT_ROW_RE = /\n  "([^"]+)": Object\.freeze\(\{([\s\S]*?)\n  \}\),/g;
-/** 行里的一格：`    A: 20,`。 */
-const DEBT_CELL_RE = /\n([ \t]+)([A-Z])(: )(\d+)(,)/g;
-
-/**
- * 把源码文本里的上限表读成 `Map<文件, {A,B,C}>`（**只读文本**，不读模块常量 ⇒ 自测能对一份副本对账）。
- *
- * @param {string} text
- * @returns {Map<string, Record<string, number>>}
- */
-export function ceilingsFromSource(text) {
-  const { body } = debtBlockOf(text);
-  const rows = new Map();
-  for (const m of body.matchAll(DEBT_ROW_RE)) {
-    const cells = {};
-    for (const c of m[2].matchAll(DEBT_CELL_RE)) cells[c[2]] = Number(c[4]);
-    rows.set(m[1], cells);
-  }
-  if (rows.size === 0) {
-    throw new Error("`DEBT_CEILINGS` 块里一行都抽不到——表被改坏了（拒绝静默成功）");
-  }
-  return rows;
-}
-
-/**
- * 验表：逐格与实测比。**不改任何文件**，返回问题清单（空 = 绿）。
- *
- * @param {{text: string, measured: Map<string, Record<string, number>>}} input
- * @returns {string[]}
- */
-export function verifyCeilings({ text, measured }) {
-  const table = ceilingsFromSource(text);
-  const problems = [];
-  for (const [file, counts] of measured) {
-    const row = table.get(file);
-    if (row === undefined) {
-      problems.push(`${file}：指令面上有这份文件，上限表里却没有它的行（新入指令面却忘了钉上限；`
-        + "`--sync` 不替你编理由注释，人手加一条再跑 --sync）");
-      continue;
-    }
-    for (const category of Object.keys(CATEGORIES)) {
-      const claim = row[category];
-      if (claim === undefined) {
-        problems.push(`${file} ${category} 类：上限表里没有这一格（--sync 只重写已有的格，缺格要人手补）`);
-        continue;
-      }
-      if (claim !== counts[category]) {
-        problems.push(`${file} ${category} 类：表 ${claim} / 实测 ${counts[category]}`
-          + "（手改派生数 = 伪造；跑 --sync）");
-      }
-    }
-  }
-  for (const file of table.keys()) {
-    if (!measured.has(file)) {
-      problems.push(`${file}：上限表里有这一行，指令面上却没有这份文件（死条目：文件名改了或文件删了，`
-        + "人手决定删掉还是改回来）");
-    }
-  }
-  return problems;
-}
-
-/**
- * 刷表：把每一格的数字重写成实测值（**只碰数字**，行尾的理由注释一个字不动）。
- *
- * @param {{text: string, measured: Map<string, Record<string, number>>}} input
- * @returns {{text: string, changes: Array<{file: string, category: string, from: number, to: number}>,
- *   missing: string[], dead: string[]}}
- */
-export function syncCeilings({ text, measured }) {
-  const { head, body, tail, start, end } = debtBlockOf(text);
-  const table = ceilingsFromSource(text);
-  const missing = [...measured.keys()].filter((file) => !table.has(file));
-  const dead = [...table.keys()].filter((file) => !measured.has(file));
-  const changes = [];
-  const rebuilt = body.replace(DEBT_ROW_RE, (row, file, inner) => {
-    const counts = measured.get(file);
-    if (counts === undefined) return row;
-    const cells = inner.replace(DEBT_CELL_RE, (cell, indent, category, sep, digits, comma) => {
-      const next = counts[category];
-      if (next === undefined) return cell;
-      if (Number(digits) !== next) changes.push({ file, category, from: Number(digits), to: next });
-      return `\n${indent}${category}${sep}${next}${comma}`;
-    });
-    return inner === "" ? row : row.replace(inner, () => cells);
-  });
-  return { text: `${text.slice(0, start)}${head}${rebuilt}${tail}${text.slice(end)}`, changes, missing, dead };
-}
-
-/** `--sync` / `--verify` 的字节预算表（issue #726）：同一套纪律，第二个表。 */
+/** `--sync` / `--verify` 的字节预算表（issue #726）。 */
 function lengthBlockOf(text) {
   const m = /(export const LENGTH_BUDGETS = Object\.freeze\(\{)([\s\S]*?)(\n\}\);)/.exec(text);
   if (m === null) {
@@ -969,16 +438,9 @@ export function syncBudgets({ text, measured }) {
   return { text: `${text.slice(0, start)}${head}${rebuilt}${tail}${text.slice(end)}`, changes, missing, dead };
 }
 
-/** 实测（只读 `counts`；上限传空表即可——`unregistered` 的红在这里无关，我们只要数）。 */
-function measuredForTable({ root, io }) {
-  const { report } = scanDirectives({ root, io, ceilings: {}, budgets: {} });
-  return new Map(report.filter((entry) => entry.kind === "directive").map((entry) => [entry.file, { ...entry.counts }]));
-}
-
-/** 字节预算的实测面（与上面同一次扫描，不跑第二遍）。 */
+/** 字节预算的实测面（一次扫描，不跑第二遍）。 */
 function measuredBytesForTable({ root, io }) {
-  const { report } = scanDirectives({ root, io, ceilings: {}, budgets: {} });
-  return new Map(report.filter((entry) => entry.kind === "directive").map((entry) => [entry.file, entry.bytes]));
+  return scanDirectives({ root, io, budgets: {} }).measuredBytes;
 }
 
 /** 目标文件必须是**本仓内**的路径（刷仓库外的文件等于给「手抄」开一条后门）。 */
@@ -986,22 +448,20 @@ function resolveTableTarget(target, root) {
   const abs = path.resolve(root, target);
   const rel = path.relative(root, abs);
   if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(`目标文件 ${target} 不在仓库内（${root}）——上限表只许刷本仓里的源文件`);
+    throw new Error(`目标文件 ${target} 不在仓库内（${root}）——预算表只许刷本仓里的源文件`);
   }
   return { abs, rel: rel.split(path.sep).join("/") };
 }
 
-/** `--verify <文件>`：验表，不改文件。退出码 0 = 逐格等于实测，1 = 有格不一致，2 = 门自己坏了。 */
+/** `--verify <文件>`：验预算表，不改文件。退出码 0 = 逐格等于推出来的那一格，1 = 有格不一致，2 = 门自己坏了。 */
 function mainVerifyTable({ target, root, io }) {
   let rel;
   let text;
-  let measured;
   let measuredBytes;
   try {
     const resolved = resolveTableTarget(target, root);
     rel = resolved.rel;
     text = readFileSync(resolved.abs, "utf8");
-    measured = measuredForTable({ root, io });
     measuredBytes = measuredBytesForTable({ root, io });
   } catch (error) {
     console.error(`agents-directive-scan --verify: ${error.message}`);
@@ -1009,7 +469,7 @@ function mainVerifyTable({ target, root, io }) {
   }
   let problems;
   try {
-    problems = [...verifyCeilings({ text, measured }), ...verifyBudgets({ text, measured: measuredBytes })];
+    problems = verifyBudgets({ text, measured: measuredBytes });
   } catch (error) {
     console.error(`agents-directive-scan --verify: ${error.message}`);
     return 2;
@@ -1018,49 +478,38 @@ function mainVerifyTable({ target, root, io }) {
   if (problems.length > 0) {
     for (const problem of problems) console.log(`  ✗ ${problem}`);
     console.log(`agents-directive-scan: 失败 — ${problems.length} 处不一致`
-      + "（上限与字节预算都是量出来的：跑 `--sync`，不许手改）");
+      + "（字节预算是量出来的：跑 `--sync`，不许手改）");
     return 1;
   }
-  console.log(`  ${measured.size} 份指令面文件 × ${Object.keys(CATEGORIES).length} 类，逐格等于实测；`
-    + `${measuredBytes.size} 份指令面文件的字节数逐格等于推出来的那一格（ceil${BUDGET_ROUNDING}(实测) + ${BUDGET_HEADROOM}）`);
+  console.log(`  ${measuredBytes.size} 份指令面文件的字节数逐格等于推出来的那一格（ceil${BUDGET_ROUNDING}(实测) + ${BUDGET_HEADROOM}）`);
   console.log(`复跑：node scripts/agents-directive-scan.mjs --verify ${rel}`);
   return 0;
 }
 
-/** `--sync <文件>`：刷表（唯一合法的改法），刷完当场复验。退出码 0 = 刷完绿，1 = 有刷不动的红，2 = 门坏了。 */
+/** `--sync <文件>`：刷预算表（唯一合法的改法），刷完当场复验。退出码 0 = 刷完绿，1 = 有刷不动的红，2 = 门坏了。 */
 function mainSyncTable({ target, root, io }) {
   let rel;
   let abs;
   let text;
-  let measured;
   let measuredBytes;
   try {
     const resolved = resolveTableTarget(target, root);
     ({ rel, abs } = resolved);
     text = readFileSync(abs, "utf8");
-    measured = measuredForTable({ root, io });
     measuredBytes = measuredBytesForTable({ root, io });
   } catch (error) {
     console.error(`agents-directive-scan --sync: ${error.message}`);
     return 2;
   }
-  let result;
   let budgetResult;
   try {
-    result = syncCeilings({ text, measured });
-    budgetResult = syncBudgets({ text: result.text, measured: measuredBytes });
+    budgetResult = syncBudgets({ text, measured: measuredBytes });
   } catch (error) {
     console.error(`agents-directive-scan --sync: ${error.message}`);
     return 2;
   }
   console.log(`agents-directive-scan --sync：${rel}`);
   const unfixable = [];
-  for (const file of result.missing) {
-    unfixable.push(`${file}：指令面上有这份文件，上限表里没有它的行——人手加一条（连理由注释），再跑 --sync`);
-  }
-  for (const file of result.dead) {
-    unfixable.push(`${file}：上限表里有这一行，指令面上没有这份文件——人手决定删掉它还是把文件名改回来`);
-  }
   for (const file of budgetResult.missing) {
     unfixable.push(`${file}：指令面上有这份文件，字节预算表里没有它的行——人手加一条（连理由注释），再跑 --sync`);
   }
@@ -1069,915 +518,169 @@ function mainSyncTable({ target, root, io }) {
   }
   if (unfixable.length > 0) {
     for (const line of unfixable) console.log(`  ✗ ${line}`);
-    console.log("agents-directive-scan: 刷不动 —— 上面这些不是上限数值能修的（不写文件）");
+    console.log("agents-directive-scan: 刷不动 —— 上面这些不是预算数值能修的（不写文件）");
     return 1;
   }
   const nextText = budgetResult.text;
   if (nextText !== text) writeFileSync(abs, nextText);
-  for (const change of result.changes) {
-    console.log(`  ${change.to > change.from ? "↑" : "↓"} ${change.file} ${change.category} 类：`
-      + `${change.from} → ${change.to}${change.to > change.from
-        ? "（**抬高**：新写进去的可变量要么改成复现命令，要么在报告里写明为什么是存量）" : ""}`);
-  }
   for (const change of budgetResult.changes) {
     console.log(`  ${change.to > change.from ? "↑" : "↓"} ${change.file} 字节预算：`
       + `${change.from} → ${change.to}（实测 ${change.measured} ⇒ ceil${BUDGET_ROUNDING} + ${BUDGET_HEADROOM}；`
       + `≈${tokensOf(change.to)} tokens；${change.to > change.from
         ? "抬高 = 这张面又长长了，先在报告里写明为什么" : "清账"}）`);
   }
-  console.log(`  改动 ${result.changes.length + budgetResult.changes.length} 格`
-    + "（数字由实测重写；行尾的理由注释一个字都没碰）");
-  const problems = [...verifyCeilings({ text: nextText, measured }), ...verifyBudgets({ text: nextText, measured: measuredBytes })];
+  console.log(`  改动 ${budgetResult.changes.length} 格（数字由实测重写；行尾的理由注释一个字都没碰）`);
+  const problems = verifyBudgets({ text: nextText, measured: measuredBytes });
   if (problems.length > 0) {
     for (const problem of problems) console.log(`  ✗ ${problem}`);
-    console.log("agents-directive-scan: 刷完仍有不一致 —— 上面这些不是上限数值能修的");
+    console.log("agents-directive-scan: 刷完仍有不一致 —— 上面这些不是预算数值能修的");
     return 1;
   }
   console.log("刷完复验：逐格等于实测");
   return 0;
 }
 
-// ── 9. 输出（两条分支都只读 `gate`，不自己算红） ─────────────────────────────
+// ── 7. 输出（两条分支都只读 `gate`，不自己算红） ─────────────────────────────
 /** 人读视图。返回值 = 退出码（由 `gateExitCode` 给；本函数不自己拼红数）。 */
-function printReport({ report, gate, constants, externalPrefixes, staleConstants, exemptions, ceilings, budgets }, { strict }) {
-  const directive = report.filter((r) => r.kind === "directive");
-  const history = report.filter((r) => r.kind === "history");
-  console.log(`agents-directive-scan: ${report.length} 份**入库**文件（清单 = \`git ls-files\`；`
-    + `面 = AGENTS 那一对 + \`CHANGELOG.md\` + \`docs/\`，issue #642）`);
-  console.log("门禁：`npm run check:agents-directives`（= `--strict` + `--verify`）在 CI 里阻塞，紧跟 `Documentation drift check` 一族；"
-    + "上限表只能由 `--sync <文件>` 刷（手改数字 = 伪造），默认模式只打报告\n");
+function printReport({ manifest, report, gate, budgets }, { strict }) {
+  const measuredBytes = new Map(report.map((r) => [r.file, r.bytes]));
+  console.log("agents-directive-scan: AGENTS 指令面字节预算（issue #726）");
+  console.log(`  判定面 = git ls-files（AGENTS 那一对，共 ${manifest.length} 份；#560：只取清单，不退回文件系统遍历）`);
+  console.log("  #909：三类文本启发式（状态声明 / 手抄件上限表 / 裸坐标）已删，本闸只判字节预算");
 
-  console.log("── 分类（第一等公民，纯路径） ──────────────────────────────────");
-  console.log(`  directive    ${String(directive.length).padStart(3)} 份  ${directive.map((r) => r.file).join(", ")}`);
-  console.log(`  history      ${String(history.length).padStart(3)} 份  （CHANGELOG + docs/，只计数、不判定）`);
-  console.log(`  真值来源：门禁常量 ${constants.size} 个（\`scripts/*.mjs\` 现读）、`
-    + `外部仓前缀 ${externalPrefixes.size} 个（\`scripts/docs-drift-check.mjs\` 现读：${[...externalPrefixes].join(" / ")}）\n`);
-
-  console.log("── 射程三类 × 指令面（非例外命中数） ──────────────────────────");
-  for (const entry of directive) {
-    const cells = Object.keys(CATEGORIES).map((c) => `${c}=${entry.counts[c]}`).join("  ");
-    const exempt = entry.hits.filter((h) => h.exempt).length;
-    console.log(`  ${entry.file}  ${cells}  （例外放行 ${exempt} 处）`);
-  }
-  console.log("  A = 工单状态句；B = 会过期的实测数；C = 裸源码行号坐标（口径见文件头）\n");
-
-  const exemptHits = directive.flatMap((entry) => entry.hits.filter((h) => h.exempt).map((h) => ({ ...h, file: entry.file })));
-  console.log("── 例外登记表（每条都必须在指令面上真的命中；空转即红） ──────────");
-  for (const entry of exemptions) {
-    const used = exemptHits.filter((h) => h.exemption === entry.id);
-    console.log(`  ${used.length === 0 ? "✗" : "✓"} ${entry.id}（${entry.categories.join("/")}）—— `
-      + `${used.length} 处：${used.slice(0, 4).map((h) => `${h.file}:${h.line}`).join(", ")}${used.length > 4 ? " …" : ""}`);
-    console.log(`      ${entry.why}`);
-  }
-  if (staleConstants.length > 0) {
-    console.log("  ⚠ 常量抄件与源码现值不一致（例外因此不放行）：");
-    for (const s of staleConstants) {
-      console.log(`    ${s.file}:${s.line}  \`${s.name} = ${s.value}\` ≠ 源码现值 ${s.truth}（真值在 ${s.constantFile}）`);
+  console.log("\n指令面长度（字节预算，每轮全额重发）：");
+  for (const [file, bytes] of measuredBytes) {
+    const budget = budgets[file];
+    if (budget === undefined) {
+      console.log(`  ✗ ${file}: 实测 ${bytes} 字节（≈${tokensOf(bytes)} tokens）：指令面上有这份文件，预算表里却没有它的行`);
+      continue;
+    }
+    if (bytes > budget) {
+      console.log(`  ✗ ${file}: 实测 ${bytes} > 预算 ${budget}（超 ${bytes - budget}，≈${tokensOf(bytes - budget)} tokens）`);
+    } else {
+      const derived = budgetFor(bytes);
+      const hint = budget !== derived ? `  ← --sync 会把这一格刷成 ${derived}` : "";
+      console.log(`  ✓ ${file}: 实测 ${bytes} / 预算 ${budget}（余量 ${budget - bytes}，≈${tokensOf(bytes)} tokens）${hint}`);
     }
   }
+  for (const entry of gate.downgradableBudget) {
+    console.log(`  ~ ${entry.file}: --sync 会把预算刷成 ${entry.derived}（当前 ${entry.budget}，差 ${entry.budget - entry.derived} 字节）`);
+  }
+  console.log(`    换算口径：${BYTES_PER_TOKEN} 字节/token（折算只给人看，判定按字节，见 BYTES_PER_TOKEN）`);
 
-  console.log("\n── 存量欠账（本票只建闸、不清账：棘轮方向） ────────────────────");
-  for (const entry of directive) {
-    const row = ceilings[entry.file] ?? {};
-    const cells = Object.keys(CATEGORIES).map((c) => `${c}: ${entry.counts[c]} / 上限 ${row[c] ?? "（未登记）"}`).join("；");
-    console.log(`  ${entry.file}  ${cells}`);
-  }
-  for (const d of gate.downgradable) {
-    console.log(`  ↓ ${d.file} ${d.category} 类实测 ${d.actual} < 上限 ${d.ceiling}——存量在变少，可把上限降到 ${d.actual}`);
-  }
+  console.log("\n判据（#909 后唯一一条）：");
+  console.log("  ⑥ 字节预算：实测 ≤ ceil512(实测) + 1024，且表里有这一行且为正数");
+  console.log("  已删：① 状态声明 ② 手抄件上限表 ③ 裸坐标——假版本号不再报红，真值由 check:docs 的版本对账管");
 
-  console.log("\n── 指令面长度（字节预算，issue #726；折叠不动它 ⇒ 每轮全额重发） ──");
-  for (const entry of directive) {
-    const budget = budgets[entry.file];
-    const headroom = budget === undefined ? null : budget - entry.bytes;
-    console.log(`  ${entry.file}  ${entry.bytes} 字节 / 预算 ${budget ?? "（未登记）"} 字节`
-      + (headroom === null ? "" : `（余量 ${headroom}）`)
-      + `  ≈ ${tokensOf(entry.bytes)} tokens（换算比 ${BYTES_PER_TOKEN} 字节/token）`);
-  }
-  for (const d of gate.downgradableBudget) {
-    console.log(`  ↓ ${d.file} 实测 ${d.bytes} 字节 / 预算 ${d.budget}——与推出来的那一格 ${d.derived}`
-      + `（= ceil${BUDGET_ROUNDING}(${d.bytes}) + ${BUDGET_HEADROOM}）不一致，\`--sync\` 会把它写成 ${d.derived}`);
-  }
-  console.log(`  换算口径：${BYTES_PER_TOKEN} 字节/token 是 2026-11-05 在 relay 上实测的比值（不是常数），只用于折算，不参与判定\n`);
-
-  if (gate.red > 0) {
-    console.log("\n── 红（每条都点名文件 + 行） ─────────────────────────────────");
-    for (const v of gate.overCeiling) {
-      console.log(`  ✗ ${v.file}  ${v.category} 类（${CATEGORIES[v.category]}）实测 ${v.actual} > 上限 ${v.ceiling}`
-        + `  ⇒ 行 ${v.lines.join(", ")}`);
-      console.log("      改成不变式或复现命令（`node scripts/agents-directive-scan.mjs` 现读）；确属存量才抬上限，并在报告里说明");
-    }
-    for (const v of gate.unregistered) {
-      console.log(`  ✗ ${v.file}  ${v.category} 类有 ${v.actual} 处命中，却没登记上限（新入指令面却忘了钉）`);
-    }
-    for (const v of gate.idleExemptions) console.log(`  ✗ 例外 \`${v.id}\` 在指令面上一处也没命中（空转条目，#210 R2）——删掉它，或修好它的判据`);
-    for (const v of gate.idleCeilings) console.log(`  ✗ ${v.file} ${v.category} 类上限 ${v.ceiling} 而实测 0（整条登记空转）`);
-    for (const v of gate.overBudget) {
-      console.log(`  ✗ ${v.file} 字节数 ${v.bytes} > 预算 ${v.budget}，超量 ${v.over} 字节`
-        + `（≈${v.tokens} tokens vs ≈${v.budgetTokens} tokens，超 ≈${v.overTokens} tokens）`
-        + "—— 把参考材料搬进冷层（`docs/maintenance/command-reference.md`），或者跑 `--sync` 把预算抬上去并在报告里说明为什么");
-    }
-    for (const v of gate.unregisteredBudget) {
-      console.log(`  ✗ ${v.file} 有 ${v.bytes} 字节（≈${v.tokens} tokens）却没登记字节预算（新入指令面却忘了钉）`);
-    }
-    for (const v of gate.idleBudgets) console.log(`  ✗ ${v.file} 字节预算 ${v.budget} 空转——${v.why}`);
-    for (const v of gate.staleConstants) {
-      console.log(`  ✗ ${v.file}:${v.line}  \`${v.name} = ${v.value}\` 与源码现值 ${v.truth}（真值在 ${v.constantFile}）不一致`
-        + "——例外因此不放行：把抄件改成现值，或把数字换成复现命令");
-    }
+  const redLines = [];
+  for (const entry of gate.overBudget) redLines.push(`${entry.file} 超预算 ${entry.over} 字节`);
+  for (const entry of gate.unregisteredBudget) redLines.push(`${entry.file} 缺字节预算行`);
+  for (const entry of gate.idleBudgets) redLines.push(`预算行「${entry.file}」空转（${entry.why}）`);
+  console.log(`\n总判词：${gate.red === 0 ? "绿" : "红"}（红 ${gate.red} 处 = 超预算 ${gate.counts.overBudget} + 未登记预算 ${gate.counts.unregisteredBudget} + 空转预算 ${gate.counts.idleBudgets}；另有可降预算提示 ${gate.downgradableBudget.length} 处）`);
+  if (redLines.length > 0) {
+    console.log("红项：");
+    for (const line of redLines) console.log(`  ✗ ${line}`);
   }
 
-  console.log("\n── 判据 ───────────────────────────────────────────────────────");
-  console.log(`  ① 指令面（AGENTS 中英）三类命中：${directive.reduce((n, r) => n + r.hits.length, 0)} 处，`
-    + `其中例外放行 ${exemptHits.length} 处、非例外 ${directive.reduce((n, r) => n + Object.values(r.counts).reduce((a, b) => a + b, 0), 0)} 处`);
-  console.log(`  ② 历史一侧（CHANGELOG + docs/）：${history.reduce((n, r) => n + r.hits.length, 0)} 处命中——**不判定**（票面 边界）`);
-  console.log(`  ③ 例外登记：${exemptions.length} 条，空转 ${gate.counts.idleExemptions} 条`);
-  console.log(`  ④ 存量欠账：${Object.keys(ceilings).length} 份文件登记，超上限 ${gate.counts.overCeiling} 格、空转 ${gate.counts.idleCeilings} 格`);
-  console.log(`  ⑤ 常量抄件对账：${staleConstants.length === 0 ? "全部等于源码现值" : `${staleConstants.length} 处过期`}`);
-  console.log(`  ⑥ 字节预算（issue #726）：${Object.keys(budgets).length} 份文件登记，超预算 ${gate.counts.overBudget} 份、`
-    + `未登记 ${gate.counts.unregisteredBudget} 份、空转 ${gate.counts.idleBudgets} 份`);
-
-  if (strict) {
-    console.log(`\n--strict: ${gate.red === 0 ? "OK — 0 处红" : `${gate.red} 处红`}`);
-    return gateExitCode(gate, { strict });
-  }
-  console.log("\n结论：报告模式（exit 0）。门禁跑的是 `--strict`（`npm run check:agents-directives`）。");
-  return gateExitCode(gate, { strict });
+  if (strict) return gateExitCode(gate, { strict });
+  console.log("当前是报告模式（给人读的视图，恒 exit 0）；要拿它当门：加 --strict");
+  console.log("派生预算表怎么改（**手改派生数 = 伪造**）：`node scripts/agents-directive-scan.mjs --sync <文件>` 把预算重写成 ceil512(实测) + 1024，`--verify <文件>` 双向逐格验（抄高抄低都红）");
+  return 0;
 }
 
-// ── 10. 自测（合成树夹具 / 纯函数夹具，不碰真文档） ───────────────────────────
-/**
- * 合成树夹具的**内容**（issue #644 ①）。
- *
- * 为什么不再拿真 `AGENTS.md` 当注入目标：真面上「实测命中」与 `DEBT_CEILINGS` 之差（= 余量）是**这台机器
- * 此刻的欠账状态**。旧用例「塞一条 ⇒ 红」隐含「干净面恰好贴在上限上」——B 类从 25 清到 24 之后，注入的
- * 那一条落进余量 ⇒ 门是绿的，用例却期望红 ⇒ **扫完账，反向证自己变红**（#644 ① 的原话）。
- *
- * 合成树把三件事都写进用例：内容在这张表里、上限 = 实测 + `margin`、注入数 = `上限 − 实测 + 1` ⇒
- * 裁决只依赖夹具，不依赖真树欠了多少（与 `docs-drift-check --self-test` 的树形用例同一个理由，#302）。
- *
- * 夹具面必须**三类都有非例外命中**：某一格实测为 0 时给它加余量会撞上「上限 > 0 而实测 0 ⇒ 红」那条
- * 规矩（空转上限），夹具自己就红了，与注入无关。同理三条例外**各自命中**（否则空转例外红）。
- */
-const FIXTURE_BODIES = Object.freeze({
-  "AGENTS.md": [
-    "# AGENTS（合成树夹具，issue #644 ①；不是真文档）",
-    "",
-    "- 见 issue #642（出处引用，不带状态）——这一句**不算** A 类命中",
-    "- 工单 #900 已落地（夹具里的存量 A 类命中）",
-    "- measured 87 declarations（夹具里的存量 B 类命中）",
-    "- 看 `src/loop/orchestrator.js:4372`（夹具里的存量 C 类命中）",
-    "- `BASELINE_ROOT = 108` 与「实测 108 个类型错误」同句（夹具里的 gate-owned-constant 例外）",
-    "- 历史值：此前实测 122 组 / 346 处（夹具里的 historical-value-label 例外）",
-    "- 看 `pi-subagents:src/runs/background/async-execution.js:9`（夹具里的 external-repo-coordinate 例外）",
-    "",
-  ].join("\n"),
-  "AGENTS_cn.md": [
-    "# AGENTS_cn（合成树夹具，issue #644 ①；不是真文档）",
-    "",
-    "- 工单 #901 已落地（夹具里的存量 A 类命中）",
-    "- 实测 122 组 / 346 处（夹具里的存量 B 类命中）",
-    "- 看 `src/loop/orchestrator.js:4372`（夹具里的存量 C 类命中）",
-    "",
-  ].join("\n"),
-  "CHANGELOG.md": [
-    "# CHANGELOG（夹具：历史一侧只计数、不判定）",
-    "",
-    "- issue #998 已落地；实测 1234 组（同一句式在指令面上是红，在历史一侧是绿）",
-    "",
-  ].join("\n"),
-  "docs/decisions/001-config-adapters.md": [
-    "# ADR-001（夹具：历史一侧只计数、不判定）",
-    "",
-    "- issue #998 已落地；实测 1234 组",
-    "",
-  ].join("\n"),
-  // 门禁常量表的真值来源：`gate-owned-constant` 例外**当场**与这里对账（名字清单从源码推，不抄）
-  "scripts/type-check-ratchet.mjs": "// 夹具：`gateConstantsFrom()` 的真值来源\nconst BASELINE_ROOT = 108;\n",
-  // 外部仓前缀名单的真值来源：`external-repo-coordinate` 例外从这里现读
-  "scripts/docs-drift-check.mjs": [
-    "// 夹具：`externalPrefixesFrom()` 的真值来源",
-    "const EXTERNAL_REPO_PREFIXES = new Map([",
-    '  ["pi-subagents", "夹具里唯一登记在案的外部仓"],',
-    "]);",
-    "",
-  ].join("\n"),
-  // `--sync` / `--verify` 的刷写目标（#644 ②）：一份带 `DEBT_CEILINGS` 表的最小源文件，
-  // 数字先摆成夹具的实测值（1 / 1 / 1），所以干净的夹具上 `--verify` 是绿的。
-});
-
-/**
- * 夹具树（issue #644 ① / #726）：内容 + 两张派生表。
- *
- * 两张表的数字都由**夹具自己的内容**算出来，不手抄：
- *   · 上限 = 夹具实测命中数 + `margin`（三个类别的命中数是固定的：每类一条）；
- *   · 字节预算 = `budgetFor(夹具 AGENTS 两份的字节数)`（= `ceil512(实测) + 1024`）。
- * 两张表都写**推出来的那一格**（上限 = 实测 + 0，预算 = budgetFor(实测)）：`--verify` 要求「表 = 推出来的那一格」，
- * 所以表永远是那一份；欠账形态（上限比实测高多少）只活在内存里的 `ceilings` 注入里，不进夹具文件——
- * 否则「干净表上 `--verify` 绿」这一格会随形态变红，而它本来就与形态无关。
- */
-function fixtureFiles() {
-  const agentsEn = FIXTURE_BODIES["AGENTS.md"];
-  const agentsCn = FIXTURE_BODIES["AGENTS_cn.md"];
-  const enBytes = Buffer.byteLength(agentsEn, "utf8");
-  const cnBytes = Buffer.byteLength(agentsCn, "utf8");
-  return {
-    ...FIXTURE_BODIES,
-    "scripts/debt-table-fixture.mjs": [
-      "// 夹具：`--sync` / `--verify` 的刷写目标（数字 = 夹具实测值）",
-      "export const DEBT_CEILINGS = Object.freeze({",
-      '  "AGENTS.md": Object.freeze({',
-      "    // 1：夹具里的存量 A 类命中",
-      "    A: 1,",
-      "    // 1：夹具里的存量 B 类命中",
-      "    B: 1,",
-      "    // 1：夹具里的存量 C 类命中",
-      "    C: 1,",
-      "  }),",
-      '  "AGENTS_cn.md": Object.freeze({',
-      "    // 1 / 1 / 1：同上（中文侧）",
-      "    A: 1,",
-      "    B: 1,",
-      "    C: 1,",
-      "  }),",
-      "});",
-      "",
-      "export const LENGTH_BUDGETS = Object.freeze({",
-      `  // ${enBytes} 字节实测 ⇒ ${budgetFor(enBytes)}（= ceil${BUDGET_ROUNDING} + ${BUDGET_HEADROOM}）`,
-      `  "AGENTS.md": ${budgetFor(enBytes)},`,
-      `  // ${cnBytes} 字节实测 ⇒ ${budgetFor(cnBytes)}（同上）`,
-      `  "AGENTS_cn.md": ${budgetFor(cnBytes)},`,
-      "});",
-      "",
-    ].join("\n"),
-  };
-}
-
-/**
- * 三种欠账形态（issue #644 ① 的判据：同一份夹具在这三种形态下**裁决必须相同**）。
- * `margin` = 上限与实测之差；贴上限那一种是 #642 落地时的形态，另两种是「清过账」之后的形态。
- */
-const DEBT_SHAPES = Object.freeze([
-  { id: "at-ceiling", margin: 0, label: "贴上限（上限 = 实测）" },
-  { id: "with-margin", margin: 1, label: "有余量（上限 = 实测 + 1）" },
-  { id: "ample-margin", margin: 5, label: "余量充足（上限 = 实测 + 5）" },
-]);
-
+// ── 8. 自测（合成树夹具上把真实路径跑一遍，不碰真文档、不假造判词） ───────────
 async function selfTest() {
+  let failures = 0;
   const eq = (actual, expected, what) => {
-    if (actual !== expected) throw new Error(`${what}: 期望 ${expected}，实测 ${actual}`);
+    if (actual !== expected) { failures += 1; console.error(`  ✗ ${what}：期望 ${expected}，实测 ${actual}`); }
   };
-  const realTruthFiles = gitTrackedFiles({ root: ROOT, pathspecs: TRUTH_PATHSPECS, suffix: ".mjs", what: "真值清单" });
+  const ok = (cond, what) => { if (!cond) { failures += 1; console.error(`  ✗ ${what}`); } };
 
-  /** 建一棵合成树夹具（内容全在 `FIXTURE_FILES` 里；git 用注入的假执行器，真 git 由第 ⑨ 例证过）。 */
-  const makeFixture = (margin = 0) => {
-    const dir = realpathSync(mkdtempSync(path.join(tmpdir(), "erix-directive-fixture-")));
-    const files = fixtureFiles();
-    for (const [rel, text] of Object.entries(files)) {
-      const abs = path.join(dir, rel);
-      mkdirSync(path.dirname(abs), { recursive: true });
-      writeFileSync(abs, text);
-    }
-    const surface = Object.keys(files).filter((rel) => rel.endsWith(".md")).sort();
-    const truth = Object.keys(files).filter((rel) => rel.startsWith("scripts/")).sort();
-    // `tracked` = 夹具声明的「入库」清单（可增可删：`--sync` 那两例要模拟「新入指令面」与「文件改名」）
-    const tracked = [...surface];
-    const io = {
-      exec: (args) => {
-        if (args[0] === "rev-parse") return `${dir}\n`;
-        if (args[0] === "ls-files") {
-          const pathspecs = args.slice(args.indexOf("--") + 1);
-          return (pathspecs.includes("scripts") ? truth : tracked).map((rel) => `${rel}\0`).join("");
-        }
-        throw new Error(`夹具 git 不认识这个子命令：${args.join(" ")}`);
-      },
-    };
-    // 实测：用全零上限探一次（只读 `counts`；全零不会触发空转红——空转要 `上限 > 0`）
-    const probe = scanDirectives({
-      root: dir,
-      io,
-      ceilings: Object.fromEntries(DIRECTIVE_FILES.map((rel) => [rel, { A: 0, B: 0, C: 0 }])),
-      budgets: {},
-    });
-    const measured = Object.fromEntries(probe.report
-      .filter((entry) => entry.kind === "directive")
-      .map((entry) => [entry.file, { ...entry.counts }]));
-    const ceilingsFor = (m) => Object.fromEntries(Object.entries(measured).map(([file, counts]) => [
-      file,
-      Object.fromEntries(Object.keys(CATEGORIES).map((category) => [category, counts[category] + m])),
-    ]));
-    // 夹具的实测字节数（与扫描器量的是同一份文件：`Buffer.byteLength`，不是字符数）
-    const measuredBytes = Object.fromEntries(probe.report
-      .filter((entry) => entry.kind === "directive")
-      .map((entry) => [entry.file, entry.bytes]));
-    const budgetsFor = (m) => Object.fromEntries(Object.entries(measuredBytes).map(([file, bytes]) => [file, bytes + m]));
-    // 命中注入类用例会往夹具文件里塞几百字节；默认预算必须留足余量，否则它们会顺带撞上长度判据（那是另一条判据）。
-    // 长度判据自己那几例（⑩ ⑪）显式把预算压回 `measuredBytes + m`（m = 0 / 1 / 5）。
-    const BUDGET_HEADROOM = 4096;
-    return {
-      dir,
-      io,
-      surface,
-      measured,
-      measuredBytes,
-      budgetsFor,
-      ceilingsFor,
-      /** 新增一份「入库」文件（模拟「新入指令面却忘了钉上限」）。 */
-      addTracked: (rel, text) => {
-        const abs = path.join(dir, rel);
-        mkdirSync(path.dirname(abs), { recursive: true });
-        writeFileSync(abs, text);
-        tracked.push(rel);
-      },
-      /** 把一份文件从「入库」清单里拿掉（模拟改名 / 删文件后表里留下的死行）。 */
-      removeTracked: (rel) => {
-        rmSync(path.join(dir, rel), { force: true });
-        const at = tracked.indexOf(rel);
-        if (at >= 0) tracked.splice(at, 1);
-      },
-    };
-  };
+  // ① #560 红线：git 拿不到 / 清单为空 ⇒ 抛错，**不退回文件系统遍历**。预算实测必须走 manifest。
+  let threw = false;
+  try { gitTrackedFiles({ root: "/no/such/repo", io: { exec: () => { throw new Error("git 不可用"); } } }); }
+  catch { threw = true; }
+  ok(threw, "git 不可用时 gitTrackedFiles 必须抛错（不静默回退文件系统遍历）");
+  threw = false;
+  try { gitTrackedFiles({ root: ROOT, io: { exec: (args) => (args[0] === "rev-parse" ? ROOT : "") } }); }
+  catch { threw = true; }
+  ok(threw, "清单为空（0 份入库文件）必须抛错（这道门会假绿）");
 
-  /** 在夹具上跑一段（跑完删树；`margin` 决定这一轮的欠账形态）。 */
-  const withFixture = async (margin, fn) => {
-    const tree = makeFixture(margin);
-    try {
-      return await fn({ ...tree, margin, ceilings: tree.ceilingsFor(margin), budgets: tree.budgetsFor(4096) });
-    } finally {
-      rmSync(tree.dir, { recursive: true, force: true });
-    }
-  };
+  // 合成指令面树（两页 AGENTS + 一把注入的假 git 执行器）。
+  const dir = realpathSync(mkdtempSync(path.join(tmpdir(), "erix-budget-fixture-")));
+  try {
+    mkdirSync(dir, { recursive: true });
+    const enBody = "# Fixture EN\n" + "lorem ipsum dolor sit amet ".repeat(60) + "\n";
+    const cnBody = "# 夹具 中文\n" + "之乎者也。".repeat(150) + "\n";
+    const writeBoth = (en, cn) => { writeFileSync(path.join(dir, "AGENTS.md"), en); writeFileSync(path.join(dir, "AGENTS_cn.md"), cn); };
+    writeBoth(enBody, cnBody);
+    const enBytes = Buffer.byteLength(enBody, "utf8");
+    const cnBytes = Buffer.byteLength(cnBody, "utf8");
+    const budgets = Object.freeze({ "AGENTS.md": budgetFor(enBytes), "AGENTS_cn.md": budgetFor(cnBytes) });
+    const io = { exec: (args) => (args[0] === "rev-parse" ? dir : "AGENTS.md\0AGENTS_cn.md\0") };
 
-  /** 跑一次真实 `runCli()`，把两条输出流收进内存（自测自己的报告不许被人读视图淹没）。 */
-  const runCaptured = async (argv, tree) => {
-    const saved = { log: console.log, error: console.error };
-    const out = [];
-    const err = [];
-    console.log = (...args) => out.push(args.map((a) => String(a)).join(" "));
-    console.error = (...args) => err.push(args.map((a) => String(a)).join(" "));
-    try {
-      const code = await runCli({ argv, root: tree.dir, io: tree.io, ceilings: tree.ceilings, budgets: tree.budgets });
-      return { code, stdout: out.join("\n"), stderr: err.join("\n") };
-    } finally {
-      console.log = saved.log;
-      console.error = saved.error;
-    }
-  };
+    // ② budgetFor 的公式（派生格的定义）。
+    eq(budgetFor(enBytes), Math.ceil(enBytes / 512) * 512 + 1024, "budgetFor = ceil512(实测) + 1024");
 
-  /** 往夹具里的一份文件追加若干行（返回追加前的原文与原文行数，供还原与「变异真的落上」核对）。 */
-  const injectLines = (tree, rel, lines) => {
-    const before = readFileSync(path.join(tree.dir, rel), "utf8");
-    writeFileSync(path.join(tree.dir, rel), `${before}\n${lines.join("\n")}\n`);
-    return { before, baseLines: before.split("\n").length - 1 };
-  };
-  const restore = (tree, rel, text) => writeFileSync(path.join(tree.dir, rel), text);
+    // ③ 派生预算表 + 未变文件 ⇒ 绿（红数 0）。
+    eq(scanDirectives({ root: dir, io, budgets }).gate.red, 0, "派生预算表 + 未变文件 ⇒ 红数应为 0");
 
-  /** 每一类命中各一种句式；`i` 只用来让每一行各自成句、行号互不相同。 */
-  const probeLine = (category, i) => (category === "A"
-    ? `issue #99${i} 已落地（反向证塞进去的第 ${i} 条）`
-    : category === "B"
-      ? `实测 1234 组（反向证塞进去的第 ${i} 条）`
-      : `看 \`src/loop/probe.js:${100 + i}\`（反向证塞进去的第 ${i} 条）`);
+    // ④ 实测 > 预算 ⇒ 超预算红（棘轮方向）。
+    const overBudget = { "AGENTS.md": Math.max(1, enBytes - 10), "AGENTS_cn.md": budgets["AGENTS_cn.md"] };
+    ok(scanDirectives({ root: dir, io, budgets: overBudget }).gate.counts.overBudget === 1, "实测 > 预算 ⇒ 超预算红");
 
-  /**
-   * 注入**恰好把某一格顶出上限**的命中数：`上限 − 实测 + 1`。
-   *
-   * 固定塞一条就是 #644 ① 的病根：余量 ≥ 1 时那一条落进余量 ⇒ 门是绿的，用例却期望红。
-   * 注入数从夹具自己的两个数推出来，所以三种欠账形态下都恰好顶出 1 格。
-   */
-  const injectOver = (tree, rel, category) => {
-    const n = tree.ceilings[rel][category] - tree.measured[rel][category] + 1;
-    const { before, baseLines } = injectLines(tree, rel, Array.from({ length: n }, (_, k) => probeLine(category, k + 1)));
-    return { n, before, baseLines };
-  };
+    // ⑤ 票面点名的反向证：往合成 AGENTS.md 末尾灌 2 KB 废话 ⇒ --strict 必红。
+    writeBoth(enBody + "\n" + "y".repeat(2048) + "\n", cnBody);
+    eq(await runCli({ argv: ["--strict"], root: dir, io, budgets }), 1, "灌 2 KB 废话（预算未抬）⇒ runCli --strict 必返回 1");
 
-  const hitsOf = (payload, rel) => payload.files.find((f) => f.file === rel)?.hits ?? [];
+    // ⑥ 撤掉废话 ⇒ 回绿。
+    writeBoth(enBody, cnBody);
+    eq(await runCli({ argv: ["--strict"], root: dir, io, budgets }), 0, "撤掉 2 KB 废话后必须回绿");
 
-  // ── 用例表：每个用例的签名是 `(shape) => Promise`；三种欠账形态各跑一遍，判词向量必须逐例相同 ──
-  const caseList = (shape) => {
-    const pending = [];
-    const t = (name, fn) => pending.push([name, fn]);
+    // ⑦ 「假版本号不再报红」（#909 有意的行为改变）：写一句状态声明句，红数仍 0。
+    writeBoth(enBody + "\n当前版本是 9.9.9。\n", cnBody);
+    eq(await runCli({ argv: ["--strict"], root: dir, io, budgets }), 0, "写一句假版本号（短到不超预算）⇒ 不再报红（#909 行为改变）");
+    writeBoth(enBody, cnBody);
 
-    t("放行证：真指令面与合成树夹具上 `--strict` / `--strict --json` 都绿，红数 0", async () => {
-      const real = await runCaptured(["--strict"], { dir: ROOT });
-      eq(real.code, 0, "真指令面 `--strict` 的退出码");
-      eq(JSON.parse((await runCaptured(["--strict", "--json"], { dir: ROOT })).stdout).gate.red, 0, "真指令面的红数");
-      await withFixture(shape.margin, async (tree) => {
-        const text = await runCaptured(["--strict"], tree);
-        eq(text.code, 0, `夹具（${shape.label}）\`--strict\` 的退出码`);
-        const json = await runCaptured(["--strict", "--json"], tree);
-        eq(json.code, 0, "夹具 `--strict --json` 的退出码");
-        const payload = JSON.parse(json.stdout);
-        eq(payload.gate.red, 0, "夹具的红数");
-        // 「形态真的落上了」（#210 R2）：贴上限那一种一格余量都没有，另两种六个格子全是余量
-        eq(payload.gate.downgradable.length, shape.margin === 0 ? 0 : 6, `夹具（${shape.label}）的余量格数`);
-      });
-    });
+    // ⑧ 预算表里有行、面上没这份文件 ⇒ 空转预算红。
+    ok(scanDirectives({ root: dir, io, budgets: { ...budgets, "AGENTS_gone.md": 5000 } }).gate.counts.idleBudgets >= 1,
+      "预算行没对应文件 ⇒ 空转预算红");
 
-    t("反向证 ①：注入 `上限 − 实测 + 1` 条 A 类命中 ⇒ 红并点名文件:行；`--strict --json` 同判；还原 ⇒ 绿",
-      () => withFixture(shape.margin, async (tree) => {
-        const { n, before, baseLines } = injectOver(tree, "AGENTS.md", "A");
-        const text = await runCaptured(["--strict"], tree);
-        const json = await runCaptured(["--strict", "--json"], tree);
-        eq(text.code, 1, "注入 A 类命中后 `--strict` 的退出码");
-        eq(json.code, text.code, "两条输出分支的退出码必须相同");
-        if (!/AGENTS\.md\s+A 类/.test(text.stdout)) {
-          throw new Error(`文本分支没点名 AGENTS.md 的 A 类红：${text.stdout.slice(-300)}`);
-        }
-        const payload = JSON.parse(json.stdout);
-        if (!payload.gate.overCeiling.some((v) => v.file === "AGENTS.md" && v.category === "A")) {
-          throw new Error("JSON 的红集合里没有 AGENTS.md 的 A 类");
-        }
-        // 变异必须真的落上（#210 R2）：注入的 n 条各自被抽成 A 类命中，行号在夹具原文之后，且没被例外放行
-        const injected = hitsOf(payload, "AGENTS.md").filter((h) => h.category === "A" && h.line > baseLines);
-        eq(injected.length, n, "注入的 A 类命中条数");
-        if (injected.some((h) => h.exempt)) throw new Error("注入的 A 类命中被例外放行了——这条反证是空的");
-        if (!injected.every((h) => h.line > 0)) throw new Error("A 类命中没带行号");
-        restore(tree, "AGENTS.md", before);
-        eq((await runCaptured(["--strict"], tree)).code, 0, "还原后 `--strict` 的退出码");
-        eq((await runCaptured(["--strict", "--json"], tree)).code, 0, "还原后 `--strict --json` 的退出码");
-      }));
+    // ⑨ 面上有文件却没预算行 ⇒ 未登记预算红。
+    ok(scanDirectives({ root: dir, io, budgets: { "AGENTS.md": budgets["AGENTS.md"] } }).gate.counts.unregisteredBudget >= 1,
+      "指令面有文件却没预算行 ⇒ 未登记预算红");
 
-    t("反向证 ②：注入 `上限 − 实测 + 1` 条 B 类命中 ⇒ 红；换成一模一样的登记例外 ⇒ 绿",
-      () => withFixture(shape.margin, async (tree) => {
-        const { n, before, baseLines } = injectOver(tree, "AGENTS.md", "B");
-        const red = await runCaptured(["--strict"], tree);
-        eq(red.code, 1, "注入裸实测数时 `--strict` 的退出码");
-        if (!/B 类/.test(red.stdout)) throw new Error("文本分支没说是 B 类红");
-        const payload = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
-        eq(hitsOf(payload, "AGENTS.md").filter((h) => h.category === "B" && h.line > baseLines).length, n,
-          "注入的 B 类命中条数");
-        restore(tree, "AGENTS.md", before);
-
-        // 换成**登记过的例外**：同一句话里带「实测 + 数字」（所以它确实是一处 B 类命中），但数字是门禁
-        // 自己持有的常量且**与现值一致** ⇒ 放行。这一格证的正是票面第 ④ 条：「塞一条登记过的例外 ⇒ 绿」。
-        const withConstant = injectLines(tree, "AGENTS.md", [
-          "实测 108 个类型错误（`BASELINE_ROOT = 108`，真值在 `scripts/type-check-ratchet.mjs`，门禁自己会对账）",
-        ]).before;
-        eq((await runCaptured(["--strict"], tree)).code, 0, "塞了登记例外后 `--strict` 的退出码");
-        const green = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
-        // 变异必须真的落上（#210 R2）：塞进去的那一句必须**先是**一处 B 类命中，**再**被例外放行。
-        // 只断言「有 `gate-owned-constant` 放行」是假证——夹具里本来就有两处。
-        const inserted = hitsOf(green, "AGENTS.md").find((h) => h.category === "B" && h.text.includes("108 个类型错误"));
-        if (inserted === undefined) throw new Error("变异没落上：塞进去的实测句没被抽成 B 类命中");
-        eq(inserted.exempt, true, "塞进去的那一句必须被例外放行（否则它只是没命中）");
-        eq(inserted.exemption, "gate-owned-constant", "放行它的是哪一条例外");
-        restore(tree, "AGENTS.md", withConstant);
-      }));
-
-    t("反向证 ③：常量抄件与源码现值不一致 ⇒ 例外**不放行** ⇒ 红（这不是免检通道，是活的对账）",
-      () => withFixture(shape.margin, async (tree) => {
-        const before = injectLines(tree, "AGENTS.md", [
-          "`BASELINE_ROOT = 999` 是门禁自己持有的常量（反向证：值写错）",
-        ]).before;
-        const run = await runCaptured(["--strict", "--json"], tree);
-        const payload = JSON.parse(run.stdout);
-        if (payload.staleConstants.length === 0) throw new Error("变异没落上：抄件过期没被报出来");
-        eq(payload.staleConstants[0].name, "BASELINE_ROOT", "过期抄件的常量名");
-        eq(payload.staleConstants[0].value, 999, "过期抄件的值");
-        eq(run.code, 1, "抄件过期时 `--strict --json` 的退出码");
-        restore(tree, "AGENTS.md", before);
-        eq((await runCaptured(["--strict"], tree)).code, 0, "还原后的退出码");
-      }));
-
-    t("反向证 ④：登记表里留一条用不上的例外 ⇒ 红（空转条目，#210 R2）",
-      () => withFixture(shape.margin, async (tree) => {
-        const ghost = { id: "fixture-never-matches", categories: ["B"], why: "反向证用的空转条目", matches: () => false };
-        const saved = EXEMPTIONS;
-        // 直接问判据（纯函数）：扫描面不变，只多一条谁也不命中的登记
-        const { report } = scanDirectives({ root: tree.dir, io: tree.io, exemptions: [...saved, ghost], ceilings: tree.ceilings });
-        const gate = gateVerdicts({ report, exemptions: [...saved, ghost], ceilings: tree.ceilings });
-        if (!gate.idleExemptions.some((e) => e.id === "fixture-never-matches")) {
-          throw new Error("空转的例外没被判红：登记表里的死条目会一直是假的绿");
-        }
-        eq(gate.counts.idleExemptions, 1, "空转例外的条数");
-        eq(gateExitCode(gate, { strict: true }), 1, "空转例外在门禁下的退出码");
-        // 反向：把它删掉 ⇒ 绿（证明上面那条红是它带来的，不是恒红）
-        const clean = gateVerdicts({ report, exemptions: saved, ceilings: tree.ceilings });
-        eq(clean.counts.idleExemptions, 0, "删掉空转条目后的空转数");
-        eq(gateExitCode(clean, { strict: true }), 0, "删掉空转条目后的退出码");
-      }));
-
-    t("反向证 ⑤：注入 `上限 − 实测 + 1` 条裸坐标 ⇒ 红；带登记前缀的外仓坐标 ⇒ 绿；未登记前缀 ⇒ 红",
-      () => withFixture(shape.margin, async (tree) => {
-        const { n, before, baseLines } = injectOver(tree, "AGENTS_cn.md", "C");
-        const red = await runCaptured(["--strict", "--json"], tree);
-        const payload = JSON.parse(red.stdout);
-        const injected = hitsOf(payload, "AGENTS_cn.md").filter((h) => h.category === "C" && h.line > baseLines);
-        eq(injected.length, n, "注入的裸坐标条数");
-        if (injected.some((h) => h.exempt)) throw new Error("注入的裸坐标被例外放行了——这条反证是空的");
-        eq(red.code, 1, "裸坐标下 `--strict --json` 的退出码");
-        restore(tree, "AGENTS_cn.md", before);
-
-        // 带**登记过**前缀的外仓坐标不是本仓坐标（例外）⇒ 一处也不进计数 ⇒ 绿
-        const withPrefix = injectLines(tree, "AGENTS_cn.md", [
-          "看 `pi-subagents:src/runs/background/async-execution.js:9`（反向证）",
-        ]).before;
-        eq((await runCaptured(["--strict"], tree)).code, 0, "带登记前缀的外仓坐标必须绿");
-        restore(tree, "AGENTS_cn.md", withPrefix);
-        // 未登记的前缀不是免检票：同一个形状换个仓名 ⇒ 照样是一处 C 类命中，所以注入数同样是自适应的
-        const { before: bogusBefore } = injectLines(tree, "AGENTS_cn.md",
-          Array.from({ length: n }, (_, k) => `看 \`zzz-repo:src/loop/probe.js:${200 + k}\`（反向证：未登记前缀）`));
-        eq((await runCaptured(["--strict"], tree)).code, 1, "未登记外部仓前缀必须红");
-        restore(tree, "AGENTS_cn.md", bogusBefore);
-        eq((await runCaptured(["--strict"], tree)).code, 0, "还原后必须绿");
-      }));
-
-    t("分类不是空话：同一句塞进 CHANGELOG.md / docs 历史文档 ⇒ 绿（历史一侧只计数、不判定）",
-      () => withFixture(shape.margin, async (tree) => {
-        const changelog = injectLines(tree, "CHANGELOG.md", ["issue #999 已落地；实测 1234 组"]).before;
-        eq((await runCaptured(["--strict"], tree)).code, 0, "CHANGELOG 里的同一句式必须绿");
-        const payload = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
-        const entry = payload.files.find((f) => f.file === "CHANGELOG.md");
-        eq(entry.kind, "history", "CHANGELOG.md 的分类");
-        if (entry.hits.length === 0) throw new Error("变异没落上：CHANGELOG 里一处命中都没抽到");
-        restore(tree, "CHANGELOG.md", changelog);
-
-        const doc = injectLines(tree, "docs/decisions/001-config-adapters.md", ["issue #999 已落地；实测 1234 组"]).before;
-        eq((await runCaptured(["--strict"], tree)).code, 0, "docs 历史文档里的同一句式必须绿");
-        restore(tree, "docs/decisions/001-config-adapters.md", doc);
-      }));
-
-    t("存量欠账是棘轮：实测 < 上限 ⇒ 绿（清账永不红）+ 提示可下调；上限 > 0 而实测 0 ⇒ 红", () => {
-      const ceiling = 3 + shape.margin;
-      const report = [{ file: "AGENTS.md", kind: "directive", counts: { A: 0, B: 0, C: 0 }, hits: [] }];
-      const ceilings = { "AGENTS.md": { A: ceiling, B: 0, C: 0 } };
-      const gate = gateVerdicts({ report, exemptions: EXEMPTIONS, ceilings });
-      eq(gate.counts.overCeiling, 0, "实测 0 < 上限时的超上限数");
-      eq(gate.downgradable.length, 1, "可下调的格数");
-      eq(gate.counts.idleCeilings, 1, "上限 > 0 而实测 0 ⇒ 空转 1 格");
-      if (gate.red === 0) throw new Error("空转的上限必须算红（否则登记表可以永远挂着没人用的数）");
-      const raised = gateVerdicts({
-        report: [{ file: "AGENTS.md", kind: "directive", counts: { A: ceiling + 1, B: 0, C: 0 }, hits: [] }],
-        exemptions: EXEMPTIONS, ceilings,
-      });
-      eq(raised.counts.overCeiling, 1, "实测 上限 + 1 > 上限 时的超上限数");
-      // 未登记上限的指令面文件（新入指令面却忘了钉）⇒ 红
-      const unpinned = gateVerdicts({
-        report: [{ file: "AGENTS_xx.md", kind: "directive", counts: { A: 1, B: 0, C: 0 }, hits: [] }],
-        exemptions: EXEMPTIONS, ceilings,
-      });
-      eq(unpinned.counts.unregistered, 1, "未登记上限的条数");
-    });
-
-    t("清单拿不到就报错退出：git 不可用 / 不在仓库内 / 空清单，都不许退回文件系统遍历", () => {
-      const boom = () => {
-        const error = new Error("spawnSync git ENOENT");
-        error.code = "ENOENT";
-        throw error;
-      };
-      const cases = [
-        ["git 不在 PATH", { exec: boom }, /不在 git 仓库内|找不到 git/],
-        ["仓库顶层不是本脚本所在目录", { exec: (args) => (args[0] === "rev-parse" ? "/somewhere/else\n" : "") }, /不是本脚本所在的/],
-        ["`git ls-files` 失败", { exec: (args) => {
-          if (args[0] === "rev-parse") return `${ROOT}\n`;
-          throw new Error("fatal: bad pathspec");
-        } }, /git ls-files/],
-        ["空清单", { exec: (args) => (args[0] === "rev-parse" ? `${ROOT}\n` : "") }, /清单是空的/],
-      ];
-      for (const [what, io, expected] of cases) {
-        let thrown = null;
-        try {
-          gitTrackedFiles({ root: ROOT, io });
-        } catch (error) {
-          thrown = error;
-        }
-        if (thrown === null) throw new Error(`${what}：没报错（静默退回文件系统遍历了）`);
-        if (!expected.test(thrown.message)) throw new Error(`${what}：报错没说清原因（${thrown.message}）`);
-        if (!/拒绝退回文件系统遍历/.test(thrown.message)) throw new Error(`${what}：报错没声明「不回退」（${thrown.message}）`);
-      }
-      // 放行证：真 git 在真仓库里跑得通（否则上面四条只是「永远有话说」）
-      if (gitTrackedFiles({ root: ROOT }).length === 0) throw new Error("真仓库里清单是空的：判据失效");
-    });
-
-    t("分类按路径：AGENTS* 与未登记路径 ⇒ directive（未知分类不是免检），CHANGELOG 与 docs/ ⇒ history", () => {
-      for (const rel of ["AGENTS.md", "AGENTS_cn.md", "AGENTS_xx.md", "NOTES.md"]) {
-        eq(classify(rel).kind, "directive", rel);
-      }
-      for (const rel of ["CHANGELOG.md", "docs/zzz-unknown.md", "docs/decisions/001-config-adapters.md",
-        "docs/host-consumer-contract.md"]) {
-        eq(classify(rel).kind, "history", rel);
-      }
-      // 未登记路径不是免检：它进的是**判定面**，而判定面上没登记上限的文件由 `unregistered` 判红
-      eq(classify("NOTES.md").why.includes("未登记"), true, "未登记路径的分类理由要点明它为什么进判定面");
-    });
-
-    t("断句与 token 边界：`pendingToolUse` 不是状态词，`foo/src/x.js:1` 不是本仓坐标", () => {
-      eq(scanText("issue #1 landed as a pair").length, 1, "英文状态句");
-      eq(scanText("`pendingToolUse` 是符号名").length, 0, "符号名里的 pending 不算");
-      eq(scanText("见 issue #642（出处引用，不带状态）").filter((h) => h.category === "A").length, 0, "纯出处引用不算");
-      eq(scanText("看 `test/src/x.js:12`").filter((h) => h.category === "C").length, 0, "长路径里的 src 不算");
-      eq(scanText("看 `src/x.js:12`").filter((h) => h.category === "C").length, 1, "裸坐标算一处");
-      // 一行两句：一句是状态断言、一句是复现命令 ⇒ 只红前一句（按句子判，不按行判）
-      const mixed = scanText("issue #7 已落地。跑 `node scripts/x.mjs` 现读").filter((h) => h.category === "A");
-      eq(mixed.length, 1, "一行里的状态句只算一处");
-    });
-
-    t("真值从源码推：门禁常量表非空且含 `BASELINE_ROOT`，外部仓前缀名单非空（否则例外在空转）", () => {
-      const sources = realTruthFiles.map((file) => ({ file, text: readFileSync(path.join(ROOT, file), "utf8") }));
-      const constants = gateConstantsFrom(sources);
-      if (constants.size === 0) throw new Error("门禁常量表是空的");
-      if (!constants.has("BASELINE_ROOT")) throw new Error("门禁常量表里没有 `BASELINE_ROOT`：真值没推到");
-      const prefixes = externalPrefixesFrom(sources.find((s) => s.file === "scripts/docs-drift-check.mjs").text);
-      if (prefixes.size === 0) throw new Error("外部仓前缀名单是空的");
-      // 抽不到就抛错（不许静默降级成「没有例外」）
-      let thrown = null;
-      try {
-        externalPrefixesFrom("const NOT_IT = 1;");
-      } catch (error) {
-        thrown = error;
-      }
-      if (thrown === null) throw new Error("抽不到 `EXTERNAL_REPO_PREFIXES` 时没有抛错");
-    });
-
-    t("反向证 ⑥：注入数自适应 —— 固定塞一条在有余量的形态下是**假绿**（#644 ① 的原病根），"
-      + "塞 `上限 − 实测 + 1` 条则三种欠账形态同判红", async () => {
-      const verdicts = [];
-      for (const probe of DEBT_SHAPES) {
-        await withFixture(probe.margin, async (tree) => {
-          const one = injectLines(tree, "AGENTS.md", ["实测 1234 组（固定只塞一条）"]).before;
-          const green = await runCaptured(["--strict"], tree);
-          restore(tree, "AGENTS.md", one);
-          const { before } = injectOver(tree, "AGENTS.md", "B");
-          const red = await runCaptured(["--strict"], tree);
-          restore(tree, "AGENTS.md", before);
-          verdicts.push({ probe, one: green.code, adaptive: red.code });
-        });
-      }
-      // 判据一：自适应那一列在三种形态下**必须相同**（都红）
-      eq(verdicts.map((v) => v.adaptive).join(","), "1,1,1", "自适应注入在三种欠账形态下的退出码");
-      // 判据二：固定塞一条只在贴上限那一形态下红 —— 这就是「反向证自己变红」的机制，写进用例免得复发
-      eq(verdicts.map((v) => v.one).join(","), "1,0,0", "固定塞一条在三种欠账形态下的退出码（后两种是假绿）");
-    });
-
-    t("反向证 ⑦：手改一格上限 ⇒ `--verify` 红并点名（抄高也是红）；`--sync` 刷回 ⇒ 逐字回到原样；再刷一遍 0 格改动",
-      () => withFixture(shape.margin, async (tree) => {
-        const rel = "scripts/debt-table-fixture.mjs";
-        const abs = path.join(tree.dir, rel);
-        const pristine = readFileSync(abs, "utf8");
-        eq((await runCaptured(["--verify", rel], tree)).code, 0, "干净表 `--verify` 的退出码");
-        const cell = "    A: 1,\n    // 1：夹具里的存量 B 类命中";
-        // 两个方向都试。抄高那一方向是 #644 ② 的洞：它在 `--strict` 下是**绿的**（棘轮只咬「实测 > 上限」）
-        for (const wrong of [9, 0]) {
-          const tampered = pristine.replace(cell, `    A: ${wrong},\n    // 1：夹具里的存量 B 类命中`);
-          if (tampered === pristine) throw new Error("变异没落上：手改那一格没改到");
-          writeFileSync(abs, tampered);
-          const run = await runCaptured(["--verify", rel], tree);
-          eq(run.code, 1, `手改成 ${wrong} 后 \`--verify\` 的退出码`);
-          if (!/AGENTS\.md A 类/.test(run.stdout)) throw new Error(`--verify 没点名是哪一格：${run.stdout}`);
-          if (!/实测 1/.test(run.stdout)) throw new Error(`--verify 没报实测值：${run.stdout}`);
-          eq((await runCaptured(["--sync", rel], tree)).code, 0, "`--sync` 的退出码");
-          eq(readFileSync(abs, "utf8"), pristine, "`--sync` 刷完必须逐字回到原样（只重写数字，注释不动）");
-          eq((await runCaptured(["--verify", rel], tree)).code, 0, "刷回后 `--verify` 的退出码");
-        }
-        const again = await runCaptured(["--sync", rel], tree);
-        eq(again.code, 0, "再刷一遍的退出码");
-        if (!/改动 0 格/.test(again.stdout)) throw new Error(`--sync 不幂等（干净表上又改了几格）：${again.stdout}`);
-      }));
-
-    t("反向证 ⑧：`--sync` / `--verify` 少传路径 ⇒ exit 2 且说清缺什么（不是 `readFileSync(undefined)` 崩）；"
-      + "目标里没有表 / 路径越界 ⇒ 同样 exit 2 且一个字节都不写", async () => {
-      for (const mode of ["--sync", "--verify"]) {
-        const run = await runCaptured([mode], { dir: ROOT });
-        eq(run.code, 2, `${mode} 少传路径时的退出码`);
-        if (!/缺少目标文件路径/.test(run.stderr)) throw new Error(`${mode} 少传路径时没说清缺什么：${run.stderr}`);
-        if (!/用法/.test(run.stderr)) throw new Error(`${mode} 少传路径时没打用法：${run.stderr}`);
-      }
-      // 目标文件里没有 `DEBT_CEILINGS` ⇒ 明确报错，而且**不写文件**（刷表不许变成「猜着写」）
-      const before = readFileSync(path.join(ROOT, "README.md"), "utf8");
-      const noTable = await runCaptured(["--sync", "README.md"], { dir: ROOT });
-      eq(noTable.code, 2, "目标里没有表时 `--sync` 的退出码");
-      if (!/抽不到/.test(noTable.stderr)) throw new Error(`报错没说清抽不到表：${noTable.stderr}`);
-      eq(readFileSync(path.join(ROOT, "README.md"), "utf8"), before, "报错路径上一个字节都不许写");
-      // 仓库外的路径不许刷（否则「刷表」就是给「手抄」开的另一道后门）
-      const outside = await runCaptured(["--sync", path.join(tmpdir(), "not-ours.md")], { dir: ROOT });
-      eq(outside.code, 2, "仓库外路径的退出码");
-      if (!/不在仓库内/.test(outside.stderr)) throw new Error(`报错没说清路径越界：${outside.stderr}`);
-    });
-
-    t("反向证 ⑨：`--sync` 修不了的两类红（指令面上没登记的文件 / 表里死了的行）⇒ 明确报错并点名，不写文件",
-      () => withFixture(shape.margin, async (tree) => {
-        const rel = "scripts/debt-table-fixture.mjs";
-        const abs = path.join(tree.dir, rel);
-        const pristine = readFileSync(abs, "utf8");
-        // ① 指令面上多了一份没登记的文件（新入指令面却忘了钉上限）
-        tree.addTracked("AGENTS_xx.md", "# AGENTS_xx（夹具）\n\n- 工单 #902 已落地\n");
-        const missing = await runCaptured(["--sync", rel], tree);
-        eq(missing.code, 1, "有未登记文件时 `--sync` 的退出码");
-        if (!/AGENTS_xx\.md/.test(missing.stdout)) throw new Error(`没点名未登记的文件：${missing.stdout}`);
-        eq(readFileSync(abs, "utf8"), pristine, "刷不动时不许写文件");
-        tree.removeTracked("AGENTS_xx.md");
-        // ② 表里有一行，指令面上没有这份文件（死条目）
-        const withDeadRow = pristine.replace('  "AGENTS_cn.md": Object.freeze({',
-          '  "AGENTS_zz.md": Object.freeze({\n    A: 0,\n    B: 0,\n    C: 0,\n  }),\n  "AGENTS_cn.md": Object.freeze({');
-        if (withDeadRow === pristine) throw new Error("变异没落上：死条目没插进去");
-        writeFileSync(abs, withDeadRow);
-        const dead = await runCaptured(["--sync", rel], tree);
-        eq(dead.code, 1, "有死条目时 `--sync` 的退出码");
-        if (!/AGENTS_zz\.md/.test(dead.stdout)) throw new Error(`没点名死条目：${dead.stdout}`);
-        // `--verify` 同样点名这两类（它不该只在 `--sync` 里被看见）
-        eq((await runCaptured(["--verify", rel], tree)).code, 1, "死条目下 `--verify` 的退出码");
-      }));
-
-    t("反向证 ⑩：字节预算 —— 注入 `预算 − 实测 + 1` 字节 ⇒ 红并点名（含实测/预算/tokens）；三种预算形态同判红；"
-      + "固定塞 1 字节在有余量的形态下是假绿（控制组）；还原 ⇒ 绿", async () => {
-      const verdicts = [];
-      for (const budgetMargin of [0, 1, 5]) {
-        await withFixture(shape.margin, async (tree) => {
-          tree.budgets = tree.budgetsFor(budgetMargin);
-          const rel = "AGENTS.md";
-          const budget = tree.budgets[rel];
-          const pristine = readFileSync(path.join(tree.dir, rel), "utf8");
-          const restore = () => writeFileSync(path.join(tree.dir, rel), pristine);
-          // 控制组：只塞 1 字节 —— 只在「预算 = 实测」那一形态下红（后两种是假绿，与 #644 ① 同一个病根）
-          writeFileSync(path.join(tree.dir, rel), `${pristine}x`);
-          const oneCode = (await runCaptured(["--strict"], tree)).code;
-          restore();
-          eq((await runCaptured(["--strict"], tree)).code, 0, `预算形态 +${budgetMargin}：还原后 \`--strict\` 的退出码`);
-          // 自适应注入：恰好把这一份顶出预算 1 字节
-          const need = budget - tree.measuredBytes[rel] + 1;
-          writeFileSync(path.join(tree.dir, rel), `${pristine}${"x".repeat(need)}`);
-          const red = await runCaptured(["--strict", "--json"], tree);
-          eq(red.code, 1, `预算形态 +${budgetMargin}：超预算后 \`--strict --json\` 的退出码`);
-          const payload = JSON.parse(red.stdout);
-          const over = payload.gate.overBudget.find((v) => v.file === rel);
-          if (over === undefined) throw new Error(`预算形态 +${budgetMargin}：红集合里没有 ${rel} 的超预算格`);
-          // 变异必须真的落上（#210 R2）：文件字节数 = 原字节 + need，而且报出来的就是它
-          eq(Buffer.byteLength(readFileSync(path.join(tree.dir, rel), "utf8"), "utf8"), over.bytes, "注入后文件的字节数");
-          eq(over.bytes, tree.measuredBytes[rel] + need, "报出来的实测字节数");
-          eq(over.budget, budget, "报出来的预算");
-          eq(over.tokens, Math.round(over.bytes / BYTES_PER_TOKEN), "报出来的 tokens（折算比只用于折算）");
-          eq(over.budgetTokens, Math.round(budget / BYTES_PER_TOKEN), "报出来的预算 tokens");
-          const text = await runCaptured(["--strict"], tree);
-          if (!/字节数 \d+ > 预算 \d+/.test(text.stdout)) {
-            throw new Error(`文本分支没报「实测 > 预算」：${text.stdout.slice(-300)}`);
-          }
-          restore();
-          eq((await runCaptured(["--strict"], tree)).code, 0, `预算形态 +${budgetMargin}：还原后 \`--strict\` 的退出码`);
-          verdicts.push({ budgetMargin, one: oneCode, adaptive: red.code });
-        });
-      }
-      eq(verdicts.map((v) => v.adaptive).join(","), "1,1,1", "自适应注入在三种预算形态下的退出码");
-      eq(verdicts.map((v) => v.one).join(","), "1,0,0",
-        "固定塞 1 字节在三种预算形态下的退出码（后两种是假绿——所以注入数必须从预算与实测推出来）");
-    });
-
-    t("反向证 ⑪：手改字节预算 ⇒ `--verify` 红并点名（抄高抄低都是红）；`--sync` 刷回 ⇒ 逐字回到原样；"
-      + "预算 0 / 死行 / 未登记 ⇒ 空转或未登记红", () => withFixture(shape.margin, async (tree) => {
-      const rel = "scripts/debt-table-fixture.mjs";
-      const abs = path.join(tree.dir, rel);
-      const pristine = readFileSync(abs, "utf8");
-      eq((await runCaptured(["--verify", rel], tree)).code, 0, "干净预算表 `--verify` 的退出码");
-      const cell = `"AGENTS.md": ${budgetFor(tree.measuredBytes["AGENTS.md"])},`;
-      if (!pristine.includes(cell)) throw new Error("变异没落上：预算表里找不到那一格");
-      // 两个方向都试：抄高（预算比推出来的那一格大）与抄低（比它小）都必须红——
-      // 预算表是算出来的，不是写出来的
-      for (const delta of [7, -7]) {
-        const tampered = pristine.replace(cell, `"AGENTS.md": ${budgetFor(tree.measuredBytes["AGENTS.md"]) + delta},`);
-        if (tampered === pristine) throw new Error("变异没落上：手改预算那一格没改到");
-        writeFileSync(abs, tampered);
-        const run = await runCaptured(["--verify", rel], tree);
-        eq(run.code, 1, `手改 ${delta} 字节后 \`--verify\` 的退出码`);
-        if (!/AGENTS\.md：预算 \d+ \/ 实测 \d+ 字节/.test(run.stdout)) {
-          throw new Error(`\`--verify\` 没点名是哪个文件的预算：${run.stdout}`);
-        }
-        eq((await runCaptured(["--sync", rel], tree)).code, 0, "`--sync` 的退出码");
-        eq(readFileSync(abs, "utf8"), pristine, "`--sync` 刷完必须逐字回到原样（只重写数字，注释不动）");
-        eq((await runCaptured(["--verify", rel], tree)).code, 0, "刷回后 `--verify` 的退出码");
-      }
-      // 纯函数的三态：预算 0 / 死行 / 未登记（空转与未登记都是红，且各自有理由）
-      eq(lengthVerdicts({ measured: new Map([["AGENTS.md", 10]]), budgets: { "AGENTS.md": 0 } }).counts.idleBudgets,
-        1, "预算写成 0 ⇒ 空转红");
-      eq(lengthVerdicts({ measured: new Map(), budgets: { "AGENTS_zz.md": 100 } }).counts.idleBudgets,
-        1, "预算表里有行、指令面上没文件 ⇒ 空转红（死条目）");
-      eq(lengthVerdicts({ measured: new Map([["AGENTS_xx.md", 10]]), budgets: {} }).counts.unregisteredBudget,
-        1, "指令面上有文件、预算表里没行 ⇒ 未登记红");
-      eq(lengthVerdicts({ measured: new Map([["AGENTS.md", 10]]), budgets: { "AGENTS.md": 10 } }).counts.overBudget,
-        0, "实测 = 预算 ⇒ 不红（边界是「超过」而不是「达到」）");
-      // 走整条门：新入指令面却没钉预算 ⇒ `--strict` 红并点名
-      tree.addTracked("AGENTS_xx.md", "# AGENTS_xx（夹具）\n\n- 见 issue #642\n");
-      const gate = await runCaptured(["--strict"], tree);
-      eq(gate.code, 1, "有文件没钉预算时 `--strict` 的退出码");
-      if (!/AGENTS_xx\.md 有 \d+ 字节/.test(gate.stdout)) {
-        throw new Error(`没点名未登记预算的文件：${gate.stdout.slice(-400)}`);
-      }
-      tree.removeTracked("AGENTS_xx.md");
-      eq((await runCaptured(["--strict"], tree)).code, 0, "拿掉那份文件后 `--strict` 的退出码");
-    }));
-
-    t("反向证 ⑫：字节预算 = `ceil512(实测) + 1024`（推出来的那一格）；刚好等于预算不红；远高于预算同样红；"
-      + "余量上限 ≤ 2048；变异落不上算失败", async () => {
-      // ① 公式本身：取整边界两侧 + 本单收口后的两份实测值（这两个数是实测，不是手填的预算）
-      eq(budgetFor(1), BUDGET_ROUNDING + BUDGET_HEADROOM, "budgetFor(1) = ceil512(1) + 余量");
-      eq(budgetFor(BUDGET_ROUNDING), BUDGET_ROUNDING + BUDGET_HEADROOM,
-        "budgetFor(512) = ceil512(512) + 余量（正好一整格不多进一位）");
-      eq(budgetFor(BUDGET_ROUNDING + 1), 2 * BUDGET_ROUNDING + BUDGET_HEADROOM,
-        "budgetFor(513) = ceil512(513) + 余量（多一字节就进一格）");
-      eq(budgetFor(32548), 33792, "本单收口后的 EN 预算（实测 32,548 ⇒ 33,792）");
-      eq(budgetFor(28823), 30208, "本单收口后的 CN 预算（实测 28,823 ⇒ 30,208）");
-      // ② 余量上限：任务书要求 ≤ 2048 字节；取整 + 余量一起算
-      const maxHeadroom = BUDGET_ROUNDING + BUDGET_HEADROOM;
-      if (!(maxHeadroom <= 2048)) throw new Error(`余量上限 ${maxHeadroom} 字节 > 2048（本闸不允许更大的余量）`);
-      eq(budgetFor(32768) - 32768, BUDGET_HEADROOM, "正好落在 512 整格上时余量就是余量常数本身");
-      const enHeadroom = budgetFor(32548) - 32548;
-      if (!(enHeadroom >= BUDGET_HEADROOM && enHeadroom <= maxHeadroom)) {
-        throw new Error(`EN 的余量 ${enHeadroom} 不在 [${BUDGET_HEADROOM}, ${maxHeadroom}] 里（取整补位 + 余量常数）`);
-      }
-      await withFixture(shape.margin, async (tree) => {
-        const rel = "AGENTS.md";
-        const pristine = readFileSync(path.join(tree.dir, rel), "utf8");
-        // ③ 刚好等于预算 ⇒ 不红（边界是「超过」而不是「达到」）
-        tree.budgets = { ...tree.budgets, [rel]: tree.measuredBytes[rel] };
-        eq((await runCaptured(["--strict"], tree)).code, 0, "预算 = 实测（刚好等于预算）时 `--strict` 的退出码");
-        // ④ 远高于预算 ⇒ 同样红（不是只有「刚刚超一个字节」才红），且超量 / 实测 / 预算三个数都对得上
-        const inject = 4096;
-        writeFileSync(path.join(tree.dir, rel), `${pristine}${"y".repeat(inject)}`);
-        const landed = Buffer.byteLength(readFileSync(path.join(tree.dir, rel), "utf8"), "utf8");
-        eq(landed, tree.measuredBytes[rel] + inject, "注入后文件的字节数（变异真的落上了）");
-        const red = await runCaptured(["--strict", "--json"], tree);
-        eq(red.code, 1, "远高于预算时 `--strict --json` 的退出码");
-        const over = JSON.parse(red.stdout).gate.overBudget.find((v) => v.file === rel);
-        if (over === undefined) throw new Error("远高于预算时红集合里没有超预算格");
-        eq(over.bytes, landed, "报出来的实测字节数");
-        eq(over.over, landed - over.budget, "报出来的超量（字节）");
-        eq(over.overTokens, Math.round((landed - over.budget) / BYTES_PER_TOKEN), "报出来的超量（tokens）");
-        const text = await runCaptured(["--strict"], tree);
-        if (!/超量 \d+ 字节/.test(text.stdout)) {
-          throw new Error(`文本分支没报超量：${text.stdout.slice(-400)}`);
-        }
-        // ⑤ 变异没落上就算失败（#210 R2）：把文件写回原样后必须真的回到绿，否则上面那格是假红
-        writeFileSync(path.join(tree.dir, rel), pristine);
-        eq(Buffer.byteLength(readFileSync(path.join(tree.dir, rel), "utf8"), "utf8"), tree.measuredBytes[rel],
-          "还原后文件的字节数");
-        eq((await runCaptured(["--strict"], tree)).code, 0, "还原后 `--strict` 的退出码");
-      });
-    });
-
-    return pending;
-  };
-
-  // ── 三种欠账形态各跑一遍全部用例，再比判词向量（#644 ① 的判据：裁决与欠账形态无关） ──
-  const runs = [];
-  for (const shape of DEBT_SHAPES) {
-    const rows = [];
-    for (const [name, fn] of caseList(shape)) {
-      try {
-        await fn(shape);
-        rows.push({ name, ok: true, detail: "" });
-      } catch (error) {
-        rows.push({ name, ok: false, detail: error.message });
-      }
-    }
-    runs.push({ shape, rows });
+    // ⑩ --sync / --verify 往返：手填的表 verifyBudgets 报不一致；syncBudgets 刷成推出来的那一格；刷完复验绿。
+    const tableSrc = "export const LENGTH_BUDGETS = Object.freeze({\n  // 手填\n  \"AGENTS.md\": 9999,\n  // 手填\n  \"AGENTS_cn.md\": 8888,\n});\n";
+    const measured = new Map([["AGENTS.md", enBytes], ["AGENTS_cn.md", cnBytes]]);
+    ok(verifyBudgets({ text: tableSrc, measured }).length > 0, "手填的表 ≠ 推出来的那一格 ⇒ verifyBudgets 报不一致");
+    const synced = syncBudgets({ text: tableSrc, measured });
+    eq(synced.changes.length, 2, "syncBudgets 应重写两格");
+    eq(verifyBudgets({ text: synced.text, measured }).length, 0, "刷完复验必须逐格等于推出来的那一格");
+    eq(budgetsFromSource(synced.text).get("AGENTS.md"), budgetFor(enBytes), "budgetsFromSource 读回刷出来的那一格");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  const base = runs[0];
-  const divergent = [];
-  for (const run of runs.slice(1)) {
-    run.rows.forEach((row, index) => {
-      const ref = base.rows[index];
-      if (row.name !== ref.name) {
-        divergent.push(`用例顺序在「${run.shape.label}」下与「${base.shape.label}」不一致（${row.name} ≠ ${ref.name}）`);
-      } else if (row.ok !== ref.ok) {
-        divergent.push(`「${ref.name}」在「${base.shape.label}」是${ref.ok ? "绿" : "红"}、`
-          + `在「${run.shape.label}」是${row.ok ? "绿" : "红"}——裁决必须与欠账形态无关（#644 ①）`);
-      }
-    });
-  }
-  const merged = base.rows.map((row, index) => {
-    const bad = runs.map((run) => ({ shape: run.shape, row: run.rows[index] })).filter((x) => !x.row.ok);
-    return {
-      name: row.name,
-      ok: bad.length === 0,
-      detail: bad.length === 0 ? "" : `[${bad[0].shape.label}] ${bad[0].row.detail}`,
-    };
-  });
-  for (const row of merged) console.log(`  ${row.ok ? "✓" : "✗"} ${row.name}${row.ok ? "" : ` — ${row.detail}`}`);
-  for (const line of divergent) console.log(`  ✗ ${line}`);
-  console.log(`  欠账形态 × 用例：${DEBT_SHAPES.length} 种形态 × ${merged.length} 例，逐例裁决`
-    + `${divergent.length === 0 ? "完全相同" : `有 ${divergent.length} 处不同`}（${DEBT_SHAPES.map((s) => s.label).join(" / ")}，#644 ①）`);
-  const failed = merged.filter((row) => !row.ok).length + divergent.length;
-  console.log(`\nagents-directive-scan --self-test: ${failed === 0
-    ? `OK — ${merged.length} 例反向证/放行证 × ${DEBT_SHAPES.length} 种欠账形态全部按预期`
-    : `${failed} 例失败`}`);
-  return failed === 0 ? 0 : 1;
+
+  console.log(`\nagents-directive-scan --self-test: ${failures === 0
+    ? "OK — 全部字节预算判据反向证通过（#909：只留预算这一条）"
+    : `${failures} 例失败`}`);
+  return failures === 0 ? 0 : 1;
 }
 
-// ── 11. main ─────────────────────────────────────────────────────────────────
+// ── 9. main ──────────────────────────────────────────────────────────────────
 /**
- * 一次 CLI 运行。`root` / `io` / `ceilings` 可注入 ⇒ 自测能在**临时树**上把真实路径（清单 → 分类 → 命中 →
- * 例外 → 上限 → 判词 → 退出码）整条跑一遍，不碰真文档、也不假造判词；`ceilings` 那一格是「欠账形态」
- * 的注入点（#644 ①：上限与实测的余量必须能由用例摆布，否则裁决会依赖这台机器此刻的欠账数）。
+ * 一次 CLI 运行。`root` / `io` / `budgets` 可注入 ⇒ 自测能在**临时树**上把真实路径（清单 → 实测 → 判据 →
+ * 退出码）整条跑一遍，不碰真文档、也不假造判词。
  *
- * 模式（互斥，别混）：`--strict` 门禁 / 报告 / `--json` / `--sync <文件>` 刷上限表 / `--verify <文件>`
- * 验上限表 / `--self-test` 反向证。
+ * 模式（互斥，别混）：`--strict` 门禁 / 报告 / `--json` / `--sync <文件>` 刷预算表 / `--verify <文件>`
+ * 验预算表 / `--self-test` 反向证。
  *
  * @param {{argv?: string[], root?: string, io?: {exec?: (args: string[], root: string) => string},
- *   ceilings?: Readonly<Record<string, Readonly<Record<"A"|"B"|"C", number>>>>,
  *   budgets?: Readonly<Record<string, number>>}} [options]
  * @returns {Promise<number>} 进程退出码
  */
-export async function runCli({ argv = process.argv.slice(2), root = ROOT, io, ceilings = DEBT_CEILINGS,
-  budgets = LENGTH_BUDGETS } = {}) {
+export async function runCli({ argv = process.argv.slice(2), root = ROOT, io, budgets = LENGTH_BUDGETS } = {}) {
   const strict = argv.includes("--strict");
   const jsonOut = argv.includes("--json");
   const selfTestMode = argv.includes("--self-test");
@@ -1986,19 +689,19 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io, ce
 
   if (selfTestMode) return selfTest();
 
-  // 上限表的刷写 / 验表（#644 ②）。**先校验参数再碰文件系统**：少传路径是明确的用法错误（exit 2），
-  // 不是 `readFileSync(undefined)` 那类崩溃（`flat-count-inventory` 的已知坑，别照抄）。
+  // 预算表的刷写 / 验表。**先校验参数再碰文件系统**：少传路径是明确的用法错误（exit 2），
+  // 不是 `readFileSync(undefined)` 那类崩溃。
   if (syncMode || verifyTableMode) {
     const mode = syncMode ? "--sync" : "--verify";
     if (syncMode && verifyTableMode) {
       console.error("agents-directive-scan: `--sync` 与 `--verify` 是两种模式（刷表 / 验表），不许同时给");
-      console.error(DEBT_TABLE_USAGE);
+      console.error(BUDGET_TABLE_USAGE);
       return 2;
     }
     const target = argv.find((arg) => !arg.startsWith("--"));
     if (target === undefined) {
-      console.error(`agents-directive-scan ${mode}: 缺少目标文件路径（${mode} 后面要跟一份含 \`DEBT_CEILINGS\` 的源文件）`);
-      console.error(DEBT_TABLE_USAGE);
+      console.error(`agents-directive-scan ${mode}: 缺少目标文件路径（${mode} 后面要跟一份含 \`LENGTH_BUDGETS\` 的源文件）`);
+      console.error(BUDGET_TABLE_USAGE);
       return 2;
     }
     return syncMode ? mainSyncTable({ target, root, io }) : mainVerifyTable({ target, root, io });
@@ -2006,27 +709,19 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io, ce
 
   let scan;
   try {
-    scan = scanDirectives({ root, io, ceilings, budgets });
+    scan = scanDirectives({ root, io, budgets });
   } catch (error) {
     console.error(`agents-directive-scan: ${error.message}`);
     console.error(`  仓库根：${root}`);
     return 2;
   }
-  const { gate, manifest, report, constants, externalPrefixes, staleConstants } = scan;
-  const usedCeilings = scan.ceilings;
-  const usedBudgets = scan.budgets;
+  const { gate, manifest, report } = scan;
   const measuredBytes = Object.fromEntries([...scan.measuredBytes].map(([file, bytes]) => [file, bytes]));
   const exitCode = gateExitCode(gate, { strict });
 
   if (jsonOut) {
-    const slim = report.map((r) => ({
-      file: r.file, kind: r.kind, counts: r.counts, bytes: r.bytes,
-      hits: r.hits.map((h) => ({
-        line: h.line, category: h.category, exempt: h.exempt, exemption: h.exemption, text: h.text,
-      })),
-    }));
     console.log(JSON.stringify({
-      surface: { source: "git ls-files", pathspecs: SCAN_PATHSPECS, files: manifest.length },
+      surface: { source: "git ls-files", pathspecs: [...DIRECTIVE_FILES], files: manifest.length },
       gate: {
         strict,
         gating: strict,
@@ -2038,11 +733,6 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io, ce
         // 既有语义），`wouldExitCode` 是**同一份红数在门禁下**的退出码。两个字段都只从 `gateExitCode()` 来。
         wouldExitCode: gateExitCode(gate, { strict: true }),
         exitCodes: { clean: 0, red: 1, manifestUnavailable: 2 },
-        overCeiling: gate.overCeiling,
-        idleExemptions: gate.idleExemptions,
-        idleCeilings: gate.idleCeilings,
-        unregistered: gate.unregistered,
-        downgradable: gate.downgradable,
         overBudget: gate.overBudget,
         unregisteredBudget: gate.unregisteredBudget,
         idleBudgets: gate.idleBudgets,
@@ -2051,22 +741,16 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io, ce
       length: {
         // 判定按字节；tokens 只是给人看的折算（比值不是常数，见 `BYTES_PER_TOKEN`）。
         bytesPerToken: BYTES_PER_TOKEN,
-        budgets: usedBudgets,
+        budgets,
         measured: measuredBytes,
         tokens: Object.fromEntries(Object.entries(measuredBytes).map(([file, bytes]) => [file, tokensOf(bytes)])),
       },
-      exemptions: EXEMPTIONS.map((e) => ({ id: e.id, categories: e.categories, why: e.why })),
-      ceilings: usedCeilings,
-      constants: Object.fromEntries([...constants].map(([name, v]) => [name, v.value])),
-      externalPrefixes: [...externalPrefixes],
-      staleConstants,
-      files: slim,
+      files: report.map((r) => ({ file: r.file, bytes: r.bytes })),
     }, null, 2));
     if (exitCode !== 0) {
       console.error(`agents-directive-scan --strict --json: ${gate.red} 处红`
-        + `（超上限 ${gate.counts.overCeiling} / 空转例外 ${gate.counts.idleExemptions}`
-        + ` / 空转上限 ${gate.counts.idleCeilings} / 未登记 ${gate.counts.unregistered}`
-        + ` / 抄件过期 ${gate.counts.staleConstants}）`);
+        + `（超预算 ${gate.counts.overBudget} / 未登记预算 ${gate.counts.unregisteredBudget}`
+        + ` / 空转预算 ${gate.counts.idleBudgets}）`);
     }
     return exitCode;
   }

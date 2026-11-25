@@ -4,6 +4,8 @@
 ## [Unreleased]
 
 ### Changed
+- **agents-directive-scan（`check:agents-directives`）**：三类文本启发式（工单状态断言 / 手抄件上限表 / 裸坐标）连同各自的 `--sync` 路径、例外登记表与 `--self-test` 夹具一并删除，本闸**只判字节预算**（#909）。有意的行为改变：往 `AGENTS.md` / `AGENTS_cn.md` 写一句假版本号不再在这里报红，版本号真值由 `check:docs` 的版本对账负责。`LENGTH_BUDGETS` 符号名保留（`test/project-instructions-716.test.js` 仍从中读注入上限 64 KiB 的推导）。
+- **agents-directive-scan (`check:agents-directives`)**: the three text heuristics (work-order status claim / hand-copied ceiling table / bare source coordinate) are removed along with their own `--sync` paths, the exception register and the `--self-test` fixtures — the gate now judges **only the byte budget** (issue #909). Intentional behavior change: writing a fake version number into `AGENTS.md` / `AGENTS_cn.md` no longer goes red here; version truth is owned by `check:docs`'s version reconciliation. The `LENGTH_BUDGETS` symbol name is preserved (`test/project-instructions-716.test.js` still reads the 64 KiB injection-cap derivation from it).
 - **fold-llm**: `description` 配额从 200 字符改为 500 token（`SUMMARIZER_DESCRIPTION_MAX_TOKENS`），用引擎 `estimateTokens` 口径夹断，新增 `descriptionTruncated` 可检测标记（#897）。
 - **fold-summary-journal**: `FOLDED_FACTS_MAX_BYTES` 2048→4096，description 先占子配额、正文拿剩余；每折上限翻倍是 #460 O(n) 护栏的有意放宽（#897）。
 - **fold-llm prompt**: 描述要求改为自解释段落 + 条件性编号待办清单，禁止上下文指代与 Markdown 表格（#897）。

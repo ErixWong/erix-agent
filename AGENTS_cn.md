@@ -49,10 +49,9 @@
 - 类型面规则（issue #213）：`src/**/*.d.ts` 是**生成物、永不入库**；`prepack` 重新生成它们且**只能往 stderr 打日志**。
   有两种 JSDoc 形状会**静默**把参数退化成 `any` ⇒ `#type-surface`。
 - **类型棘轮**（`check:types` / `check:types:strict`，issue #214 / #417）：root 档不追求清零，对着
-  `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 98`（已接受的债，实测 98 个错）比：超过 ⇒ exit 1，
-  等于 ⇒ 绿，低于 ⇒ 绿 + 「可下调至 N」提示，所以这个数只减不增；逐文件承载量与是否宿主可及都由 `--verbose` 打印。
-  此前那些读数（各自树上实测 142 / 185 / 218 / 226 / 261）是**历史值**，绝不当现值用。
-  `--with-tools` 把并集扩到 `./tools`（基线 **133** / 28 个文件 = 98 + 19 + 16）；`check:types:strict` 在同一条命令上追加
+  `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT` 比——**数值去脚本里读，本页不留手抄件**：超过 ⇒ exit 1，等于 ⇒ 绿，低于 ⇒ 绿 + 「可下调至 N」提示，
+  所以这个数只减不增；逐文件承载量与是否宿主可及都由 `--verbose` 打印。`--with-tools` 把并集扩到 `./tools`，
+  它有自己那条基线，同一条规矩；`check:types:strict` 在同一条命令上追加
   `--strict`、对着脚本里它自己那对基线，它阻塞，且**两档在同一笔提交里一起降**。⚠ **跑棘轮之前先删掉生成物**
   （`find src -name '*.d.ts' -delete`）：生成物在场时 `tsc` 会把 `./x.js` 解析到同目录的声明，查的是声明而不是实现。
 - **量数纪律**（issue #653，对本文提到的每一道棘轮和每一张派生表都成立）：派生数与基线**只在最终树上取**；基点落后
@@ -65,9 +64,7 @@
   `pi-subagents:src/runs/background/async-execution.js:4`——且仓名必须在 `scripts/docs-drift-check.mjs` 的
   `EXTERNAL_REPO_PREFIXES` 里登记过（没登记的名字红，登记了却没人引用也红）。**不带前缀的路径就是本仓内的路径，
   必须在这里解析得到。**
-- **锚点**：本页只有四个数归门禁、也只有它们是现值——`BASELINE_ROOT = 98`、符号锚点地板
-  `SYMBOL_ANCHOR_MIN_UNIQUE = 249`（只升：掉到地板以下就红——锚点在退化被抓住）、裸行号棘轮
-  `BARE_LINE_REF_BASELINE = 6`（只降）、锚点覆盖面地板 `REF_SCAN_DOCS_MINIMUM = 53`。文档不得依赖裸行号：
+- **锚点**：文档不得依赖裸行号：
   指位置要写符号 + 它的文件（`` `符号`（`路径`） ``），不写 `路径:123`。实测流水住在
   `docs/maintenance/symbol-anchor-ledger_cn.md`。加锚点或搬锚点之前先读 `#docs-anchors`。
 
