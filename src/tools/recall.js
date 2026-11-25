@@ -1,48 +1,6 @@
 // @ts-check
-import { reconstructRoundsFromBoundary } from "../messages/rounds.js";
+import { isMessageRow } from "../store/message-rows.js";
 import { Buffer } from "node:buffer";
-
-/**
- * @typedef {object} FoldEntry
- * @property {number} from - 该折覆盖的起始轮号（含）
- * @property {number} to - 该折覆盖的结束轮号（含）
- * @property {object[]} payload - 被折掉的原始消息数组（整轮被删后按序拼接，从轮边界开始）
- */
-
-/**
- * 提取一条消息里**模型会看到的文本**：text 块、tool_result 的内容、tool_use 的名字与入参。
- * 目的：让工具轮的原文也带可辨识内容（不再是空串），使逐字取回有真实判据。
- * @param {any} message
- * @returns {string}
- */
-function extractText(message) {
-  if (!message) return "";
-  const content = message.content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts = [];
-  for (const block of content) {
-    if (!block || typeof block !== "object") continue;
-    if (block.type === "text" && typeof block.text === "string") {
-      parts.push(block.text);
-    } else if (block.type === "tool_result") {
-      const inner = block.content;
-      if (typeof inner === "string") parts.push(`[tool_result] ${inner}`);
-      else if (Array.isArray(inner)) {
-        const t = inner
-          .filter((/** @type {any} */ b) => b?.type === "text" && typeof b.text === "string")
-          .map((/** @type {any} */ b) => b.text)
-          .join("\n");
-        parts.push(`[tool_result] ${t}`);
-      } else {
-        parts.push("[tool_result]");
-      }
-    } else if (block.type === "tool_use") {
-      parts.push(`[tool_use ${String(block.name ?? "")} id=${String(block.id ?? "")} ${JSON.stringify(block.input ?? {})}]`);
-    }
-  }
-  return parts.join("\n");
-}
 
 /**
  * 计算 JSON 序列化后的 UTF-8 字节长度。
@@ -55,28 +13,15 @@ function byteLength(value) {
 
 /**
  * 从 store + runId 构建只读访问器（宿主接线用）。
- * 读取的正是落盘归档那一份，不新增任何轮记录键。
+ * 返回的就是 `store.load(runId)` 的账本行（读侧已把消息行折回轮载体）——
+ * 这是原文的家，账本本身记着每条消息属于哪一轮，不新增任何轮记录键。
  *
  * @param {{ load: (runId: string) => Promise<any[]> }} store - 转录 store
  * @param {string} runId
- * @returns {() => Promise<FoldEntry[]>}
+ * @returns {() => Promise<any[]>}
  */
 export function createRecallAccessor(store, runId) {
-  return async () => {
-    const records = await store.load(runId);
-    /** @type {FoldEntry[]} */
-    const folds = [];
-    for (const record of records) {
-      if (record.folded && Array.isArray(record.foldedPayload) && record.foldedPayload.length > 0) {
-        folds.push({
-          from: record.foldedRoundRange?.from ?? 1,
-          to: record.foldedRoundRange?.to ?? 1,
-          payload: record.foldedPayload,
-        });
-      }
-    }
-    return folds;
-  };
+  return async () => store.load(runId);
 }
 
 /**
@@ -84,20 +29,24 @@ export function createRecallAccessor(store, runId) {
  *
  * 默认不挂进任何既有默认工具列表——由宿主显式挂载。
  *
- * @param {{ readFoldedRounds: () => Promise<FoldEntry[]> | FoldEntry[] }} options
- *   只读访问器：返回该 run 已落盘的全部折叠归档。
+ * 数据源是**账本本身**（`store.load(runId)` 的行），不是折叠快照 `foldedPayload`：
+ * `foldedPayload` 是有界去重后的快照、不是轮的完整切片，天生还原不出轮；而账本完整、
+ * 且每条消息都记着自己的轮号。轮号直接取账本上记的 `record.round`，不重算、不按下标猜。
+ *
+ * @param {{ readLedgerRows: () => Promise<any[]> | any[] }} options
+ *   只读访问器：返回该 run 的账本行（`store.load(runId)` 的输出）。
  * @returns {{ definitions: object[], executeTool: (req: any) => Promise<string> }}
  */
 export function createBuiltinRecallTools(options = {}) {
-  const accessor = options?.readFoldedRounds;
+  const accessor = options?.readLedgerRows;
   if (typeof accessor !== "function") {
-    throw new TypeError("createBuiltinRecallTools requires options.readFoldedRounds to be a function");
+    throw new TypeError("createBuiltinRecallTools requires options.readLedgerRows to be a function");
   }
 
   const TOOL_DEFINITION = {
     name: "recall_read",
     description:
-      "按轮号取回已被折掉的归档原文（逐字）。when-to-use：上下文被折叠后需要取回某轮的原始消息时调用；round 是轮号（1 起），不是数组下标；scope 仅支持 run；轮数与区间对不上时返回 unmappable 而非猜测",
+      "按轮号从账本逐字取回某一轮的原始消息（不做任何改写、不截断）。when-to-use：需要取回某一轮落盘的原始消息时调用——无论该轮是否已被折叠，账本始终保留每轮正文；round 是账本记录的轮号（1 起），不是数组下标；scope 仅支持 run；账本里没有该轮正文时返回 not_folded，不猜测、不拿相近轮顶替",
     inputSchema: {
       type: "object",
       properties: {
@@ -128,59 +77,44 @@ export function createBuiltinRecallTools(options = {}) {
       return JSON.stringify({ status: "invalid", reason: "scope 仅支持 run", round });
     }
 
-    let folds;
+    let rows;
     try {
-      folds = await accessor();
+      rows = await accessor();
     } catch {
-      return JSON.stringify({ status: "error", reason: "无法读取折叠归档", round });
+      return JSON.stringify({ status: "error", reason: "无法读取账本", round });
     }
-    if (!Array.isArray(folds)) folds = [];
+    if (!Array.isArray(rows)) rows = [];
 
-    // 找到覆盖该轮的折
-    const fold = folds.find((f) => f && Number.isSafeInteger(f.from) && Number.isSafeInteger(f.to) && round >= f.from && round <= f.to);
-    if (!fold) {
-      return JSON.stringify({ status: "not_folded", round, message: "该轮未被折叠 / 不在归档内" });
-    }
+    // 口径①：消息行（kind==="message"）里 round===N 的那些，按 seq 升序拼接其 messages
+    //   （seq 相同保持落盘先后：V8 的 Array#sort 稳定，先按原序入桶再按 seq 排序即可）。
+    //   正常轮的正文已被 store.load() 折进轮载体、消息行被吸走，所以这里只剩崩溃轮（无载体）。
+    const fromMessageRows = rows
+      .map((/** @type {any} */ row, /** @type {number} */ index) => ({ row, index }))
+      .filter(({ row }) => isMessageRow(row) && row.round === round && Array.isArray(row.messages))
+      .sort((/** @type {any} */ a, /** @type {any} */ b) => (a.row.seq - b.row.seq) || (a.index - b.index))
+      .flatMap(({ row }) => row.messages);
 
-    const { payload, from, to } = fold;
+    // 口径②：轮载体行（非消息行、自带 messages 的旧/正常格式）里 round===N 的，直接取其 messages。
+    const fromCarrierRows = rows
+      .filter((/** @type {any} */ row) => !isMessageRow(row) && row.round === round && Array.isArray(row.messages))
+      .flatMap((/** @type {any} */ row) => row.messages);
 
-    // 用引擎自己的轮规则还原被折的轮组（与 groupIntoRounds 同源，不另立口径）。
-    // payload 由 selectFoldedRounds 选整轮后 flatMap 而来，天然从轮边界开始。
-    const reconstructed = reconstructRoundsFromBoundary(payload);
-    const reconstructedRounds = reconstructed.length;
-    const expectedRounds = to - from + 1;
+    const messages = [...fromMessageRows, ...fromCarrierRows];
 
-    // 轮数对不上 ⇒ 取回不可靠：明确 unmappable，报两个数，不猜、不按下标硬取、不给正文。
-    if (reconstructedRounds !== expectedRounds) {
+    if (messages.length === 0) {
       return JSON.stringify({
-        status: "unmappable",
+        status: "not_folded",
         round,
-        foldRoundRange: { from, to },
-        reconstructedRounds,
-        expectedRounds,
-        message: `还原轮数(${reconstructedRounds})与轮区间(to-from+1=${expectedRounds})对不上：归档可能是有界去重差分或被改写过，无法可靠定位该轮`,
-        content: null,
-        messages: null,
+        message: `账本里没有第 ${round} 轮的正文（recall_read 读的是账本，不限于已折轮次）`,
       });
     }
-
-    const roundIndex = round - from; // 0-based，且因上面已保证在 [from,to] 且轮数==区间 ⇒ 必在范围内
-    const roundMessages = reconstructed[roundIndex].messages;
-
-    // 该轮第一条消息在 payload 里的序号（全局）
-    let globalIndex = 0;
-    for (let i = 0; i < roundIndex; i++) globalIndex += reconstructed[i].messages.length;
-
-    const content = roundMessages.map((m) => extractText(m)).join("\n");
 
     return JSON.stringify({
       status: "found",
       round,
-      foldRoundRange: { from, to },
-      payloadIndex: globalIndex,
-      byteLength: byteLength(roundMessages),
-      content,
-      messages: roundMessages,
+      messageCount: messages.length,
+      byteLength: byteLength(messages),
+      messages,
     });
   }
 

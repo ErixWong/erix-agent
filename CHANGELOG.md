@@ -5,37 +5,45 @@
 
 ### Added
 - **Deterministic recall tool `recall_read` (issue #896 C1).** A new built-in tool factory
-  `createBuiltinRecallTools({ readFoldedRounds })` in `src/tools/recall.js` produces the
+  `createBuiltinRecallTools({ readLedgerRows })` in `src/tools/recall.js` produces the
   `recall_read` tool (opt-in: not wired into any existing default tool list). The tool takes
-  `{ round: integer, scope?: "run" }` and retrieves verbatim archived messages from folded
-  round records. **Round splitting replays the engine's own rule** — a NEW exported
-  `reconstructRoundsFromBoundary()` in `src/messages/rounds.js` is the single source of truth,
-  shared by `groupIntoRounds` and `recall_read` (splitting by "real user message" collapses
-  tool-heavy payloads, where most `role:"user"` messages are `tool_result`, into one group).
-  If the reconstructed round count ≠ `to - from + 1` the tool returns `unmappable` with both
-  numbers and no body (never guesses a nearby round). `not_folded` is returned when the round
-  is not in any archived range. **No content verification is performed**: `recall_read` reads the
-  ledger's own archived bytes — not an LLM artifact — so reading a row yields the original text;
-  recomputing `foldSummaryFingerprint` against `foldId` was pure ceremony and was removed (no
-  `trust`/`foldId` in the response, no new ledger key). A companion
-  `createRecallAccessor(store, runId)` builds the read-only accessor from the transcript store.
-  Tool definition token cost: 191 (total 11 builtin tools: 4,714 → 4,905).
-  Pins: `test/tools/recall-read-896.test.js` (eight cells, driven by a real built-in
-  `sliding-window` fold covering rounds 1..11 — no hand-built payload; the core splitting,
-  multi-round, real-shape and `unmappable` cells go red on the earlier implementation, and a
-  "no validation fields" cell goes red if `trust`/`foldId` are ever reintroduced).
+  `{ round: integer, scope?: "run" }` and retrieves a round's messages **verbatim from the ledger
+  itself** (`store.load(runId)` rows), **not** from the fold snapshot `foldedPayload`: a measured
+  real run showed `foldedPayload` is a bounded-dedup snapshot (range 1..89 with only 78 messages →
+  reconstructs to 40, never the full 89), so reading it can never recover a round — while the
+  ledger keeps every round's body and already records each message's `round`. The round number is
+  the ledger's own `record.round` — never recomputed, never indexed off a payload. Two read paths:
+  ① message rows (`isMessageRow`, `record.round === N`) concatenated by ascending `seq` (stable;
+  ties keep on-disk order) — only crash rounds (no carrier) survive `store.load()`; ② round-carrier
+  rows (non-message, `record.round === N`, carrying `messages`) taken directly — the normal path.
+  Both empty ⇒ `not_folded` (wording "账本里没有该轮的正文"; dropped "未被折叠" since it reads the
+  ledger). Coordinates returned: `round`, `messageCount`, `byteLength`; `messages` verbatim (no
+  rewrite/truncate/prefix). `unmappable` and `reconstructRoundsFromBoundary` were **removed from
+  this tool** (that export now serves only `groupIntoRounds`). **No content verification**: reading
+  a ledger row already yields the original text, so `foldSummaryFingerprint`/`foldId` hashing was
+  pure ceremony (no `trust`/`foldId` in the response, no new ledger key). A companion
+  `createRecallAccessor(store, runId)` returns `store.load(runId)`. Tool definition token cost: 260
+  (total 11 builtin tools: 4,714 → 4,974). Pins: `test/tools/recall-read-896.test.js` (eight cells,
+  driven by a real built-in `sliding-window` fold whose `foldedPayload` is bounded-truncated far
+  below the round count — no hand-built rows; the verbatim, multi-round, key "payload ≪ rounds", and
+  "unfolded round still retrievable" cells all go red on the `foldedPayload`-reading implementation
+  (it returns `unmappable`/`not_folded` there), and a "no validation fields" cell red-guards any
+  reintroduced `trust`/`foldId`).
 - **确定性召回工具 `recall_read`（issue #896 C1）。** 新文件 `src/tools/recall.js` 导出
   `createBuiltinRecallTools`（opt-in，默认不挂进任何既有工具列表）。入参 `{ round, scope? }`，
-  按轮号从已落盘的折叠归档中逐字取回原文。**轮切分回放引擎自己的规则**——`src/messages/rounds.js`
-  新增导出 `reconstructRoundsFromBoundary()` 作为唯一真相来源，由 `groupIntoRounds` 与 `recall_read`
-  共用（按「真实用户消息」切分会让工具密集的 payload——其中多数 `role:"user"` 是 `tool_result`——塌成一组）。
-  还原轮数 ≠ `to - from + 1` 时返回 `unmappable` 并报两个数、不给正文（绝不拿相近轮顶替）；该轮不在任何
-  归档区间则返回 `not_folded`。**不做内容校验**：`recall_read` 读的是账本自己落盘的归档字节、不是 LLM
-  产物，读出来就是原文，重算 `foldSummaryFingerprint` 与 `foldId` 比对纯属仪式，已删除（响应里无
-  `trust`/`foldId`，也不新增账本键）。配套 `createRecallAccessor(store, runId)` 从 store 构建只读访问器。
-  工具定义 token 成本实测 191（11 个内置工具合计 4,714 → 4,905）。判据：
-  `test/tools/recall-read-896.test.js`（八格，全走内置 `sliding-window` 真折叠覆盖 round 1..11，不手搓
-  payload；切分/多轮/真实形态/`unmappable` 四格在更早实现下均红，「无校验字段」格在有人把校验加回时变红）。
+  按轮号从**账本本身**（`store.load(runId)` 的行）逐字取回某轮消息，**不再读折叠快照 `foldedPayload`**：
+  实测真 run 的 `foldedPayload` 是有界去重后的快照（区间 1..89 只有 78 条消息 → 还原出 40 轮、永远还原不出
+  89 轮），拿它取回天生还原不出轮；而账本每轮正文完整、且每条消息都记着自己的 `round`。轮号直接取账本的
+  `record.round`，不重算、不按 payload 下标猜。两条读路：① 消息行（`isMessageRow`、`record.round===N`）按
+  `seq` 升序拼接（稳定、相同 seq 保落盘先后）——`store.load()` 后只剩崩溃轮（无载体）；② 轮载体行（非消息行、
+  `record.round===N`、自带 `messages`）直接取——正常路径。两者皆空 ⇒ `not_folded`（话术「账本里没有该轮的正文」，
+  已去掉「未被折叠」，因为读的是账本）。返回坐标 `round`/`messageCount`/`byteLength`，`messages` 逐字返回（不改写、
+  不截断、不加前缀）。`unmappable` 与 `reconstructRoundsFromBoundary` **从本工具移除**（该导出现只服务
+  `groupIntoRounds`）。**不做内容校验**：读账本行本就是原文，哈希自证纯属仪式（响应无 `trust`/`foldId`、不新增账本键）。
+  配套 `createRecallAccessor(store, runId)` 返回 `store.load(runId)`。工具定义 token 成本实测 260（11 个内置工具
+  合计 4,714 → 4,974）。判据：`test/tools/recall-read-896.test.js`（八格，全走内置 `sliding-window` 真折叠、其
+  `foldedPayload` 被有界截断到远小于轮数，不手搓行；逐字/多轮/关键「payload ≪ 轮数」/「未折轮照样取回」四格在读
+  `foldedPayload` 的旧实现下均红（旧实现给 `unmappable`/`not_folded`），「无校验字段」格防止有人把 `trust`/`foldId` 加回）。
 
 ### Changed
 - **fold-llm**: `description` 配额从 200 字符改为 500 token（`SUMMARIZER_DESCRIPTION_MAX_TOKENS`），用引擎 `estimateTokens` 口径夹断，新增 `descriptionTruncated` 可检测标记（#897）。
