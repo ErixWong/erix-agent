@@ -4600,8 +4600,22 @@ export async function runToolLoop(options) {
       //   `protectedMessage: isRealUser` 至今仍开着（实测探针 commit 2c5ad310），这条路径今天还活着。
       // ⚠ 过渡期：`protectedMessage` 已按 #898 退役（前置 `recall_read` 先落地）；退役后这条
       //   触发路径不可达，本块与 `test/compact/fold-increment-safety-scope-894.test.js` 一起删。
-      const incrementFoldedPayload = foldedPayload;
-      const incrementFoldedRoundRange = foldedRoundRange;
+      // ⇒ 快照是**真拷贝**而不是别名：今天安全层那几处都是**重新赋值**
+      //   （`foldedPayload = [...foldedPayload, …]`，见下方安全层那一发），所以上面那个别名
+      //   **此刻**不会出错；但别名把「快照」退化成一个约定：只要将来有人改成就地
+      //   `incrementFoldedPayload.push(...)` / `foldedPayload.push(...)`，本折区间就会在快照**身上**
+      //   被改小，而判据**不会红**（它看的是正文与区间是否自洽，不是数组同一性）。
+      //   拷贝把这种漏锁成一个不变量：本折的素材集合到这一刻就**封上**了。
+      //   （拷贝是**浅**的：元素对象仍与归档共用。这是故意的——如果将来有人就地改**元素内容**，
+      //   那是「归档与增量同时变」的另一种错，不在本刀要钉的形状里，钉它得拿每次折叠的深拷贝
+      //   开销去换，不划算。）
+      // `incrementFoldedRoundRange` 同理拷贝（它是个 `{from,to}` 小对象）：到上面的定稿点为止它只被
+      //   **重新赋值**（策略那一发与兜底 merge），定稿点之后无人再碰；拷贝一份不花钱，但把
+      //   「三元组同源同时刻」从约定抬成不变量。
+      const incrementFoldedPayload = [...foldedPayload];
+      const incrementFoldedRoundRange = foldedRoundRange === undefined
+        ? undefined
+        : { ...foldedRoundRange };
       const incrementFoldedRounds = foldedRounds;
       // ── issue #738 第二步（评审必修）：**摘要块的对象身份要在安全层动手之前钉住** ──────────
       // 逐字承诺只能在**定稿后**的 `messages` 上证，但那时候「哪一块是摘要块」可能已经被后面的层
