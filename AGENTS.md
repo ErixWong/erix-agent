@@ -177,8 +177,8 @@ npm run release:day -- --stage finalize      # tag the version cut → dual push
 - Model configuration comes from `~/.erix/config.json` slot `default` (relay `api.ai.erix.vip/v1`) — the same file
   the `erix_run` extension reads; it does not follow pi's current model.
 - Local debugging runs the CLI from this repository (`node bin/cli.js chat`).
-- When an agent works in this repository: **estimate the read budget before reading and take it in one call** and
-  state the verification claim before reporting.
+- When an agent works in this repository: **estimate the read budget before reading and take it in one call**,
+  and state the verification claim before reporting.
 
 ## 7. Model and cost discipline
 
