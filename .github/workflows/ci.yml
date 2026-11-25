@@ -186,13 +186,6 @@ jobs:
       - name: Pack-link contract publish-surface self-test
         run: node scripts/pack-link-check.mjs --self-test
 
-      # issue #429：零消费者候选表 × `@deprecated` 登记表，外加它自己的反向证。
-      - name: Deprecated-export registry reconciliation
-        run: npm run check:exports:deprecated
-
-      - name: Deprecated-export registry self-test
-        run: node scripts/deprecated-export-check.mjs --self-test
-
       # issue #687：移除闸的反向证（装好的包 × 运行时导出面）。
       - name: Guide removal gate self-test
         run: node scripts/guide-removal-gate.mjs --self-test

@@ -1,7 +1,7 @@
 // issue #689 的**发版日命令**测试：`scripts/release-day.mjs` 的整链路钉子。
 //
-// 分工（与 `test/host-consumer-probe.test.js` / `test/guide-removal-gate.test.js` 同一套惯例）：
-//   - **反向证**（preflight 某步红就停在那一步并点名、闸门关着的真上游与不在的 `--hosts` 目录判「未判定」、
+// 分工（与 `test/guide-removal-gate.test.js` 同一套惯例）：
+//   - **反向证**（preflight 某步红就停在那一步并点名、闸门关着的真上游判「未判定」、
 //     回写失败留下「已发布、未回写」的状态且重跑从 writeback 续、没回写就 finalize 必须红、两侧 ls-remote
 //     不一致必须红、`--dry` 一个字节都不写、`--sync` 只动发布态那几句）都在
 //     `node scripts/release-day.mjs --self-test` 里（合成树 + 假 runner，全离线）。这里只 spawn 它一次并断言
@@ -88,9 +88,8 @@ test("--self-test：离线反向证 exit 0", () => {
 });
 
 test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红 exit 1 / 未判定 exit 2 / 绿 exit 0（真 CLI）", async () => {
-  // 合成树：`npm run <script>` 全部替成 `node -e 0 --`（`--` 之后是 npm 追加的 `--hosts …`，不 `--` 的话
-  // `node` 会把它当自己的选项而 exit 9）。第 2 步读的是 `package.json` + `CHANGELOG.md`，
-  // 其余四步在合成树上没有意义；真值面只有第 2 步，其余门禁在 `--self-test` 里另有反向证）。
+  // 合成树：`npm run <script>` 全部替成 `node -e 0 --`。第 2 步读的是 `package.json` + `CHANGELOG.md`，
+  // 其余三步在合成树上没有意义；真值面只有第 2 步，其余门禁在 `--self-test` 里另有反向证）。
   const dir = await makeTmp("erix-release-day-715-");
   const tree = join(dir, "tree");
   mkdirSync(tree, { recursive: true });
@@ -98,7 +97,6 @@ test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红
     "check:changelog": "node -e 0 --",
     "check:release:model-e2e": "node -e 0 --",
     "check:release": "node -e 0 --",
-    "check:host-consumers": "node -e 0 --",
   };
   writeFileSync(join(tree, "package.json"),
     `${JSON.stringify({ name: "erix-agent", version: "0.31.0", scripts }, null, 2)}\n`, "utf8");
@@ -115,23 +113,23 @@ test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红
   };
 
   // ① 红：版本节已开（未发布形态）+ 条目还停在 `[Unreleased]`
-  const red = run(redChangelog, ["--hosts", tree]);
+  const red = run(redChangelog);
   assert.equal(red.status, 1, `漏搬形态必须 exit 1：\n${red.stdout}\n${red.stderr}`);
-  assert.match(red.stdout, /\[2\/5\][^\n]*\*\*红\*\*/u, "红要落在第 2 步上（不是第 1 步、也不是笼统一句失败）");
+  assert.match(red.stdout, /\[2\/4\][^\n]*\*\*红\*\*/u, "红要落在第 2 步上（不是第 1 步、也不是笼统一句失败）");
   assert.match(red.stdout, /2 条未入账条目停在/u, "判词要点名条数");
   assert.match(red.stdout, /4963293/u, "判词要自带可执行动作（4963293 的形状）");
   assert.match(red.stdout, /停在这一步/u, "红了就停，后面的前置不跑");
 
   // ② 未判定：本版还没有版本节（还没切版）⇒ exit 2，不是绿也不是红
-  const notJudged = run(redChangelog.replace(`${heading}\n\n`, ""), ["--hosts", tree]);
+  const notJudged = run(redChangelog.replace(`${heading}\n\n`, ""));
   assert.equal(notJudged.status, 2, `还没切版必须 exit 2：\n${notJudged.stdout}\n${notJudged.stderr}`);
-  assert.match(notJudged.stdout, /\[2\/5\][^\n]*\*\*未判定\*\*/u, "未判定要落在第 2 步上");
+  assert.match(notJudged.stdout, /\[2\/4\][^\n]*\*\*未判定\*\*/u, "未判定要落在第 2 步上");
   assert.match(notJudged.stdout, /还没切版/u, "读数要说清「还没切版」");
 
   // ③ 绿：版本节已开 且 `[Unreleased]` 为空 ⇒ 整趟 preflight 全绿 exit 0
-  const green = run(["# Changelog", "", "## [Unreleased]", "", heading, "", "- older", ""].join("\n"), ["--hosts", tree]);
+  const green = run(["# Changelog", "", "## [Unreleased]", "", heading, "", "- older", ""].join("\n"));
   assert.equal(green.status, 0, `版本节已开 + \`[Unreleased]\` 空必须 exit 0：\n${green.stdout}\n${green.stderr}`);
-  assert.match(green.stdout, /\[2\/5\][^\n]*→ 绿/u, "第 2 步要报绿");
+  assert.match(green.stdout, /\[2\/4\][^\n]*→ 绿/u, "第 2 步要报绿");
 });
 
 
@@ -154,7 +152,7 @@ test("AGENTS §4 的 preflight 清单与 PREFLIGHT_STEPS 逐格对账（中英�
       `${doc} §4 的 [i/N] 清单与 PREFLIGHT_STEPS 对不上（真值 = scripts/release-day.mjs 现读，不抄）`);
   }
   // 正证的靶子不能是空的：面必须是 PREFLIGHT_STEPS 的全长（否则「对得上」可以是「两边都没扫到东西」）。
-  assert.ok(PREFLIGHT_STEPS.length >= 5,
+  assert.ok(PREFLIGHT_STEPS.length >= 4,
     `PREFLIGHT_STEPS 只剩 ${PREFLIGHT_STEPS.length} 步：这一格的对账面退化`);
   assert.deepEqual(PREFLIGHT_STEPS.map(preflightDocCommand).filter((c) => c === null), [],
     "有步骤既推不出命令列也没声明 docCommand ⇒ 清单对账对它空转（内联判据步骤必须显式声明）");
@@ -167,30 +165,30 @@ test("AGENTS §4 的 preflight 清单与 PREFLIGHT_STEPS 逐格对账（中英�
   // ── 反向证：每格单独关一次 ⇒ 必须红（把文档里的数字改错 / 命令那侧变了而文档没跟上，两个方向都要咬） ──
   const cases = [
     {
-      name: "分母抄错（[2/5] → [2/8]）",
-      text: replaceOnce(texts["AGENTS.md"], "[2/5]", "[2/8]", "分母"),
+      name: "分母抄错（[2/4] → [2/8]）",
+      text: replaceOnce(texts["AGENTS.md"], "[2/4]", "[2/8]", "分母"),
       expect: /分母是 \/8/u,
     },
     {
-      name: "文档少一行（删掉 [4/5] 那一行）",
-      text: replaceOnce(texts["AGENTS.md"], "#   [4/5] check:release ", "#   [4/5] ~~", "第 4 行")
-        .replace(/^#   \[4\/5\].*$/mu, ""),
-      expect: /清单列了 4 步，而 PREFLIGHT_STEPS 有 5 步/u,
+      name: "文档少一行（删掉 [4/4] 那一行）",
+      text: replaceOnce(texts["AGENTS.md"], "#   [4/4] check:release ", "#   [4/4] ~~", "第 4 行")
+        .replace(/^#   \[4\/4\].*$/mu, ""),
+      expect: /清单列了 3 步，而 PREFLIGHT_STEPS 有 4 步/u,
     },
     {
       name: "步骤改名（check:release → check:release-x）",
-      text: replaceOnce(texts["AGENTS.md"], "[4/5] check:release ", "[4/5] check:release-x ", "第 4 步命令"),
+      text: replaceOnce(texts["AGENTS.md"], "[4/4] check:release ", "[4/4] check:release-x ", "第 4 步命令"),
       expect: /命令列是.*check:release-x.*要求.*check:release/u,
     },
     {
-      name: "序号跳号（[3/5] → [9/5]）",
-      text: replaceOnce(texts["AGENTS_cn.md"], "[3/5] ERIX_E2E_MODEL=1 check:release:model-e2e", "[9/5] ERIX_E2E_MODEL=1 check:release:model-e2e", "第 3 步序号"),
+      name: "序号跳号（[3/4] → [9/4]）",
+      text: replaceOnce(texts["AGENTS_cn.md"], "[3/4] ERIX_E2E_MODEL=1 check:release:model-e2e", "[9/4] ERIX_E2E_MODEL=1 check:release:model-e2e", "第 3 步序号"),
       expect: /按行序应为 \[3\//u,
     },
     {
       name: "命令那侧加了一步，文档没跟上（真值变了 ⇒ 两份文档都得红）",
       steps: [...PREFLIGHT_STEPS, { id: "new-gate", label: "check:new-gate", argv: ["npm", "run", "check:new-gate"] }],
-      expect: /PREFLIGHT_STEPS 有 6 步/u,
+      expect: /PREFLIGHT_STEPS 有 5 步/u,
     },
     {
       name: "新加的内联判据步骤忘了声明 docCommand（那一列无从推导）",

@@ -14,7 +14,7 @@
 
 原文把 T7 写成「6–10 条通用样本表」，并排在「可选，最慢，最后做」。**那一版没有照做**，理由写在 #257 的
 2026-10-31 修订里：2026-10 之后新增的 `--self-test` 家族（`docs-drift-check` / `pack-link-check` /
-`retired-spelling-scan` / `test-hygiene-check` / `export-consumer-check`）已经在**各自门禁内部**自带变异自证，
+`retired-spelling-scan` / `test-hygiene-check`）已经在**各自门禁内部**自带变异自证，
 再按原文造一张通用表，等于把已经被覆盖的东西再覆盖一遍。所以本表按修订收窄成：
 
 > **只收「那些 `--self-test` 没覆盖的行为面」** —— 各刀手工做过、验完就散、下一次重构不会因此变红的变异。
@@ -29,8 +29,7 @@
 | provider 的 `retryable` 映射、4xx → `code` 分类、abort 非重试 | 同上（这三条是**宿主可见**的值面：`termination.errorCode` 直接上行） |
 | `sessionScanPrefix` 的哈希式（`-c` 续跑按它筛会话） | 同上；它与 `bin/repl.js` / `src/tools/notes.js` 是两份同式实现，漂一边不会有门禁红 |
 
-**不收**：`docs-drift-check` / `pack-link-check` / `retired-spelling-scan` / `test-hygiene-check` /
-`export-consumer-check` 各自 `--self-test` 已经钉住的那批（重复一遍只会让 CI 更慢，不会多抓一个 bug）。
+**不收**：`docs-drift-check` / `pack-link-check` / `retired-spelling-scan` / `test-hygiene-check` 各自 `--self-test` 已经钉住的那批（重复一遍只会让 CI 更慢，不会多抓一个 bug）。
 
 ## 判据（每一条都能被 `--self-test` 打红）
 
