@@ -4,6 +4,32 @@
 ## [Unreleased]
 
 ### Changed
+- **The fold summarizer now emits a real `title` and `description`, and they land in the ledger
+  instead of a section-heading shell (issue #897).** Under the default `fold-llm`, the factory prompt
+  dictates that the first line is the `## 阶段` heading, and `buildFoldedFacts` derived `title` from
+  "the first body line" — so every `foldedFacts.title` was the literal `## 阶段` (an empty shell), and
+  `foldedFacts.summary` was absent on the product path (the orchestrator never passed `input.summary`).
+  The prompt now asks the model for two single-line meta fields **before the first `##`**
+  (`标题：` / `描述：`, sub-quota title ≤ 60 chars, description ≤ 200 chars, counted with
+  `Array.from`; no new `##` section, so the five-section budget is unchanged). `parseSummarizerMeta`
+  extracts and strips them from the body, and reports a readable `*Missing` reason instead of silently
+  substituting the first line. `buildFoldedFacts` prefers the model's `title`/`summary`; when a shared
+  2048-byte budget (`FOLDED_FACTS_MAX_BYTES`, unchanged) cannot fit the description it now writes a
+  `summaryDropped: true` marker so "crowded out" is distinguishable from "model never wrote it", and a
+  `titleFallback: true` marker when a semantic fold fell back to the first-line derivation.
+  `foldSummary` gains additive `title`/`description` keys; no existing key was renamed or redefined.
+  Pins: `test/compact/fold-title-desc-897.test.js` (four cells; every one goes red on the base commit).
+- **折叠摘要器现在会产出真正的 `title` 与 `description`，并落进账本，而不是一个小节标题壳（issue #897）。**
+  产品默认 `fold-llm` 下，出厂提示词规定第一行是 `## 阶段` 小节标题，而 `buildFoldedFacts` 的 title
+  派生是「取正文首行」⇒ 落账的 `foldedFacts.title` 逐字等于 `## 阶段`（一个壳），且 `foldedFacts.summary`
+  在产品路径上恒缺席（orchestrator 从不传 `input.summary`）。现在提示词要求模型在第一个 `##`**之前**
+  额外吐两行单行元信息（`标题：` / `描述：`，子配额 title ≤ 60 字符、description ≤ 200 字符，用
+  `Array.from` 数；不新增 `##` 小节，五节预算不变）。`parseSummarizerMeta` 把两行从正文摘出并剥离，
+  缺失时给出可读的 `*Missing` 原因而不是静默拿首行顶上。`buildFoldedFacts` 优先用模型的 `title`/`summary`；
+  当共用的 2048 字节预算（`FOLDED_FACTS_MAX_BYTES`，未抬）装不下 description 时，写一个 `summaryDropped: true`
+  标记，使「被挤掉」与「模型没写」可区分；语义折退回首行派生时写 `titleFallback: true`。`foldSummary`
+  新增纯加法的 `title`/`description` 键；既有键一个都没改名或改语义。钉住用例：
+  `test/compact/fold-title-desc-897.test.js`（四格，每格都在基点上红）。
 - **The incremental fold text no longer describes rounds outside the range it declares (issue
   #894, transitional fix).** The verdict is **content-level only**: the fold increment's body used to
   contain material from a round **outside** the `from` / `to` / `rounds` it itself printed — measured
