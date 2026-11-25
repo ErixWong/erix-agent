@@ -54,10 +54,10 @@ points at (e.g. `npm run check:docs`);
 - Type surface (issue #213): `src/**/*.d.ts` are **generated, never committed**; `prepack` regenerates them and logs
   to **stderr only**. Two JSDoc shapes silently degrade a parameter to `any` ⇒ `#type-surface`.
 - **Type ratchets** (`check:types` / `check:types:strict`, issues #214 / #417): the root tier accepts debt against
-  `BASELINE_ROOT = 98` (baseline constant **98**, the accepted debt measured 98 errors) in
-  `scripts/type-check-ratchet.mjs`: above it ⇒ exit 1, equal ⇒ green, below ⇒ green plus a "you may lower the baseline" hint, so the total never rises;
-  per-file counts and host reachability come from `--verbose`. `--with-tools` widens the union to `./tools`
-  (baseline **133** / 28 files); `check:types:strict` re-runs it with `--strict` against its own baselines, blocks,
+  `BASELINE_ROOT` in `scripts/type-check-ratchet.mjs` (**read the value there — page-header rule: no hand-made
+  copies**): above it ⇒ exit 1, equal ⇒ green, below ⇒ green plus a "you may lower the baseline" hint, so the total never rises;
+  per-file counts and host reachability come from `--verbose`. `--with-tools` widens the union to `./tools` and has
+  its own baseline, same rule; `check:types:strict` re-runs it with `--strict` against its own baselines, blocks,
   and **both tiers drop in one commit**. ⚠ **Delete the generated declarations before running a ratchet**
   (`find src -name '*.d.ts' -delete`): while they sit next to their sources, `tsc` resolves `./x.js` to the sibling
   declaration and checks declarations instead of implementations.
