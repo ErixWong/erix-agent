@@ -4864,6 +4864,15 @@ export async function runToolLoop(options) {
         : undefined;
       pendingFoldedFacts = buildFoldedFacts({
         text: factsText,
+        // issue #897：把摘要器解析出的模型 title/description 传下去（两个纯加法键）。
+        // title 缺省时不传 ⇒ 落账层自己退回「正文首行」并标 titleFallback；
+        // description 传进既有的 `input.summary` 读取点（不新建读取点、不改其语义）。
+        ...(typeof strategyFoldSummary?.title === "string" && strategyFoldSummary.title !== ""
+          ? { title: strategyFoldSummary.title }
+          : {}),
+        ...(typeof strategyFoldSummary?.description === "string" && strategyFoldSummary.description !== ""
+          ? { summary: strategyFoldSummary.description }
+          : {}),
         // issue #567：折叠的契约身份（两个纯加法键，与轮记录那份同源：同一个对象、同一个值）。
         foldId: foldedFingerprint,
         ...(foldSeq === undefined ? {} : { seq: foldSeq }),
