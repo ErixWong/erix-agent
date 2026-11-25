@@ -122,7 +122,7 @@ jobs:
         if: matrix.node == 22
         run: npm run check:release
 
-      # issue #257 T7：样本表里每一条**真的会被闸咬住**的机器证据。放最后：它跑单个测试文件
+      # issue #257 T7：样本清单里每一条**真的会被闸咬住**的机器证据。放最后：它跑单个测试文件
       # （前面 `Test suite` 已绿，变异后的红才可归因），且是唯一会临时改写 tracked 源文件的步骤。
       - name: Mutation samples actually bite (mutate → red → restore → green)
         run: npm run check:mutation:run
@@ -137,7 +137,7 @@ jobs:
     timeout-minutes: 20
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
-      # `fetch-depth: 0` 同样不能省：`check:inventory` / `check:mutation` 读的是树，但
+      # `fetch-depth: 0` 同样不能省：`check:inventory` 读的是树，但
       # `check:changelog` 一族读 tag 与合并史（见 `real` 那个 job 的注释）。
       - uses: actions/checkout@v4
         with:
@@ -159,12 +159,7 @@ jobs:
       - name: Config-leaf value status verify
         run: npm run check:config-leaf-values
 
-      # issue #257 T7：变异样本表的验表（第 4/5/6 列与合计行由真树重算）。
-      # ⚠ 刷表：`node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md`
-      - name: Mutation sample table verify
-        run: npm run check:mutation
-
-      # 上一条自己的反向证（内存夹具，不落盘、不碰真树）。
+      # issue #257 T7 / #906：真跑判据自己的反向证（内存夹具，不落盘、不碰真树）。
       - name: Mutation sample check self-test
         run: node scripts/mutation-sample-check.mjs --self-test
 

@@ -8,7 +8,7 @@
 //   ③ **投递时序写死**：投递发生在承载 `foldedFacts` 的轮记录 append **之前**（今天的现场），
 //      契约里逐字同一句；本文件用「钩子里那一刻去账本里查不到这条 foldId」把它钉住，不是靠注释。
 //
-// 反向证（防回装；与 `test/mutation-samples.md` 的 M12 / M13 成对）：
+// 反向证（防回装；与 `scripts/mutation-samples.mjs` 的 M12 / M13 成对）：
 //   · ④ 把 `roundRange` 从指纹输入里去掉 ⇒ 同 messages、不同区间的两次折叠会拿到**同一个** `foldId` ⇒ 红；
 //   · ⑤ 把 `seq` 改回宿主自算（= 引擎不给）⇒ 载荷里没有 `seq` ⇒ 红。
 //
