@@ -14,23 +14,26 @@
 //   就是可观察的「轮次标记」；判据把它抽成 `mentionedRounds()`，两个方向都钉：既不许 `> to`，
 //   也不许 `< from`。）
 //
-// ── 为什么必须同时钉 ⓪ 与 ③ ──────────────────────────────────────────────────────────
+// ── 为什么必须同时钉 ⓪ 与 ③（而且必须**分开**钉）─────────────────────────────────────
 // 越界正文有**两个产生点**，形状完全相同（读全量 `foldedPayload`，`from/to/count` 取不涨的区间）：
 //   ⓪ `incrementText` 的 `budgetFallbackFoldedRounds > 0` 那一支（配置策略折不够 ⇒ 引擎预算兜底
-//     接手折轮，本折实际删掉的是「策略那一折 + 兜底那一折」的并集，#873 之后这一格变常见）；
-//   ③ 落到 `computeFactsFallbackText()` 那一支（无兜底折轮时，**默认策略 = 滑窗**就走这里）。
-// 上一轮的修法只切了 ⓪，③ 原封不动 ⇒ 默认策略（绝大多数用户的默认路径）照样越界。
-// ⇒ 两个格子各自钉一条路径，并且**各自断言自己走的是哪一支**（判据见 `assertBranchIs0` /
-//   `assertBranchIs3`）：
-//   · ⓪ 的条件是「预算兜底真折了轮」，而 `src/loop/orchestrator.js:4492` 那个
-//     `observeCompactionLayer` **只在** `fallback.foldedRounds > 0` 时写 `layers.slidingWindow`
-//     ⇒ 配的是 `fold-llm`、却同时出现 `foldLlm` + `slidingWindow` 两层观测，就是 ⓪ 的充分证据；
-//   · ③ 反过来证伪 ⓪：入口那一发已把**全部**不受保护轮折完（区间跨度与 `foldedRounds` 都等于
-//     不受保护轮数），兜底既不折受保护轮也不重折已折的 ⇒ `budgetFallbackFoldedRounds = 0`
-//     ⇒ 正文只能出自 `computeFactsFallbackText()`。
-//   两条分支在本夹具里吐出的正文**逐字相同**（实测两份 `increment.text` 完全一样，`noteTools`
-//   的差异不改变措辞），所以只能靠上面这两条**观察面**区分；不写它们，「只修 ⓪」的人会把
-//   ③ 的红误读成 ⓪ 的红。
+//     接手折轮，本折实际删掉的是「策略那一折 + 兜底那一折」的并集；#873 之后这一格变常见）；
+//   ③ 落到 `computeFactsFallbackText()` 那一支（**没有**兜底折轮、且策略自己报不出正文时才走：
+//     `strategyFoldSummary` 的 `increment` 与 `text` 都不成句 ⇒ 由定稿处就地现算）。
+// 上一轮的修法只切了 ⓪，③ 原封不动 ⇒ 只要有条路径落到 ③ 就照样越界，而且**没人报红**
+// （实测：只退 ③ 的变异在上一版判据下全绿，见下面「变异证据」M3b）。
+// ⇒ 分工（按**实测**写）：格子 1 / 格子 2 钉 ⓪（两个策略配置各一遍），**格子 4 钉 ③**。
+//   分支身份只能用**观察面**断言，不能用正文措辞：两条分支吐出的正文**逐字相同**（实测两份
+//   `increment.text` 完全一样，`noteTools` 的差异不改变措辞），措辞分不开它们。
+//   · ⓪ 的观察面（`assertBranchIs0`）：配的是 `fold-llm`，却同时出现 `foldLlm` + `slidingWindow`
+//     两层观测 —— `src/loop/orchestrator.js:4492` 那个 `observeCompactionLayer` **只在**
+//     `fallback.foldedRounds > 0` 时才写 `layers.slidingWindow` ⇒ 那一发只能是引擎的预算兜底。
+//   · ③ 的观察面（格子 4）：配一个**非管线**策略（名字不在 `COMPACTION_PIPELINE` 里），于是
+//     `layers.slidingWindow` 只可能来自预算兜底；本格要求它 `triggered === 0` ⇒ 兜底折了 0 轮
+//     ⇒ `budgetFallbackFoldedRounds === 0` ⇒ ⓪ 的闸门为假 ⇒ 正文只能出自 ③。
+//   · ⚠ 默认策略 = 滑窗时**没有**可用的分支代理（入口那一发与兜底是同一个层、同一个名字）：
+//     那里曾用「区间跨度 == 不受保护轮数」反证 ⓪，**已被实测推翻**（兜底折的轮也落在同一段
+//     并集里，`foldedRounds == 6` 完全可以是「策略 5 + 兜底 1」）⇒ 那一格现在不声称分支身份。
 //
 // ── 这是**过渡期**修法（口径已批 #898，不是永久机制）────────────────────────────────
 // 本格钉的这条触发路径靠的是 `protectedMessage` 钩子，而该机制已批退役（#898，前置是
@@ -43,15 +46,23 @@
 //   （给一个即将不存在的机制再加一层可观测面 = 过度设计）。这条「不新增」本身钉在
 //   格子 3 的 `PREFIX_RECORD_KEYS` 上（实测改动前后的轮记录键集必须逐字相同）。
 //
-// ── 变异格（改动方向一旦被改坏，哪一格会红）────────────────────────────────
-//   M1 快照取点太晚（在安全层之后才切，或干脆不切、继续读全量 `foldedPayload`）
-//      ⇒ 格子 1 与格子 2 同时红（正文重新含 `PROCTOOL_R7`）。
-//   M2 只切 ⓪、不切 ③ ⇒ 格子 1 绿、**格子 2 红**（这一格存在的唯一理由）。
-//   M3 只切 ③、不切 ⓪ ⇒ 格子 1 红、格子 2 绿。
-//   M4 把归档 `buildFoldedRecordArchive` 或折叠身份 `foldSummaryFingerprint` 也改成读快照
-//      ⇒ **格子 3** 红（契约面被拿去做内部自洽：`foldId` 变了、归档里再没有安全层降级的原文）。
-//   M5 顺手往轮记录加了新键（例如「安全层降级了几轮」那类新事实）
-//      ⇒ **格子 3** 的 `PREFIX_RECORD_KEYS` 红（过渡期只改内存侧的读者，账本形状不动）。
+// ── 变异证据（**实测**，不是推断；每一发都是「只回退一步」的源码 + 本文件，跑完即还原）────
+//   M3a 只退回 ⓪（预算兜底那一支改回读全量 `foldedPayload`）
+//      ⇒ exit=1，红格 = **格子 1 与格子 2**（两格都报「实测越界轮=[7]」），格子 3/4 绿。
+//      ⇒ 事实：**格子 1 与格子 2 走的都是 ⓪**（格子 2 曾名「③ 路径」——那名字是错的：它的
+//        分支代理「区间跨度 == 不受保护轮数」证伪不了 ⓪，兜底折的轮也落在同一段并集里）。
+//   M3b 只退回 ③（定稿处 `computeFactsFallbackText()` 那个闭包改回读全量）
+//      ⇒ 在**只有格子 1–3** 的上一版判据下：exit=0、红格 0（**全绿**）⇒ ③ 当时一遍都没被钉；
+//      ⇒ 加上格子 4 之后：exit=1，红格 = **仅格子 4**（报「实测越界轮=[7]」）。
+//   ⇒ 本文件的分工（按实测写，不按设计意图写）：**格子 1 / 格子 2 钉 ⓪**（两个策略配置各一遍），
+//     **格子 4 钉 ③**，格子 3 钉「不拿契约面换内部自洽」与「账本形状一字不动」。
+//   M4a 落盘归档 `buildFoldedRecordArchive` 改读快照
+//      ⇒ exit=1，红格 = **格子 3**（归档条数变 12、末条 `PROCTOOL_R7` 消失）；格子 1/2 也连带红
+//      （它们的**夹具前提**就是「那条降级消息已进了轮记录归档」）⇒ 归档被搜短这件事报三行。
+//   M4b 折叠身份 `foldSummaryFingerprint`（= 契约上的 `foldId`）改由快照算
+//      ⇒ exit=1，红格 = **仅格子 3**（就地重算的 `foldId` 与落账那份不相等）。
+//   M5 往轮记录加一个新键（实测：无条件写 `roundRecord.safetyDowngrade = { rounds:[7], count:1 }`）
+//      ⇒ exit=1，红格 = **仅格子 3**（`PREFIX_RECORD_KEYS` 多一个键就红）。
 //
 // 夹具蓝本：上一轮取证探针（本文件照它改写：`buildRun` / `collect` / `findQ1` / `findLeak` 与三轮
 // 工具轮、受保护消息的构造都是抄它的，只是**断言方向反过来**；蓝本本体不进主干）。
@@ -85,7 +96,8 @@ const TOOL_RESULT_BYTES = 150;
 const BUDGET_TOKENS = 3000;
 const PROTECTED_ASSISTANT_BYTES = 3000;
 // ⓪ 分支才会传 `noteTools`；③ 不传——但两者在本夹具里吐的正文逐字相同，所以**不能**拿正文
-// 措辞当分支身份，必须用下面 `assertBranchIs0` / `assertBranchIs3` 那两条观察面。
+// 措辞当分支身份：⓪ 用下面 `assertBranchIs0` 那条观察面；③ 由格子 4 用「配非管线策略 +
+// `slidingWindow.triggered === 0`」这条代理坐实（实测证据见文件头「变异证据」）。
 // 不受保护轮数 = 总工具轮 − 受保护轮 = 6：③ 那一格拿它证伪「预算兜底折了轮」。
 const UNPROTECTED_ROUNDS = TOOL_TURNS - PROTECTED_ROUNDS.length;
 
@@ -171,6 +183,12 @@ function findQ1(compactions) {
   ));
 }
 
+// 取**某一轮**带折叠事实的那条轮记录（同一轮可能有多条行，只拿带 `foldedFacts` 的那一条）。
+function findFoldRecordAtRound(records, round) {
+  return records.find((record) => record?.round === round
+    && record[FOLDED_FACTS_RECORD_FIELD] !== undefined);
+}
+
 // 增量正文里出现的轮次标记（工具名自带轮号：`tool_R<n>` / `PROCTOOL_R<n>`）。
 function mentionedRounds(text) {
   return [...String(text ?? "").matchAll(/(?:PROCTOOL_R|tool_R)(\d+)/g)].map((m) => Number(m[1]));
@@ -179,23 +197,14 @@ function mentionedRounds(text) {
 // ⓪ 的分支身份（只在配置策略 = `fold-llm` 时可用）：配的是 `fold-llm`，`layers.slidingWindow`
 // 那一发只可能是引擎预算兜底，而 `orchestrator.js:4492` 仅在 `fallback.foldedRounds > 0` 时
 // 才写这一层观测 ⇒ 两层同时 triggered = ⓪ 的条件（`budgetFallbackFoldedRounds > 0`）成立。
+// ⚠ 默认策略 = 滑窗时**用不了**这个代理：入口那一发与预算兜底是同一个层、同一个名字，
+//   layers 分不开 ⇒ 那一格不声称分支身份（实测它走的也是 ⓪）。③ 的身份改由格子 4 坐实：
+//   配**非管线策略** + `slidingWindow.triggered === 0`（见格子 4 注释）。
 function assertBranchIs0(label, q1) {
   assert.ok(q1.layers?.foldLlm?.triggered, `${label} 分支身份：配置策略 fold-llm 确实折过`);
   assert.ok(q1.layers?.slidingWindow?.triggered,
     `${label} 分支身份：配的是 fold-llm，却同时出现 slidingWindow 观测 ⇒ 那是预算兜底且它真折了轮`
     + "（orchestrator.js:4492 只在 fallback.foldedRounds>0 时写）⇒ 本格走的是 ⓪");
-}
-
-// ③ 的分支身份（默认策略 = 滑窗）：用「区间跨度与折轮数都等于不受保护轮数」证伪 ⓪ 的条件
-// ⇒ 兜底无轮可折 ⇒ 正文只能出自 `computeFactsFallbackText()`（只修 ⓪ 不算修这一格）。
-function assertBranchIs3(label, q1, increment) {
-  assert.ok(q1.layers?.slidingWindow?.triggered, `${label} 分支身份：滑窗那一发折过`);
-  assert.ok(!q1.layers?.foldLlm?.triggered,
-    `${label} 分支身份：本格没有 fold-llm 层 ⇒ slidingWindow 观测可能来自入口那一发，不能反推兜底折轮`);
-  assert.equal(increment.to - increment.from + 1, UNPROTECTED_ROUNDS,
-    `${label} 分支身份：本折区间必须正好覆盖全部 ${UNPROTECTED_ROUNDS} 个不受保护轮 ⇒ 兜底无轮可折`
-    + " ⇒ budgetFallbackFoldedRounds>0 为假 ⇒ 正文出自 computeFactsFallbackText（③）");
-  assert.equal(q1.foldedRounds, UNPROTECTED_ROUNDS, `${label} 分支身份：折的轮数必须等于不受保护轮数`);
 }
 
 // 一条格里跑完「夹具前提 → 分支身份 → 判据」三步，红的是哪一步由断言消息区分。
@@ -215,16 +224,19 @@ async function assertIncrementStaysInsideItsOwnRange({ label, runId, strategy, b
   assert.ok(JSON.stringify(stripVolatile(fold.record?.foldedPayload ?? [])).includes("PROCTOOL_R7"),
     `${label} 夹具前提：被安全层降级的那条已进了总 foldedPayload（越界素材在场）`);
 
+  // 分支身份：声称走 ⓪ 的那格必须在格里证伪另一条；`"unknown"` = **不声称**——默认滑窗下入口
+  // 那一发与预算兜底同层同名，代理不存在（实测该格走的仍是 ⓪：见文件头「变异证据」M3a/M3b）。
   if (branch === "0") {
     assertBranchIs0(label, q1);
   } else {
-    assertBranchIs3(label, q1, increment);
+    assert.equal(branch, "unknown", `${label} 内部口径：branch 只认 "0" / "unknown"`);
   }
 
   const outside = [...new Set(mentionedRounds(text))]
     .filter((round) => round < (increment.from ?? 1) || round > increment.to);
   assert.deepEqual(outside, [],
-    `${label} #894 判据：增量正文不得含声明区间 from=${increment.from} to=${increment.to}`
+    `${label} ${branch === "0" ? "⓪" : "不声称分支（实测与格子 1 同走 ⓪）"} #894 判据：`
+    + `增量正文不得含声明区间 from=${increment.from} to=${increment.to}`
     + `（rounds=${increment.rounds}）之外的轮次，实测越界轮=${JSON.stringify(outside)}`);
 }
 
@@ -294,13 +306,15 @@ test("#894 ⓪ 路径（配置策略 fold-llm + 预算兜底折轮）：增量�
 });
 
 // ── 格子 2：③ 路径（默认策略 = 滑窗 ⇒ 落进 `computeFactsFallbackText()`）────────────────
-// 专门钉「上一轮只修 ⓪ 会漏」：这一格的夹具与格子 1 只差一个策略配置，越界正文却来自另一个函数。
-test("#894 ③ 路径（默认滑窗策略 → computeFactsFallbackText）：增量正文不得含声明区间外的轮次", async () => {
+// ── 格子 2：同一份夹具只换策略配置（默认滑窗）；实测与格子 1 一样走 ⓪ ──────────────
+// 名字里**不再声称 ③**：实测 M3a（只退 ⓪）让本格与格子 1 同时红、M3b（只退 ③）让本格绿。
+// ③ 由格子 4 钉（那里配的是**非管线策略**，才能把预算兜底与入口那一发分开）。
+test("#894 ⓪ 路径（配置策略 = 默认滑窗）：增量正文不得含声明区间外的轮次", async () => {
   await assertIncrementStaysInsideItsOwnRange({
-    label: "(b) 默认滑窗 ③",
+    label: "(b) 默认滑窗 ⓪",
     runId: "p894-b-default",
     strategy: undefined,
-    branch: "3",
+    branch: "unknown",
   });
 });
 
@@ -350,3 +364,102 @@ test("#894 反向证A（不改契约）：foldId 仍由全量归档算出、轮�
 // 前置是 `recall_read` 先落地），给一个即将不存在的机制再加一层可观测面就是过度设计。
 // ⇒ 本刀**账本形状一字不动**：不新增轮记录键、不新增枚举值、不新增统计键；「不许新增」这件事
 //   由上面格子 3 的 `PREFIX_RECORD_KEYS` 钉住（正面钉「没有新键」比原来那条断言更贴本刀意图）。
+
+// ── 格子 4：**真正驱动 ③**（`computeFactsFallbackText()`）的那一格 ──────────────────────
+// 实测结论（见文件头「变异证据」那一段）：**只有这个形状能让 ③ 接手**。三件事必须同时成立：
+//   Ⅰ 宿主自带的策略**自己折轮**，并报一个「有形状、没正文」的 `foldSummary`（既无 `text`
+//     也无 `increment`）⇒ ① 与 ② 都空。关键：引擎只在 `foldSummary` **缺席**时才就地补一份
+//     机械正文（`orchestrator.js:4339-4344` 那个 `strategyFoldSummary === undefined` 的兜底），
+//     报一个 `{ source, strategy }」不会触发它。
+//   Ⅱ 策略把可折的那几轮**一次折光**（只留最后几条消息），库层预算兜底接手时**无轮可折**
+//     ⇒ `fallback.foldedRounds === 0` ⇒ `budgetFallbackFoldedRounds === 0` ⇒ **⓪ 的闸门为假**。
+//   Ⅲ 预算仍装不下 ⇒ 安全层（`enforceSize`）照跑，把它降级的那条受保护消息**追加进全量**
+//     `foldedPayload`（`protectedDowngraded > 0`）——这就是越界素材本身。
+// 「⓪ 真的没接手」用**观察代理**坐实，不靠读源码猜：`orchestrator.js:4492-4496` 只在
+// `fallback.foldedRounds > 0` 时才给 budget 相的 `slidingWindow` 层记 `triggered`（#657 注释就写着
+// 「`layers` 里 `triggered > 0` 的 budget 相层就是同一件事」）；而本夹具配的是**非管线策略**
+// （`name = "host-fake-notext"`，不在 `COMPACTION_PIPELINE` 的名字表里）⇒ 策略自己那一折也不会碰
+// 这个层。于是 `layers.slidingWindow.triggered === 0` ⇔ 兜底折了 0 轮 ⇔ `budgetFallbackFoldedRounds`
+// === 0 ⇔ ⓪ 那一支根本没跑 ⇒ 正文只能来自 ③。
+// ⚠ 上一轮我在格子 2 里用「区间跨度 == 未受保护轮数」当 ③ 的代理，**那个代理是错的**：
+//   兜底折的轮也落在同一段并集里，`foldedRounds == 6` 完全可以是「策略 5 + 兜底 1」。
+//   实测：只退 ⓪ ⇒ 格子 1/2 两格皆红；只退 ③ ⇒ 两格皆绿。⇒ 格子 1/2 走的都是 ⓪，
+//   ③ 在本格之前**一遍都没被钉**（这正是 #894 说的那个错误的镜像：不是一处漏修，是一处漏钉）。
+
+// 策略只留最后这么多条消息：保留集里必然还剩受保护的那几轮（越界素材会在），
+// 而可折的那几轮一次折光 ⇒ 预算兜底无轮可折。
+const FAKE_STRATEGY_KEEP_MESSAGES = 4;
+
+// 一个「会折轮、但报不出正文」的假宿主策略：`foldSummary` 有形状、没 `text`/`increment`。
+// 同时把每次报出的东西**留档**，让判据能直接断言「① ② 确实空」而不是靠推。
+function createNoTextStrategy({ keepMessages = FAKE_STRATEGY_KEEP_MESSAGES } = {}) {
+  const reports = [];
+  const foldSummary = Object.freeze({ source: "strategy", strategy: "host-fake-notext" });
+  return {
+    reports,
+    strategy: {
+      name: "host-fake-notext",
+      shouldCompact: async () => true,
+      compact: async (messages) => {
+        const kept = messages.slice(-keepMessages);
+        const folded = messages.slice(0, Math.max(0, messages.length - kept.length));
+        reports.push({
+          foldedRounds: folded.length,
+          hasText: typeof foldSummary.text === "string",
+          hasIncrement: typeof foldSummary.increment === "string",
+        });
+        return {
+          messages: kept,
+          compacted: true,
+          foldedPayload: folded,
+          foldedRounds: folded.length,
+          foldedRoundRange: { from: 1, to: Math.max(1, folded.length) },
+          foldSummary,
+        };
+      },
+    },
+  };
+}
+
+test("#894 ③ 路径（假宿主策略不报正文 + 预算兜底折 0 轮 → computeFactsFallbackText）：增量正文不得含声明区间外的轮次", async () => {
+  const label = "(c) 假宿主策略无正文 ③";
+  const { strategy, reports } = createNoTextStrategy();
+  const { records } = await runFixture({ label, runId: "p894-c-notext", strategy });
+
+  // 前提 Ⅰ：策略每一发都报了「有形状、没正文」的 foldSummary ⇒ ① 与 ② 结构性为空。
+  assert.ok(reports.length > 0, `${label} 夹具前提：配的假策略真的被调到了`);
+  assert.ok(reports.every((report) => report.hasText === false && report.hasIncrement === false),
+    `${label} 夹具前提：策略报出的 foldSummary 必须既无 text 也无 increment（否则正文是 ② 供的，本格钉不到 ③）`);
+
+  // 前提 Ⅱ+Ⅲ（观察到的事实）：本折**真的折了轮**、`slidingWindow` 层**一次没触发**（⓪ 闸门为假）、
+  // 安全层**真的动了手**且**降级了受保护消息**（越界素材在场）。
+  const stats = records.flatMap((record) => (record.compactionStats ?? [])
+    .map((stat) => ({ round: record.round, ...stat })));
+  const q1 = stats.find((stat) => stat.compacted === true
+    && stat.foldedRounds > 0
+    && (stat.layers?.slidingWindow?.triggered ?? 0) === 0
+    && (stat.layers?.enforceSize?.triggered ?? 0) > 0
+    && (stat.protectedDowngraded ?? 0) > 0);
+  assert.ok(q1,
+    `${label} 夹具前提：要有一发「折了轮 + 预算兜底折 0 轮（slidingWindow.triggered=0）+ 安全层降级了受保护消息（protectedDowngraded>0）」的压缩；实测 stats=${JSON.stringify(stats)}`);
+  assert.ok(reports.some((report) => report.foldedRounds === q1.foldedRounds),
+    `${label} ③ 那一折的折轮数必须等于策略自报的那份（预算兜底一份没加 ⇒ 才能说 ⓪ 没接手）；实测=${q1.foldedRounds}`);
+
+  const foldRecord = findFoldRecordAtRound(records, q1.round);
+  assert.ok(foldRecord, `${label} 夹具前提：那一轮带折叠事实（轮号=${q1.round}）`);
+  const increment = foldRecord[FOLDED_FACTS_RECORD_FIELD][FOLDED_FACTS_INCREMENT_KEY];
+  // 正文真的由 ③ 供出来了（不是空串、不是占位）。
+  assert.ok(typeof increment?.text === "string" && increment.text !== "",
+    `${label} ③ 必须真的供出了增量正文（拿不到 ⇒ 本格是空转）`);
+  // 非空转钳：声明区间必须**窄于**受保护轮的轮号，否则「正文不含越界轮」这句是自动成立的。
+  assert.ok(Number.isSafeInteger(increment.to) && increment.to < PROTECTED_ROUNDS[0],
+    `${label} 非空转钳：增量声明的 to=${increment.to} 必须小于受保护轮号 ${PROTECTED_ROUNDS[0]}（否则安全层那条本来就在区间内，断言空转）`);
+
+  const outside = [...new Set(mentionedRounds(increment.text)
+    .filter((round) => round < increment.from || round > increment.to))]
+    .sort((left, right) => left - right);
+  assert.deepEqual(outside, [],
+    `${label} 格子 4：③ 供出的增量正文不得含它自己声明区间 from=${increment.from} to=${increment.to}`
+    + `（rounds=${increment.rounds}）之外的轮次；实测越界轮=${JSON.stringify(outside)}`
+    + `（只退 ③ 的变异下实测为 [7]，即安全层追加的那条受保护消息）`);
+});

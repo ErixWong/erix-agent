@@ -30,9 +30,14 @@
   `recall_read` landed first); `bin/config.js` still passes `protectedMessage: isRealUser` in the
   meanwhile, so this seam stays until that host does. Once it is gone the increment scope becomes
   structurally consistent and **this block and its pin are deleted together** — see the comment at the
-  snapshot site. Pins: `test/compact/fold-increment-safety-scope-894.test.js` (both producer paths
-  separately, the archive/`foldId` byte-shape unchanged, and that a run with **no** downgrade writes
-  nothing new). Docs and the derived contract tables are synced separately.
+  snapshot site. Pins: `test/compact/fold-increment-safety-scope-894.test.js` — cells 1 and 2 pin the
+  budget-fallback producer under two strategy configurations, **cell 4 pins the on-the-spot producer**
+  (a host strategy that folds rounds but reports a `foldSummary` with no text, while the budget
+  fallback folds 0 rounds — the only shape measured to reach it), and cell 3 pins the contract surface
+  (archive contents, `foldId` recomputed over the full archive, unchanged round-record key set). The
+  file's header records the measured mutation evidence (`M3a`/`M3b`/`M4`/`M5`) for each of them —
+  including the fact that an earlier revision of the pin had **no** coverage of the second producer.
+  Docs and the derived contract tables are synced separately.
 - **本折增量正文不再写它自己区间之外的轮次（issue #894，过渡期修法）。** 结论只到**内容层**：
   折叠增量的正文写过**它自己打印的** `from` / `to` / `rounds` **之外**的轮次内容——探针实测：
   `foldedFacts.increment` 声明 `from=1,to=6,rounds=6`，正文却写着 `工具足迹：PROCTOOL_R7×1`，
@@ -51,8 +56,11 @@
   键、没有新增轮记录键、没有新增枚举值或统计键。这整条路径的触发者是 `protectedMessage`，而 #898
   已把它退役（前置 `recall_read` 先落地）；这段期间 `bin/config.js` 仍传 `protectedMessage: isRealUser`，
   所以这条缝还在。它一旦消失，增量区间就**结构性**自洽，**本块与它的判据一起删**——见快照处的注释。
-  钉住用例：`test/compact/fold-increment-safety-scope-894.test.js`（两个产生点各自钉、归档与
-  `foldId` 的字节形状不变、以及「**无**降级」的格子什么都不多写）。文档与派生契约表另行同步。
+  钉住用例：`test/compact/fold-increment-safety-scope-894.test.js`（格子 1/2 钉 ⓪ 在两个策略配置下的
+  那一发；**格子 4 钉 ③** —— 配一个会折轮但报不出正文的非管线策略、且预算兜底 0 轮，这是实测
+  唯一能走到 ③ 的形状；格子 3 钉契约面：归档内容、由全量归档现算的 `foldId`、逐字不变的轮记录键集）。
+  每一格的变异证据（M3a/M3b/M4/M5，实测）写在该文件头部注释里，其中包括「上一版判据对第二个
+  产生点**零覆盖**」这个事实。文档与派生契约表另行同步。
 - **Folding depth is now budget-relative, not round-count relative, and it can never fold below
   five rounds (issue #873).** `selectFoldedRounds` (`src/compact/helpers.js`) used to compute its
   target as `rounds.length - keepRounds`, so `keepRounds` was silently a **destination** rather than
