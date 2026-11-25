@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // 破坏包逐名表的**唯一读法**（一个读法，两个消费者：`scripts/docs-drift-check.mjs` 与
-// `scripts/host-consumer-probe.mjs`）。
+// `scripts/guide-removal-gate.mjs`）。
 //
 // 为什么要单独一个模块而不是各读各的：那张表（`docs/host-upgrade-guide-<版本>.md` 里一行一个名字、
 // 带迁移条款与入口列的 Markdown 表）有两个判据在看——
 //   ① `docs-drift-check` 的 `bundle-table`：表的名字集合 ↔ 现算候选集**双向**对账、中英一致、条款照抄
 //      `@deprecated` 标记、入口列现读 `src/index.js` / `src/tools/index.js`；
-//   ② `host-consumer-probe` 的覆盖判据：宿主真的在 import 的名字，**必须**在这张表里有一行条目。
+//   ② `guide-removal-gate` 的判据：这张表声称已删的名字，**必须**在发布物运行时导出面上真的不存在（反向亦然）。
 // 两个判据各自抄一份「表怎么读」，就是两条会各自漂移的真相（同一个病：抄一份名单 = 多一条漂移路径）。
 // 所以表的形状（几格、第一格长什么样、入口列认哪几种写法、版本号从哪来）只写在这里，两边 import。
 //
@@ -43,7 +43,7 @@ export const BUNDLE_ROW_NAME_RE = /^`([A-Za-z_$][\w$]*)`$/;
 /**
  * 一份指南**文本**里的逐名行与重复行。
  *
- * 纯函数（吃文本、不吃路径）：`host-consumer-probe --self-test` 因此能在内存夹具上反向证，
+ * 纯函数（吃文本、不吃路径）：`guide-removal-gate --self-test` 因此能在内存夹具上反向证，
  * 不用往仓里写文件。
  *
  * @param {string} text 指南原文

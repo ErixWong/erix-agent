@@ -4,7 +4,7 @@
 //
 // 病根（issue #687 的原话，逐字可复核）：0.30.0 升级指南写着「16 exported names are removed」、§3 写着
 // `createAnthropicProvider` 在 0.30.0 已不存在，而**已发布的 `erix-agent@0.30.0` 一个都没删**——解包后
-// `import` 一次，root 与 `./tools` 两个入口把 16 个名字全都还给了消费者。三把既有闸都看不见这一维：
+// `import` 一次，root 与 `./tools` 两个入口把 16 个名字全都还给了消费者。当初的三把闸都看不见这一维（`deprecated-export-check` 与 `host-consumer-probe` 已随「库不管消费者」整体删除）：
 //   · `scripts/deprecated-export-check.mjs` 只对账「`@deprecated` 登记 ↔ `check:exports` 现算候选」；
 //   · `scripts/host-consumer-probe.mjs` 只对账「宿主命中 ↔ 指南有无条目」；
 //   · `check:docs` 的 `bundle-table` 只对账「指南两张表的名集 ↔ 候选清单」。
@@ -33,7 +33,7 @@
 //
 // ── 入口怎么判（不许猜）───────────────────────────────────────────────────────
 //  入口按指南行里登记的入口列（`.` / `./tools`）判；读法住在 `scripts/bundle-guide-table.mjs`
-//  （`check:docs` 的 `bundle-table` 与 `host-consumer-probe` 读的是同一份），本文件**不抄第二份表形状**、
+//  （`check:docs` 的 `bundle-table` 与已删的 `host-consumer-probe` 当年读的是同一份），本文件**不抄第二份表形状**、
 //  也不抄第二份名单。入口列写法本工具不认识时（`bundleEntryClaim` 返 null），**两个入口都查**——
 //  宁可按更严的一边判，也不许猜一个。入口列写错本身由 `check:docs` 的 `bundle-table` 判红（它现读
 //  `src/index.js` / `src/tools/index.js` 的再导出块），这里不重复那一道。

@@ -40,7 +40,7 @@
   `gh api repos/<owner>/<repo>/rulesets` 现查；今天它要求走 PR、且没有配任何 status check），所以唯一自动门禁是
   发版前必跑的 `npm run release:day -- --stage preflight`。工作流文件刻意保留：`check:changelog` 与
   `check:test-summary` 会读它验证步骤接线。恢复自动触发 ⇒ 先读 `#ci`，并按 ruleset 现值决定要不要配
-  `required_status_checks`。`check:host-consumers` 与 `npm run soak` 仍然留在 CI 之外。
+  `required_status_checks`。`npm run soak` 仍然留在 CI 之外。
 - **闸的可复现性**：`check:docs` 与 `check:docs:strict` 必须在开发工作树里**和**在全新克隆里都 exit 0。需要
   `node_modules` 的闸在裸克隆里以 `Cannot find module 'typescript'` 失败，含义是**这道闸没能跑**，
   永远不是回归 ⇒ `#gate-reproducibility`。
@@ -70,16 +70,15 @@
 
 ## 4. 发版日
 
-四条命令，按这个顺序。下面五行清单与 `scripts/release-day.mjs` 里的 `PREFLIGHT_STEPS` 逐行对账；每一步判什么
+四条命令，按这个顺序。下面四行清单与 `scripts/release-day.mjs` 里的 `PREFLIGHT_STEPS` 逐行对账；每一步判什么
 写在 `#release-day`：
 
 ```bash
 npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/5] check:changelog                           每个公共面合并都在本版段落里有名字
-#   [2/5] CHANGELOG [Unreleased] carry              还停在 `## [Unreleased]` 下的条目
-#   [3/5] ERIX_E2E_MODEL=1 check:release:model-e2e  真模型端点；没带那个环境变量 ⇒ 什么都没跑 = 未判定
-#   [4/5] check:release                             离线：包形状 / 装好的包 / TS 宿主 / CLI 假上游
-#   [5/5] check:host-consumers -- --hosts …         每个宿主命中都必须已被本版升级指南覆盖
+#   [1/4] check:changelog                           每个公共面合并都在本版段落里有名字
+#   [2/4] CHANGELOG [Unreleased] carry              还停在 `## [Unreleased]` 下的条目
+#   [3/4] ERIX_E2E_MODEL=1 check:release:model-e2e  真模型端点；没带那个环境变量 ⇒ 什么都没跑 = 未判定
+#   [4/4] check:release                             离线：包形状 / 装好的包 / TS 宿主 / CLI 假上游
 npm run release:day -- --stage publish       # 打印操作单，exit 3；`npm publish` 由你自己在终端跑
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → 两侧各验一次 → 文档闸

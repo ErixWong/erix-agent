@@ -45,7 +45,7 @@ points at (e.g. `npm run check:docs`);
   `gh api repos/<owner>/<repo>/rulesets`; today it requires a PR and configures no status check), so the only
   automatic gate is `npm run release:day -- --stage preflight`, run before every release. The workflow file stays
   because `check:changelog` and `check:test-summary` assert its step wiring. Restoring auto-triggers ⇒ read `#ci`
-  first and decide `required_status_checks` from the live ruleset. `check:host-consumers` and `npm run soak` stay out of CI.
+  first and decide `required_status_checks` from the live ruleset. `npm run soak` stays out of CI.
 - **Gate reproducibility**: `check:docs` and `check:docs:strict` must exit 0 in a development worktree *and* on a
   fresh clone. A gate that needs `node_modules` failing with `Cannot find module 'typescript'` in a bare checkout
   means **the gate could not run**, never a regression ⇒ `#gate-reproducibility`.
@@ -79,16 +79,15 @@ points at (e.g. `npm run check:docs`);
 
 ## 4. Release day
 
-Four commands, in this order. The five checklist rows are reconciled row by row against `PREFLIGHT_STEPS` in
+Four commands, in this order. The four checklist rows are reconciled row by row against `PREFLIGHT_STEPS` in
 `scripts/release-day.mjs`; what each step means is `#release-day`:
 
 ```bash
 npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/5] check:changelog                           every public merge named in this version's section
-#   [2/5] CHANGELOG [Unreleased] carry              entries still parked under [Unreleased]
-#   [3/5] ERIX_E2E_MODEL=1 check:release:model-e2e  real model endpoint; without the env nothing ran
-#   [4/5] check:release                             offline: tarball / installed package / TS host / CLI fake upstream
-#   [5/5] check:host-consumers -- --hosts …         every host hit covered by this version's upgrade guide
+#   [1/4] check:changelog                           every public merge named in this version's section
+#   [2/4] CHANGELOG [Unreleased] carry              entries still parked under [Unreleased]
+#   [3/4] ERIX_E2E_MODEL=1 check:release:model-e2e  real model endpoint; without the env nothing ran
+#   [4/4] check:release                             offline: tarball / installed package / TS host / CLI fake upstream
 npm run release:day -- --stage publish       # prints the operation sheet, exits 3; run `npm publish` yourself
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 npm run release:day -- --stage finalize      # tag the version cut → dual push → verify both sides → doc gates
