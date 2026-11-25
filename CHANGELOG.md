@@ -4,6 +4,88 @@
 ## [Unreleased]
 
 ### Changed
+- **The incremental fold text no longer describes rounds outside the range it declares (issue
+  #894, transitional fix).** The verdict is **content-level only**: the fold increment's body used to
+  contain material from a round **outside** the `from` / `to` / `rounds` it itself printed — measured
+  on a probe: `foldedFacts.increment` declared `from=1,to=6,rounds=6` while its body said
+  `工具足迹：PROCTOOL_R7×1`, and `PROCTOOL_R7` belongs to round 7. Cause: within one compaction the
+  safety layer `safeTruncateMessages` **appends** the protected messages it downgrades to the total
+  `foldedPayload` (`src/loop/orchestrator.js`), while `foldedRoundRange` / `foldedRounds` do not grow
+  with them, so every reader that pairs the total payload with that range reports a body wider than
+  its own range. Both increment producers are affected and they are **two separate sites** — the
+  budget-fallback branch (`budgetFallbackFoldedRounds > 0`) and the mechanical fallback computed at
+  finalization (`computeFactsFallbackText()`, which the accumulated `factsText` also calls) — so
+  fixing only the first leaves the second leaking. The fix snapshots the **triple**
+  (`incrementFoldedPayload` / `incrementFoldedRoundRange` / `incrementFoldedRounds`) at the single
+  moment where the config-strategy fold and the budget-fallback fold are both finalized and **no**
+  later layer — safe truncation, oversized-tool-result, user-turn guard — has touched anything, and
+  feeds that snapshot **only** to those two readers. The archive (`buildFoldedRecordArchive`) and the
+  fold identity (`foldSummaryFingerprint`) deliberately do not read that snapshot — but the fold
+  identity itself is **two paths** and this fix changes neither: the mechanical (zero-LLM) path
+  recomputes over the **full** `foldedPayload` on the spot, while a summarizer that actually ran takes
+  the **cached** `lastFoldSummaryOutcome?.fingerprint` and does not recompute at all (that cache branch
+  is untouched here and outside this fix's criteria). What this fix can show is also narrower than
+  "byte-identical": **the archive-building path was not modified**, and the pin asserts the archive
+  **entry count**, the per-entry **tool-name sequence**, the presence of the downgraded entry, `foldId`
+  **equal to a recomputation over that record's own archive**, and an **unchanged round-record key
+  set** — there is **no pre-fix golden archive** in the criteria, so "byte-identical to before the fix"
+  is **not** what is proven here. Internal consistency is still not bought with the contract surface.
+  A deliberate consequence, and **only on the fallback path**: `factsText` is
+  `factsTextFromSummary !== "" ? factsTextFromSummary : computeFactsFallbackText()` with
+  `factsTextFromSummary = strategyFoldSummary?.text ?? fedSummaryText`, so the accumulated `factsText`
+  no longer contains the safety-downgraded messages **only when neither the strategy text nor the
+  `fedSummaryText` forms a sentence** and the fallback fires; on that path those messages are not
+  rounds this fold folded and their **original text is still in the archive** (no evidence lost).
+  **Transitional, and nothing new was added to the
+  ledger**: no `safetyDowngrade` key, no new round-record key, no new enum or stats key. The trigger
+  for this whole path is `protectedMessage`, whose retirement #898 has **approved** (its predecessor
+  `recall_read` has to land first; **not implemented yet**): `bin/config.js` still passes
+  `protectedMessage: isRealUser` today, so this seam stays until that host does. Once it is gone the
+  increment scope becomes structurally consistent and **this block and its pin are deleted together** —
+  see the comment at the snapshot site. Pins: `test/compact/fold-increment-safety-scope-894.test.js` —
+  cells 1 and 2 pin the budget-fallback producer under two strategy configurations, **cell 4 pins the
+  on-the-spot producer**
+  (a host strategy that folds rounds but reports a `foldSummary` with no text, while the budget
+  fallback folds 0 rounds — the only shape measured to reach it), and cell 3 pins the contract surface
+  (entry count, the per-entry tool-name sequence, the downgraded entry still present, `foldId` equal
+  to a recomputation over that record's own archive, unchanged round-record key set — **not** a
+  byte-diff against a pre-fix archive, of which the criteria hold no golden copy). The
+  file's header records the measured mutation evidence (`M3a`/`M3b`/`M4`/`M5`) for each of them —
+  including the fact that an earlier revision of the pin had **no** coverage of the second producer.
+  Docs and the derived contract tables are synced separately.
+- **本折增量正文不再写它自己区间之外的轮次（issue #894，过渡期修法）。** 结论只到**内容层**：
+  折叠增量的正文写过**它自己打印的** `from` / `to` / `rounds` **之外**的轮次内容——探针实测：
+  `foldedFacts.increment` 声明 `from=1,to=6,rounds=6`，正文却写着 `工具足迹：PROCTOOL_R7×1`，
+  而 `PROCTOOL_R7` 属第 7 轮。成因：同一次压缩里安全层 `safeTruncateMessages` 会把它降级的那几条
+  受保护消息**追加**进总 `foldedPayload`（`src/loop/orchestrator.js`），而 `foldedRoundRange` /
+  `foldedRounds` 不跟着涨，于是任何「拿总 payload 配那份区间」的读者都会报出**正文宽于区间**。
+  两个产生点都中，而且是**两处**——预算兜底那一支（`budgetFallbackFoldedRounds > 0`）与定稿处
+  就地现算的机械替代物（`computeFactsFallbackText()`，累计体 `factsText` 也调它）——只修第一处会漏
+  第二处。修法是给**三元组**（`incrementFoldedPayload` / `incrementFoldedRoundRange` /
+  `incrementFoldedRounds`）在「配置策略那一折与预算兜底那一折都已定稿、而后面每一层（安全截断、
+  单条工具结果尺寸控制、user-turn 守卫）都还没动手」的**那一刻**切一份快照，**只**喂给那两个读者。
+  归档（`buildFoldedRecordArchive`）与折叠身份（`foldSummaryFingerprint`）**刻意**都不读那份快照；但
+  折叠身份本身是**两条路**，本刀一条都没改：零 LLM 的机械路径就地按**全量** `foldedPayload` 现算，
+  摘要器真跑过时直接取**缓存**的 `lastFoldSummaryOutcome?.fingerprint`（在 `reusableCompactionSummarizer`
+  里写入、每次 `compactBeforeRound` 开头清空），**根本不重算**——那条缓存分支本刀没动，也不在本刀判据
+  覆盖内。本刀能证的东西同样比「逐字不变」更窄：**归档构建路径本刀未改**，判据钉的是归档**条数 /
+  每条工具名序列 / 被降级那条仍在场**、`foldId` **与该轮记录自己那份归档就地重算相等**、以及**轮记录
+  键集不变**；判据里**没有**修复前的完整归档金标，所以「与修复前**逐字**相同」**不是**这里证明的东西。
+  内部自洽依旧不拿契约面去换。一个**有意**的后果，而且**只在兜底那一路**：`factsText =
+  factsTextFromSummary !== "" ? factsTextFromSummary : computeFactsFallbackText()`，其中
+  `factsTextFromSummary = strategyFoldSummary?.text ?? fedSummaryText`；只有**策略正文与 `fedSummaryText`
+  都不成句**、落到兜底那一路时，累计体 `factsText` 才不含安全层降级的那几条（它们不是这一折折掉的轮次，
+  而它们的**原文仍在归档里**，证据不丢）。**过渡期，且账本上什么都没新增**：没有 `safetyDowngrade`
+  键、没有新增轮记录键、没有新增枚举值或统计键。这整条路径的触发者是 `protectedMessage`，#898 已
+  **批准**把它退役（硬前置 `recall_read` 先落地，**尚未实施**）：今天 `bin/config.js` 仍传
+  `protectedMessage: isRealUser`，所以这条缝还在。它一旦消失，增量区间就**结构性**自洽，
+  **本块与它的判据一起删**——见快照处的注释。
+  钉住用例：`test/compact/fold-increment-safety-scope-894.test.js`（格子 1/2 钉 ⓪ 在两个策略配置下的
+  那一发；**格子 4 钉 ③** —— 配一个会折轮但报不出正文的非管线策略、且预算兜底 0 轮，这是实测
+  唯一能走到 ③ 的形状；格子 3 钉契约面：归档条数与每条工具名序列、被降级那条仍在场、`foldId` 与该轮记录
+  自己那份归档就地重算相等、轮记录键集不变（**不是**与修复前完整归档的逐字比对——判据里没有那份金标）。
+  每一格的变异证据（M3a/M3b/M4/M5，实测）写在该文件头部注释里，其中包括「上一版判据对第二个
+  产生点**零覆盖**」这个事实。文档与派生契约表另行同步。
 - **Folding depth is now budget-relative, not round-count relative, and it can never fold below
   five rounds (issue #873).** `selectFoldedRounds` (`src/compact/helpers.js`) used to compute its
   target as `rounds.length - keepRounds`, so `keepRounds` was silently a **destination** rather than

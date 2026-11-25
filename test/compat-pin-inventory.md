@@ -922,6 +922,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-round-runstate-copy-843.test.js` | 2 | `tools`×2 |
 | `test/loop-runstate-inject-872.test.js` | 4 | `completion`×2, `stallDetection`×2 |
 | `test/compact/fold-target-overhead-873.test.js` | 2 | `tools`×2 |
+| `test/compact/fold-increment-safety-scope-894.test.js` | 10 | `strategy`×10 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
