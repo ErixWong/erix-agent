@@ -12,19 +12,6 @@ function byteLength(value) {
 }
 
 /**
- * 从 store + runId 构建只读访问器（宿主接线用）。
- * 返回的就是 `store.load(runId)` 的账本行（读侧已把消息行折回轮载体）——
- * 这是原文的家，账本本身记着每条消息属于哪一轮，不新增任何轮记录键。
- *
- * @param {{ load: (runId: string) => Promise<any[]> }} store - 转录 store
- * @param {string} runId
- * @returns {() => Promise<any[]>}
- */
-export function createRecallAccessor(store, runId) {
-  return async () => store.load(runId);
-}
-
-/**
  * 创建 `recall_read` 内置工具的工厂（issue #896 C1）。
  *
  * 默认不挂进任何既有默认工具列表——由宿主显式挂载。

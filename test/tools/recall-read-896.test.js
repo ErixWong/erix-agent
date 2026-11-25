@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createBuiltinRecallTools, createRecallAccessor } from "../../src/tools/recall.js";
+import { createBuiltinRecallTools } from "../../src/tools/recall.js";
 import { isMessageRow } from "../../src/store/message-rows.js";
 import { estimateTokens } from "../../src/tokens.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
@@ -96,7 +96,7 @@ test("#896-1 逐字取回（真折叠被折轮）：recall_read 取回的正文�
   const { store, runId, fold, ledgerMessagesFor } = await buildRealFold();
   assert.ok(fold, "必须有一次真折叠");
 
-  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: createRecallAccessor(store, runId) });
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => store.load(runId) });
   const result = JSON.parse(await executeTool({ name: "recall_read", input: { round: 3 } }));
 
   assert.equal(result.status, "found");
@@ -119,7 +119,7 @@ test("#896-2 多轮真折叠（≥5 轮）：逐轮各取一次，每轮都与�
   const span = fold.foldedRoundRange.to - fold.foldedRoundRange.from + 1;
   assert.ok(span >= 5, `这一格要测多轮，实测单次折叠仅 ${span} 轮`);
 
-  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: createRecallAccessor(store, runId) });
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => store.load(runId) });
   for (let n = fold.foldedRoundRange.from; n <= fold.foldedRoundRange.to; n += 1) {
     const r = JSON.parse(await executeTool({ name: "recall_read", input: { round: n } }));
     assert.equal(r.status, "found", `round ${n} 应 found，实测 ${r.status}`);
@@ -142,7 +142,7 @@ test("#896-3 关键：foldedPayload ≪ 轮数时，被折轮仍从账本逐字�
   assert.ok(payloadMsgs < expected, `payload(${payloadMsgs}) 必须明显小于轮数(${expected})`);
   assert.notEqual(reconstructed, expected, "按 foldedPayload 还原的轮数 ≠ 期望轮数（旧实现据此报 unmappable）");
 
-  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: createRecallAccessor(store, runId) });
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => store.load(runId) });
   const r = JSON.parse(await executeTool({ name: "recall_read", input: { round: 6 } }));
 
   // 账本直读照样取回完整该轮，且逐字相等
@@ -167,7 +167,7 @@ test("#896-4 未折叠轮（在账本、不在折叠区间）照样取回", asyn
   }
   assert.ok(target !== null, "必须存在一个在账本里、不在折叠区间内的轮");
 
-  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: createRecallAccessor(store, runId) });
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => store.load(runId) });
   const r = JSON.parse(await executeTool({ name: "recall_read", input: { round: target } }));
 
   assert.equal(r.status, "found", `未折轮 ${target} 也应取回（读账本，不限于已折轮次）`);
@@ -178,7 +178,7 @@ test("#896-4 未折叠轮（在账本、不在折叠区间）照样取回", asyn
 
 test("#896-5 无校验字段：found 返回里不含 trust / foldId 比对结论", async () => {
   const { store, runId } = await buildRealFold();
-  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: createRecallAccessor(store, runId) });
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => store.load(runId) });
   const r = JSON.parse(await executeTool({ name: "recall_read", input: { round: 3 } }));
 
   assert.equal(r.status, "found");
@@ -191,7 +191,7 @@ test("#896-5 无校验字段：found 返回里不含 trust / foldId 比对结论
 
 test("#896-7 not_folded：账本没有该轮 ⇒ 不给任何正文、话术是「账本里没有」", async () => {
   const { store, runId } = await buildRealFold();
-  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: createRecallAccessor(store, runId) });
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => store.load(runId) });
   const r = JSON.parse(await executeTool({ name: "recall_read", input: { round: 999 } }));
 
   assert.equal(r.status, "not_folded");
@@ -208,7 +208,7 @@ test("#896-8 账本零新增：跑完后轮记录键集与改动前逐字相同"
   const before = await store.load(runId);
   const keysBefore = before.map((r) => Object.keys(r).sort());
 
-  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: createRecallAccessor(store, runId) });
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => store.load(runId) });
   await executeTool({ name: "recall_read", input: { round: 3 } });
   await executeTool({ name: "recall_read", input: { round: 12 } });
   await executeTool({ name: "recall_read", input: { round: 999 } });

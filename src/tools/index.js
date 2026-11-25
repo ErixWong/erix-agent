@@ -74,5 +74,4 @@ export {
 // issue #896 C1：确定性召回工具（opt-in，默认不挂进任何既有工具列表）。
 export {
   createBuiltinRecallTools,
-  createRecallAccessor,
 } from "./recall.js";

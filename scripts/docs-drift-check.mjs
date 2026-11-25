@@ -5331,7 +5331,6 @@ const EXPECTED_ABSENT_PATHS = new Map([
   ["analysis.md", "#269 复盘：这条引用本身就是「不存在的文件」，CHANGELOG:102 在讲它为什么不存在（#278 把它纳进裸名裁决后必须登记）"],
   ["session-meta.json", "宿主 `~/.erix/session-meta.json`（#168 停读停写的会话归属状态文件），CHANGELOG:158 讲的是宿主侧行为"],
   ["models.json", "宿主 `~/.pi/agent/models.json`（provider 槽位配置），CHANGELOG:200-201 的 e2e 根因在宿主配置里"],
-  ["recall.js", "CLI recall 工具的文件名（f26ea47 已移除，CHANGELOG:889 记的就是移除）"],
   ["nonce.json", "复验脚本临时写的 nonce 文件名（docs/research/2026-09-13-notes-why.md:1468 的 CLI 复验口径），不是仓库文件"],
   ["2026-10-09-architecture-review.md", "运行时输出文件名（任务单写的日期），落地到仓库时改名成 docs/design/2026-10-08-architecture-review.md，所以这个名字本仓不存在"],
   ["transcript.json", "erix run 写进宿主输出目录的 transcript 文件名（host-upgrade-guide-v030 中英 :94/:99 讲的是宿主怎么读它），不是仓库文件"],

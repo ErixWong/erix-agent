@@ -21,8 +21,12 @@
   rewrite/truncate/prefix). `unmappable` and `reconstructRoundsFromBoundary` were **removed from
   this tool** (that export now serves only `groupIntoRounds`). **No content verification**: reading
   a ledger row already yields the original text, so `foldSummaryFingerprint`/`foldId` hashing was
-  pure ceremony (no `trust`/`foldId` in the response, no new ledger key). A companion
-  `createRecallAccessor(store, runId)` returns `store.load(runId)`. Tool definition token cost: 260
+  pure ceremony (no `trust`/`foldId` in the response, no new ledger key). The read-only accessor is
+  wired by the host inline as `() => store.load(runId)` — the one-line `createRecallAccessor` export
+  was removed as ceremony (it was an entry export with no in-repo consumer, which the docs-drift
+  bundle-table gate counts as a to-be-deleted name). `createBuiltinRecallTools`'s in-repo consumer is
+  the new contract suite `test/contract/recall-tools.js` (registered in `test/contract/index.js` and
+  listed in npm `files`). Tool definition token cost (re-measured; description unchanged): 260
   (total 11 builtin tools: 4,714 → 4,974). Pins: `test/tools/recall-read-896.test.js` (eight cells,
   driven by a real built-in `sliding-window` fold whose `foldedPayload` is bounded-truncated far
   below the round count — no hand-built rows; the verbatim, multi-round, key "payload ≪ rounds", and
@@ -40,8 +44,11 @@
   已去掉「未被折叠」，因为读的是账本）。返回坐标 `round`/`messageCount`/`byteLength`，`messages` 逐字返回（不改写、
   不截断、不加前缀）。`unmappable` 与 `reconstructRoundsFromBoundary` **从本工具移除**（该导出现只服务
   `groupIntoRounds`）。**不做内容校验**：读账本行本就是原文，哈希自证纯属仪式（响应无 `trust`/`foldId`、不新增账本键）。
-  配套 `createRecallAccessor(store, runId)` 返回 `store.load(runId)`。工具定义 token 成本实测 260（11 个内置工具
-  合计 4,714 → 4,974）。判据：`test/tools/recall-read-896.test.js`（八格，全走内置 `sliding-window` 真折叠、其
+  只读访问器由宿主**内联**接成 `() => store.load(runId)`——那一行的 `createRecallAccessor` 导出已当仪式删除
+  （它是仓内零消费者的入口导出，会被 docs-drift 破坏包闸当成「本版要删的名字」）。`createBuiltinRecallTools`
+  的仓内消费者是新增的契约套件 `test/contract/recall-tools.js`（已登记进 `test/contract/index.js`、并列入 npm
+  `files`）。工具定义 token 成本重测（描述未动）260（11 个内置工具合计 4,714 → 4,974）。判据：
+  `test/tools/recall-read-896.test.js`（八格，全走内置 `sliding-window` 真折叠、其
   `foldedPayload` 被有界截断到远小于轮数，不手搓行；逐字/多轮/关键「payload ≪ 轮数」/「未折轮照样取回」四格在读
   `foldedPayload` 的旧实现下均红（旧实现给 `unmappable`/`not_folded`），「无校验字段」格防止有人把 `trust`/`foldId` 加回）。
 
