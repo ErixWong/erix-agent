@@ -1,5 +1,7 @@
 # ADR-021: Where the symbol-anchor claim chain lives — evaluation and migration plan (issue #644 ③)
 
+> **Status note (#908, later):** the three floors this ADR protects — `SYMBOL_ANCHOR_MIN_UNIQUE`, `REF_SCAN_DOCS_MINIMUM`, `BARE_LINE_REF_BASELINE` — have since been removed, and the two measurement ledgers `docs/maintenance/symbol-anchor-ledger*.md` have been deleted; the rest of this document is preserved as decision history and is not rewritten.
+
 > **Status: proposal (2026-10-31); implemented (2026-11-01).** This record evaluated the question and
 > fixed the migration checklist; the move itself landed in the ticket it asked for. The destination it
 > picked at implementation time is `docs/maintenance/symbol-anchor-ledger.md` / `_cn.md` — the checklist

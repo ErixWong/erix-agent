@@ -64,9 +64,11 @@
   `pi-subagents:src/runs/background/async-execution.js:4`——且仓名必须在 `scripts/docs-drift-check.mjs` 的
   `EXTERNAL_REPO_PREFIXES` 里登记过（没登记的名字红，登记了却没人引用也红）。**不带前缀的路径就是本仓内的路径，
   必须在这里解析得到。**
-- **锚点**：文档不得依赖裸行号：
-  指位置要写符号 + 它的文件（`` `符号`（`路径`） ``），不写 `路径:123`。实测流水住在
-  `docs/maintenance/symbol-anchor-ledger_cn.md`。加锚点或搬锚点之前先读 `#docs-anchors`。
+- **锚点**：指位置优先写符号 + 它的文件（`` `符号`（`路径`） ``），而不是 `路径:123`。
+  自 #908 起裸行号**不再阻塞**——`check:docs` 会统计并打一行 `BARE-LINES-ADVISORY` 提示，但不再因它压红
+  （三条锚点地板已随 #908 拆除，测量日志 `docs/maintenance/symbol-anchor-ledger*.md` 已删除）。
+  但行号仍须**为真**：指到文件末尾之外、或点名的符号在 `src/` 里已不存在，照旧红。
+  加锚点或搬锚点之前先读 `#docs-anchors`。
 
 ## 4. 发版日
 

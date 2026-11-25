@@ -862,7 +862,7 @@ function compareMessageSequences(left, right) {
 //
 // 为什么要读自己的源码：条件表达式在 run 完之后就不存在了（只有 pass/evidence 留在台账里），
 // 想机械判定「这个键进没进条件」只能回到源码文本上比对。这不是新的依赖面——
-// `scripts/docs-drift-check.mjs` 早就从自己的文本里读回 SYMBOL_ANCHOR_MIN_UNIQUE 等锚点。
+// `scripts/docs-drift-check.mjs` 早就从自己的文本里读回 `SYMBOL_EXISTENCE_BASELINE` 等锚点。
 const KEY_AUDIT_ASSERTION = "evidence-keys-classified";
 const REPORT_AUDIT_ASSERTION = "report-fact-keys-classified";
 const SELF_SOURCE = new URL(import.meta.url);

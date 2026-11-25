@@ -265,8 +265,6 @@ const CHARTS_EN = "docs/charts.md";
 const CHARTS_CN = "docs/charts_cn.md";
 /** issue #644 ③：符号锚点声称链的新家（历史类文档，`retired-spelling-scan.mjs` 按路径把它归成 history）。
  *  它同时在锚点面内（见 `SYMBOL_DOCS_STATIC`）：搬动不能让 (符号, 文件) 组数掉下去。 */
-const LEDGER_EN = "docs/maintenance/symbol-anchor-ledger.md";
-const LEDGER_CN = "docs/maintenance/symbol-anchor-ledger_cn.md";
 const RATCHET_SRC = "scripts/type-check-ratchet.mjs";
 /** 工具事实契约常量的真值出处（工单 261014 T1）。 */
 const TOOL_FACT_SRC = "src/tool-fact.js";
@@ -1975,10 +1973,7 @@ function collectBaselineClaimErrors() {
 /** #286 T-a：覆盖面清单里被硬编码的那几份（升级指南按目录实扫，见 `refScanDocs()`）。 */
 const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT_EN, CONTRACT_CN,
   // 工单 261021-03 B1：活文档纳面（架构 / 图表 / 需求对照中英各一份 + pi 扩展 README）。
-  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN, PI_EXT_README,
-  // issue #644 ③：符号锚点声称链从 AGENTS 搬到 docs/maintenance/ 之后，这两份必须留在锚点面内——
-  // 唯一 (符号, 文件) 组数是跨文档并集，链项引的那些锚点换了文档不能变成「消失」。
-  LEDGER_EN, LEDGER_CN];
+  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN, PI_EXT_README];
 
 /** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「硬编码那批 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
  *  于是有人把某份指南改名到不再匹配那个模式（或把它挪出 `docs/`），脚本与测试侧的 glob **一起少一份**，
@@ -2050,20 +2045,6 @@ const REF_SCAN_COUNT_CLAIMS = [
         groups: ["total", "floor", "pinned", "guides"], label: "活文档份数" },
     ],
   },
-  {
-    doc: LEDGER_EN,
-    rules: [
-      { re: /The anchor face is \*\*(\d+) pinned documents \+ the (\d+) upgrade-guide files the directory scan finds = (\d+)\*\*\s*\(`REF_SCAN_DOCS_MINIMUM = (\d+)`\)/g,
-        groups: ["pinned", "guides", "total", "floor"], label: "anchor-face document count" },
-    ],
-  },
-  {
-    doc: LEDGER_CN,
-    rules: [
-      { re: /锚点覆盖面是 \*\*(\d+) 份点名文档 \+ 按目录实扫到的 (\d+) 份升级指南 = (\d+)\*\*（`REF_SCAN_DOCS_MINIMUM = (\d+)`）/g,
-        groups: ["pinned", "guides", "total", "floor"], label: "锚点覆盖面份数" },
-    ],
-  },
 ];
 
 /** 份数声称的真值（与覆盖面判据同源：`refScanDocs()`）。 */
@@ -2128,33 +2109,6 @@ function collectRefScanCountClaimErrors() {
   return out;
 }
 
-/* ── #644 ③：指令面必须指着声称链的新家 ────────────────────────────────────────
- * 搬链之后，AGENTS 里只剩「常量 + 一句指针」。指针本身也要有闸：把它删掉，下一位读者就再也找不到
- * 那条链（历史还在 docs/maintenance/，但指令面上没有任何线索）——这是「搬走了但没人知道搬哪去了」。
- * 判据是**存在性**（每份指令面文档必须点名自己语言的那一份账本），不是措辞对账。
- */
-const LEDGER_POINTER_RULES = Object.freeze([
-  { doc: AGENTS_EN, ledger: LEDGER_EN },
-  { doc: AGENTS_CN, ledger: LEDGER_CN },
-]);
-
-function collectLedgerPointerErrors() {
-  const out = [];
-  for (const { doc, ledger } of LEDGER_POINTER_RULES) {
-    const text = textOf(doc);
-    if (typeof text !== "string") {
-      out.push(`ledger-pointer: ${doc} 读不到文本——指令面少一份，指针判据在这份上失效`);
-      continue;
-    }
-    if (!text.includes(ledger)) {
-      out.push(`ledger-pointer: ${doc} 里没有指向 \`${ledger}\` 的指针——`
-        + "符号锚点的实测流水整条住在那份账本里（issue #644 ③）；指令面上删掉这句指针，"
-        + "下一位读者就找不到它，也就没人知道那条链搬哪去了");
-    }
-  }
-  collectLedgerPointerErrors.notes = [`ledger-pointer: ${LEDGER_POINTER_RULES.length} 份指令面文档都指着各自的账本`];
-  return out;
-}
 
 /** 行内代码形态的标识符（不是路径：干掉带 `/` 与 `.` 的东西）。 */
 const INLINE_SYMBOL_RE = /`([A-Za-z_$][\w$]*)`/g;
@@ -2616,7 +2570,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `emitEvent`（`src/loop/orchestrator.js:1517-1531`）改写成不带括号、不带链接的裸
  *  `src/loop/orchestrator.js:1517-1531`，棘轮那一侧的计数**一字不变**（照旧绿），而符号声明校验
  *  整条消失。没有这条下限，#286 后面几刀就能「一边把裸行号换成符号锚点、一边偷偷退回去」而全程全绿。
- *  与 `BARE_LINE_REF_BASELINE` 同构：生效值从脚本**自身文本**里读（自测能把它调高来证它真的是锁）。
+ *  生效值从脚本**自身文本**里读（自测能把它调高来证它真的是锁）。
  *  现值 = 我自己那条 note 打出来的唯一 (符号, 文件) 组数 / 处数（跑 `--verbose` 现读，本文不抄）。
  *  历史（每一次抬高下限的链项：哪次合并、引了哪些符号、在哪棵树上量的）**不在本文件**：
  *  issue #644 ③ 把它整条搬到了 `docs/maintenance/symbol-anchor-ledger.md`（历史类文档，正文有命中数钉子）。
@@ -5223,10 +5177,7 @@ for (const rel of [README_EN, README_CN]) {
  *  契约×2 + pi 扩展 README）——这三对是「会被人当成现状读」的活文档，死引用漂了不会红的代价比
  *  入口文档只高不低。 */
 const PATH_DOCS = [README_EN, README_CN, PI_EXT_README, CONTRACT_EN, CONTRACT_CN, AGENTS_EN, AGENTS_CN,
-  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN,
-  // issue #644 ③：账本既然在锚点面内（`SYMBOL_DOCS_STATIC`），它的普通路径引用也该校——
-  // 一份「符号锚点要被校验」的文档，没有理由让它的路径引用免检。
-  LEDGER_EN, LEDGER_CN];
+  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN];
 
 // 引用裁决分类（四类，**没一类能整目录/整前缀豁免**；每条白名单必须写理由）。
 // 白名单条目还会被反向校：没人引用、或分类与 .gitignore 不再自洽 → 红，所以条目不会烂在那里。
@@ -7792,7 +7743,7 @@ function collectAllDrift() {
     // #772 R2 M2：标记区内容的正向不变量（只许包住那张表）
     ...cellAxesRegionContentErrors(),
     // #635 ① / #644 ③：份数声称的机器对账 + 指令面指着账本的那句指针
-    ...collectRefScanCountClaimErrors(), ...collectLedgerPointerErrors(),
+    ...collectRefScanCountClaimErrors(),
     ...collectCliFlagErrors(),
     // #668 ①：压缩策略「默认值」的分层对账（库层 / CLI 层各自绑源码真值）
     ...collectCompactionDefaultErrors(),
@@ -7828,8 +7779,6 @@ for (const n of collectRefScanCoverageErrors.notes ?? []) note(n);
 // #635 ① / #644 ③
 for (const e of collectRefScanCountClaimErrors()) err(e);
 for (const n of collectRefScanCountClaimErrors.notes ?? []) note(n);
-for (const e of collectLedgerPointerErrors()) err(e);
-for (const n of collectLedgerPointerErrors.notes ?? []) note(n);
 for (const e of collectSymbolAnchorErrors()) err(e);
 for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
 // #755：「路径先行」与「path:symbol」两种符号坐标必须能在被指文件里抽到声明（存量走只降不升的基线）
@@ -9879,28 +9828,9 @@ const SELF_TEST_CASES = [
   // 旧的三例断言「数字不符 ⇒ 红」。那三例守的是「闸自己的覆盖面必须被文档复述」——自指类判据。
   // 现在改成两例：**数字被改错仍然绿**（不再收税），且提示里确实把实测摆出来（信息没丢）。
   {
-    label: `#635 ①（改写）：把账本英文侧的「点名文档」数改成 ${REF_SCAN_TRUTH.pinned + 1} ⇒ **仍然绿**（只报不判），提示里摆出实测 ${REF_SCAN_TRUTH.pinned}`,
-    overlay: { [LEDGER_EN]: (t) => t.replace(`**${REF_SCAN_TRUTH.pinned} pinned documents`, `**${REF_SCAN_TRUTH.pinned + 1} pinned documents`) },
-    expect: [new RegExp(`ref-scan-claims（只报不判）：实测 点名 ${REF_SCAN_TRUTH.pinned}`, "u")],
-    expectGreen: true,
-  },
-  {
     label: "#635 ①（改写）：把中文 README 那句份数声称整句删掉 ⇒ **仍然绿**（删句子不再是「逃逸」，因为它本就不该是判据）",
     overlay: { [README_CN]: (t) => t.replace(`（当前 ${REF_SCAN_TRUTH.guides} 份，按目录实扫）`, "") },
     expectGreen: true,
-  },
-  // ══ issue #644 ③：指令面必须指着声称链的新家（搬走了但没人知道搬哪去 = 没搬）══════════
-  {
-    label: "#644 ③：从 AGENTS.md 里删掉指向账本的指针 ⇒ 红并点名（指令面上再没有任何线索指向那条链）",
-    overlay: { [AGENTS_EN]: (t) => t.replaceAll(LEDGER_EN, "the anchor ledger") },
-    expect: [/ledger-pointer: AGENTS\.md 里没有指向 `docs\/maintenance\/symbol-anchor-ledger\.md` 的指针/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#644 ③：中文侧同样删掉指针 ⇒ 红（中英成对：只留一侧等于另一侧的读者找不到）",
-    overlay: { [AGENTS_CN]: (t) => t.replaceAll(LEDGER_CN, "那份账本") },
-    expect: [/ledger-pointer: AGENTS_cn\.md 里没有指向 `docs\/maintenance\/symbol-anchor-ledger_cn\.md` 的指针/],
-    expectFiles: [AGENTS_CN],
   },
   // ══ issue #677：契约「套件清单」的 unknownSlot 形态（§2.12）════════════════════════════
   // 这一族的靶子**自包含**：行按「小节标题 + 行首键」定位，替换文本由 `suiteInventoryRowLine` 从零构造

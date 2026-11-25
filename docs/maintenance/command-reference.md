@@ -63,15 +63,12 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   no silent pass when ground truth cannot be read). Named string *values* — termination reasons, provider error
   codes — are the one weaker tier and are accepted only in the five files listed with a reason in
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs` (the fifth, `bin/final-guard.js`, was
-  added for issue #743 so the CLI guard's two skip reasons are actually checked). Because the bare-line ratchet keys on
-  (document, target file, line range) — **never on the doc's own line number** — rewriting
-  `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 249`:
-  dropping below it is red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
-  Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
-  The measurement log that used to sit in this parenthetical — every past reading, merge by merge, with the tree
-  it came from — now lives in `docs/maintenance/symbol-anchor-ledger.md`. That file is history, not current state;
-  nothing on this page restates it.
+  added for issue #743 so the CLI guard's two skip reasons are actually checked). A symbol anchor is judged by the
+  symbol it names: rewriting `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` never changes whether
+  that symbol exists in the target file, and `symbols` checks that ground truth directly — a named symbol that is
+  absent is red. #908 removed the old **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE` and the measurement log
+  `docs/maintenance/symbol-anchor-ledger*.md` it used to point at (both deleted); the existence and span-intersection
+  checks themselves are unchanged.
   *`symbol-shape`* (issue #755) covers the two **other** ways a document writes a symbol coordinate, both of
   which used to be invisible to `symbol-anchor`: **S2** `` `path`: `sym` and `sym` `` (file first, colon, one or more
   backticked symbols — the #755 field shape was `src/loop/tool-result-ttl.js`: `stubFor` and `placeholderFor`,
@@ -94,20 +91,12 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   before resolving. Two legal fixes: **drop the range** (`` `symbol` (`path`) ``, preferred: numbers drift and
   `symbols` never needed them) or move it onto the declaration. Anchors *without* a range are outside this rule,
   which is also why dropping ranges makes the ratchet below go down legitimately.
-  *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
-  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 6` in that same script (lowered from 80:
-  issue #286 T-c turned the remaining 76 bare line keys of the orchestrator / providers / skills-loader /
-  run-snapshot-executor / config / compact / notes / display / reflection families into symbol anchors in both
-  contract languages and the 0.17.0 guide; the 6 keys left are the span fixtures the `--self-test` mutations
-  rewrite verbatim (`terminationReasonForAction` / `max_rounds_cap` / `defaultSleep`), not range facts;
-  before that 80 came from issue #286 T-b2 turning the remaining bare line numbers of the `src/loop/provider-runner.js`,
-  `src/loop/termination.js` and `src/reflection/governor.js` families into symbol anchors in both contract languages,
-  50 unique keys in total; before that 130 came from PR #451 turning the contract's two bare ranges pointing at the
-  end-turn wrap-up block into a symbol anchor).
-  The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`, which prints the whole breakdown (occurrences /
-  unique ranges / declaratively exempted / **marked-region exempted** ⇒ effective measured); as of issue #772 that
-  line reads 97 occurrences, 82 unique ranges, 4 declaratively exempted
+  *`bare-lines`* counts `src/**.js:N` / `:N-M` references as unique (document, target file, line range). Since #908
+  it is an **advisory, not a blocker**: `check:docs` still counts them and prints a one-line
+  `BARE-LINES-ADVISORY 现存 N 处（提示，不阻塞）` note, but never turns red over the count — the old **only-down**
+  `BARE_LINE_REF_BASELINE` ratchet (and its measurement log `docs/maintenance/symbol-anchor-ledger*.md`) were removed by #908.
+  The number is reproducible with `node scripts/docs-drift-check.mjs --verbose`, which prints the whole breakdown
+  (occurrences / unique ranges / declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
@@ -189,15 +178,14 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   would only raise it.
   Scope is the document set a host actually reads: the two READMEs, both AGENTS files, both
   contract files, both architecture docs, both chart docs, both requirements docs, `examples/pi-extension/README.md`,
-  the maintenance ledger pair (`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`),
   plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
-  agree: `REF_SCAN_DOCS_MINIMUM = 53` is the floor, and the count it stands for (pinned documents + the guides the
+  agree: the count it stands for (pinned documents + the guides the
   directory scan finds) is **reported, not judged** (261122): `check:docs` prints the measured numbers as a
   `ref-scan-claims` note every run, and a document that restates a different number is a **note**, not a red —
   restating a measurement nobody acts on was a self-referential gate (it taxed every new guide with four edits).
-  The floor itself is still enforced: shrinking the anchor face below `REF_SCAN_DOCS_MINIMUM` stays red.
+  Since #908 there is no numeric coverage floor: a guide renamed away from that pattern is caught by the pinned list below, not a count threshold.
   `test/docs-anchor-ratchet.test.js` keeps its own pinned list of the same documents. **Renaming or removing** a
   pinned guide is red (that is the coverage silently shrinking); **adding** one is not — it joins the anchor face
   automatically, because demanding that the pinned list match the discovered set exactly taxed every new guide with

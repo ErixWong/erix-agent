@@ -82,9 +82,6 @@ const NAMED_DOCS_PINNED = [
   "docs/charts.md", "docs/charts_cn.md",
   "docs/requirements.md", "docs/requirements_cn.md",
   "examples/pi-extension/README.md",
-  // issue #644 ③：符号锚点声称链搬到 docs/maintenance/ 之后，这两份必须留在锚点面内——
-  // 链项引的那 51 + 51 组锚点换了文档不能变成「消失」（组数是跨文档并集，挪出面就掉数）。
-  "docs/maintenance/symbol-anchor-ledger.md", "docs/maintenance/symbol-anchor-ledger_cn.md",
 ];
 
 /** 覆盖面：与脚本里的 `refScanDocs()` 同一批文档，**故意**在测试侧另写一遍——两边不一致时第 ②③ 条
@@ -115,7 +112,7 @@ assert.ok(extra.length >= 0, "新指南自动进覆盖面，不要求同步这�
     script.indexOf("];", script.indexOf("const SYMBOL_DOCS_STATIC = [")),
   );
   assert.ok(staticBlock.length > 20, "抽不到脚本侧的 `const SYMBOL_DOCS_STATIC = [...]`——点名清单被挪走了");
-  const constToRel = { README_EN: "README.md", README_CN: "README_cn.md", AGENTS_EN: "AGENTS.md", AGENTS_CN: "AGENTS_cn.md", CONTRACT_EN, CONTRACT_CN, ARCH_EN: "docs/architecture.md", ARCH_CN: "docs/architecture_cn.md", CHARTS_EN: "docs/charts.md", CHARTS_CN: "docs/charts_cn.md", REQ_EN: "docs/requirements.md", REQ_CN: "docs/requirements_cn.md", PI_EXT_README: "examples/pi-extension/README.md", LEDGER_EN: "docs/maintenance/symbol-anchor-ledger.md", LEDGER_CN: "docs/maintenance/symbol-anchor-ledger_cn.md" };
+  const constToRel = { README_EN: "README.md", README_CN: "README_cn.md", AGENTS_EN: "AGENTS.md", AGENTS_CN: "AGENTS_cn.md", CONTRACT_EN, CONTRACT_CN, ARCH_EN: "docs/architecture.md", ARCH_CN: "docs/architecture_cn.md", CHARTS_EN: "docs/charts.md", CHARTS_CN: "docs/charts_cn.md", REQ_EN: "docs/requirements.md", REQ_CN: "docs/requirements_cn.md", PI_EXT_README: "examples/pi-extension/README.md" };
   const scriptNamed = [...staticBlock.matchAll(/\b([A-Z][A-Z0-9_]+)\b/g)].map((m) => constToRel[m[1]]).filter(Boolean);
   assert.deepEqual([...new Set(scriptNamed)].sort(), [...NAMED_DOCS_PINNED].sort(),
     `脚本侧 SYMBOL_DOCS_STATIC 点名的文档与本文件的 NAMED_DOCS_PINNED 不一致（脚本 ${scriptNamed.join(", ")}）`

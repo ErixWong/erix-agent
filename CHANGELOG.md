@@ -3,6 +3,10 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Changed
+- **`check:docs` loses its three anchor ratchets; bare line-number references become an advisory (issue #908).** The documentation gate dropped the **only-down** `BARE_LINE_REF_BASELINE`, the **only-up** `SYMBOL_ANCHOR_MIN_UNIQUE` and the coverage floor `REF_SCAN_DOCS_MINIMUM`, together with the two measurement ledgers `docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md` (deleted). **Two intended behaviour changes:** (1) those three floors are gone; (2) a bare `path:123` reference is **no longer a blocker** — `check:docs` still counts them and prints a `BARE-LINES-ADVISORY … （提示，不阻塞）` note instead of turning red. The truth checks are unchanged and still red: a symbol that no longer exists in `src/`, a line number pointing past the end of a file (`src/loop/orchestrator.js:99999`), a symbol anchor whose range does not intersect its declaration, and the EN/CN heading-skeleton mismatch.
+- **`check:docs` 拆掉三只锚点棘轮，裸行号引用降级为提示（issue #908）。** 文档门禁去掉了**只降不升**的 `BARE_LINE_REF_BASELINE`、**只升不降**的 `SYMBOL_ANCHOR_MIN_UNIQUE` 与覆盖面地板 `REF_SCAN_DOCS_MINIMUM`，并删除两份测量日志 `docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`。**两处有意的行为改变：**（1）这三只地板拆了；（2）裸 `path:123` 引用**不再是阻塞项**——`check:docs` 照旧统计并打一行 `BARE-LINES-ADVISORY …（提示，不阻塞）`，不再因此压红。真值检查一条不减、照旧压红：在 `src/` 里已不存在的符号、指到文件末尾之外的行号（`src/loop/orchestrator.js:99999`）、区间不与声明处相交的符号锚点、以及中英标题骨架不齐。
+
 ### Added
 - **Deterministic recall tool `recall_read` (issue #896 C1).** A new built-in tool factory
   `createBuiltinRecallTools({ readLedgerRows })` in `src/tools/recall.js` produces the

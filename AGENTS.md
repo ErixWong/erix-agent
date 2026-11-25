@@ -73,9 +73,12 @@ points at (e.g. `npm run check:docs`);
   `pi-subagents:src/runs/background/async-execution.js:4` — and the repo name must be registered in
   `EXTERNAL_REPO_PREFIXES` in `scripts/docs-drift-check.mjs` (unregistered names are red; registered names nobody
   references are red too). **An unprefixed path is a path in this repository and must resolve here.**
-- **Anchors**: docs must not lean on bare line numbers: point at a symbol with its file
-  (`` `symbol` (`path`) ``), never at `path:123`. The measurement log lives in
-  `docs/maintenance/symbol-anchor-ledger.md`. Read `#docs-anchors` before adding or moving an anchor.
+- **Anchors**: prefer pointing at a symbol with its file (`` `symbol` (`path`) ``) over `path:123`.
+  Since #908 a bare line number is **no longer a blocker** — `check:docs` counts them and prints a
+  `BARE-LINES-ADVISORY` note, but it does not turn red over them (the three anchor floors were removed by
+  #908 and the measurement log `docs/maintenance/symbol-anchor-ledger*.md` was deleted). The line-number
+  still has to be *true*: a reference that points past the end of a file, or a named symbol that no longer
+  exists in `src/`, stays red. Read `#docs-anchors` before adding or moving an anchor.
 
 ## 4. Release day
 

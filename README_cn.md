@@ -698,8 +698,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
   `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（按目录实扫；现测份数由 `check:docs` 的 `ref-scan-claims` 提示打印），再加上
   工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
   （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）、
-  `erix_run` 的 README（`examples/pi-extension/README.md`）与维护账本中英（`docs/maintenance/symbol-anchor-ledger.md` /
-  `docs/maintenance/symbol-anchor-ledger_cn.md`——正文是**历史**账本，门禁钉它的正文而不是要求它写现状）。份数就是锚点覆盖面（下限是 `REF_SCAN_DOCS_MINIMUM = 53`；现测值由 `check:docs` 打印）：文件改名、
+  `erix_run` 的 README（`examples/pi-extension/README.md`）。份数就是锚点覆盖面：文件改名、
   行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
 - **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
   `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行
