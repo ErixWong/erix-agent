@@ -27,7 +27,12 @@ import {
 
 export function createSummarizerPromptGuide(recoveryHint) {
   const hint = resolveRecoveryHint(recoveryHint);
-  return `请把被折叠轮次整理成可继续工作的日志，并严格使用以下分节：
+  return `请把被折叠轮次整理成可继续工作的日志。在第一个 \`##\` 小节**之前**，先单独输出两行元信息，
+每行以固定前缀开头、各占一行、冒号后紧跟内容（不要加空格之外的额外符号、不要写成标题或列表）：
+标题：<一句话标题，不超过 60 个字符>
+描述：<本折工作的简述，不超过 200 个字符>
+这两行必须写实际内容，不要写「无」或其它占位符；确实无法概括时宁可留空（只写前缀）也不要填「无」。
+之后严格使用以下分节：
 ## 阶段
 说明已发生的工作阶段与关键转折。
 ## 已改文件
@@ -427,7 +432,10 @@ export function createFoldLlmStrategy({
             optionValue(callOptions, options, "maxSummarizerInputTokens", undefined),
           ),
         });
-        const summary = summarizerOutcome.summary;
+        // issue #897：先把模型给的两行元信息（title/description）从摘要正文里摘出来，
+        // 下面的 withRecoveryHint / enforceSummarySize / appendFoldFidelity 吃的是**剥掉那两行后**的正文。
+        const summarizerMeta = parseSummarizerMeta(summarizerOutcome.summary);
+        const summary = summarizerMeta.body;
         const droppedInputMessages = summarizerOutcome.droppedMessages;
         // issue #566：本折的机械替代物总是算（零 LLM）。
         // `compactedSummary` 是续写累计体（prior 会被续写进输出），
@@ -477,6 +485,14 @@ export function createFoldLlmStrategy({
           // 改前它不给这个键 ⇒ 引擎落回 `fedSummaryText`（折叠后那条消息**全文** = 摘要 + 原任务正文）
           // ⇒ 账上 54–78% 是模型还在 head 里看着的任务原文，`truncated` 从第 2 折起恒真。
           text: compactedSummary,
+          // issue #897：模型给的 title/description 随 foldSummary 向上交（只做加法，
+          // 不改既有键）；没拿到时不静默，带一个可读的 `*Missing` 原因。
+          ...(summarizerMeta.title !== undefined
+            ? { title: summarizerMeta.title }
+            : { titleMissing: summarizerMeta.titleMissing }),
+          ...(summarizerMeta.description !== undefined
+            ? { description: summarizerMeta.description }
+            : { descriptionMissing: summarizerMeta.descriptionMissing }),
           ...(prior.truncated ? { priorSummaryTruncated: true, priorSummaryBytes: prior.bytes } : {}),
           ...(prior.bytes > 0 && !prior.truncated ? { priorSummaryBytes: prior.bytes } : {}),
           // issue #469（裁决 A）：基底从哪来——`"ledger"` = resume 后从账本播的，
@@ -791,6 +807,63 @@ function summarizerFailure(error, facts = {}) {
  * 保留「超窗 ⇒ 缩输入重试一次」：那不是降级，是让调用装得下。重试仍失败 ⇒ 同样抛，
  * `details.kind` 保持 `context_window_exceeded`（超窗归因不因重试又失败而被掩盖）。
  */
+// issue #897：从摘要正文里摘出模型给的 title / description。
+// 出厂提示词要求模型在第一个 `##` 之前先输出两行带固定前缀的元信息；这里把它们解析出来，
+// 并从正文里**剥掉**（理由：这两行是给账本的元信息，不是进上下文的日志正文——留着会
+// 被 `sectionsFromSummary` 当 phase-preamble 占用优先级 4 的摘要预算，且与五节合同争位）。
+// 只扫描第一个 `##` 之前的 preamble，行首锚定固定前缀，不与正文自然句撞车。
+// 缺失/空/占位「无」都算**没拿到**（不静默：返回一个可读的 `*Missing` 原因），
+// 绝不用正文首行顶上冒充（那正是今天 `## 阶段` 的来源）。
+const SUMMARIZER_TITLE_MAX_CHARS = 60;
+const SUMMARIZER_DESCRIPTION_MAX_CHARS = 200;
+const SUMMARIZER_TITLE_LINE = /^标题：(.*)$/m;
+const SUMMARIZER_DESC_LINE = /^描述：(.*)$/m;
+
+function clampMetaChars(value, maxChars) {
+  const chars = Array.from(value);
+  return chars.length <= maxChars ? value : chars.slice(0, maxChars).join("");
+}
+
+function normalizeMetaValue(raw) {
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed === "无") return undefined;
+  return trimmed;
+}
+
+/**
+ * 解析摘要正文里模型给的两行元信息。
+ * @param {string} summary 摘要器返回的原文
+ * @returns {{ body: string,
+ *   title?: string, titleMissing?: "no-line" | "empty-or-placeholder",
+ *   description?: string, descriptionMissing?: "no-line" | "empty-or-placeholder" }}
+ */
+function parseSummarizerMeta(summary) {
+  const headingMatch = /^## .*(?:\r?\n|$)/m.exec(summary);
+  const headEnd = headingMatch ? headingMatch.index : summary.length;
+  let preamble = summary.slice(0, headEnd);
+  const sections = summary.slice(headEnd);
+
+  const titleMatch = SUMMARIZER_TITLE_LINE.exec(preamble);
+  const descMatch = SUMMARIZER_DESC_LINE.exec(preamble);
+
+  const rawTitle = titleMatch ? normalizeMetaValue(titleMatch[1]) : undefined;
+  const rawDesc = descMatch ? normalizeMetaValue(descMatch[1]) : undefined;
+
+  // 从 preamble 剥掉这两行（连同尾随换行），body = 剩余 preamble + 各小节。
+  preamble = preamble.replace(/^标题：.*\r?\n?/m, "").replace(/^描述：.*\r?\n?/m, "");
+  const body = `${preamble}${sections}`;
+
+  return {
+    body,
+    ...(rawTitle !== undefined
+      ? { title: clampMetaChars(rawTitle, SUMMARIZER_TITLE_MAX_CHARS) }
+      : { titleMissing: titleMatch ? "empty-or-placeholder" : "no-line" }),
+    ...(rawDesc !== undefined
+      ? { description: clampMetaChars(rawDesc, SUMMARIZER_DESCRIPTION_MAX_CHARS) }
+      : { descriptionMissing: descMatch ? "empty-or-placeholder" : "no-line" }),
+  };
+}
+
 async function callSummarizerWithBound({
   summarizer,
   payload,
