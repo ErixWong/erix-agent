@@ -11,10 +11,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { runToolLoop } from "../../src/loop/orchestrator.js";
+import { createMemoryTranscriptStore } from "../../src/store/memory.js";
+import { withSeed } from "../helpers/run-direct.js";
 import { estimateTokens } from "../../src/tokens.js";
 import { parseSummarizerMeta, SUMMARIZER_DESCRIPTION_MAX_TOKENS } from "../../src/compact/fold-llm.js";
 import {
   FOLDED_FACTS_MAX_BYTES,
+  FOLDED_FACTS_RECORD_FIELD,
   buildFoldedFacts,
 } from "../../src/compact/fold-summary-journal.js";
 
@@ -146,4 +150,69 @@ test("#897-5「本折无具体事务」不被当占位符：description 在场�
     "恰好「无」应被当占位符拒掉");
   assert.equal(metaWu.descriptionMissing, "empty-or-placeholder",
     "恰好「无」应给出 descriptionMissing: empty-or-placeholder");
+});
+
+// ---------- 格 6：端到端（引擎链路 ⇒ foldedFacts.descriptionTruncated） ----------
+
+const SUMMARY_SYSTEM = "你是对话历史压缩器";
+
+test("#897-6 端到端：800 token description ⇒ 落账 foldedFacts.descriptionTruncated === true", async () => {
+  // 构造一段 ~800 token 的 CJK description（现算，不写死）
+  const desc = "测".repeat(Math.ceil(800 / 1.725));
+  const descTokens = estimateTokens(desc);
+  assert.ok(descTokens > SUMMARIZER_DESCRIPTION_MAX_TOKENS,
+    `前置：夹具 token 数应 > ${SUMMARIZER_DESCRIPTION_MAX_TOKENS}，实测 ${descTokens}`);
+
+  // fake provider: summarizer 返回带标题+描述的文本，工具请求按脚本发
+  const toolTurns = 13;
+  let turnCount = 0;
+  let summaryCount = 0;
+  const provider = {
+    protocol: "fake", model: "fake-model", requests: [],
+    async chat(request) {
+      if (typeof request?.system === "string" && request.system.includes(SUMMARY_SYSTEM)) {
+        summaryCount += 1;
+        const body = `标题：测试折叠\n描述：${desc}\n## 阶段\nS${summaryCount}\n${"s".repeat(200)}`;
+        return { content: [{ type: "text", text: body }], stopReason: "end_turn", usage: { input_tokens: 900, output_tokens: 50 } };
+      }
+      if (turnCount < toolTurns) {
+        turnCount += 1;
+        return { content: [{ type: "tool_use", id: `tu_${turnCount}`, name: "exec", input: { command: `cmd-${turnCount}` } }], stopReason: "tool_use", usage: { input_tokens: 100, output_tokens: 20 } };
+      }
+      return { content: [{ type: "text", text: "done" }], stopReason: "end_turn", usage: { input_tokens: 100, output_tokens: 20 } };
+    },
+  };
+
+  const store = createMemoryTranscriptStore();
+  const runId = "897-e2e";
+  await runToolLoop(withSeed({
+    provider,
+    executeTool: async ({ id }) => `out ${id} ${"z".repeat(600)}`,
+    maxRounds: 20,
+    completion: false,
+    reflection: false,
+    config: { folding: { context: { budgetTokens: 2400, keepRounds: 0, strategy: "fold-llm" } } },
+    store,
+    runId,
+    seed: `start ${"y".repeat(1500)}`,
+  }));
+
+  assert.ok(summaryCount >= 1, `摘要器应被调用（实测 ${summaryCount}）`);
+  const records = await store.load(runId);
+  const folds = records.filter((r) => r?.[FOLDED_FACTS_RECORD_FIELD] !== undefined);
+  assert.ok(folds.length >= 1, `至少一折（实测 ${folds.length}）`);
+
+  // 至少一折的 foldedFacts 应该有 descriptionTruncated: true
+  const truncatedFacts = folds
+    .map((f) => f[FOLDED_FACTS_RECORD_FIELD])
+    .filter((ff) => ff.descriptionTruncated === true);
+  assert.ok(truncatedFacts.length >= 1,
+    `foldedFacts.descriptionTruncated 应存在（实测: ${JSON.stringify(folds.map((f) => ({ descTrunc: f[FOLDED_FACTS_RECORD_FIELD]?.descriptionTruncated, summary: (f[FOLDED_FACTS_RECORD_FIELD]?.summary ?? "").slice(0, 20) })))}）`);
+
+  // 且落账 summary 的 estimateTokens ≤ 500
+  for (const ff of truncatedFacts) {
+    const summaryTokens = estimateTokens(ff.summary ?? "");
+    assert.ok(summaryTokens <= SUMMARIZER_DESCRIPTION_MAX_TOKENS,
+      `夹断后 summary 的 estimateTokens ≤ ${SUMMARIZER_DESCRIPTION_MAX_TOKENS}，实测 ${summaryTokens}`);
+  }
 });

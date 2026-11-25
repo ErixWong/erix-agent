@@ -109,6 +109,7 @@ async function runFoldLlmChain({
   seedBytes = 1500,
   toolBytes = 600,
   summaryBytes = 1200,
+  maxSummaryTokens,
   store = createMemoryTranscriptStore(),
   // 判据 1b/1c 要换一个**对抗性**摘要器（把 `priorSummary` 原文续写进输出），其余一切不变。
   provider,
@@ -120,7 +121,7 @@ async function runFoldLlmChain({
     maxRounds: 20,
     completion: false,
     reflection: false,
-    config: { folding: { context: { budgetTokens, keepRounds: 0, strategy: "fold-llm" } } },
+    config: { folding: { context: { budgetTokens, keepRounds: 0, strategy: "fold-llm", ...(maxSummaryTokens !== undefined ? { maxSummaryTokens } : {}) } } },
     store,
     runId,
     seed: `start ${"y".repeat(seedBytes)}`,
@@ -394,11 +395,11 @@ test("#566-2 不需要 diff 两份累计快照，就能拿到第 k 折的 from/t
 
 // ---- 判据 3：夹断不影响增量（本单的核心价值断言）----------------------------------
 
-test("#566-3 累计体被 2048 前缀夹断时，本折增量仍完整可读", async () => {
+test("#566-3 累计体被前缀夹断时，本折增量仍完整可读", async () => {
   // issue #657：夹断的**来源**变了——改前累计体里混着原任务正文，几乎必然超上限；改后它是纯累计
-  // 摘要，只有**摘要自己**长过上限才会夹断。所以本格把摘要器调大（2600 字节）来造同一个现场：
+  // 摘要，只有**摘要自己**长过上限才会夹断。所以本格把摘要器调大并抬高 `maxSummaryTokens`：
   // 要测的东西（「累计侧被夹断 ⇒ 增量侧仍完整可读」）与判据一字未动。
-  const { folds } = await runFoldLlmChain({ runId: "566-truncate", toolTurns: 13, summaryBytes: 2600 });
+  const { folds } = await runFoldLlmChain({ runId: "566-truncate", toolTurns: 13, summaryBytes: 4200, maxSummaryTokens: 1800 });
   assert.ok(folds.length >= 2, `前置：至少两折（实测 ${folds.length}）`);
   const truncated = folds.filter(({ facts }) => facts.truncated === true);
   assert.ok(truncated.length >= 1,

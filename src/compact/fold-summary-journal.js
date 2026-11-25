@@ -632,6 +632,7 @@ function foldedFactsToolCalls(text) {
  *   fingerprint?: unknown,
  *   incrementText?: unknown,
  *   incrementOrigin?: unknown,
+ *   descriptionTruncated?: unknown,
  *   foldId?: unknown,
  *   seq?: unknown,
  *   maxBytes?: number,

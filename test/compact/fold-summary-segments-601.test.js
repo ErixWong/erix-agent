@@ -318,13 +318,13 @@ test("#601-5 text 语义不变：第 1 折的独特字面量在第 3 折后仍�
   assert.equal(segmentsOf(text).length, 3, text);
 });
 
-test("#601-6 预算：20 次折叠 ⇒ 块 ≤2048 字节，且最新那次仍在（夹断只削尾部）", async () => {
+test("#601-6 预算：20 次折叠 ⇒ 块 ≤ FOLDED_FACTS_MAX_BYTES，且最新那次仍在（夹断只削尾部）", async () => {
   const text = summaryTextOf(await foldSeries(20, (index) => [
     toolUse(`use-${index}`, "exec", {
-      command: `npm test -- --grep case-${index} ${"x".repeat(40)}`,
+      command: `npm test -- --grep case-${index} ${"x".repeat(100)}`,
     }),
     toolResult(`use-${index}`, ttlStub(`fold-${index}`)),
-  ]));
+  ])) + "\n" + "f".repeat(FOLDED_FACTS_MAX_BYTES);
   const facts = buildFoldedFacts({
     text,
     roundRange: { from: 1, to: 20 },

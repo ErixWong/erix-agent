@@ -4153,7 +4153,7 @@ export async function runToolLoop(options) {
     // `fold-llm` 降级分支的那份）。没配内置策略、或宿主自带策略不产它 ⇒ `undefined`，语义照旧。
     // issue #566：`increment` = **本折自己那份**（合并前的增量）。只在「策略的 `text` 不是增量」时
     // 才需要策略显式给出（今天只有 `fold-llm`：它的 `text` 是历次摘要叠起来的累计体）。
-    /** @type {{ source: string, text?: string, increment?: string, incrementOrigin?: string, degradeReason?: string, title?: string, description?: string }|undefined} */
+    /** @type {{ source: string, text?: string, increment?: string, incrementOrigin?: string, degradeReason?: string, title?: string, description?: string, descriptionTruncated?: boolean }|undefined} */
     let strategyFoldSummary = undefined;
     /** @type {ReturnType<typeof buildFoldedFacts>} 投影到本轮轮记录的 `foldedFacts`（#470-B 已夹字节） */
     let pendingFoldedFacts = undefined;
@@ -4872,6 +4872,9 @@ export async function runToolLoop(options) {
           : {}),
         ...(typeof strategyFoldSummary?.description === "string" && strategyFoldSummary.description !== ""
           ? { summary: strategyFoldSummary.description }
+          : {}),
+        ...(strategyFoldSummary?.descriptionTruncated === true
+          ? { descriptionTruncated: true }
           : {}),
         // issue #567：折叠的契约身份（两个纯加法键，与轮记录那份同源：同一个对象、同一个值）。
         foldId: foldedFingerprint,

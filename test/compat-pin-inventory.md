@@ -924,6 +924,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/fold-target-overhead-873.test.js` | 2 | `tools`×2 |
 | `test/compact/fold-increment-safety-scope-894.test.js` | 10 | `strategy`×10 |
 | `test/compact/fold-title-desc-897.test.js` | 2 | `completion`×1, `reflection`×1 |
+| `test/compact/fold-desc-500tok-897.test.js` | 3 | `completion`×1, `reflection`×1, `strategy`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
