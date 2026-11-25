@@ -54,7 +54,7 @@ npm run docs:pass
 | 闸 | 为什么留着 |
 |---|---|
 | `check:agents-directives` 的字节预算 + 状态句/过期抄件/裸坐标三类 | 指令面每轮全额重发：**长度**就是成本，而写在上面的状态句会被当成事实执行。棘轮数字一律 `--sync` 刷，不许手写。 |
-| `check:inventory` / `check:config-leaf-values` | 它们比的是**提交进库的表与树**——派生值，由探针重新生成。这里没有一处判散文；`--sync` 是唯一合法的更新路径。 |
+| `check:inventory` / `check:config-leaf-values` | `check:inventory` 拿 AST 与白名单 `scripts/compat-pin-allowlist.mjs` 对（清单外写点或清单条目失效 ⇒ 红）；`check:config-leaf-values` 由探针重生成一张入库的表再与树对。两者判的都是**派生值**、不判散文；动派生态只有生成器这一条合法路径（不许手改）。 |
 | `check:pack-links` | 随包 Markdown 的链接必须解析得到；随包 README 里一条死链是坏产物，不是过期句。 |
 | `check:changelog` | 碰到公开面的合并没有 CHANGELOG 条目是**缺记录**，不是措辞问题。 |
 

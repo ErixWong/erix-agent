@@ -83,8 +83,9 @@ test("端到端：wrapExecuteTool 的 `← delegate: …` 回显行里看得见�
   const cwd = await makeTmp("erix-cli-tool-echo-617-");
   const subRunId = "sub-e2e-617";
   const calls = [];
-  // 执行上下文单独存一格（不用对象字面量里的 `context` 简写：`test/compat-pin-inventory.md` 的
-  // 扁平选项写点计数器按属性名数，这里造出来的「写点」不是兼容性钉子，不该进那张表）。
+  // 执行上下文单独存一格（不用对象字面量里的 `context` 简写：`scripts/flat-count-inventory.mjs` 的
+  // 扁平选项写点计数器按属性名数，这里造出来的「写点」不是兼容性钉子，会平白让这个文件在
+  // `scripts/compat-pin-allowlist.mjs` 之外多一处清单外写点）。
   let seenContext;
   const { executeTool } = createCliTools({
     cwd,

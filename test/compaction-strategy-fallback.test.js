@@ -222,7 +222,7 @@ function summaryProvider({ toolTurns, summaryBytes }) {
  * 一条 `fold-llm` 折叠链（`keepRounds` / `foldAtRatio` 可调），返回事件面 + 账本面。
  *
  * ⚠ 全部用**规位拼写**（`config.run.*` / `config.folding.context.*`）：本文件不许新增扁平写点，
- * 否则 `test/compat-pin-inventory.md` 会漂（那张表没有手改的余地，只能 `--sync`）。
+ * 否则清单外的 (文件, 面) 会令 `scripts/compat-pin-allowlist.mjs` 的白名单判据变红（`check:inventory`）。
  */
 async function runFoldLlmChain({
   runId,
@@ -376,8 +376,8 @@ async function runHostStrategyChain({
     provider,
     // ⚠ 返回值上的这个键**故意**叫 `hostStrategy` 而不是 `strategy`：`scripts/flat-count-inventory.mjs`
     // 数的是 `test/**` 里出现的属性名，`strategy` 是它认的兼容钉子键之一（口径是「属性写法的名字」，
-    // 分不清「选项写点」和「普通对象键」）⇒ 叫 `strategy` 会让 `test/compat-pin-inventory.md` 凭空
-    // 多一个与兼容性无关的写点。这里不是在绕开计数器，而是不给那张表添噪声。
+    // 分不清「选项写点」和「普通对象键」）⇒ 叫 `strategy` 会平白让这个文件在
+    // `scripts/compat-pin-allowlist.mjs` 里多一处与兼容性无关的清单写点。这里不是在绕开计数器，而是不给白名单添噪声。
     hostStrategy,
     compactions: events.filter((event) => event.type === "compaction"),
     notices: events.filter((event) => event.type === EVENT_TYPE),

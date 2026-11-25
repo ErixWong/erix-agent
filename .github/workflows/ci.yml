@@ -137,8 +137,8 @@ jobs:
     timeout-minutes: 20
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
-      # `fetch-depth: 0` 同样不能省：`check:inventory` 读的是树，但
-      # `check:changelog` 一族读 tag 与合并史（见 `real` 那个 job 的注释）。
+      # `fetch-depth: 0` 同样不能省：真正需要全历史的是 `check:changelog` 一族（读 tag 与 first-parent
+      # 合并史，见 `real` job 的 #691 注释）；`check:inventory` 只读工作树（白名单），不是这里的理由。
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -148,9 +148,9 @@ jobs:
       - name: Install dev dependencies (no lockfile in this repo by design)
         run: npm install --include=dev
 
-      # issue #534：清点表 `test/compat-pin-inventory.md` 的 `--verify`。
-      # ⚠ 表漂了不许手改数字：`node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md`
-      # （issue #802 起单归属分派行的写点也是派生值，`--sync` 能自己刷；跨片行仍是人工格，会点名 MANUAL_CELL）。
+      # issue #534 / #907：扁平写点白名单 `scripts/compat-pin-allowlist.mjs` 的 `--verify`。判据：
+      # 清单外的 (文件, 面) 出现扁平写点、或清单条目指向已不存在的文件 ⇒ exit 1。
+      # 台账已随 #907 删（不再逐文件核点数）⇒ 清单内文件的点数变化不再跑红。
       - name: Compatibility-pin inventory verify
         run: npm run check:inventory
 

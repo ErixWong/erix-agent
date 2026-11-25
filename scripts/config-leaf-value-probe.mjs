@@ -28,7 +28,7 @@
 //   node scripts/config-leaf-value-probe.mjs --sync   <en> <cn>   # 机器刷表（两张文档一起重写）
 //   node scripts/config-leaf-value-probe.mjs --verify <en> <cn>   # 验表（不改文件；不一致 ⇒ exit 1）
 //
-// 纪律（沿用 `test/compat-pin-inventory.md` / `scripts/flat-count-inventory.mjs` 的口径）：
+// 纪律（沿用 `scripts/flat-count-inventory.mjs` 的口径）：
 //   · **表是量出来的，不是写出来的**：`--sync` 是改表唯一合法的姿势，**手改数字算伪造**；
 //   · `--verify` 是 CI 阻塞门禁 `npm run check:config-leaf-values` 跑的那条；
 //   · 探针自己先证「同一份输入两次跑出同一张表」（`assertDeterministic`）：指纹不稳的话，

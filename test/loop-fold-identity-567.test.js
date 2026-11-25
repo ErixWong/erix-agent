@@ -65,7 +65,7 @@ async function runFolding({ onFoldSummary, store = createMemoryTranscriptStore()
   const payloads = [];
   const run = await runDirect({
     // 观察面走**规位**（`capabilities.hooks.*`），不用已退役的顶层扁平拼写（#499 / #498 S4c）：
-    // 新写的格子不往兼容钉子的计数面（`test/compat-pin-inventory.md` 的主表）添写点。
+    // 新写的格子不往兼容钉子的计数面添写点（清单外的扁平写点会令 `scripts/compat-pin-allowlist.mjs` 白名单判据变红）。
     capabilities: {
       ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) },
       hooks: {

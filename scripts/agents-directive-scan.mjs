@@ -336,7 +336,7 @@ export function scanDirectives({ root = ROOT, io, budgets = LENGTH_BUDGETS } = {
  * 为什么要有 `--sync`（issue #644 ②）：预算是**派生态**（实测值的钉子），但手改没有任何东西能证明抄对了，
  * 而且抄**高**在 `--strict` 下是**绿的**（棘轮只咬「实测 > 预算」），所以「手抄错」是这道门里唯一没闸的东西。
  *
- * 家族标准（`scripts/flat-count-inventory.mjs`；`scripts/mutation-sample-check.mjs` 的 `--sync` / `--verify` 那半句已随 #906 撤走）：
+ * 家族标准（`--sync` / `--verify` 这一族现在只剩本脚本：`scripts/flat-count-inventory.mjs` 的台账与 `--sync` 已随 #907 撤走、`scripts/mutation-sample-check.mjs` 的 `--sync` / `--verify` 那半句已随 #906 撤走）：
  *   · `--sync <文件>`：**刷表**。数字由实测重写 —— 这是**唯一合法**的改预算方式；
  *   · `--verify <文件>`：**验表**。逐格与 `budgetFor(实测)` 比，**不改任何文件**；任一处不一致 ⇒ exit 1 并点名。
  * 两者都比 `--strict` 更紧：`--strict` 是棘轮（实测 ≤ 预算即绿，允许余量），`--sync` / `--verify`

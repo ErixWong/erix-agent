@@ -400,7 +400,7 @@ test("⑥缺陷③：策略折 {from:1,to:3} + 兜底折后续 ⇒ 区间合并�
   const payloads = [];
   const run = await runDirect({
     // 观察面走**规位**（`capabilities.hooks.*`），不用已退役的顶层扁平拼写：
-    // 本格要测的是区间合并，不该顺手给 `compat-pin-inventory` 添一个扁平写点。
+    // 本格要测的是区间合并，不该顺手在 `scripts/compat-pin-allowlist.mjs` 之外多一处清单外扁平写点。
     capabilities: {
       ports: { strategy },
       hooks: { onFoldSummary: (payload) => {

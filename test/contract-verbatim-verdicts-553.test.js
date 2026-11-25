@@ -368,7 +368,7 @@ export async function auditCapabilityVerdicts(text) {
 //      一个顶层容器」，证明被拒的原因只能是那个名字，不是端口不完整。
 //   ② `{ ...base, ...null }` 展开成**空对象** ⇒ 非对象入参必须**直接**传 `null`。
 //   ③ 端口成员表用 `Map` 而不是对象字面量写：`test/**` 里 `session` / `tools` 这类字面量属性名
-//      会被 `npm run check:inventory` 计成**扁平写点**（本片零新增写点，见工单 §地盘与禁改）。
+//      会被 `npm run check:inventory` 计成**扁平写点**（清单外的文件出现扁平写点会令 `scripts/compat-pin-allowlist.mjs` 白名单判据变红；本片零新增写点，见工单 §地盘与禁改）。
 
 const PORT_MEMBERS = new Map([
   ["modelConfig", () => ({ resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) })],
