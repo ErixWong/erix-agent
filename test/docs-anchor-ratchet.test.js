@@ -94,13 +94,13 @@ const DOCS = [
   ...readdirSync(join(ROOT, "docs")).filter((f) => /^host-upgrade-guide.*\.md$/.test(f)).sort().map((f) => `docs/${f}`),
 ];
 
-test("#286 覆盖面（返工 R2 + 工单 261021-03 B1 + 261021-12 + 261022-17 + docs-261031-01 + issue #765 工单 261109-08）：脚本侧实扫的指南清单必须等于测试侧硬编码的那 40 份，且下限仍为 53", () => {
+test("#286 覆盖面（返工 R2 + 工单 261021-03 B1 + 261021-12 + 261022-17 + docs-261031-01 + issue #765 工单 261109-08）：脚本侧实扫的指南清单不得比测试侧硬编码的那批少（缩面即红）；#908 已拆份数地板，本例只留扫描面真值", () => {
   const discovered = readdirSync(join(ROOT, "docs")).filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
     .map((f) => `docs/${f}`).sort();   // 与清单同形状（都带 docs/ 前缀），免得比出假差集
   const missing = GUIDE_DOCS_PINNED.filter((f) => !discovered.includes(f));
   const extra = discovered.filter((f) => !GUIDE_DOCS_PINNED.includes(f));
   assert.deepEqual(missing, [], "这些指南不见了（改名或移走 = 覆盖面静默缩面）：" + missing.join(", ")
-    + "\n  脚本侧靠 `^host-upgrade-guide.*\\.md$` 实扫发现不到新名字，必须同时改：脚本里的 REF_SCAN_DOCS_MINIMUM 与本文件的 GUIDE_DOCS_PINNED");
+    + "\n  脚本侧靠 `^host-upgrade-guide.*\\.md$` 实扫发现不到新名字，必须同时改：本文件的 GUIDE_DOCS_PINNED 与覆盖面清单（#908：脚本侧份数地板已拆）");
   // 261122 裁决（自指类判据清理）：这里原来要求「实扫集合 **恰好等于** 测试侧硬编码的那份清单」——
 // 每新增一份指南（切版时必然新增一对）都要来改这个清单，而清单与脚本侧 `refScanDocs()` 是**同一批文档的
 // 第二份副本**，改了也不产生任何用户可见的收益。判据改成**只防缩面**：清单里点名的每一份必须还在
@@ -108,12 +108,6 @@ test("#286 覆盖面（返工 R2 + 工单 261021-03 B1 + 261021-12 + 261022-17 +
 assert.deepEqual(missing, [], "这些指南不见了（改名或移走 = 覆盖面静默缩面）：" + missing.join(", "));
 assert.ok(extra.length >= 0, "新指南自动进覆盖面，不要求同步这份清单");
   const script = read("scripts/docs-drift-check.mjs");
-  const minimum = Number(script.match(/^const REF_SCAN_DOCS_MINIMUM = (\d+);/m)?.[1] ?? NaN);
-  assert.equal(minimum, 53, "覆盖面下限常量被改了：应保留 15 份点名文档 + 历史最低 38 份指南 = 53"
-    + "（15 份 = README×2 + AGENTS×2 + 契约×2 + 架构×2 + 图表×2 + 需求对照×2 + erix_run README + 维护账本×2，"
-    + "工单 261021-03 B1 由 6 抬到 13、issue #644 ③ 再由 13 抬到 15；当前覆盖面是 15 + 40 = 55）");
-  assert.ok(NAMED_DOCS_PINNED.length + GUIDE_DOCS_PINNED.length >= minimum,
-    "测试侧清单覆盖面低于脚本侧下限（两处必须同步）");
   // 点名那一批还要与脚本里的 `SYMBOL_DOCS_STATIC` 逐份对得上：只比份数的话，「揉掉架构、换成另一份」
   // 这种等量交换两边仍然相等 ⇒ 静默换面（与指南改名同一条病，只是形状不同）。
   const staticBlock = script.slice(
@@ -129,18 +123,6 @@ assert.ok(extra.length >= 0, "新指南自动进覆盖面，不要求同步这�
   for (const rel of NAMED_DOCS_PINNED) assert.ok(existsSync(join(ROOT, rel)), `点名的活文档不见了：${rel}（改名 = 检查面静默缩面，与指南改名同一条病）`);
 });
 
-test("#286 棘轮基线常量与 AGENTS 中英两侧声称的数一致（口径文件化不许单边腐烂）", () => {
-  const script = read("scripts/docs-drift-check.mjs");
-  const baseline = script.match(/^const BARE_LINE_REF_BASELINE = (\d+);/m)?.[1];
-  assert.ok(baseline, "脚本里抽不到 `const BARE_LINE_REF_BASELINE = <数字>;`——棘轮常量被删或改了写法");
-  assert.ok(Number(baseline) <= 244, `棘轮只能降不能抬：工单 #286 T-a 登记的是 244，现在是 ${baseline}——抬上去要在提交信息里写「这次允许变差」的理由`);
-  for (const doc of ["AGENTS.md", "AGENTS_cn.md"]) {
-    const claims = [...read(doc).matchAll(/BARE_LINE_REF_BASELINE\s*=\s*(\d+)/g)].map((m) => m[1]);
-    // issue #802：不再要求「两侧都必须写」（那是措辞警察）。**写了就必须等于常量**这一半留着。
-    assert.deepEqual([...new Set(claims)].filter((v) => v !== baseline), [],
-      `${doc} 声称的基线与脚本常量不一致：${claims.join(" / ")} vs ${baseline}`);
-  }
-});
 
 /** #286 T-b1a R1：符号锚点自带的区间必须与该符号在被引文件里的**声明处相交**。
  *  为什么这条要钉在测试侧：判据本身在 `--self-test` 里有四条反向证，但那些证只证明「判据会红」；
@@ -156,11 +138,8 @@ test("#286 T-b1a 符号锚点自带区间与声明处相交：--verbose 的 note
   assert.ok(Number(span[2]) > 0, "一处带区间的符号锚点都抽不到 = 提取逻辑被改坏，这条判据在空跑");
 });
 
-test("#286 棘轮实测值恰好等于基线，符号锚点确实在抽东西（拿 --verbose 的真实输出问）", () => {
+test("#286 符号锚点确实在抽东西、覆盖面份数等于测试侧实扫（拿 --verbose 真实输出问；#908：裸行号棘轮已拆，本例只留符号/覆盖面真值）", () => {
   const out = execFileSync(process.execPath, [join(ROOT, "scripts", "docs-drift-check.mjs"), "--verbose"], { encoding: "utf8" });
-  const m = out.match(/⇒ 棘轮口径实测 \*\*(\d+)\*\* vs 基线 (\d+)/);
-  assert.ok(m, `--verbose 里没有棘轮那条 note——覆盖面或输出被改坏：\n${out.slice(0, 500)}`);
-  assert.equal(m[1], m[2], `实测 ${m[1]} ≠ 基线 ${m[2]}：多了就是有人新增裸行号，少了请把基线常量降下来（只减不增）`);
   const anchor = out.match(/symbol-anchor: 覆盖面 (\d+) 份文档里「符号 \+ 文件」锚点 (\d+) 处/);
   assert.ok(anchor, "符号锚点的覆盖面 note 不见了——提取器或覆盖面被改坏");
   assert.equal(Number(anchor[1]), DOCS.length, `覆盖面份数与测试侧另写的那份不一致：脚本 ${anchor[1]} vs 测试 ${DOCS.length}`);
@@ -206,7 +185,7 @@ test("#286 覆盖面里没有任何一处裸行号越界（工单点名的 notes
 test("#286 反向证不许被整批删掉，豁免条目必须条条带理由（条目 + 就地声明双条件）", () => {
   const script = read("scripts/docs-drift-check.mjs");
   const proofs = [...script.matchAll(/label: "#286 /g)].length;
-  assert.ok(proofs >= 16, `--self-test 里带 #286 的反向证只剩 ${proofs} 例（评审返工后共 17 例）——删用例不算修好`);
+  assert.ok(proofs >= 15, `--self-test 里带 #286 的反向证只剩 ${proofs} 例（#908 拆掉 6 例棘轮/地板反向证：地板原 21 例→现 15 例；再删就算把真值反向证整批拆了）`);
   assert.ok(/expectMutateMiss: true/.test(script), "「变异没打上」那一例（expectMutateMiss）被删了——变异器空转就没人管了");
 
   const entries = [...script.matchAll(/target: "(src\/[^"]+)",/g)];
