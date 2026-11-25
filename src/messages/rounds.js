@@ -144,6 +144,37 @@ export function pendingTrailingToolUses(messages) {
 }
 
 /**
+ * 从一段「已经停在轮边界上」的消息数组里，按引擎的轮规则**还原**出轮组。
+ *
+ * 这是 `groupIntoRounds` 轮构造循环的**唯一真相来源**（issue #896 C1）：assistant 带 `tool_use`
+ * ⇒ 与紧跟的那条消息合成一轮；否则单条一轮。`groupIntoRounds` 拿它处理 head 之后的部分；
+ * `recall_read` 拿它把 `foldedPayload`（整轮被删后按序拼接、**从轮边界开始**）还原成轮。
+ *
+ * 与 `groupIntoRounds` 的区别：这里**不做 head / firstRealUser 判定**——调用方保证输入从轮边界
+ * 开始（`foldedPayload` 由 `selectFoldedRounds` 选**整轮**后 flatMap 而来，天然满足）。
+ *
+ * @param {CanonicalMessage[]} messages
+ * @returns {MessageRound[]}
+ */
+export function reconstructRoundsFromBoundary(messages) {
+  const input = Array.isArray(messages) ? messages : [];
+  /** @type {MessageRound[]} */
+  const rounds = [];
+  for (let index = 0; index < input.length;) {
+    const message = input[index];
+    const uses = message?.role === "assistant" ? toolUses(message) : [];
+    if (uses.length > 0) {
+      rounds.push({ messages: input.slice(index, index + 2) });
+      index += 2;
+      continue;
+    }
+    rounds.push({ messages: [message] });
+    index += 1;
+  }
+  return rounds;
+}
+
+/**
  * Group canonical messages into indivisible conversation rounds.
  *
  * @param {CanonicalMessage[]} messages
@@ -159,21 +190,7 @@ export function groupIntoRounds(messages) {
   }
 
   const head = input.slice(0, firstRealUser + 1);
-  const rounds = [];
-
-  for (let index = firstRealUser + 1; index < input.length;) {
-    const message = input[index];
-    const uses = message?.role === "assistant" ? toolUses(message) : [];
-
-    if (uses.length > 0) {
-      rounds.push({ messages: input.slice(index, index + 2) });
-      index += 2;
-      continue;
-    }
-
-    rounds.push({ messages: [message] });
-    index += 1;
-  }
+  const rounds = reconstructRoundsFromBoundary(input.slice(firstRealUser + 1));
 
   return { head, rounds };
 }
