@@ -4598,14 +4598,17 @@ export async function runToolLoop(options) {
       //   全量）⇒ 证据不丢，只是不再冒充「本折删掉的东西」。别以为这里漏了。
       // ⚠ 不要写成「此处不可能读到安全层追加的内容」——那是假话：`bin/config.js` 里
       //   `protectedMessage: isRealUser` 至今仍开着（实测探针 commit 2c5ad310），这条路径今天还活着。
-      // ⚠ 过渡期：`protectedMessage` 已按 #898 退役（前置 `recall_read` 先落地）；退役后这条
-      //   触发路径不可达，本块与 `test/compact/fold-increment-safety-scope-894.test.js` 一起删。
+      // ⚠ 过渡期：`protectedMessage` 已**批准**退役（#898 已定，硬前置 `recall_read` 先落地，
+      //   **尚未实施**——今天 `bin/config.js` 仍设着 `protectedMessage: isRealUser`，见上一条）；
+      //   退役后这条触发路径不可达，本块与 `test/compact/fold-increment-safety-scope-894.test.js` 一起删。
       // ⇒ 快照是**真拷贝**而不是别名：今天安全层那几处都是**重新赋值**
       //   （`foldedPayload = [...foldedPayload, …]`，见下方安全层那一发），所以上面那个别名
-      //   **此刻**不会出错；但别名把「快照」退化成一个约定：只要将来有人改成就地
-      //   `incrementFoldedPayload.push(...)` / `foldedPayload.push(...)`，本折区间就会在快照**身上**
-      //   被改小，而判据**不会红**（它看的是正文与区间是否自洽，不是数组同一性）。
-      //   拷贝把这种漏锁成一个不变量：本折的素材集合到这一刻就**封上**了。
+      //   **此刻**不会出错；但别名下那份「快照」只是一个约定：只要将来有人把某一发改成就地
+      //   `foldedPayload.push(...)`（别名之下 `incrementFoldedPayload` 与它是**同一个数组**），就地
+      //   追加的新内容就会**被增量正文一并读进去** ⇒ 正文重新盖过它自己声明的那段固定区间，
+      //   **#894 那个症状原样回来**（实测形状：声明 `from=1,to=6,rounds=6` 的正文里又出现属第 7 轮
+      //   的 `PROCTOOL_R7`）。就地 push **不会**改 `foldedRoundRange` 那个对象本身——区间不跟着涨
+      //   正是病根的形状。拷贝把这件事锁成一个不变量：本折的素材集合到这一刻就**封上**了。
       //   （拷贝是**浅**的：元素对象仍与归档共用。这是故意的——如果将来有人就地改**元素内容**，
       //   那是「归档与增量同时变」的另一种错，不在本刀要钉的形状里，钉它得拿每次折叠的深拷贝
       //   开销去换，不划算。）
@@ -4725,8 +4728,12 @@ export async function runToolLoop(options) {
       //   · 摘要器真跑过 ⇒ 用它的指纹（已被 #326 的复用账本用作键，含轮区间 / 恢复提示 / 续写基底）；
       //   · 零 LLM 的机械策略（`sliding-window` / `fold-statistical`）⇒ 就地按**同一口径**算：
       //     被折负载 + 轮区间 + 恢复提示（后两个是 #567 反向证的靶子：去掉区间 ⇒ 不同折叠会撞同一个 id）。
-      // issue #894：**另一种读者**——折叠身份（`foldedFingerprint` = 契约上的 `foldId`）也从
-      // **全量** `foldedPayload` 算，与增量读者不是同一份 ⇒ `foldId` 逐字不变（判据「反向证 A」钉）。
+      // issue #894：**另一种读者**——折叠身份（`foldedFingerprint` = 契约上的 `foldId`）**不读增量
+      // 快照**，但它本身是**两条路**（本刀只保证「不读快照」；缓存分支没动，也不在本刀判据覆盖内）：
+      //   · 零 LLM 的机械路径 ⇒ 就地按**全量** `foldedPayload` 现算；
+      //   · 摘要器真跑过 ⇒ 直接取 `lastFoldSummaryOutcome?.fingerprint` 这个**缓存分支**（在
+      //     `reusableCompactionSummarizer` 里写入、每次 `compactBeforeRound` 开头清空），**根本不重算**。
+      // ⇒ 判据「反向证 A」钉的是：`foldId` 与轮记录那份**全量归档**就地重算相等——不是「与修复前逐字相同」。
       const foldedFingerprint = lastFoldSummaryOutcome?.fingerprint
         ?? foldSummaryFingerprint({
           messages: foldedPayload,
