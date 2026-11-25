@@ -852,7 +852,7 @@ export function runSelfTest() {
       const problems = checkWiring(ciText, pkg, agents);
       expect(
         problems.length === 0,
-        "⑧ CI/AGENTS/package.json 接线：阻塞步存在且在 `check:test-summary` 之后、"
+        "⑧ CI/AGENTS/package.json 接线：阻塞步存在且在 `npm test`（Test suite）之后、"
           + "checkout 取全历史",
         `⑧ 接线有问题：${problems.join(" / ")}`,
       );
@@ -874,12 +874,12 @@ export function runSelfTest() {
         `⑧c 浅克隆没被点名：落上=${depthApplied}，问题=${checkWiring(noDepth, pkg, agents).join(" / ") || "无"}`,
       );
       // ⑧d 换锚之后的位置反向证（issue #855）：把 `check:changelog` 整步（`- name:` + `run:`）
-      // 挪到 `check:test-summary -- --self-test` **之前** ⇒ 接线检查必须点名。
+      // 挪到 `run: npm test`（Test suite）**之前** ⇒ 接线检查必须点名。
       // 少了这一格，删掉第二个地标之后，位置判据就可能悄悄退化成「存在就好」。
       // 变异没落上（找不到那一步或找不到锚点步）同样算失败，不接受「跑了没红」。
       const stepHead = "^(\\s*- name:[^\\n]*\\n\\s*run:\\s*npm run ";
       const stepPat = new RegExp(`${stepHead}check:changelog\\s*\\n)`, "mu");
-      const anchorPat = new RegExp(`${stepHead}check:test-summary -- --self-test\\s*\\n)`, "mu");
+      const anchorPat = /^(\s*- name:[^\n]*\n\s*run:\s*npm test\s*\n)/mu; // #905：锚点改为 Test suite 的 run: npm test（原为汇总对账 self-test 步，已随 #905 删）
       const stepBlock = ciText.match(stepPat)?.[1];
       const anchorBlock = ciText.match(anchorPat)?.[1];
       const moveApplied = !!stepBlock && !!anchorBlock
@@ -890,13 +890,13 @@ export function runSelfTest() {
       const movedProblems = moveApplied
         ? checkWiring(movedCi, pkg, agents)
         : ["变异没落上（ci.yml 里找不到可挪的那一步，或找不到位置锚点步）"];
-      // 只认「排在了 … 之前」这条位置报红：换成别的报红（哪怕也带 check:test-summary）都算没咬到。
+      // 只认「排在了 … 之前」这条位置报红：换成别的报红（哪怕也带 npm test）都算没咬到。
       const positionNamed = movedProblems.some(
-        (p) => p.includes("排在了") && p.includes("check:test-summary"),
+        (p) => p.includes("排在了") && p.includes("npm test"),
       );
       expect(
         moveApplied && positionNamed,
-        "⑧d 把 `check:changelog` 整步挪到 `check:test-summary -- --self-test` 之前 ⇒ 接线检查必须点名"
+        "⑧d 把 `check:changelog` 整步挪到 `run: npm test`（Test suite）之前 ⇒ 接线检查必须点名"
           + "（证明换锚后位置判据还活着，不是「存在就好」）",
         `⑧d 位置变异后没红：落上=${moveApplied}，问题=${movedProblems.join(" / ") || "无"}`,
       );
@@ -921,11 +921,14 @@ export function runSelfTest() {
  * 接线检查（自测用，也便于下一任读者一眼看见「接线」这个词指哪几处）。
  * 返回问题列表（空 = 接线完整）。
  *
- * 位置判据只锚一步：`run: npm run check:test-summary -- --self-test`（issue #855 的裁决）。
- * 这里原来还借 `run: npm run check:docs` 当第二个地标，而 issue #802 已按用户裁决把
- * 文档族整族撤出流水线，那个地标随之消失 —— 于是本判据在 main 上恒红（issue #855）：
- * 红的是判据自己失去了评估能力，不是文档失控（AGENTS 与 ci.yml 本来就是一致的）。
- * **裁决：CI 不裁文档措辞。** 文档族的机器约束留在版本边界 —— `release:day` 的
+ * 位置判据只锚一步：`run: npm test`（Test suite 那一步，issue #905 的裁决）。
+ * 它的历史：最初借 `run: npm run check:docs` 当第二个地标，issue #802 已按用户裁决把
+ * 文档族整族撤出流水线，那个地标随之消失 —— 本判据一度在 main 上恒红（issue #855）：
+ * 红的是判据自己失去了评估能力，不是文档失控（AGENTS 与 ci.yml 本来就是一致的）；
+ * #855 于是改锚到当时的汇总对账步。#905 又把那道汇总对账闸整条删了，那个锚点随之消失 ——
+ * 再留原样就会重演 #855 的恒红。所以改锚 Test suite 的 `run: npm test`：它是 #905 明令保留的
+ * 真判据本身、删不得，也就不会再有「锚点被悄悄撤走、判据只剩红」这一种表达。
+ * **裁决不变：CI 不裁文档措辞。** 文档族的机器约束仍留在版本边界 —— `release:day` 的
  * preflight / writeback 两处都阻塞地跑它们，另加周期性 agent pass（见 AGENTS 的 CI 一节）。
  * 所以本判据不得再借任何文档步当地标：借来的地标一旦被撤，判据只剩「红」这一种表达。
  *
@@ -938,11 +941,13 @@ export function checkWiring(ciText, pkg, agentsTexts) {
   const problems = [];
   const lines = ciText.split("\n");
   const stepLine = lines.findIndex((line) => /^\s*run:\s*npm run check:changelog\s*$/u.test(line));
-  const testSummaryLine = lines.findIndex((line) => /^\s*run:\s*npm run check:test-summary -- --self-test\s*$/u.test(line));
+  // 锚点：#905 撤掉汇总对账闸后，改锚 ci.yml 里真实在场的 Test suite 步 `run: npm test`——
+  // 它是 #905 明令保留的真判据本身、删不得，比借任何可被撤走的步骤更稳（详见函数上方 docstring）。
+  const anchorLine = lines.findIndex((line) => /^\s*run:\s*npm test\s*$/u.test(line));
   if (stepLine < 0) problems.push("ci.yml 里没有阻塞步 `run: npm run check:changelog`");
-  if (testSummaryLine < 0) problems.push("ci.yml 里找不到 `check:test-summary -- --self-test` 那一步（位置判据的锚点）");
-  if (stepLine >= 0 && testSummaryLine >= 0 && stepLine < testSummaryLine) {
-    problems.push("`check:changelog` 排在了 `check:test-summary` **之前**（接线口径：Test suite / check:test-summary 之后）");
+  if (anchorLine < 0) problems.push("ci.yml 里找不到 `run: npm test` 那一步（位置判据的锚点：Test suite，#905 撤汇总对账闸后的改锚）");
+  if (stepLine >= 0 && anchorLine >= 0 && stepLine < anchorLine) {
+    problems.push("`check:changelog` 排在了 `npm test`（Test suite）**之前**（接线口径：Test suite 之后）");
   }
   // 每个 `actions/checkout` 都要带 `fetch-depth: 0`（issue #802 起 CI 是多 job、多处 checkout）：
   // 少一处就少一个 job 里的 tag 与合并史，那一族的闸只能 exit 2（未判定）。按「份数」判而不是「至少一处」，
