@@ -3,6 +3,55 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Added
+- **Deterministic recall tool `recall_read` (issue #896 C1).** A new built-in tool factory
+  `createBuiltinRecallTools({ readLedgerRows })` in `src/tools/recall.js` produces the
+  `recall_read` tool (opt-in: not wired into any existing default tool list). The tool takes
+  `{ round: integer, scope?: "run" }` and retrieves a round's messages **verbatim from the ledger
+  itself** (`store.load(runId)` rows), **not** from the fold snapshot `foldedPayload`: a measured
+  real run showed `foldedPayload` is a bounded-dedup snapshot (range 1..89 with only 78 messages →
+  reconstructs to 40, never the full 89), so reading it can never recover a round — while the
+  ledger keeps every round's body and already records each message's `round`. The round number is
+  the ledger's own `record.round` — never recomputed, never indexed off a payload. Two read paths:
+  ① message rows (`isMessageRow`, `record.round === N`) concatenated by ascending `seq` (stable;
+  ties keep on-disk order) — only crash rounds (no carrier) survive `store.load()`; ② round-carrier
+  rows (non-message, `record.round === N`, carrying `messages`) taken directly — the normal path.
+  Both empty ⇒ `not_folded` (wording "账本里没有该轮的正文"; dropped "未被折叠" since it reads the
+  ledger). Coordinates returned: `round`, `messageCount`, `byteLength`; `messages` verbatim (no
+  rewrite/truncate/prefix). `unmappable` and `reconstructRoundsFromBoundary` were **removed from
+  this tool** (that export now serves only `groupIntoRounds`). **No content verification**: reading
+  a ledger row already yields the original text, so `foldSummaryFingerprint`/`foldId` hashing was
+  pure ceremony (no `trust`/`foldId` in the response, no new ledger key). The read-only accessor is
+  wired by the host inline as `() => store.load(runId)` — the one-line `createRecallAccessor` export
+  was removed as ceremony (it was an entry export with no in-repo consumer, which the docs-drift
+  bundle-table gate counts as a to-be-deleted name). `createBuiltinRecallTools`'s in-repo consumer is
+  the new contract suite `test/contract/recall-tools.js` (registered in `test/contract/index.js` and
+  listed in npm `files`). Tool definition token cost (re-measured; description unchanged): 260
+  (total 11 builtin tools: 4,714 → 4,974). Pins: `test/tools/recall-read-896.test.js` (eight cells,
+  driven by a real built-in `sliding-window` fold whose `foldedPayload` is bounded-truncated far
+  below the round count — no hand-built rows; the verbatim, multi-round, key "payload ≪ rounds", and
+  "unfolded round still retrievable" cells all go red on the `foldedPayload`-reading implementation
+  (it returns `unmappable`/`not_folded` there), and a "no validation fields" cell red-guards any
+  reintroduced `trust`/`foldId`).
+- **确定性召回工具 `recall_read`（issue #896 C1）。** 新文件 `src/tools/recall.js` 导出
+  `createBuiltinRecallTools`（opt-in，默认不挂进任何既有工具列表）。入参 `{ round, scope? }`，
+  按轮号从**账本本身**（`store.load(runId)` 的行）逐字取回某轮消息，**不再读折叠快照 `foldedPayload`**：
+  实测真 run 的 `foldedPayload` 是有界去重后的快照（区间 1..89 只有 78 条消息 → 还原出 40 轮、永远还原不出
+  89 轮），拿它取回天生还原不出轮；而账本每轮正文完整、且每条消息都记着自己的 `round`。轮号直接取账本的
+  `record.round`，不重算、不按 payload 下标猜。两条读路：① 消息行（`isMessageRow`、`record.round===N`）按
+  `seq` 升序拼接（稳定、相同 seq 保落盘先后）——`store.load()` 后只剩崩溃轮（无载体）；② 轮载体行（非消息行、
+  `record.round===N`、自带 `messages`）直接取——正常路径。两者皆空 ⇒ `not_folded`（话术「账本里没有该轮的正文」，
+  已去掉「未被折叠」，因为读的是账本）。返回坐标 `round`/`messageCount`/`byteLength`，`messages` 逐字返回（不改写、
+  不截断、不加前缀）。`unmappable` 与 `reconstructRoundsFromBoundary` **从本工具移除**（该导出现只服务
+  `groupIntoRounds`）。**不做内容校验**：读账本行本就是原文，哈希自证纯属仪式（响应无 `trust`/`foldId`、不新增账本键）。
+  只读访问器由宿主**内联**接成 `() => store.load(runId)`——那一行的 `createRecallAccessor` 导出已当仪式删除
+  （它是仓内零消费者的入口导出，会被 docs-drift 破坏包闸当成「本版要删的名字」）。`createBuiltinRecallTools`
+  的仓内消费者是新增的契约套件 `test/contract/recall-tools.js`（已登记进 `test/contract/index.js`、并列入 npm
+  `files`）。工具定义 token 成本重测（描述未动）260（11 个内置工具合计 4,714 → 4,974）。判据：
+  `test/tools/recall-read-896.test.js`（八格，全走内置 `sliding-window` 真折叠、其
+  `foldedPayload` 被有界截断到远小于轮数，不手搓行；逐字/多轮/关键「payload ≪ 轮数」/「未折轮照样取回」四格在读
+  `foldedPayload` 的旧实现下均红（旧实现给 `unmappable`/`not_folded`），「无校验字段」格防止有人把 `trust`/`foldId` 加回）。
+
 ### Changed
 - **agents-directive-scan（`check:agents-directives`）**：三类文本启发式（工单状态断言 / 手抄件上限表 / 裸坐标）连同各自的 `--sync` 路径、例外登记表与 `--self-test` 夹具一并删除，本闸**只判字节预算**（#909）。有意的行为改变：往 `AGENTS.md` / `AGENTS_cn.md` 写一句假版本号不再在这里报红，版本号真值由 `check:docs` 的版本对账负责。`LENGTH_BUDGETS` 符号名保留（`test/project-instructions-716.test.js` 仍从中读注入上限 64 KiB 的推导）。
 - **agents-directive-scan (`check:agents-directives`)**: the three text heuristics (work-order status claim / hand-copied ceiling table / bare source coordinate) are removed along with their own `--sync` paths, the exception register and the `--self-test` fixtures — the gate now judges **only the byte budget** (issue #909). Intentional behavior change: writing a fake version number into `AGENTS.md` / `AGENTS_cn.md` no longer goes red here; version truth is owned by `check:docs`'s version reconciliation. The `LENGTH_BUDGETS` symbol name is preserved (`test/project-instructions-716.test.js` still reads the 64 KiB injection-cap derivation from it).

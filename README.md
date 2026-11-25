@@ -280,6 +280,8 @@ src/
     file-tools.js                  Canonical file tools: readFile/searchText/rg/grep/tree/edit/writeFile
     index.js                       Optional tools subpath exports
     notes.js                       Host-side notes tools
+    recall.js                      Deterministic ledger recall tool (`recall_read`): locate a round in the
+                                   ledger and return its messages verbatim (issue #896)
     providers.js                   Tool-provider adapters
     registry.js                    Tool schemas and executor registry
     delegation/                    Child-run bookkeeping (issue #617 P1a) plus the bounded transcript-tail
@@ -460,6 +462,7 @@ quoted blocks below against it):
   "test/contract/skills-loader.js",
   "test/contract/termination-payload.js",
   "test/contract/tool-result-envelope.js",
+  "test/contract/recall-tools.js",
   "test/contract/transcript-store.js",
   "test/helpers/tmp.js"
 ]

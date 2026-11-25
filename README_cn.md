@@ -230,6 +230,7 @@ src/
     file-tools.js                    文件工具规范实现：readFile/searchText/rg/grep/tree/edit/writeFile
     index.js                        可选 tools 子路径导出
     notes.js                        宿主侧 notes 工具
+    recall.js                       确定性账本召回工具（`recall_read`）：按轮号在账本里定位并逐字返回该轮消息（issue #896）
     providers.js                    tool-provider adapter
     registry.js                     工具 schema 与 executor registry
     delegation/                    派生（子 run）纯簿记（issue #617 P1a），外加有界的 transcript 尾读
@@ -418,6 +419,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "test/contract/skills-loader.js",
   "test/contract/termination-payload.js",
   "test/contract/tool-result-envelope.js",
+  "test/contract/recall-tools.js",
   "test/contract/transcript-store.js",
   "test/helpers/tmp.js"
 ]
