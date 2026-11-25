@@ -779,7 +779,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli-idle.test.js` | 10 | `prompt`×5, `session`×5 |
 | `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1 |
 | `test/loop-governance-switch-cells.test.js` | 10 | `completion`×4, `reflection`×4, `wrapup`×2 |
-| `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `resume`×1, `strategy`×1 |
+| `test/loop-persist-compaction-facts.test.js` | 9 | `completion`×3, `reflection`×3, `strategy`×2, `resume`×1 |
 | `test/loop-resume-unpersisted-tool-results.test.js` | 8 | `resume`×4, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-tool-list.test.js` | 9 | `tools`×7, `prompt`×2 |
 | `test/loop-resume-fold-immunity.test.js` | 2 | `tools`×2 |
@@ -921,6 +921,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-filewrites-blind.test.js` | 1 | `tools`×1 |
 | `test/loop-round-runstate-copy-843.test.js` | 2 | `tools`×2 |
 | `test/loop-runstate-inject-872.test.js` | 4 | `completion`×2, `stallDetection`×2 |
+| `test/compact/fold-target-overhead-873.test.js` | 2 | `tools`×2 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

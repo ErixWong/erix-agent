@@ -371,7 +371,7 @@ test("⑥缺陷③：策略折 {from:1,to:3} + 兜底折后续 ⇒ 区间合并�
     protocol: "fake",
     model: "fake-model",
     async chat() {
-      if (turns < 6) {
+      if (turns < 14) {
         turns += 1;
         return {
           content: [{ type: "tool_use", id: `tu_${turns}`, name: "echo", input: { text: `R${turns}` } }],
@@ -417,7 +417,7 @@ test("⑥缺陷③：策略折 {from:1,to:3} + 兜底折后续 ⇒ 区间合并�
     initialUserMessage: "开始任务",
     tools: [{ name: "echo", description: "回显输入", inputSchema: { type: "object", properties: { text: { type: "string" } } } }],
     // 前 4 轮小、后 2 轮大：折叠必然「策略折更老的几轮 → 仍超预算 → 兜底再折剩下的」。
-    executeTool: async ({ input }) => (Number(String(input?.text ?? "").replace(/^R/u, "")) <= 4
+    executeTool: async ({ input }) => (Number(String(input?.text ?? "").replace(/^R/u, "")) <= 6
       ? `tiny-${String(input?.text ?? "")}`
       : `BIG-${String(input?.text ?? "")}_${"填充".repeat(600)}`),
     maxRounds: 20,

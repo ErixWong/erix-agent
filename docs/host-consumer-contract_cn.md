@@ -1874,7 +1874,7 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 | `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3408` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
 | `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
 | `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6170` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6170` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
+| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6189` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:75` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6189` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = 该格不双写，没有权威源/交接条件可谈。
@@ -2486,8 +2486,15 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
 - **它不是验收机制。** 它是给模型的忠告，不是闸门：验收仍看 `finalGuard` / 交付物判据，一个 guard 判
   `accept` 的恢复 run 就是 `verified`，与模型有没有照告示去做无关。引擎无法让模型一定去勘验——所以
   有副作用的工具**仍然应该由宿主自己加幂等键**（键 / 锁 / 去重表）。见升级指南的「没变的」那一节。
-- **它可能被折掉。** 告示是最新的一轮，默认 `keepRounds` 会把它留在保留窗口内；但激进的压缩配置
-  （例如 `keepRounds: 0`）会在同一轮就把它折进摘要，那时模型读到的摘要而不是告示原文。
+- **它一般不会被折掉。** 告示是最新的一轮，默认 `keepRounds`（6）和激进的 `keepRounds: 0` 都会把它留在保留
+  窗口内：按预算比例折叠时 `keepRounds` 是**保留下限、最小有效值 5**（`MIN_KEEP_ROUNDS`，issue #873——
+  「留 1 轮等于没留」），所以 `keepRounds: 0`（或 1–4）按 5 来算，最新一轮留在保留窗口而不会被折进摘要。
+  **折叠深度按预算比例，不按轮数（issue #873）：** `selectFoldedRounds`（`src/compact/helpers.js`）从**最老**一轮
+  开始逐轮加入，一旦本地估算（含摘要块开销）降到 `FOLD_TARGET_RATIO`（0.65）× `budgetTokens` 及以下就停；
+  工作集地板与进度保证仍可覆盖它。`keepRounds` 是**保留下限**（最近 `max(keepRounds, MIN_KEEP_ROUNDS)` 轮永不折），
+  **不是**「折到只剩 N 轮」的目标。轮数不超过有效下限时一轮都不折，交给 enforce-size 安全层。只有没有
+  **正的有限目标**（`targetTokens` 缺席、为零、为负或非有限值）时才退回保留轮数口径（逐字沿用旧行为），
+  那里 `keepRounds: 0` 仍折到 0。
 
 ### 同 key 异 payload 的冲突（issue #326）
 

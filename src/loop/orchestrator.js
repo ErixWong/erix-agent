@@ -4768,17 +4768,36 @@ export async function runToolLoop(options) {
         : computeFactsFallbackText();
       // issue #566：**本折增量**（append-only 记录，只进账本，不进模型上下文）。
       // 取源优先级（全部是「本折那份」，**没有**一条是「累计体」）：
+      //   ⓪ issue #873 回归修复：预算兜底**真的追加折了轮**（`budgetFallbackFoldedRounds > 0`）时，
+      //     本折实际删掉的是「配置策略那一折 + 兜底那一折」的**并集**，而策略自带的 `increment`
+      //     只描述策略自己折的那几轮 ⇒ 增量正文的区间会**窄于**最终 `foldedRoundRange`/`foldedRounds`
+      //     写进键的那段（`increment.text` 与 `increment.from/to/rounds` 各说一套，#566 判据「增量
+      //     自己写出它折的是哪一段」红）。这种一格必须用**定稿处全量 `foldedPayload`** 就地重算，
+      //     它天然覆盖并集区间。`#873` 之前策略总是折到够预算 ⇒ 兜底不接手 ⇒ 从不触发；本单把
+      //     折的目标改成 `0.65×budget` 后策略常够不着预算 ⇒ 兜底接手变常见，这条不一致才暴露。
       //   ① `strategyFoldSummary.increment` —— 策略自己报的本次产物（`fold-llm` 的摘要器输出）；
       //   ② `strategyFoldSummary.text` —— 策略带出的机械替代物 / 宿主注入正文（它们本来就只讲本折）；
       //   ③ 就地现算的机械替代物（同上）。
       // ⚠ 故意**不**用 `fedSummaryText`：那是「折叠后那条 user 消息的全文」= 累计体 + 原任务正文，
       // 拿它当增量就等于把「本折删掉了什么」重新变成「截至本折的历史长什么样」——本单要消灭的正是这个。
-      const incrementText = typeof strategyFoldSummary?.increment === "string"
-        && strategyFoldSummary.increment !== ""
-        ? strategyFoldSummary.increment
-        : (typeof strategyFoldSummary?.text === "string" && strategyFoldSummary.text !== ""
-          ? strategyFoldSummary.text
-          : computeFactsFallbackText());
+      const incrementText = budgetFallbackFoldedRounds > 0
+        ? ((foldedPayload.length > 0 && foldedRounds > 0
+          ? summarizeFoldedPayload(foldedPayload, {
+            from: foldedRoundRange?.from ?? 1,
+            to: foldedRoundRange?.to ?? foldedRounds,
+            count: foldedRounds,
+            recoveryHint: compactionContext.recoveryHint,
+            noteTools: noteToolSurface,
+            ...(navigationRecord === undefined ? {} : { navigationRecord }),
+          })
+          : "")
+          || strategyFoldSummary?.increment || strategyFoldSummary?.text)
+        : (typeof strategyFoldSummary?.increment === "string"
+          && strategyFoldSummary.increment !== ""
+          ? strategyFoldSummary.increment
+          : (typeof strategyFoldSummary?.text === "string" && strategyFoldSummary.text !== ""
+            ? strategyFoldSummary.text
+            : computeFactsFallbackText()));
       // issue #567：**给这次折叠一个 run 内单调的 `seq`**（`foldId` 就是上面那个指纹）。
       // 只有**真的会产出替代物**时才占号：没有正文 ⇒ `buildFoldedFacts()` 返回 `undefined`、
       // 既不投递也不落账，让它占号只会在 seq 上留一个「查无此折」的空洞（判据「严格递增」仍绿，

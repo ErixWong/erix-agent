@@ -150,9 +150,15 @@ const requestedBlocks = (provider) => provider.mainRequests
 test("#738-A 写侧自证：fedSummaryText 在真实请求里对得上，而 .summary 从来没有作为整块 fed 过", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createProvider({
-    mainScript: [toolTurn("a"), toolTurn("b"), { throw: new Error("boom: 崩在折叠之后") }],
+    // issue #873（MIN_KEEP_ROUNDS=5 重调夹具）：旧下限 1 时 `keepRounds: 0` 只要 1 轮可折就调得起
+    // 摘要器；新下限 5 ⇒ `fold-llm`（keepRounds 0⇒5）要上下文里同时 >5 轮才真折，否则折 0 轮、
+    // 不发摘要（fedSummaryText 根本不出现）。本夹具：工具轮从 2 补到 9（崩溃轮仍在最后）、预算从 500 抬
+    // 到 1300（TASK 600y≈204 tok + 每轮 400z≈153 tok ⇒ 第 8 轮才跨预算、之前能攒够 >5 轮）、maxRounds 抬到
+    // 14（让崩溃轮能发生）⇒ 第 8 轮真折一次、之后预算内装得下 ⇒ 只有真 fold-llm 的那一折、不落机械
+    // 兵底 fact（否则无 `.summary`）。工具轮内容 / 崩溃轮 / 全部契约断言逐字不变。
+    mainScript: [toolTurn("a"), toolTurn("b"), toolTurn("c"), toolTurn("d"), toolTurn("e"), toolTurn("f"), toolTurn("g"), toolTurn("h"), toolTurn("i"), { throw: new Error("boom: 崩在折叠之后") }],
   });
-  await assert.rejects(() => runToolLoop(options("738-exact", store, provider, { budgetTokens: 300 })),
+  await assert.rejects(() => runToolLoop(options("738-exact", store, provider, { budgetTokens: 1300, maxRounds: 14 })),
     /boom: 崩在折叠之后/u);
   const facts = factsOf(await store.load("738-exact"));
   assert.equal(provider.summaryCalls >= 1, true, "前置：`fold-llm` 必须真跑过摘要器");
@@ -192,17 +198,19 @@ test("#738-B 写侧不凑数：`fold-statistical` 那一档拿不到精确插入
   // 分段合并），第二折起它自报的 `foldSummary.text` 不再等于任何一个插入块 ⇒ 逐字证不过 ⇒ 不写。
   const store = createMemoryTranscriptStore();
   const steps = [];
-  for (let index = 1; index <= 6; index += 1) steps.push(toolTurn(`r${String(index)}`));
+  // issue #873（MIN_KEEP_ROUNDS=5）：keepRounds:1 被抬到有效下限 5 ⇒ 工具轮从 6 补到 12，预算从 4000 抬
+  // 到 7500（每轮 4000z≈1336 tok ⇒ 第 6 轮才跨预算、之前能攒够 >5 轮）⇒ 配置策略真折 ≥2 次。
+  for (let index = 1; index <= 12; index += 1) steps.push(toolTurn(`r${String(index)}`));
   steps.push(endTurn("done"));
   const provider = createProvider({ mainScript: steps });
   await runToolLoop(withSeed({
     capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
     provider,
     executeTool: async ({ id }) => `MARK-${id} ${"z".repeat(4000)}`,
-    maxRounds: 8,
+    maxRounds: 16,
     completion: false,
     reflection: false,
-    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 4000, keepRounds: 1 } } },
+    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 7500, keepRounds: 1 } } },
     store,
     runId: "738-noexact",
     initialUserMessage: TASK_BODY,

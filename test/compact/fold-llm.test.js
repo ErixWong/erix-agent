@@ -81,9 +81,13 @@ test("uses section priorities when enforcing the summary budget", async () => {
   assert.match(foldedSummary, /## 下一步/);
   assert.match(foldedSummary, /已完成项禁止重做/);
   assert.match(foldedSummary, /\[已修剪\]/);
-  // LLM 摘要受 maxSummaryTokens 约束；机械保真层在其后追加（见 docs/design A2）。
+  // issue #873 修复①：机械保真层现在**在** `maxSummaryTokens` 之内（旧行为：追加在夹断之后，
+  // 预算削不掉它）⇒ 上界是**整份**摘要，不只是一段。这条从「llmPart ≤ 1500」收紧成「全体 ≤ 1500」。
+  assert.ok(estimateTokens(foldedSummary) <= 1500);
   assert.ok(estimateTokens(llmPart) <= 1500);
-  assert.match(foldedSummary, /^> continue again$/m);
+  // 预算紧时先让位的是机械保真层（第 5 档，机械可重抽），而不是任何一节合同（留骨架）。
+  assert.match(foldedSummary, /^## 用户最新未解决输入[^\n]*\n\[已修剪\]$/mu);
+  assert.doesNotMatch(foldedSummary, /^> continue again$/m);
 });
 
 test("token truncates an unsectioned summary and marks the truncation", async () => {
@@ -98,8 +102,10 @@ test("token truncates an unsectioned summary and marks the truncation", async ()
 
   assert.match(llmPart, /截断|修剪/);
   assert.ok(estimateTokens(llmPart) <= maxSummaryTokens);
-  // 机械保真层在尺寸截断之后才追加，所以摘要预算削不掉它（A2 的关键行为）。
-  assert.match(text, /^> continue again$/m);
+  // issue #873 修复①：保真层现在在尺寸截断**之前**拼入，整份摘要（含它）受同一个预算约束
+  // ⇒ 预算只有 30 token 时它保不住（旧断言「逐字引用仍在」钉的正是「躲在预算外」这个 bug）。
+  assert.ok(estimateTokens(text) <= maxSummaryTokens, "整份摘要（含保真层）必须 ≤ 声明预算");
+  assert.doesNotMatch(text, /^> continue again$/m);
 });
 
 test("publishes note-first recovery guidance requirements", () => {
@@ -206,18 +212,20 @@ test("appends the mechanical fidelity layer after the LLM summary" + " (anchor i
   assert.deepEqual(result.messages.at(-1), messages.at(-1));
 });
 
-test("keeps the mechanical fidelity layer when the summary budget is tiny", async () => {
+test("keeps the fidelity layer inside the summary budget when it is tiny (issue #873 fix ①)", async () => {
   const result = await createFoldLlmStrategy({
     summarizer: async () => "unsectioned summary ".repeat(200),
     maxSummaryTokens: 40,
   }).compact(anchorConversation(), { keepRounds: 2 });
   const text = result.messages[0].content[0].text;
-  const [llmPart] = text.split("## 用户最新未解决输入");
 
-  assert.ok(estimateTokens(llmPart) <= 40);
-  assert.match(llmPart, /截断|修剪/);
-  assert.match(text, /^shas: 1ed3f35$/m);
-  assert.match(text, /^> 取消旧方案，改做锚点索引$/m);
+  // 旧断言：预算 40 时锚点行与逐字引用仍然全文在场（因为它们躲在预算外）。
+  // 新语义（#873 修复①）：保真层先拼、尺寸后管 ⇒ 40 token 的预算就是硬上界，它装不下时
+  // 必须被夹断，但夹断必须是**显式**的（截断标记），不能是静默丢内容。
+  assert.ok(estimateTokens(text) <= 40, `整份摘要必须 ≤ 声明预算（实测 ${estimateTokens(text)}）`);
+  assert.match(text, /截断|修剪/);
+  assert.doesNotMatch(text, /^shas: 1ed3f35$/m);
+  assert.doesNotMatch(text, /^> 取消旧方案，改做锚点索引$/m);
 });
 
 test("adds no mechanical section when the folded payload has nothing to extract", async () => {
@@ -358,22 +366,20 @@ test("anchors:false leaves no stale anchors when the summary role switches betwe
   assert.doesNotMatch(userSummary.content[0].text, /## 锚点索引/u);
 });
 
-test("keeps the anchor section intact when maxSummaryTokens is tiny (A2)", async () => {
+test("prunes the anchor section into the summary budget when maxSummaryTokens is tiny (A2 / issue #873 fix ①)", async () => {
   const result = await createFoldLlmStrategy({
     summarizer: async () => "unsectioned summary ".repeat(200),
     maxSummaryTokens: 50,
   }).compact(anchorConversation(), { keepRounds: 2 });
   const text = result.messages[0].content[0].text;
-  const [llmPart] = text.split("## 用户最新未解决输入");
 
-  // 摘要本体被削到 50 token 内，但锚点节完整保留（在尺寸截断之后追加）。
-  assert.ok(estimateTokens(llmPart) <= 50);
-  assert.match(llmPart, /截断|修剪/);
-  const anchorSection = text.slice(text.indexOf("## 锚点索引"));
-  assert.match(anchorSection, /^shas: 1ed3f35$/mu);
-  assert.match(anchorSection, /^paths: src\/compact\/fold-llm\.js:120$/mu);
-  assert.match(anchorSection, /^issues: #32$/mu);
-  assert.match(anchorSection, /^urls: https:\/\/git\.erix\.vip\/eric\/erix-llm-kit\/commit\/1ed3f35$/mu);
+  // 旧断言（A2 时代）：摘要本体被削到 50 token 内，但锚点节完整保留（它在尺寸截断之后追加）。
+  // 新语义（#873 修复①）：锚点节也在这个预算**内**，所以 50 token 装不下时它也被夹断；
+  // 上界必须成立（选择器拿它当开销上界），且夹断必须显式留记号。
+  assert.ok(estimateTokens(text) <= 50, `整份摘要必须 ≤ 声明预算（实测 ${estimateTokens(text)}）`);
+  assert.match(text, /截断|修剪/);
+  assert.doesNotMatch(text, /^shas: 1ed3f35$/mu);
+  assert.doesNotMatch(text, /^urls: https:\/\/git\.erix\.vip/u);
 });
 
 test("constructor parameter errors stay fail-loud (summarizer must be a function)", () => {

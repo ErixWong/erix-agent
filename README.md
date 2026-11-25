@@ -745,8 +745,16 @@ decide whether to consume the result.
   extra tool-free completion per compaction, billed into `result.usage` and
   visible through `onUsage`). When `budgetTokens` is absent, the loop derives it from
   `contextWindowTokens` and `maxOutputTokens` found in `modelConfig`,
-  `modelMetadata`, `model`, `provider`, or `context`. Compaction keeps six
-  rounds by default when a strategy is active. A task brief takes precedence
+  `modelMetadata`, `model`, `provider`, or `context`. When a strategy is active,
+  compaction folds the **oldest** rounds first until its local estimate (including
+  the fold-summary overhead) falls to 65% of `budgetTokens` or below (issue #873);
+  `keepRounds` (default 6) is a **retention floor** whose **minimum effective value is
+  5** (`MIN_KEEP_ROUNDS`, issue #873 — keeping one round is the same as keeping none) — the most recent
+  `max(keepRounds, 5)` rounds are never folded, so `keepRounds: 0` folds as if 5 rather than folding
+  everything — and it is not the fold target. When there are no more rounds than the effective floor,
+  nothing is folded and the enforce-size safety layer takes over. When `budgetTokens` is absent, it
+  folds to keep `keepRounds` rounds (unchanged legacy behavior). A task brief takes
+  precedence
   in this order: explicit `task`, `context.task`, then the last user message
   in the entry transcript.
 - Compaction supports `summaryRole`, `recoveryHint`, `protectedMessage`,

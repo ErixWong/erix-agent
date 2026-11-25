@@ -71,7 +71,11 @@ function makeHostFoldLlm() {
 // 每轮工具输出 20 000 字符 ≈ 5 000 tokens，预算 20 000、留 2 轮 ⇒ 第 5 轮圈顶就折一次
 // （必须让**配置的策略**真的折，而不是让 `keepRounds: 0` 的预算兜底折：兜底那条没有摘要器，
 // 落不出 `foldedSummary` 事实，读侧按边界①就不该动）。
-const BUDGET_TOKENS = 4000;
+// ↑ 上面那段旧注释按旧语义写的（预算 4 000）。issue #873 MIN_KEEP_ROUNDS=5 重调后预算已抬到 8 000：
+// 有效保留下限 5 ⇒ `keepFloor = len - 5`；预算 4 000 时第 5 轮就超预算但 len<6 ⇒ fold-llm 折不动
+// ⇒ 退到 sliding-window 兵底先丢轮 ⇒ 历史长不到 6 轮 ⇒ 一次都不折。抬到 8 000 让历史先长到
+// ≥6 轮（head + 5 轮工具轮才跨预算），才让配置策略（宿主 fold-llm，非兵底）真折。崩溃前补到 8 轮。
+const BUDGET_TOKENS = 8000;
 const KEEP_ROUNDS = 1;
 const TOOL_BYTES = 4000;
 
@@ -191,7 +195,7 @@ test("#462 判据 1/2/4：续跑不从 round 1 重折，被折正文一次都不
   const store = createMemoryTranscriptStore();
   const first = makeHostFoldLlm();
   const crashSteps = [];
-  for (let step = 1; step <= 6; step += 1) crashSteps.push(toolStep(step));
+  for (let step = 1; step <= 8; step += 1) crashSteps.push(toolStep(step));
   crashSteps.push({ throw: new Error("boom: 崩溃在崩溃轮的模型调用") });
   await assert.rejects(() => runToolLoop(withSeed(loopOptions({
     runId: "462-refold", store, strategy: first.strategy, steps: crashSteps,

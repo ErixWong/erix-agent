@@ -369,7 +369,10 @@ test("folding remains terminating with and without a transcript store", async ()
         return checks === 2;
       },
       compact(messages, options) {
-        return base.compact(messages, { ...options, keepRounds: 0 });
+        // 本用例测的是**无预算的旧口径**（靠 `keepRounds: 0` 强制折光，与预算比例无关）。
+        // issue #873：本格用 `keepRounds: 0` 强制「折光全部轮次」以产出摘要。新语义下 `budgetTokens`
+        // 会被内层当作折叠目标（1000 ⇒ 650，tiny 内容达不到 ⇒ 不折）；置 `undefined` ⇒ 退回旧行为。
+        return base.compact(messages, { ...options, keepRounds: 0, budgetTokens: undefined });
       },
     };
 

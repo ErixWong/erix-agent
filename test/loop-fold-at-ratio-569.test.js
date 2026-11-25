@@ -60,21 +60,33 @@ function seedTextFor(target) {
 }
 
 /**
- * 两轮历史（user / assistant / user），总估算 ≈ `target`。
+ * 八轮历史（head user + 8 轮纯文本），总估算 ≈ `target`。
  *
- * 用途是 B4：`keepRounds: 0` 时头部那一轮**真的**被折掉，于是「提前折」有 `foldedRounds` 可断言，
+ * 用途是 B4：`keepRounds: 0` 时最老几轮**真的**被折掉，于是「提前折」有 `foldedRounds` 可断言，
  * 而不只是「事件出现了」。
+ *
+ * issue #873 MIN_KEEP_ROUNDS=5 夹具重调：旧夹具只有 2 轮（head 之外），有效保留下限
+ * `max(keepRounds:0, 5) = 5` ⇒ `keepFloor = max(0, 2-5) = 0` ⇒ 一轮都折不动。改为 head 之外 8 轮
+ * （无 tool_use，逐条即一轮），总量按 `target` 均摊。落点：目标 = 0.65×budget = 132054，预算
+ * 203161 ⇒ 总内容 ~160k（132054 < 160k < 203161），r=0.5 阈值 101580.5 触发折叠、不传 r 时 < 预算
+ * 不折（baseline 契约）；折到 ≤132054 从最老侧折 ~2 轮即可，keepFloor = 8-5 = 3 够折 ⇒ 留 ≥6 轮
+ * （≥5）；`noted` 标记放保留侧第 5 轮（index 5 ≥ keepFloor）⇒ 不被折走。
  *
  * @param {number} target
  * @returns {Array<{role: string, content: Array<{type: string, text: string}>}>}
  */
 function historyFor(target) {
-  const half = seedTextFor(Math.floor(target / 2));
-  return [
-    { role: "user", content: [{ type: "text", text: half }] },
-    { role: "assistant", content: [{ type: "text", text: "noted" }] },
-    { role: "user", content: [{ type: "text", text: half }] },
-  ];
+  const roundCount = 8;
+  const perRound = Math.max(1000, Math.floor(target / roundCount));
+  const notedRound = 5;
+  const body = seedTextFor(perRound);
+  const messages = [{ role: "user", content: [{ type: "text", text: "seed" }] }];
+  for (let i = 0; i < roundCount; i += 1) {
+    const role = i % 2 === 0 ? "assistant" : "user";
+    const text = i === notedRound ? `noted ${body}` : body;
+    messages.push({ role, content: [{ type: "text", text }] });
+  }
+  return messages;
 }
 
 /**
@@ -203,8 +215,11 @@ test("B3 r=0.5：边界两侧各一格（101580 不折 / 101581 折）", async (
   assert.equal(above.firstRound.length, 1, "101581 > 101580.5");
 });
 
-test("B4 r=0.5 是**真的**折：两轮历史 102k + keepRounds 0 ⇒ foldedRounds / tokensAfter 都动；同一份历史不传 r ⇒ 不折", async () => {
-  const messages = historyFor(102000);
+test("B4 r=0.5 是**真的**折：两轮历史 160k（> 折叠目标 0.65×budget）+ keepRounds 0 ⇒ foldedRounds / tokensAfter 都动；同一份历史不传 r ⇒ 不折", async () => {
+  // issue #873：折叠目标现在是 `预算 × 0.65`（=132054），不再由 keepRounds 定。夹具必须在目标**之上**
+  // 才会真折（旧语义下 keepRounds:0 会折到只剩 0 轮，102k 也折；新语义只折到目标）。
+  // 取 160k：既 > 目标 132054（⇒ 真折），又 < 预算 203161（⇒ 不传 r 的基线仍不折）。
+  const messages = historyFor(160000);
   const total = estimateMessageTokens(messages);
   assert.ok(total > HALF_THRESHOLD, `夹具必须已在阈值之上，实得 ${total}`);
 

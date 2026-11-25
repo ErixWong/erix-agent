@@ -2315,7 +2315,7 @@ vocabulary, or a CN/EN axis mismatch all go red.
 | `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3408` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:204`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
 | `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:722`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
 | `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6170` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6170` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
+| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6189` | Both sides are alive: round-record side `test/compaction-observability.test.js:75` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6189` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = that cell is not double-written, so there is no authority or handoff condition to state.
@@ -3098,9 +3098,20 @@ What a host can observe, and what it must not conclude:
   not the model acted on the notice. The engine cannot make the model verify anything — so a host whose
   tools have side effects should still make those calls idempotent on its own side (a key, a lock, a
   dedupe table). See the upgrade guide's “what did not change” section.
-- **It can be folded away.** The notice is the newest round, so the default `keepRounds` keeps it
-  unfolded; with an aggressive compaction configuration (e.g. `keepRounds: 0`) it can be folded into the
-  summary in the very same turn, in which case the model reads the summary and not the notice.
+- **It is normally not folded away.** The notice is the newest round, so both the default `keepRounds` (6)
+  and an aggressive `keepRounds: 0` keep it unfolded: under budget-relative folding `keepRounds` is a
+  **retention floor whose minimum effective value is 5** (`MIN_KEEP_ROUNDS`, issue #873 — keeping one round
+  is the same as keeping none), so `keepRounds: 0` (or 1–4) folds as if it were 5, and the newest round stays
+  in the retained window rather than being folded into the summary.
+  **Folding depth is budget-relative, not round-count relative (issue #873):** `selectFoldedRounds`
+  (`src/compact/helpers.js`) folds the **oldest** rounds first and stops as soon as the local estimate
+  (including the fold-summary overhead) is at or below `FOLD_TARGET_RATIO` (0.65) of `budgetTokens`; the
+  working-set floor and the progress guarantee may override that. `keepRounds` is a **retention floor** (the
+  most recent `max(keepRounds, MIN_KEEP_ROUNDS)` rounds are never folded), **not** a "fold until only N rounds
+  remain" target. When there are no more rounds than the effective floor, nothing is folded and the
+  enforce-size safety layer takes over. Only when there is no positive finite target (`targetTokens`
+  absent, zero, negative or non-finite) does folding fall back to the retention count (the unchanged
+  legacy behavior), where `keepRounds: 0` still folds to zero.
 
 ### Same-key payload conflicts (issue #326)
 

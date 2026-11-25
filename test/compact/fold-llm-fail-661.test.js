@@ -39,7 +39,7 @@ const SUMMARY = [
  *
  * @param {{ toolTurns?: number, summaryThrows?: boolean, summaryText?: string }} [options]
  */
-function makeProvider({ toolTurns = 3, summaryThrows = true, summaryText = SUMMARY } = {}) {
+function makeProvider({ toolTurns = 8, summaryThrows = true, summaryText = SUMMARY } = {}) {
   let turns = 0;
   const mainRequests = [];
   const summaryRequests = [];
@@ -90,7 +90,13 @@ function makeProvider({ toolTurns = 3, summaryThrows = true, summaryText = SUMMA
 }
 
 /**
- * 一条会在第 2 轮触发 `fold-llm` 折叠的 run（`budgetTokens` 小 + `keepRounds: 0`）。
+ * 一条会让 `fold-llm` **真的折一轮**的 run（`budgetTokens` 小 + `keepRounds: 0`）。
+ *
+ * issue #873：`keepRounds: 0` 从「折到只剩 0 轮」改成「保留下限、最小有效值 5（MIN_KEEP_ROUNDS）」。
+ * 当引擎第一次触发压缩时若在场轮数 ≤5，配置策略会守住那 5 轮、折 0 轮 ⇒ 摘要器根本不会被调 ⇒
+ * 判据测的是别的。要让配置策略真的折、真的调摘要器，必须让上下文里同时 >5 轮。本夹具把预算从 400
+ * 抬到 1050（种子≈143 tok + 每轮 400z≈160 tok ⇒ est(5)≈943 < 1050 ≤ est(6)≈1103，第 6 轮才超预算）、
+ * `makeProvider` 默认 `toolTurns` 从 3 抬到 8 ⇒ 折叠落在第 6 轮（已有 >5 轮在场）。断言全部逐字未动——只调了这个夹具的折叠触发点。
  *
  * `seedLedger` 为真时，工具那一步先报一条**非致命**的宿主持久化失败（#109 的 `notes` 端口形态），
  * 于是失败那一折抛出时 `errorLedger` 里已经有条目——判据 8 就是「那条账单跟着异常走」。
@@ -99,7 +105,7 @@ async function runFoldLlm({
   runId,
   provider,
   store = createMemoryTranscriptStore(),
-  budgetTokens = 300,
+  budgetTokens = 1050,
   strategy = "fold-llm",
   seedLedger = false,
   resume = false,

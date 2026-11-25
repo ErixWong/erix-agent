@@ -51,6 +51,12 @@ test("#601-8 引擎把折叠记录账本线到渲染处（每折长一条，最�
         // 非枚举（`Object.defineProperty`）⇒ 不参与 `Object.keys` / JSON 的选项键面。
         enumerable: Object.keys(options).includes("foldRecords"),
       });
+      // 本用例测的是**无预算的旧口径**（与预算摆动无关，只验折叠账本）。
+      // issue #873：本格的折叠由 `shouldCompact` + `keepRounds` 驱动（与预算摆动无关）。新语义下
+      // `budgetTokens` 会被策略当作「折到 预算×`FOLD_TARGET_RATIO`」的目标（1e6 ⇒ 目标 650k，小内容
+      // 永远达不到 ⇒ 一折都不动）。这里把它置 `undefined` ⇒ 内层逐字退回旧行为（按 `keepRounds` 计数折），
+      // 与旧代码语义一致（旧代码本就不读 `budgetTokens`，引擎拿它只用来判 overBudget / 兜底）。
+      options.budgetTokens = undefined;
       return inner.compact(messages, options);
     },
   };

@@ -44,14 +44,43 @@ async function foldWith(summaryText, options = {}) {
   return { result, text };
 }
 
-test("#469-C ① 默认预算装得下 5 节 × 150 字：五节全在，一个 [已修剪] 都没有", async () => {
-  const summary = summaryOf(150);
+test("#469-C ① 默认预算装得下 5 节 × 145 字 + 恢复提示 + 保真层：全在，一个 [已修剪] 都没有", async () => {
+  // issue #873 修复①口径：机械保真层现在**在** `maxSummaryTokens` 之内，所以「默认预算装得下」
+  // 这句话的范围从「五节」变成了「五节 + 恢复提示 + 保真层」——本夹具总量 1,386 ≤ 1,400，
+  // 三层同时装得下（旧夹具的 150 字/节在旧口径下是 1,335 + 躲在预算外的保真层，不是一回事）。
+  const summary = summaryOf(145);
   assert.ok(estimateTokens(summary) > 800, "前提：这一份在旧默认 800 下必须会被剪");
-  const { text } = await foldWith(summary);
+  const { text, result } = await foldWith(summary);
   for (const title of SECTIONS) {
     assert.ok(text.includes(`## ${title}`), `默认配置下「${title}」必须还在`);
   }
   assert.equal(text.includes("[已修剪]"), false, "默认预算下不该有任何一节被剪");
+  // 新增（#873 修复①）：保真层也在预算内且这里没被剪 ⇒ 默认预算真的装下了三层。
+  assert.match(text, /## 用户最新未解决输入/u);
+  // 上界针对**摘要本体**（`text` 含保留轮正文，不是摘要）。
+  assert.ok(
+    estimateTokens(result.foldSummary.text) <= DEFAULT_SUMMARY_MAX_TOKENS,
+    "默认预算是整份摘要的上界",
+  );
+});
+
+test("#469-C ①b 超默认预算时：机械保真层先让位（留骨架），合同节只在不够时跟着让位，整体 ≤ 预算", async () => {
+  // 150 字/节：五节本身 1,335，加上恢复提示与保真层后超出默认预算 ⇒ 预算必须真的管得住。
+  const summary = summaryOf(150);
+  const { text, result } = await foldWith(summary);
+  assert.ok(
+    /^## 用户最新未解决输入[^\n]*\n\[已修剪\]$/mu.test(text),
+    "保真层是第 5 档（机械可重抽），超预算时必须先它让位且留标题骨架",
+  );
+  for (const title of ["已改文件", "已验证项", "下一步", "主题词面包屑"]) {
+    const at = text.indexOf(`## ${title}`);
+    const body = text.slice(at + title.length + 3, text.indexOf("## ", at + 3));
+    assert.ok(at >= 0 && !body.includes("[已修剪]"), `「${title}」比保真层优先级高，不该先被剪`);
+  }
+  assert.ok(
+    estimateTokens(result.foldSummary.text) <= DEFAULT_SUMMARY_MAX_TOKENS,
+    "剪后摘要本体必须落在预算内",
+  );
 });
 
 test("#469-C ② 裁剪保留标题：`## 标题\\n[已修剪]`，不把整节连标题抹掉", () => {
@@ -70,12 +99,23 @@ test("#469-C ② 裁剪保留标题：`## 标题\\n[已修剪]`，不把整节�
 
 test("#469-C ③ 紧预算下先保「下一步」与「主题词」，「已改文件」先剪且留骨架", async () => {
   const summary = summaryOf(150);
-  const { text } = await foldWith(summary, { maxSummaryTokens: 900 });
-  const body = (title) => text.slice(text.indexOf(`## ${title}`), text.indexOf(`## ${title}`) + 400);
+  // issue #873 修复①：预算从 900 抬到 1000——保真层进了预算后，同样 900 会把「已验证项」
+  // 也一并吸掉，这格要钉的是**相对优先序**，取一个让优先序完整展开的预算。
+  const { text } = await foldWith(summary, { maxSummaryTokens: 1000 });
+  // 正文窗口只取到下一节标题为止（旧实现定长 400 字窗口会邻接读到邻节的 `[已修剪]`，
+  // 保真层进了摘要之后那个窗口会误报）。
+  const body = (title) => {
+    const at = text.indexOf(`## ${title}`);
+    assert.ok(at >= 0, `「${title}」的标题必须在（裁剪只剪正文、不删标题）`);
+    const next = text.indexOf("## ", at + 3);
+    return text.slice(at, next < 0 ? text.length : next);
+  };
   assert.equal(body("下一步").includes("[已修剪]"), false, "「下一步」必须优先保");
   assert.equal(body("主题词面包屑").includes("[已修剪]"), false, "「主题词面包屑」必须与「下一步」同档");
   assert.equal(body("已改文件").includes("[已修剪]"), true, "「已改文件」应当先被剪");
   assert.match(body("已改文件"), /^## 已改文件\n\[已修剪\]/u, "剪掉也必须留标题（骨架不消失）");
+  // 新增（#873 修复①）：机械保真层现在也在这个预算内，所以它必须让位（且同样留骨架）。
+  assert.match(text, /^## 用户最新未解决输入[^\n]*\n\[已修剪\]$/mu, "保真层在预算内 ⇒ 紧预算下先让位");
 });
 
 // —— 默认值守护（issue #618 表 1 的「零守护」补口）——

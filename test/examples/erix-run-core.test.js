@@ -2044,7 +2044,7 @@ test("#661：引擎抛 summarizer_failed 时 harness 的终局不是静默成功
   //
   // 折叠怎么被触发（夹具的关键，改之前先读）：`keepRounds` 缺省 6 ⇒ 历史不到 7 轮时 fold-llm 一轮都
   // 折不动，预算兜底（零 LLM 的 `sliding-window`）会先把它折掉，摘要器一次都不会被调。所以这里
-  // 让**前 3 轮很小、第 4 轮很大**：第 4 轮把估算顶到预算 2 倍以上 ⇒ 引擎把 keepRounds 收到 2 ⇒
+  // 让**前 6 轮都很小、第 7 轮才很大**（#873 保留下限 5：旧“第 4 轮大”在第 5 轮就顶超预算、
   // fold-llm 真的折 2 轮 ⇒ 摘要器被调 ⇒ 失败。
   const SUMMARY_SYSTEM = "你是对话历史压缩器";
   let turns = 0;
@@ -2062,7 +2062,7 @@ test("#661：引擎抛 summarizer_failed 时 harness 的终局不是静默成功
         summaryRequests.push(request);
         throw new Error("summarizer exploded (erix_run 661)");
       }
-      if (turns < 6) {
+      if (turns < 8) {
         turns += 1;
         return {
           content: [{ type: "tool_use", id: `tu_${turns}`, name: "work", input: { path: `a${turns}.js` } }],
@@ -2080,7 +2080,7 @@ test("#661：引擎抛 summarizer_failed 时 harness 的终局不是静默成功
   provider.chatStream = provider.chat;
 
   const payload = await core.runErixRun(
-    { task: "触发折叠", cwd: repoRoot, strategy: "fold-llm", maxRounds: 8 },
+    { task: "触发折叠", cwd: repoRoot, strategy: "fold-llm", maxRounds: 14 },
     {
       env: {},
       home: "/tmp/fake-home",
@@ -2091,10 +2091,10 @@ test("#661：引擎抛 summarizer_failed 时 harness 的终局不是静默成功
       createProvider: () => provider,
       createAssembly: () => ({
         tools: [],
-        // 前 3 轮小、第 4 轮起很大（见上面夹具说明）。
+        // 前 6 轮小、第 7 轮起才大（见上面夹具说明）。
         executeTool: async ({ id }) => {
           const round = Number(String(id).split("_")[1]);
-          return `tool output ${id} ${"z".repeat(round >= 4 ? 5_000 : 200)}`;
+          return `tool output ${id} ${"z".repeat(round >= 7 ? 5_000 : 200)}`;
         },
       }),
       createStore: () => createMemoryTranscriptStore(),

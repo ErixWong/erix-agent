@@ -233,16 +233,27 @@ async function runFoldLlmChain({
   toolBytes = 1200,
   seedBytes = 300,
   summaryBytes = 2000,
+  // issue #873 MIN_KEEP_ROUNDS=5：行 2 需要「配置策略真折了、但仍超预算 ⇒ 引擎 enforce-size
+  // （sliding-window 层）同一次再折一把」。有效保留下限 5 ⇒ fold-llm 至少留 5 轮；要让那 5 轮
+  // （都是最近的）仍超预算，只能让轮递增大：前 `bigFromTurn - 1` 轮小（把触发点拖到 len≥6）、
+  // 从 `bigFromTurn` 轮起大（让最近 5 轮盖不住预算）。默认 `Infinity` ⇒ 全小（不影响行 1 与缺格）。
+  bigFromTurn = Infinity,
+  bigBytes = 0,
 }) {
+  let toolTurn = 0;
   const events = [];
   const store = createMemoryTranscriptStore();
   const provider = summaryProvider({ toolTurns, summaryBytes });
   const result = await runDirect({
     provider,
     seed: `start ${"y".repeat(seedBytes)}`,
-    executeTool: async ({ id }) => `out ${id} ${"z".repeat(toolBytes)}`,
+    executeTool: async ({ id }) => {
+      toolTurn += 1;
+      const bytes = toolTurn >= bigFromTurn ? bigBytes : toolBytes;
+      return `out ${id} ${"z".repeat(bytes)}`;
+    },
     config: {
-      run: { maxRounds: 12, completion: false, reflection: false },
+      run: { maxRounds: 20, completion: false, reflection: false },
       folding: { context: { budgetTokens, keepRounds, foldAtRatio, strategy: "fold-llm" } },
     },
     store,
@@ -425,13 +436,18 @@ test("#657 真值表前两行：配置策略真的折了 ⇒ 仍写配置名（�
   // 行 1：配置策略折了、兜底没折。
   const rowOne = await runFoldLlmChain({
     runId: "657-row-one",
-    budgetTokens: 1200,
+    // issue #873 新语义：保留下限是 `MIN_KEEP_ROUNDS`（= 5，用户裁决「留 1 轮等于没留」），
+    // 单轮上下文折叠后必须留够 5 轮 ⇒ 若触发时轮数不超过 5，配置策略会折 0 轮、交兜底
+    // （这是设计允许的地板，不是回归）。
+    // 旧夹具用 `toolBytes: 9000` 让首轮即爆预算 ⇒ 触发时恰好只有 1 轮 ⇒ 配置策略从没真折（旧语义会折光那
+    // 1 轮才调摘要器）。改成多轮累积到触发点的形状（小 toolBytes + 相应预算），让配置的 fold-llm 真的折。
+    budgetTokens: 2500,
     keepRounds: 0,
     foldAtRatio: 1,
-    toolTurns: 4,
-    toolBytes: 9000,
+    toolTurns: 14,
+    toolBytes: 600,
     seedBytes: 200,
-    summaryBytes: 400,
+    summaryBytes: 200,
   });
   assert.ok(rowOne.compactions.length >= 1, "前置：这一格必须真的折叠");
   assert.ok(rowOne.provider.summaryCalls() >= 1, "前置：配置的 fold-llm 真的跑了摘要器（它折了）");
@@ -444,13 +460,15 @@ test("#657 真值表前两行：配置策略真的折了 ⇒ 仍写配置名（�
   // 行 2：配置策略折了，**而且**兜底随后也折了（同一个 stat 上两个 budget 相层都 triggered）。
   const rowTwo = await runFoldLlmChain({
     runId: "657-row-two",
-    budgetTokens: 900,
+    budgetTokens: 1200,
     keepRounds: 1,
-    foldAtRatio: 0.5,
-    toolTurns: 6,
-    toolBytes: 1200,
-    seedBytes: 300,
+    foldAtRatio: 1,
+    toolTurns: 16,
+    toolBytes: 300,
+    seedBytes: 200,
     summaryBytes: 2000,
+    bigFromTurn: 8,
+    bigBytes: 3000,
   });
   const both = rowTwo.compactions
     .map((event) => event.compaction)

@@ -51,11 +51,20 @@ function createSummarizingProvider({
   return provider;
 }
 
+// issue #873（MIN_KEEP_ROUNDS=5）：有效保留下限 = max(keepRounds, 5)，`keepRounds: 0` ⇒ 实际按 5 算。
+// 旧注释（keepRounds:0 留 1 轮）是加 MIN_KEEP_ROUNDS 之前的口径，已失效。新口径下：预算太小会被
+// `sliding-window` 兜底层抢先整轮丢，配置策略在 len≤5 时折 0 轮 ⇒ 摘要器从不调、fold-statistical 也不
+// compact（这正是本文件 6 例红的根因）。正解是**让历史先长过 5 轮再由配置策略折**：把 BASE_SCRIPT 扩到
+// **6 个 tool 轮 + 收尾**，并把预算抬到 1100（target=715）：实测第一次超预算时恰有6 轮、策略恰好折
+// 最老那一轮（范围「第 1 轮 - 第 1 轮」）、摘要器恰好调 1 次，与契约断言逐字对齐。
+// 契约断言逐字保留；只把随夹具形状变化的 `result.rounds` 从 3 改 7（6 tool 轮 + 收尾，摘要不占轮）。
 const BASE_SCRIPT = [
-  {
-    content: [{ type: "tool_use", id: "work-1", name: "work", input: { path: "src/a.js" } }],
-    stopReason: "tool_use",
-  },
+  { content: [{ type: "tool_use", id: "work-1", name: "work", input: { path: "src/a.js" } }], stopReason: "tool_use" },
+  { content: [{ type: "tool_use", id: "work-2", name: "work", input: { path: "src/b.js" } }], stopReason: "tool_use" },
+  { content: [{ type: "tool_use", id: "work-3", name: "work", input: { path: "src/c.js" } }], stopReason: "tool_use" },
+  { content: [{ type: "tool_use", id: "work-4", name: "work", input: { path: "src/d.js" } }], stopReason: "tool_use" },
+  { content: [{ type: "tool_use", id: "work-5", name: "work", input: { path: "src/e.js" } }], stopReason: "tool_use" },
+  { content: [{ type: "tool_use", id: "work-6", name: "work", input: { path: "src/f.js" } }], stopReason: "tool_use" },
   { content: [{ type: "text", text: "final answer" }], stopReason: "end_turn" },
 ];
 
@@ -71,13 +80,13 @@ async function runWithProvider(provider, context, usageSink, { toolOutputChars =
     provider,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(toolOutputChars)}`,
-    maxRounds: 3,
+    maxRounds: 16,
     completion: false,
     // #498 S3: split by **value shape**, not by key name. A strategy **object** is a behaviour
     // carrier (`capabilities.ports.strategy`); a strategy **name** (`"fold-llm"`) or a bad scalar
     // (`7`) is data and stays in `config.folding.context` — which is also why the "non-string,
     // non-object strategy values fail at startup" cell below still goes red at the same place.
-    config: { folding: { context: { budgetTokens: 400, keepRounds: 0, ...dataOnly } } },
+    config: { folding: { context: { budgetTokens: 1100, keepRounds: 0, ...dataOnly } } },
     store: createMemoryTranscriptStore(),
     runId: "compaction-strategy-name",
     capabilities: {
@@ -161,7 +170,7 @@ test("fold-llm by name summarizes folded rounds with the run provider and books 
 
   // 5) the run still finishes normally, and the summary call is not a round
   assert.equal(result.termination.reason, "end_turn");
-  assert.equal(result.rounds, 2);
+  assert.equal(result.rounds, 7, "6 个 tool 轮 + 收尾 = 7 个模型轮（摘要不占轮）");
   assert.equal(result.finalText, "final answer");
   assert.ok(events.some((event) => event.type === "compaction"));
 });
@@ -191,11 +200,13 @@ test("a failing summarizer fails the run with summarizer_failed instead of degra
 
 test("an empty summarizer answer fails the run rather than folding into nothing", async () => {
   // issue #661：空串 / 空白摘要不再降级（那是「模型什么都没产出」，不是成功的空摘要）。
-  // 旧夹具为「测得到降级」调过预算与工具输出长度；现在断言的是终局错误，夹具保持原样即可。
+  // issue #873 MIN_KEEP_ROUNDS=5：`toolOutputChars: 4000` 每轮（含 framing）远超 1000 token；预算 2500
+  // 下 len 只能到 ~2 轮 <5 ⇒ 策略折 0 轮⇒摘要器不调。预算抬到 7000：实测 6 个 tool 轮时恰在
+  // len=6 超预算⇒策略折最老一轮⇒空摘要⇒failed（6500 仍不折）。断言逐字未动。
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT, summaryText: "   " });
   const failure = await runWithProvider(
     provider,
-    { strategy: "fold-llm", budgetTokens: 700 },
+    { strategy: "fold-llm", budgetTokens: 7000 },
     undefined,
     { toolOutputChars: 4000 },
   ).then(
@@ -279,9 +290,9 @@ test("#486 P1-B 宿主 abort 必须真的中止摘要请求（run 的 signal 不
       provider,
       initialUserMessage: `start ${"y".repeat(600)}`,
       executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-      maxRounds: 3,
+      maxRounds: 16,
       completion: false,
-      config: { folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
+      config: { folding: { context: { budgetTokens: 1200, keepRounds: 0, strategy: "fold-llm" } } },
       store: createMemoryTranscriptStore(),
       runId: "issue-486-p1b",
     }).catch(() => {}),

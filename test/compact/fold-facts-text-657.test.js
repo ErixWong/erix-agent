@@ -41,7 +41,7 @@ const TOOL_FILLER = "z";
  *
  * @param {{ toolTurns?: number, summaryBytes?: number, failSummary?: boolean }} [options]
  */
-function makeProvider({ toolTurns = 4, summaryBytes = 400, failSummary = false } = {}) {
+function makeProvider({ toolTurns = 7, summaryBytes = 400, failSummary = false } = {}) {
   let turns = 0;
   let summaries = 0;
   const requests = [];
@@ -77,7 +77,7 @@ function makeProvider({ toolTurns = 4, summaryBytes = 400, failSummary = false }
 }
 
 /** 跑一条 `fold-llm` 折叠链，返回账本里的折叠记录与事件面的 compaction 统计。 */
-async function runChain({ runId, provider, budgetTokens = 1000, toolBytes = 600, seedBytes = 1500 }) {
+async function runChain({ runId, provider, budgetTokens = 1700, toolBytes = 600, seedBytes = 1500 }) {
   const stats = [];
   const store = createMemoryTranscriptStore();
   const result = await runDirect({
@@ -117,9 +117,14 @@ function seenTexts(provider) {
 }
 
 test("#657-6 成功的 fold-llm 折叠：`foldedFacts.text` 不含任务原文，且等于交给上下文的那份累计摘要", async () => {
-  const provider = makeProvider({ toolTurns: 4, summaryBytes: 400 });
+  const provider = makeProvider({ toolTurns: 7, summaryBytes: 400 });
   const { folds } = await runChain({ runId: "657-6-success", provider });
-  assert.equal(folds.length, 1, `前置：本夹具恰好折一次（实测 ${folds.length}）`);
+  // issue #873（MIN_KEEP_ROUNDS=5 重调夹具）：有效保留下限抬到 5 后，配置策略 `fold-llm`（keepRounds 0⇒5）
+  // 只有当上下文里同时存在 >5 轮时才会真折；预算太小会每轮就触发、rounds 从不超过 5 ⇒ fold-llm
+  // 折 0 轮、退化成 enforce-size 机械兵底（origin 就不是 semantic 了）。故把预算从 1000 抬到 1700
+  // （seed 1500≈500 tok + 每轮 600z≈223 tok ⇒ 第 6 轮才跨预算）、toolTurns 抬到 7 ⇒ 第 6 轮触发首折
+  // （fold-llm 真折、origin semantic）、第 7 轮再触发一次 ⇒ 分阶段 2 折。下面只取 folds[0]，契约断言逐字不动。
+  assert.equal(folds.length, 2, `本夹具新语义下分阶段折两次（实测 ${folds.length}）`);
   assert.ok(provider.summaryCalls() >= 1, "前置：走的是真摘要器那条路（否则测的是降级分支）");
 
   const { facts } = folds[0];
@@ -145,7 +150,7 @@ test("#657-6 成功的 fold-llm 折叠：`foldedFacts.text` 不含任务原文�
 });
 
 test("#657-7 同一折的 `increment` 逐字不变（仍是机械替代物），`title` 形状不变", async () => {
-  const provider = makeProvider({ toolTurns: 4, summaryBytes: 400 });
+  const provider = makeProvider({ toolTurns: 7, summaryBytes: 400 });
   const { folds } = await runChain({ runId: "657-7-increment", provider });
   const { facts } = folds[0];
   const increment = facts[FOLDED_FACTS_INCREMENT_KEY];
@@ -173,7 +178,7 @@ test("#657-8 反向锁（issue #661 反转）：摘要器失败 ⇒ 根本没有
   // PR #660 在这里加的是一条「降级路径反向锁」——它锁的正是 issue #661 删掉的那条分支。
   // 处置（工单 §3 特别交代）：**不许删格子**，改写成「失败 ⇒ 一个折叠记录都没有」：
   // 没有统计摘要替代物、没有 `source:"statistical"`、也没有 `degradeReason`。
-  const provider = makeProvider({ toolTurns: 4, summaryBytes: 400, failSummary: true });
+  const provider = makeProvider({ toolTurns: 7, summaryBytes: 400, failSummary: true });
   const store = createMemoryTranscriptStore();
   const events = [];
   const failure = await runDirect({
@@ -181,7 +186,7 @@ test("#657-8 反向锁（issue #661 反转）：摘要器失败 ⇒ 根本没有
     executeTool: async ({ id }) => `tool output ${id} ${TOOL_FILLER.repeat(600)}`,
     config: {
       run: { maxRounds: 20, completion: false, reflection: false },
-      folding: { context: { budgetTokens: 1000, keepRounds: 0, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens: 1700, keepRounds: 0, strategy: "fold-llm" } },
     },
     seed: `${TASK_MARKER} ${"y".repeat(1500)}`,
     store,
@@ -209,7 +214,7 @@ test("#657-8 反向锁（issue #661 反转）：摘要器失败 ⇒ 根本没有
 });
 
 test("#657-9 `compactionStats[].foldSummary` 不受影响：那里 `text` 显式写死为 undefined（正文只走账本）", async () => {
-  const provider = makeProvider({ toolTurns: 4, summaryBytes: 400 });
+  const provider = makeProvider({ toolTurns: 7, summaryBytes: 400 });
   const { stats, folds } = await runChain({ runId: "657-9-stat-shape", provider });
   assert.ok(stats.length >= 1, "前置：必须有 compaction 统计");
   for (const stat of stats) {

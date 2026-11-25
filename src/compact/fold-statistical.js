@@ -1,6 +1,6 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { summarizeToolCall } from "../loop/tool-result-ttl.js";
-import { estimateMessageTokens } from "../tokens.js";
+import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import {
   ANCHOR_SECTION_HEADING,
   clampAnchorSection,
@@ -22,6 +22,7 @@ import {
   resolveFoldRecoveryHint,
   resolveRecoveryHint,
   selectFoldedRounds,
+  FOLD_TARGET_RATIO,
   isRealUser,
 } from "./helpers.js";
 
@@ -1242,12 +1243,57 @@ export function createFoldStatisticalStrategy(options = {}) {
       const keep = normalizedKeepRounds(
         optionValue(callOptions, options, "keepRounds", undefined),
       );
+      // issue #873：折多少由**预算比例**定（`FOLD_TARGET_RATIO`）；无预算⇒ targetTokens undefined ⇒ 旧行为。
+      const budgetTokens = optionValue(callOptions, options, "budgetTokens", undefined);
+      const targetTokens = Number.isFinite(budgetTokens) && budgetTokens > 0
+        ? budgetTokens * FOLD_TARGET_RATIO
+        : undefined;
       const { folded, retained, foldedIndexes } = selectFoldedRounds(
         rounds,
         keep,
         settings.protectedMessage,
         // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
         settings.workingSetRecentRounds,
+        {
+          targetTokens,
+          headMessages: head,
+          // 摘要开销估算 = 本策略**实际会拼出来的那份**机械摘要，走同一个生产函数
+          // `summarizeFoldedPayload`（内含 inventory / stubs / navigation record / recovery hint /
+          // anchors），用 `estimateTokens` 估长度（issue #873 验收阻断②）。旧版只传 `{from,to,count}`
+          // 的占位串。
+          // issue #873 修复②（copilot 拦下的第 ② 条）：选择器折的**不是连续前缀**——`protectedMessage`
+          // / 连续性块 / 工作集地板都会让中间轮被保留——所以重建必须按回调第二参 `foldedIndexes`
+          //（= 此刻真被选中的轮索引）；旧版 `rounds.slice(0, count)` 会把没被折的轮算进摘要、
+          // 又把真被折的轮漏掉，估算对象与实际被折轮次不符（可能低估也可能高估）。
+          summaryOverheadTokens: (foldedCount, foldedIndexes) => {
+            if (foldedCount <= 0) return 0;
+            const indexes = Array.isArray(foldedIndexes)
+              ? foldedIndexes.filter((index) => Number.isSafeInteger(index)
+                && index >= 0
+                && index < rounds.length)
+              : Array.from({ length: Math.min(foldedCount, rounds.length) }, (_, index) => index);
+            if (indexes.length === 0) return 0;
+            const estFolded = indexes.flatMap((index) => rounds[index].messages);
+            // 范围句与生产路径同一个口径（`roundRangeForIndexes`：`roundOffset` / `roundNumbers`）。
+            const estRange = roundRangeForIndexes(indexes, settings.roundOffset, settings.roundNumbers)
+              ?? { from: 1, to: indexes.length };
+            const estAnchorsEnabled = settings.anchors !== false;
+            const estAnchorClamp = settings.anchors === false
+              ? {}
+              : (settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {});
+            const text = summarizeFoldedPayload(estFolded, {
+              from: estRange.from,
+              to: estRange.to,
+              count: indexes.length,
+              stubs: [...new Set(collectTtlFoldStubs(estFolded))],
+              navigationRecord: buildFoldNavigationRecord(estFolded, estRange),
+              recoveryHint: settings.recoveryHint,
+              noteTools: settings.noteTools,
+              ...(estAnchorsEnabled ? { anchors: extractAnchors(estFolded, estAnchorClamp) } : {}),
+            });
+            return estimateTokens(text);
+          },
+        },
       );
       const foldedPayload = cloneFoldPayload(
         folded.flatMap((round) => round.messages),
