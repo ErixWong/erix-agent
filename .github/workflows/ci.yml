@@ -1,10 +1,23 @@
 name: ci
 
 on:
-  pull_request:
-  push:
-    branches: [main]
-  # 手工重跑入口
+  # 261125 用户裁决：自动触发全部关停——`pull_request` 与 `push` 到 main 都不再跑 CI。
+  # 停它的判据（261125 实测过去半个月 160 次 run）：9 次红里 6 次是派生登记表/派生列漂移，
+  # 0 次是 src 行为回归；噪声淹没信号，且每次刷表都要一次 agent 往返。
+  #
+  # 门禁改由 ruleset「main-require-pr」承担：**必须走 PR 才能合 main，但不再要求任何 status check**。
+  # 唯一自动门禁因此是本地 `npm run release:day -- --stage preflight`（发版前必跑）。
+  #
+  # 本文件**刻意保留**：`scripts/changelog-coverage-check.mjs` 与
+  # `scripts/suite-summary-reconcile.mjs` 会读它验证步骤接线，删文件会让 preflight 红。
+  #
+  # 恢复自动触发：取消下面三行注释，并把 required_status_checks（`real · node 22` /
+  # `real · node 24`）加回 ruleset，两者必须同批改，否则 main 会推不进去。
+  # pull_request:
+  # push:
+  #   branches: [main]
+  #
+  # 手工重跑入口（保留）：`gh workflow run ci.yml`。
   workflow_dispatch:
 
 permissions:

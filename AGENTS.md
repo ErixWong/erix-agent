@@ -72,11 +72,13 @@ handful of probes that only a release or a probe-maintenance pass runs (`check:v
 | `npm run check:config-leaf-values` | the config-leaf value tables against a live probe | `#check-config-leaf-values` |
 | `node bin/cli.js …` | the CLI locally, for debugging | `#cli-local` |
 
-- CI (`.github/workflows/ci.yml`) is **two jobs by judgement class** (issue #802): `real` (behaviour — blocking on
-  every event, node 22 **and** 24) and `registries` (committed tables vs the tree, visible but **not blocking on
-  `pull_request`**). **There is no documentation job** — documentation review is a periodic agent pass
-  (`docs/maintenance/doc-review-pass.md`), not a gate. Editing the workflow ⇒ `#ci` first. `check:host-consumers`
-  and `npm run soak` stay out of CI.
+- **CI no longer runs on any event** (261125 user ruling): the `pull_request` / `push` triggers of
+  `.github/workflows/ci.yml` are retired because 6 of its 9 reds over the preceding fortnight were derived-table
+  bookkeeping and none was a `src/` behaviour regression; only `workflow_dispatch` remains. The `main` gate is now
+  the ruleset `main-require-pr` — **a PR is required, no status check is** — so the only automatic gate is
+  `npm run release:day -- --stage preflight`, run before every release. The file stays because `check:changelog`
+  and `check:test-summary` assert its step wiring. Restoring CI ⇒ `#ci` first, and re-add `required_status_checks`
+  in the same batch or `main` becomes unpushable. `check:host-consumers` and `npm run soak` stay out of CI.
 - **Gate reproducibility**: `check:docs` and `check:docs:strict` must exit 0 in a development worktree *and* on a
   fresh clone. A gate that needs `node_modules` failing with `Cannot find module 'typescript'` in a bare checkout
   means **the gate could not run**, never a regression ⇒ `#gate-reproducibility`.
