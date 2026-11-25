@@ -34,42 +34,12 @@ rots silently while still costing every turn.
 
 ## 3. Development commands
 
-One row per gate a change here has to answer to: what it judges, and the anchor to read before editing what it
-owns (anchors are sections of `docs/maintenance/command-reference.md`). `package.json` is the full list — the
-handful of probes that only a release or a probe-maintenance pass runs (`check:version-state-probe`,
-`check:version-states`, `check:final-guard-probe`, `check:tests`) are deliberately not rows here.
+`package.json` is the list of scripts; this section no longer repeats it. Every gate, the judgement it makes,
+and the anchor to read before editing what it owns live in
+[`docs/maintenance/command-reference.md`](./docs/maintenance/command-reference.md) — start at its top index.
 
-| Command | What it judges | Anchor to read first |
-|---|---|---|
-| `npm test` | the whole suite (`node --test`) | `#test-suite` |
-| `node --check <file>` | one file's syntax | — |
-| `npm run check:syntax` | syntax of every tracked `.js`/`.mjs`/`.cjs` | `#check-syntax` |
-| `npm run check:test-summary` | suite summary vs its registered baseline | `#check-test-summary` |
-| `npm run check:changelog` | CHANGELOG coverage of public-surface merges | `#check-changelog` |
-| `npm run check:docs` | doc drift + EN/CN sync | `#check-docs` |
-| `npm run check:docs:strict` | the same, warnings block too | `#check-docs` |
-| `node scripts/docs-drift-check.mjs --self-test` | the anchors' own reverse proof | `#docs-anchors` |
-| `npm run check:docs-examples` | JS fences of both contract docs and both READMEs | `#check-docs-examples` |
-| `npm run check:pack-links` | packaged Markdown links + `.d.ts` / publish-surface claims | `#check-pack-links` |
-| `npm run check:release` | offline pre-release checklist as one command | `#check-release` |
-| `npm run check:release:model-e2e` | real model endpoint checklist (gated by `ERIX_E2E_MODEL=1`) | `#check-release-real` |
-| `npm run check:long-task-e2e` | standalone real-code long-task test (gated; not in release gate; defaults to L1 only, `--with-l2` takes ~13 min) | `#check-long-task-e2e` |
-| `npm run release:day` | the release day in four `--stage`s | `#release-day` |
-| `npm run check:cli:model-e2e` | the installed CLI against the real model endpoint (gated) | `#check-cli-real` |
-| `npm run check:docs-spelling` | retired flat option spellings in living docs | `#check-docs-spelling` |
-| `npm run check:agents-directives` | this page: status claims, expiring copies, bare coordinates, byte budget | `#check-agents-directives` |
-| `npm run types:build` | generates the published `src/**/*.d.ts` | `#type-surface` |
-| `npm run check:types-build` | those declarations still generate with the entry symbols | `#type-surface` |
-| `npm run check:types` | `--checkJs` error-count ratchet (`--with-tools`: baseline **133** / 28 files) | `#type-ratchets` |
-| `npm run check:types:strict` | the strict ratchet (blocks; its baselines live in the script) | `#type-ratchets` |
-| `npm run check:mutation` | the committed mutation-sample table against the tree | `#check-mutation` |
-| `npm run check:mutation:run` | the samples bite (mutate → red → restore → green) | `#check-mutation` |
-| `npm run check:exports` | who consumes each exported name — **no judgement**; three entries incl. `test/contract/`, plus an `internal-only` tier | `#check-exports` |
-| `npm run check:exports:deprecated` | zero-consumer deletion registry and marker rules | `#check-exports-deprecated` |
-| `npm run check:host-consumers` | host imports of names marked for removal (only with `--hosts`, never in CI; candidates computed live) | `#check-host-consumers` |
-| `npm run check:inventory` | the compatibility-pin table against the tests' AST | `#check-inventory` |
-| `npm run check:config-leaf-values` | the config-leaf value tables against a live probe | `#check-config-leaf-values` |
-| `node bin/cli.js …` | the CLI locally, for debugging | `#cli-local` |
+A gate you have to answer to is named in the cold layer by its `npm run` script name and by the anchor section it
+points at (e.g. `npm run check:docs`);
 
 - **CI runs only on `workflow_dispatch`**: `main` is gated by a ruleset (measure it live with
   `gh api repos/<owner>/<repo>/rulesets`; today it requires a PR and configures no status check), so the only
