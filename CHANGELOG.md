@@ -4,6 +4,55 @@
 ## [Unreleased]
 
 ### Changed
+- **The incremental fold text no longer describes rounds outside the range it declares (issue
+  #894, transitional fix).** The verdict is **content-level only**: the fold increment's body used to
+  contain material from a round **outside** the `from` / `to` / `rounds` it itself printed — measured
+  on a probe: `foldedFacts.increment` declared `from=1,to=6,rounds=6` while its body said
+  `工具足迹：PROCTOOL_R7×1`, and `PROCTOOL_R7` belongs to round 7. Cause: within one compaction the
+  safety layer `safeTruncateMessages` **appends** the protected messages it downgrades to the total
+  `foldedPayload` (`src/loop/orchestrator.js`), while `foldedRoundRange` / `foldedRounds` do not grow
+  with them, so every reader that pairs the total payload with that range reports a body wider than
+  its own range. Both increment producers are affected and they are **two separate sites** — the
+  budget-fallback branch (`budgetFallbackFoldedRounds > 0`) and the mechanical fallback computed at
+  finalization (`computeFactsFallbackText()`, which the accumulated `factsText` also calls) — so
+  fixing only the first leaves the second leaking. The fix snapshots the **triple**
+  (`incrementFoldedPayload` / `incrementFoldedRoundRange` / `incrementFoldedRounds`) at the single
+  moment where the config-strategy fold and the budget-fallback fold are both finalized and **no**
+  later layer — safe truncation, oversized-tool-result, user-turn guard — has touched anything, and
+  feeds that snapshot **only** to those two readers. The archive (`buildFoldedRecordArchive`) and the
+  fold identity (`foldSummaryFingerprint`) keep reading the full payload on purpose: **`foldedFingerprint`
+  / `foldId` and `record.foldedPayload` stay byte-identical** — internal consistency is not bought with
+  the contract surface. A deliberate consequence: the accumulated `factsText` no longer contains the
+  safety-downgraded messages, because those are not rounds this fold folded and their **original text
+  is still in the archive** (no evidence lost). **Transitional, and nothing new was added to the
+  ledger**: no `safetyDowngrade` key, no new round-record key, no new enum or stats key. The trigger
+  for this whole path is `protectedMessage`, which #898 has already retired (its predecessor
+  `recall_read` landed first); `bin/config.js` still passes `protectedMessage: isRealUser` in the
+  meanwhile, so this seam stays until that host does. Once it is gone the increment scope becomes
+  structurally consistent and **this block and its pin are deleted together** — see the comment at the
+  snapshot site. Pins: `test/compact/fold-increment-safety-scope-894.test.js` (both producer paths
+  separately, the archive/`foldId` byte-shape unchanged, and that a run with **no** downgrade writes
+  nothing new). Docs and the derived contract tables are synced separately.
+- **本折增量正文不再写它自己区间之外的轮次（issue #894，过渡期修法）。** 结论只到**内容层**：
+  折叠增量的正文写过**它自己打印的** `from` / `to` / `rounds` **之外**的轮次内容——探针实测：
+  `foldedFacts.increment` 声明 `from=1,to=6,rounds=6`，正文却写着 `工具足迹：PROCTOOL_R7×1`，
+  而 `PROCTOOL_R7` 属第 7 轮。成因：同一次压缩里安全层 `safeTruncateMessages` 会把它降级的那几条
+  受保护消息**追加**进总 `foldedPayload`（`src/loop/orchestrator.js`），而 `foldedRoundRange` /
+  `foldedRounds` 不跟着涨，于是任何「拿总 payload 配那份区间」的读者都会报出**正文宽于区间**。
+  两个产生点都中，而且是**两处**——预算兜底那一支（`budgetFallbackFoldedRounds > 0`）与定稿处
+  就地现算的机械替代物（`computeFactsFallbackText()`，累计体 `factsText` 也调它）——只修第一处会漏
+  第二处。修法是给**三元组**（`incrementFoldedPayload` / `incrementFoldedRoundRange` /
+  `incrementFoldedRounds`）在「配置策略那一折与预算兜底那一折都已定稿、而后面每一层（安全截断、
+  单条工具结果尺寸控制、user-turn 守卫）都还没动手」的**那一刻**切一份快照，**只**喂给那两个读者。
+  归档（`buildFoldedRecordArchive`）与折叠身份（`foldSummaryFingerprint`）**刻意**继续读全量：
+  **`foldedFingerprint` / `foldId` 与 `record.foldedPayload` 逐字不变**——不拿契约面换内部自洽。
+  一个**有意**的后果：累计体 `factsText` 不再含安全层降级的那几条，因为它们不是这一折折掉的轮次，
+  而它们的**原文仍在归档里**（证据不丢）。**过渡期，且账本上什么都没新增**：没有 `safetyDowngrade`
+  键、没有新增轮记录键、没有新增枚举值或统计键。这整条路径的触发者是 `protectedMessage`，而 #898
+  已把它退役（前置 `recall_read` 先落地）；这段期间 `bin/config.js` 仍传 `protectedMessage: isRealUser`，
+  所以这条缝还在。它一旦消失，增量区间就**结构性**自洽，**本块与它的判据一起删**——见快照处的注释。
+  钉住用例：`test/compact/fold-increment-safety-scope-894.test.js`（两个产生点各自钉、归档与
+  `foldId` 的字节形状不变、以及「**无**降级」的格子什么都不多写）。文档与派生契约表另行同步。
 - **Folding depth is now budget-relative, not round-count relative, and it can never fold below
   five rounds (issue #873).** `selectFoldedRounds` (`src/compact/helpers.js`) used to compute its
   target as `rounds.length - keepRounds`, so `keepRounds` was silently a **destination** rather than

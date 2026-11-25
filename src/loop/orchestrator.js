@@ -4578,6 +4578,31 @@ export async function runToolLoop(options) {
             + " until max_rounds_cap",
         });
       }
+      // ── issue #894（**过渡期**修法）：本折增量必须有自己那份「与区间同时刻」的素材 ──────
+      // 本刀的**全部目就是把两种读者分开**——共用一个变量就是病根：
+      //   · **读者 A（本折增量）**：正文素材必须与它自己写出的 `from/to/count` **同源同时刻**，
+      //     否则正文会盖过自己声明的区间（就是 #894）；
+      //   · **读者 B（落盘归档与折叠身份）**：`buildFoldedRecordArchive` 与 `foldSummaryFingerprint`
+      //     读下面的**全量** `foldedPayload`，与增量读者不是同一份，`record.foldedPayload` 的内容
+      //     与 `foldedFingerprint`（= `foldId`）逐字不变——这一条是刻意的：不拿契约面换内部自洽。
+      // 病根现场：下面安全层那一发（`safeTruncateMessages`）会把被降级的受保护消息追加进
+      // `foldedPayload`，但 `foldedRoundRange` / `foldedRounds` **不跟着涨**（安全层降级不是
+      // 「折了几轮」）⇒ 拿「此刻的全量 payload」现算正文、却用不涨的区间声明 from/to/count，
+      // 正文就盖到区间外（实测：声明 `from=1,to=6,rounds=6` 的增量正文里出现属第 7 轮的
+      // `PROCTOOL_R7`）。两个产生点形状相同，两处都得改：只切 ⓪ 会漏 ③。
+      // ⇒ 取点：**策略那一折 + 预算兜底那一折都已定稿（包括兜底摘要 prepend），而安全层与
+      //   user-turn 守卫都还没动手**的这一刻（与 #738 钉摘要块身份同一个时刻）。快照只喂读者 A：
+      //   ⓪ `budgetFallbackFoldedRounds > 0` 那一支、③ `computeFactsFallbackText()`。
+      // 累计体 `factsText` 也调 `computeFactsFallbackText()` ⇒ 它因此**不再含**安全层降级的那几条，
+      //   这是**有意**的：那几条不是这一折折掉的轮次，而它们的**原文仍在归档里**（读者 B 仍读
+      //   全量）⇒ 证据不丢，只是不再冒充「本折删掉的东西」。别以为这里漏了。
+      // ⚠ 不要写成「此处不可能读到安全层追加的内容」——那是假话：`bin/config.js` 里
+      //   `protectedMessage: isRealUser` 至今仍开着（实测探针 commit 2c5ad310），这条路径今天还活着。
+      // ⚠ 过渡期：`protectedMessage` 已按 #898 退役（前置 `recall_read` 先落地）；退役后这条
+      //   触发路径不可达，本块与 `test/compact/fold-increment-safety-scope-894.test.js` 一起删。
+      const incrementFoldedPayload = foldedPayload;
+      const incrementFoldedRoundRange = foldedRoundRange;
+      const incrementFoldedRounds = foldedRounds;
       // ── issue #738 第二步（评审必修）：**摘要块的对象身份要在安全层动手之前钉住** ──────────
       // 逐字承诺只能在**定稿后**的 `messages` 上证，但那时候「哪一块是摘要块」可能已经被后面的层
       // 搅浑：安全层把摘要截成 `SUMMARY\n[已修剪]`，而它**同一条消息里**保留下来的正文块恰好还是
@@ -4649,6 +4674,8 @@ export async function runToolLoop(options) {
         // 被 store 的去重判据报成 `dedup_payload_conflict`（#460 review）。
         await foldArchiveLedger.ensureSeeded(round);
       }
+      // issue #894：**另一种读者**——落盘归档读**全量** `foldedPayload`（含安全层追加的那几条），
+      // 与上面的增量读者不是同一份 ⇒ 增量不写它，归档仍留原文（不丢证据）。
       foldedArchive = buildFoldedRecordArchive({
         foldedPayload,
         ledger: foldArchiveLedger,
@@ -4684,6 +4711,8 @@ export async function runToolLoop(options) {
       //   · 摘要器真跑过 ⇒ 用它的指纹（已被 #326 的复用账本用作键，含轮区间 / 恢复提示 / 续写基底）；
       //   · 零 LLM 的机械策略（`sliding-window` / `fold-statistical`）⇒ 就地按**同一口径**算：
       //     被折负载 + 轮区间 + 恢复提示（后两个是 #567 反向证的靶子：去掉区间 ⇒ 不同折叠会撞同一个 id）。
+      // issue #894：**另一种读者**——折叠身份（`foldedFingerprint` = 契约上的 `foldId`）也从
+      // **全量** `foldedPayload` 算，与增量读者不是同一份 ⇒ `foldId` 逐字不变（判据「反向证 A」钉）。
       const foldedFingerprint = lastFoldSummaryOutcome?.fingerprint
         ?? foldSummaryFingerprint({
           messages: foldedPayload,
@@ -4755,11 +4784,15 @@ export async function runToolLoop(options) {
       // 就地现算的机械替代物（定稿处）：**这一份天然就是「本折自己那份」**——它只描述本次
       // `foldedPayload` 的那些轮，不包含任何历史折叠文本。抽成闭包是为了让下面 #566 的增量
       // 与 `factsText` 的第三优先级**共用同一次计算**（不重跑、也不改变 `factsText` 的求值时机）。
-      const computeFactsFallbackText = () => (compacted && foldedRounds > 0 && foldedPayload.length > 0
-        ? summarizeFoldedPayload(foldedPayload, {
-          from: foldedRoundRange?.from ?? 1,
-          to: foldedRoundRange?.to ?? foldedRounds,
-          count: foldedRounds,
+      // issue #894（过渡期，见上面快照那一段）：这一支同时喂 ③ 与累计体 `factsText`，必须读
+      // **三元组快照**（素材与区间同源同时刻），而不是安全层动完手之后的全量 `foldedPayload`。
+      // 归档与折叠身份不走这里（它们读全量，是另一种读者）。
+      const computeFactsFallbackText = () => (compacted && incrementFoldedRounds > 0
+        && incrementFoldedPayload.length > 0
+        ? summarizeFoldedPayload(incrementFoldedPayload, {
+          from: incrementFoldedRoundRange?.from ?? 1,
+          to: incrementFoldedRoundRange?.to ?? incrementFoldedRounds,
+          count: incrementFoldedRounds,
           recoveryHint: compactionContext.recoveryHint,
         })
         : "");
@@ -4780,12 +4813,15 @@ export async function runToolLoop(options) {
       //   ③ 就地现算的机械替代物（同上）。
       // ⚠ 故意**不**用 `fedSummaryText`：那是「折叠后那条 user 消息的全文」= 累计体 + 原任务正文，
       // 拿它当增量就等于把「本折删掉了什么」重新变成「截至本折的历史长什么样」——本单要消灭的正是这个。
+      // issue #894（过渡期）：⓪ 与 ③ 是**两个产生点**，形状相同（读全量 payload + 不涨的区间），
+      // 两处都得读快照；只切其中一处会漏掉另一条路径（`test/compact/fold-increment-safety-scope-894.test.js`
+      // 的格子 1 / 格子 2 各自钉住一条）。
       const incrementText = budgetFallbackFoldedRounds > 0
-        ? ((foldedPayload.length > 0 && foldedRounds > 0
-          ? summarizeFoldedPayload(foldedPayload, {
-            from: foldedRoundRange?.from ?? 1,
-            to: foldedRoundRange?.to ?? foldedRounds,
-            count: foldedRounds,
+        ? ((incrementFoldedPayload.length > 0 && incrementFoldedRounds > 0
+          ? summarizeFoldedPayload(incrementFoldedPayload, {
+            from: incrementFoldedRoundRange?.from ?? 1,
+            to: incrementFoldedRoundRange?.to ?? incrementFoldedRounds,
+            count: incrementFoldedRounds,
             recoveryHint: compactionContext.recoveryHint,
             noteTools: noteToolSurface,
             ...(navigationRecord === undefined ? {} : { navigationRecord }),
