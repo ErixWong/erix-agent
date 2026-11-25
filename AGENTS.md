@@ -26,9 +26,8 @@
 ## 2. Where the code layout lives
 
 `README.md` → the "Module map" section is the tree, and it is the copy `check:docs` reconciles (the tree's size is
-`find src -name '*.js' -not -name '*.d.ts' | wc -l`). This page keeps no copy of it: the drift check reds a documented
-path that stops existing but never reds a file nobody wrote down, so a hand-copied tree rots silently while still
-costing every turn.
+`find src -name '*.js' -not -name '*.d.ts' | wc -l`). **Never copy that tree onto this page**: a hand-copied tree
+rots silently while still costing every turn.
 
 - The one layout fact that *is* a rule: **mock MCP servers stay in `fixtures/`, never under `test/`** — `node --test`
   runs every file under `test/` and those servers hang it.
@@ -72,13 +71,11 @@ handful of probes that only a release or a probe-maintenance pass runs (`check:v
 | `npm run check:config-leaf-values` | the config-leaf value tables against a live probe | `#check-config-leaf-values` |
 | `node bin/cli.js …` | the CLI locally, for debugging | `#cli-local` |
 
-- **CI no longer runs on any event** (261125 user ruling): the `pull_request` / `push` triggers of
-  `.github/workflows/ci.yml` are retired because 6 of its 9 reds over the preceding fortnight were derived-table
-  bookkeeping and none was a `src/` behaviour regression; only `workflow_dispatch` remains. The `main` gate is now
-  the ruleset `main-require-pr` — **a PR is required, no status check is** — so the only automatic gate is
-  `npm run release:day -- --stage preflight`, run before every release. The file stays because `check:changelog`
-  and `check:test-summary` assert its step wiring. Restoring CI ⇒ `#ci` first, and re-add `required_status_checks`
-  in the same batch or `main` becomes unpushable. `check:host-consumers` and `npm run soak` stay out of CI.
+- **CI runs only on `workflow_dispatch`**: `main` is gated by a ruleset (measure it live with
+  `gh api repos/<owner>/<repo>/rulesets`; today it requires a PR and configures no status check), so the only
+  automatic gate is `npm run release:day -- --stage preflight`, run before every release. The workflow file stays
+  because `check:changelog` and `check:test-summary` assert its step wiring. Restoring auto-triggers ⇒ read `#ci`
+  first and decide `required_status_checks` from the live ruleset. `check:host-consumers` and `npm run soak` stay out of CI.
 - **Gate reproducibility**: `check:docs` and `check:docs:strict` must exit 0 in a development worktree *and* on a
   fresh clone. A gate that needs `node_modules` failing with `Cannot find module 'typescript'` in a bare checkout
   means **the gate could not run**, never a regression ⇒ `#gate-reproducibility`.
@@ -89,8 +86,7 @@ handful of probes that only a release or a probe-maintenance pass runs (`check:v
 - **Type ratchets** (`check:types` / `check:types:strict`, issues #214 / #417): the root tier accepts debt against
   `BASELINE_ROOT = 98` (baseline constant **98**, the accepted debt measured 98 errors) in
   `scripts/type-check-ratchet.mjs`: above it ⇒ exit 1, equal ⇒ green, below ⇒ green plus a "you may lower the baseline" hint, so the total never rises;
-  per-file counts and host reachability come from `--verbose`. Historical readings (142 / 185 / 218 / 226 / 261)
-  are history, not current state. `--with-tools` widens the union to `./tools`
+  per-file counts and host reachability come from `--verbose`.（整段删掉；注意别留下多余空行） `--with-tools` widens the union to `./tools`
   (baseline **133** / 28 files); `check:types:strict` re-runs it with `--strict` against its own baselines, blocks,
   and **both tiers drop in one commit**. ⚠ **Delete the generated declarations before running a ratchet**
   (`find src -name '*.d.ts' -delete`): while they sit next to their sources, `tsc` resolves `./x.js` to the sibling
@@ -161,16 +157,15 @@ npm run release:day -- --stage finalize      # tag the version cut → dual push
   (`git.erix.vip/eric/erix-llm-kit`); `git push origin <ref>` updates both. Push the pair yourself — the
   `sync-erix-mirror.sh` cron is off and must stay off, so a failing push URL leaves that side lagging silently:
   **verify both sides after pushing**.
-- **A rejected push to `main` is the remote's answer, not a permission problem**: `GH013` / "required status
-  checks are expected" says the checks have not run on **the sha being pushed** — once that sha shows them green
-  a direct push goes through, so a rejection never means "must go by PR". Rule content you measure
-  (`gh api repos/<owner>/<repo>/rulesets`), never copy — a copy here once said "no branch protection" and was
-  contradicted by the next release. Never `--force`: the two push URLs above run independently, so a rejected
-  push can leave the mirror ahead of GitHub — read both sides back before deciding anything.
+- **A rejected push to `main` is the remote's answer, not a permission problem**: read what the remote reports
+  (`GH013` / "required status checks are expected" = the checks have not run on **the sha being pushed**) and read
+  the live ruleset (`gh api repos/<owner>/<repo>/rulesets`) — never copy rule state onto a page, and never assume a
+  rejection means "must go by PR" without reading it. Never `--force`: the two push URLs above run independently, so
+  a rejected push can leave the mirror ahead of GitHub — read both sides back before deciding anything.
 - **GitHub is the workflow truth**: issues, PRs and reviews live there. Gitea is a code mirror only (no Actions
   pipeline; its issue/PR area is a frozen archive — do not open or reply there).
 - Contribution flow: branch `feat-YYMMDD-NN-<描述>` / `fix-YYMMDD-NN-<描述>` → PR into `main` for anything touching
-  the public surface; small fixes and documentation may go direct. Commit messages: conventional commits + 中文摘要.
+  the public surface; small fixes and documentation may skip the PR, but never land directly on `main` — branch first. Commit messages: conventional commits + 中文摘要.
 
 ## 6. Runtime data and local environment
 
@@ -180,10 +175,9 @@ npm run release:day -- --stage finalize      # tag the version cut → dual push
   the tool captures — inspect judge behavior there, not in `/tmp`.
 - Model configuration comes from `~/.erix/config.json` slot `default` (relay `api.ai.erix.vip/v1`) — the same file
   the `erix_run` extension reads; it does not follow pi's current model.
-- Local debugging runs the CLI from this repository (`node bin/cli.js chat`); the supervisor watches
-  `/tmp/erix-*-log.txt` for step-by-step output.
-- When an agent works in this repository: **estimate the read budget before reading and take it in one call**, break
-  long tasks down with `todo_add` first, and state the verification claim before reporting.
+- Local debugging runs the CLI from this repository (`node bin/cli.js chat`).
+- When an agent works in this repository: **estimate the read budget before reading and take it in one call** and
+  state the verification claim before reporting.
 
 ## 7. Model and cost discipline
 

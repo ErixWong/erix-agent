@@ -23,8 +23,8 @@
 ## 2. 代码结构住在哪里
 
 `README.md` 的「Module map」一节就是那棵结构树，也是 `check:docs` 当场对账的那一份（树有多大：
-`find src -name '*.js' -not -name '*.d.ts' | wc -l`）。本页不留它的复本：漂移检查会把「写了却已不存在的路径」
-判红，却永远不会因为「存在却没人写下来」而红——所以手抄在这页的树会一边每轮收费一边静默腐烂。
+`find src -name '*.js' -not -name '*.d.ts' | wc -l`）。**绝不要把那棵树抄到本页**：手抄在这页的树会一边每轮
+收费一边静默腐烂。
 
 - 唯一一条属于规则而不是属于地图的结构事实：**mock MCP server 留在 `fixtures/`，绝不放进 `test/`**——
   `node --test` 会跑 `test/` 下的每一个文件，那些 server 会把它挂住。
@@ -68,12 +68,11 @@
 | `npm run check:config-leaf-values` | 配置叶取值表对着一次实跑探针 | `#check-config-leaf-values` |
 | `node bin/cli.js …` | 本地跑 CLI，只为调试 | `#cli-local` |
 
-- **CI 不再由任何事件触发**（261125 用户裁决）：`.github/workflows/ci.yml` 的 `pull_request` / `push` 触发已摘除，
-  因为此前半个月的 9 次红里 6 次是派生登记表刷表、0 次是 `src/` 行为回归；只剩 `workflow_dispatch`。
-  `main` 的门禁改为 ruleset `main-require-pr`——**必须走 PR，但不要求任何 status check**——所以唯一自动门禁是
-  发版前必跑的 `npm run release:day -- --stage preflight`。文件刻意保留：`check:changelog` 与
-  `check:test-summary` 会读它验证步骤接线。恢复 CI ⇒ 先读 `#ci`，且必须同批把 `required_status_checks`
-  加回 ruleset，否则 `main` 会推不进去。`check:host-consumers` 与 `npm run soak` 仍然留在 CI 之外。
+- **CI 只在 `workflow_dispatch` 上跑**：`main` 的门禁由 ruleset 承担（现值用
+  `gh api repos/<owner>/<repo>/rulesets` 现查；今天它要求走 PR、且没有配任何 status check），所以唯一自动门禁是
+  发版前必跑的 `npm run release:day -- --stage preflight`。工作流文件刻意保留：`check:changelog` 与
+  `check:test-summary` 会读它验证步骤接线。恢复自动触发 ⇒ 先读 `#ci`，并按 ruleset 现值决定要不要配
+  `required_status_checks`。`check:host-consumers` 与 `npm run soak` 仍然留在 CI 之外。
 - **闸的可复现性**：`check:docs` 与 `check:docs:strict` 必须在开发工作树里**和**在全新克隆里都 exit 0。需要
   `node_modules` 的闸在裸克隆里以 `Cannot find module 'typescript'` 失败，含义是**这道闸没能跑**，
   永远不是回归 ⇒ `#gate-reproducibility`。
@@ -84,7 +83,7 @@
 - **类型棘轮**（`check:types` / `check:types:strict`，issue #214 / #417）：root 档不追求清零，对着
   `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 98`（已接受的债，实测 98 个错）比：超过 ⇒ exit 1，
   等于 ⇒ 绿，低于 ⇒ 绿 + 「可下调至 N」提示，所以这个数只减不增；逐文件承载量与是否宿主可及都由 `--verbose` 打印。
-  此前那些读数（各自树上实测 142 / 185 / 218 / 226 / 261）是**历史值**，绝不当现值用。
+  （整段删掉；注意别留下多余空行）
   `--with-tools` 把并集扩到 `./tools`（基线 **133** / 28 个文件 = 98 + 19 + 16）；`check:types:strict` 在同一条命令上追加
   `--strict`、对着脚本里它自己那对基线，它阻塞，且**两档在同一笔提交里一起降**。⚠ **跑棘轮之前先删掉生成物**
   （`find src -name '*.d.ts' -delete`）：生成物在场时 `tsc` 会把 `./x.js` 解析到同目录的声明，查的是声明而不是实现。
@@ -150,15 +149,14 @@ npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → �
   （`git.erix.vip/eric/erix-llm-kit`）；`git push origin <ref>` 两边一起更新。这一对推送得你自己做——
   `sync-erix-mirror.sh` 那个 cron 是关着的且必须保持关，某个 push URL 失败时那一侧会静默落后：
   **推完两侧各验一次**。
-- **`main` 上被拒的推送是远端的回答，不是权限问题**：`GH013` / “required status checks are expected”
-  说的是**正在推的那个 sha** 上检查没跑过——同一个 sha 跑绿之后直推就放行，所以「被拒」从不
-  等于「必须走 PR」。规则内容要现验（`gh api repos/<owner>/<repo>/rulesets`），不行抄——这里
-  抄过一份「没有分支保护」，下一版就被拒了。永不 `--force`：上面两条 push URL 各跑各的，
-  被拒的推送可能让镜像跑在 GitHub 前面——决定下一步前先把两侧都回读一遍。
+- **`main` 上被拒的推送是远端的回答，不是权限问题**：先读远端怎么说（`GH013` / “required status checks are
+  expected”说的是**正在推的那个 sha** 上检查没跑过），再现查规则（`gh api repos/<owner>/<repo>/rulesets`）——规则状态
+  一律现验、不许抄到页面上；没读到远端原文之前，不要断定「被拒」等于什么。永不 `--force`：上面两条 push URL
+  各跑各的，被拒的推送可能让镜像跑在 GitHub 前面——决定下一步前先把两侧都回读一遍。
 - **GitHub 是工作流的真值**：issue、PR、评审都在那里。Gitea 只是代码镜像（没有 Actions 流水线；它的 issue/PR 区
   是一份冻结的历史归档——不要在那边开单或回帖）。
 - 贡献流程：动到公共面的东西从 `feat-YYMMDD-NN-<描述>` / `fix-YYMMDD-NN-<描述>` 开分支 → PR 进 `main`；小修复与
-  文档可直推。提交信息：conventional commits + 中文摘要。
+  文档可免 PR，但**永远不要直接落在 `main` 上**——先建分支。提交信息：conventional commits + 中文摘要。
 
 ## 6. 运行时数据与本机环境
 
@@ -168,8 +166,8 @@ npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → �
   ——要看 judge 行为就去那里，别靠 `/tmp` 重定向。
 - 模型配置来自 `~/.erix/config.json` 的 `default` 槽（relay `api.ai.erix.vip/v1`）——`erix_run` 扩展读的就是同一个
   文件，它不跟着 pi 的当前模型走。
-- 本地调试用本仓的 CLI（`node bin/cli.js chat`）；监督者看 `/tmp/erix-*-log.txt` 里的逐步输出。
-- agent 在本仓干活时：**读之前先估读预算，并一次装进来**，长任务先用 `todo_add` 拆开，汇报之前先给验证声明。
+- 本地调试用本仓的 CLI（`node bin/cli.js chat`）。
+- agent 在本仓干活时：**读之前先估读预算，并一次装进来**，汇报之前先给验证声明。
 
 ## 7. 模型与成本纪律
 
