@@ -3,6 +3,24 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Added
+- **Deterministic recall tool `recall_read` (issue #896 C1).** A new built-in tool factory
+  `createBuiltinRecallTools({ readFoldedRounds })` in `src/tools/recall.js` produces the
+  `recall_read` tool (opt-in: not wired into any existing default tool list). The tool takes
+  `{ round: integer, scope?: "run" }` and retrieves verbatim archived messages from folded
+  round records, verified via `foldSummaryFingerprint` recomputation against the stored
+  `foldId`. Returns `verified`/`untrusted`/`stale` trust levels with verifiable coordinates
+  (round, payload index, byte length, foldId). A companion `createRecallAccessor(store, runId)`
+  builds the read-only accessor from the transcript store. Tool definition token cost: 174
+  (total 11 builtin tools: 4,714 → 4,888). Pins: `test/tools/recall-read-896.test.js`
+  (six cells; every one goes red on the base commit).
+- **确定性召回工具 `recall_read`（issue #896 C1）。** 新文件 `src/tools/recall.js` 导出
+  `createBuiltinRecallTools`（opt-in，默认不挂进任何既有工具列表）。入参 `{ round, scope? }`，
+  按轮号从已落盘的折叠归档中逐字取回原文，当场重算 `foldSummaryFingerprint` 与记录的 `foldId`
+  比对（verified/stale/untrusted 三态）。配套 `createRecallAccessor(store, runId)` 从 store
+  构建只读访问器。工具定义 token 成本实测 174（11 个内置工具合计 4,714 → 4,888）。
+  判据：`test/tools/recall-read-896.test.js`（六格，基点全红）。
+
 ### Changed
 - **fold-llm**: `description` 配额从 200 字符改为 500 token（`SUMMARIZER_DESCRIPTION_MAX_TOKENS`），用引擎 `estimateTokens` 口径夹断，新增 `descriptionTruncated` 可检测标记（#897）。
 - **fold-summary-journal**: `FOLDED_FACTS_MAX_BYTES` 2048→4096，description 先占子配额、正文拿剩余；每折上限翻倍是 #460 O(n) 护栏的有意放宽（#897）。
