@@ -381,7 +381,7 @@ export function createFoldLlmStrategy({
 
       let compactedHead = head;
       // issue #470（A1）：本次折叠的**机械替代物**（进账本用，不进消息流）。
-      /** @type {{ source: string, text?: string, increment?: string, incrementOrigin?: string }|undefined} */
+      /** @type {{ source: string, text?: string, increment?: string, incrementOrigin?: string, title?: string, description?: string, titleMissing?: string, descriptionMissing?: string }|undefined} */
       let foldSummary = undefined;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
@@ -819,11 +819,13 @@ const SUMMARIZER_DESCRIPTION_MAX_CHARS = 200;
 const SUMMARIZER_TITLE_LINE = /^标题：(.*)$/m;
 const SUMMARIZER_DESC_LINE = /^描述：(.*)$/m;
 
+/** @param {string} value @param {number} maxChars @returns {string} */
 function clampMetaChars(value, maxChars) {
   const chars = Array.from(value);
   return chars.length <= maxChars ? value : chars.slice(0, maxChars).join("");
 }
 
+/** @param {string} raw @returns {string|undefined} */
 function normalizeMetaValue(raw) {
   const trimmed = raw.trim();
   if (trimmed === "" || trimmed === "无") return undefined;

@@ -542,6 +542,7 @@ function foldedFactsTitle(text) {
 }
 
 // issue #897：模型给的 title 走同一个上限夹断（与 `foldedFactsTitle` 同口径，不另定一个）。
+/** @param {string} value @returns {string} */
 function clampFactsTitleChars(value) {
   const characters = Array.from(value);
   return characters.length <= FOLDED_FACTS_TITLE_MAX_CHARS
