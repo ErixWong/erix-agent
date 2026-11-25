@@ -20,7 +20,7 @@ function byteLength(value) {
  * `foldedPayload` 是有界去重后的快照、不是轮的完整切片，天生还原不出轮；而账本完整、
  * 且每条消息都记着自己的轮号。轮号直接取账本上记的 `record.round`，不重算、不按下标猜。
  *
- * @param {{ readLedgerRows: () => Promise<any[]> | any[] }} options
+ * @param {{ readLedgerRows?: () => Promise<any[]> | any[] }} [options]
  *   只读访问器：返回该 run 的账本行（`store.load(runId)` 的输出）。
  * @returns {{ definitions: object[], executeTool: (req: any) => Promise<string> }}
  */
