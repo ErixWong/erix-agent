@@ -30,7 +30,11 @@ export function createSummarizerPromptGuide(recoveryHint) {
   return `请把被折叠轮次整理成可继续工作的日志。在第一个 \`##\` 小节**之前**，先单独输出两行元信息，
 每行以固定前缀开头、各占一行、冒号后紧跟内容（不要加空格之外的额外符号、不要写成标题或列表）：
 标题：<一句话标题，不超过 60 个字符>
-描述：<本折工作的简述，不超过 200 个字符>
+描述：<自解释段落，不超过 500 token（本引擎按 estimateTokens 口径计）。要求：
+  • 必须自解释：不出现「上面」「刚才」「该文件」「前面提到的」这类依赖上下文的指代；写清项目名 / 文件路径 / 判据 / 具体动作。
+  • 若这一折有具体事务（改代码、改文件、跑测试、改配置等）：用编号清单列出尚未完成的动作，每项一句话、动宾结构、自带对象与判据。不要用 Markdown 表格语法（| 浪费字符且渲染归宿主）。形如：待办：1) 在 src/x.js 把 A 改成 B；2) 跑 test/y.test.js 确认 N 格绿；3) 提交
+  • 若这一折只是讨论/设想/没有可执行事务：写「本折无具体事务」，不要编造待办。
+  • 只列真实存在的动作，不许推测、不许补充原文没有的东西。>
 这两行必须写实际内容，不要写「无」或其它占位符；确实无法概括时宁可留空（只写前缀）也不要填「无」。
 之后严格使用以下分节：
 ## 阶段
@@ -493,6 +497,7 @@ export function createFoldLlmStrategy({
           ...(summarizerMeta.description !== undefined
             ? { description: summarizerMeta.description }
             : { descriptionMissing: summarizerMeta.descriptionMissing }),
+          ...(summarizerMeta.descriptionTruncated ? { descriptionTruncated: true } : {}),
           ...(prior.truncated ? { priorSummaryTruncated: true, priorSummaryBytes: prior.bytes } : {}),
           ...(prior.bytes > 0 && !prior.truncated ? { priorSummaryBytes: prior.bytes } : {}),
           // issue #469（裁决 A）：基底从哪来——`"ledger"` = resume 后从账本播的，
@@ -815,7 +820,8 @@ function summarizerFailure(error, facts = {}) {
 // 缺失/空/占位「无」都算**没拿到**（不静默：返回一个可读的 `*Missing` 原因），
 // 绝不用正文首行顶上冒充（那正是今天 `## 阶段` 的来源）。
 const SUMMARIZER_TITLE_MAX_CHARS = 60;
-const SUMMARIZER_DESCRIPTION_MAX_CHARS = 200;
+/** issue #897：description 配额从 200 字符改为 500 token（向量化单元）；title 保持 60 字符不变。 */
+export const SUMMARIZER_DESCRIPTION_MAX_TOKENS = 500;
 const SUMMARIZER_TITLE_LINE = /^标题：(.*)$/m;
 const SUMMARIZER_DESC_LINE = /^描述：(.*)$/m;
 
@@ -823,6 +829,31 @@ const SUMMARIZER_DESC_LINE = /^描述：(.*)$/m;
 function clampMetaChars(value, maxChars) {
   const chars = Array.from(value);
   return chars.length <= maxChars ? value : chars.slice(0, maxChars).join("");
+}
+
+/**
+ * 按 token 上限夹断一段文本（用引擎自己的 `estimateTokens` 口径）。
+ * 返回 `{ text, truncated }`：`truncated` 仅在真发生夹断时为 true。
+ * 用二分查找最长前缀使 `estimateTokens(prefix) <= maxTokens`。
+ *
+ * @param {string} value @param {number} maxTokens @returns {{ text: string, truncated: boolean }}
+ */
+function clampMetaTokens(value, maxTokens) {
+  if (estimateTokens(value) <= maxTokens) return { text: value, truncated: false };
+  const chars = Array.from(value);
+  let low = 0;
+  let high = chars.length;
+  let best = 0;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    if (estimateTokens(chars.slice(0, mid).join("")) <= maxTokens) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return { text: chars.slice(0, best).join(""), truncated: true };
 }
 
 /** @param {string} raw @returns {string|undefined} */
@@ -837,9 +868,10 @@ function normalizeMetaValue(raw) {
  * @param {string} summary 摘要器返回的原文
  * @returns {{ body: string,
  *   title?: string, titleMissing?: "no-line" | "empty-or-placeholder",
- *   description?: string, descriptionMissing?: "no-line" | "empty-or-placeholder" }}
+ *   description?: string, descriptionMissing?: "no-line" | "empty-or-placeholder",
+ *   descriptionTruncated?: true }}
  */
-function parseSummarizerMeta(summary) {
+export function parseSummarizerMeta(summary) {
   const headingMatch = /^## .*(?:\r?\n|$)/m.exec(summary);
   const headEnd = headingMatch ? headingMatch.index : summary.length;
   let preamble = summary.slice(0, headEnd);
@@ -855,14 +887,23 @@ function parseSummarizerMeta(summary) {
   preamble = preamble.replace(/^标题：.*\r?\n?/m, "").replace(/^描述：.*\r?\n?/m, "");
   const body = `${preamble}${sections}`;
 
+  // description 按 token 夹断（issue #897：向量化单元），超了写 descriptionTruncated 标记。
+  let descResult;
+  let descTruncated = false;
+  if (rawDesc !== undefined) {
+    descResult = clampMetaTokens(rawDesc, SUMMARIZER_DESCRIPTION_MAX_TOKENS);
+    descTruncated = descResult.truncated;
+  }
+
   return {
     body,
     ...(rawTitle !== undefined
       ? { title: clampMetaChars(rawTitle, SUMMARIZER_TITLE_MAX_CHARS) }
       : { titleMissing: titleMatch ? "empty-or-placeholder" : "no-line" }),
     ...(rawDesc !== undefined
-      ? { description: clampMetaChars(rawDesc, SUMMARIZER_DESCRIPTION_MAX_CHARS) }
+      ? { description: descResult.text }
       : { descriptionMissing: descMatch ? "empty-or-placeholder" : "no-line" }),
+    ...(descTruncated ? { descriptionTruncated: true } : {}),
   };
 }
 
