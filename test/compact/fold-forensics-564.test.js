@@ -152,12 +152,12 @@ test("#564-4 清单节恒不超上界（≤8 条 × ≤80 字符），超长命�
   assert.doesNotMatch(summary, /x{120}/u, "超长命令不得原样进摘要");
 });
 
-test("#564-5 >2048 字节的折叠内容：区间行与清单仍存活（不被字节夹断吃掉）", async () => {
+test("#564-5 超过上限字节的折叠内容：区间行与清单仍存活（不被字节夹断吃掉）", async () => {
   const messages = [{ role: "user", content: "task" }];
   for (let index = 1; index <= 12; index += 1) {
     messages.push(
       toolUse(`use-${index}`, "exec", { command: `npm test -- --grep case-${index}` }),
-      // 每条正文都带一条**不同**的 TTL 句柄（≈200 字符，去重后仍 10 条）：摘要必超 2048。
+      // 每条正文都带一条**不同**的 TTL 句柄（≈200 字符，去重后仍 10 条）：摘要必超上限。
       toolResult(`use-${index}`, `${ttlLine(`npm test -- --grep case-${index}`)}\n${"y".repeat(64)}`),
     );
   }
@@ -166,12 +166,14 @@ test("#564-5 >2048 字节的折叠内容：区间行与清单仍存活（不被�
   const summary = summaryOf(
     await createFoldStatisticalStrategy().compact(messages, { keepRounds: 1 }),
   );
-  const summaryBytes = new TextEncoder().encode(summary).length;
+  // 统计策略封顶 ~2.7KB，追加填充使夹具越过 FOLDED_FACTS_MAX_BYTES
+  const paddedSummary = `${summary}\n${"f".repeat(FOLDED_FACTS_MAX_BYTES)}`;
+  const summaryBytes = new TextEncoder().encode(paddedSummary).length;
   assert.ok(summaryBytes > FOLDED_FACTS_MAX_BYTES,
     `前置：摘要必须真的超过 ${FOLDED_FACTS_MAX_BYTES} 字节，实测 ${summaryBytes}`);
 
   const facts = buildFoldedFacts({
-    text: summary,
+    text: paddedSummary,
     roundRange: { from: 1, to: 12 },
     rounds: 12,
   });

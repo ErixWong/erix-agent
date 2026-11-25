@@ -4,6 +4,14 @@
 ## [Unreleased]
 
 ### Changed
+- **fold-llm**: `description` 配额从 200 字符改为 500 token（`SUMMARIZER_DESCRIPTION_MAX_TOKENS`），用引擎 `estimateTokens` 口径夹断，新增 `descriptionTruncated` 可检测标记（#897）。
+- **fold-summary-journal**: `FOLDED_FACTS_MAX_BYTES` 2048→4096，description 先占子配额、正文拿剩余；每折上限翻倍是 #460 O(n) 护栏的有意放宽（#897）。
+- **fold-llm prompt**: 描述要求改为自解释段落 + 条件性编号待办清单，禁止上下文指代与 Markdown 表格（#897）。
+- **fold-llm**: description quota changed from 200 characters to 500 tokens (`SUMMARIZER_DESCRIPTION_MAX_TOKENS`), clamped using the engine's own `estimateTokens`; new `descriptionTruncated` flag emitted only on actual truncation (issue #897).
+- **fold-summary-journal**: `FOLDED_FACTS_MAX_BYTES` raised 2048→4096; description takes a first-priority sub-quota, body gets the remainder. Doubling the per-fold cap is a deliberate relaxation of the #460 O(n) guardrail (issue #897).
+- **fold-llm prompt**: description must now be a self-contained paragraph with a conditional numbered action list; context-dependent references and Markdown table syntax are forbidden (issue #897).
+
+### Changed
 - **The fold summarizer now emits a real `title` and `description`, and they land in the ledger
   instead of a section-heading shell (issue #897).** Under the default `fold-llm`, the factory prompt
   dictates that the first line is the `## 阶段` heading, and `buildFoldedFacts` derived `title` from

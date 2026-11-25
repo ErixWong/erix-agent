@@ -309,7 +309,7 @@ test("#603-5 预算与夹断不变：20 折 ⇒ 块 ≤ FOLDED_FACTS_MAX_BYTES�
   const longFoldText = (index) => [
     `【上下文折叠·v1·erix-9f6e2c】早期第 ${index}–${index} 轮（共 1 轮）已折叠。工具足迹：exec×8。`,
     "工具调用清单（机械摘要，不代表执行成功）：",
-    ...Array.from({ length: 8 }, (_, k) => `- exec ${`case-${index}-${k}-`.padEnd(70, "x")}`),
+    ...Array.from({ length: 8 }, (_, k) => `- exec ${`case-${index}-${k}-`.padEnd(150, "x")}`),
   ].join("\n");
   const ledger = Array.from({ length: 19 }, (_, index) => foldRecordOf({
     from: index + 1,
@@ -321,7 +321,7 @@ test("#603-5 预算与夹断不变：20 折 ⇒ 块 ≤ FOLDED_FACTS_MAX_BYTES�
   const text = await renderBlock({
     ledger,
     newest: { from: 20, to: 20, rounds: 1, calls: [20] },
-  });
+  }) + "\n" + "f".repeat(FOLDED_FACTS_MAX_BYTES);
 
   const facts = buildFoldedFacts({ text, roundRange: { from: 1, to: 20 }, rounds: 20 });
   assert.equal(facts.truncated, true,

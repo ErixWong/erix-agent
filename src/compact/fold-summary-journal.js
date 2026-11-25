@@ -199,11 +199,16 @@ export const FOLDED_FACTS_RECORD_FIELD = "foldedFacts";
 export const FOLDED_FACTS_INCREMENT_KEY = "increment";
 
 /**
- * 替代物投影的字节上界（issue #470-B）。
+ * 替代物投影的字节上界（issue #470-B，#897 放宽）。
  * 机械文本本身有界（锚点索引带 `maxPerKind`/`maxChars`），这里再夹一刀，
  * 防 #460 那条 O(n) 在摘要面复发（与 #335 重复存储同族）。
+ *
+ * issue #897 放宽理由：description 是 500 token 的段落（中文 ≈1,000 字节、英文 ≈1,500 字节），
+ * 与正文共用 2048 会让正文频繁被夹断；翻倍后正文仍拿得到 ~2,500 字节。
+ * ⚠ 代价：每折记录上限翻倍（100 折的 run 从 ~200KB 到 ~400KB），
+ * 这是 #460 那条 O(n) 护栏的**有意放宽**，不是忘了它。
  */
-export const FOLDED_FACTS_MAX_BYTES = 2048;
+export const FOLDED_FACTS_MAX_BYTES = 4096;
 
 /** @param {any} value @param {WeakSet<object>} seen @returns {string} */
 function canonicalJson(value, seen) {
@@ -627,6 +632,7 @@ function foldedFactsToolCalls(text) {
  *   fingerprint?: unknown,
  *   incrementText?: unknown,
  *   incrementOrigin?: unknown,
+ *   descriptionTruncated?: unknown,
  *   foldId?: unknown,
  *   seq?: unknown,
  *   maxBytes?: number,
@@ -663,8 +669,9 @@ export function buildFoldedFacts(input = {}) {
   const modelTitle = typeof input.title === "string" ? input.title.trim() : "";
   const title = modelTitle !== "" ? clampFactsTitleChars(modelTitle) : foldedFactsTitle(raw);
   const titleFallback = origin === "semantic" && modelTitle === "";
-  // `summary` 与 `text` 共用一个预算：语义摘要先占，剩下的留给正文；整份放不下就不写这个可选键
-  //（不截断、不越界、不另立预算——机械路径给的 `summary` 在这里就被丢掉，它不许冒充语义）。
+  // issue #897：description 单独子配额：**先占**（已在 `parseSummarizerMeta` 里按 500 token 夹断，
+  // 实际不超过 ~1,500 字节），正文拿 `maxBytes − description 字节`。4096 预算下这个 gate 事实上永远通过，
+  // 保留作为安全网（机械路径给的 summary 在这里被丢掉，它不许冒充语义）。
   const summaryCandidate = origin === "semantic" && typeof input.summary === "string"
     ? input.summary.trim()
     : "";
@@ -736,6 +743,8 @@ export function buildFoldedFacts(input = {}) {
     ...(increment === undefined ? {} : { [FOLDED_FACTS_INCREMENT_KEY]: increment }),
     ...(summary !== "" ? { summary } : {}),
     ...(summaryDropped ? { summaryDropped: true } : {}),
+    // issue #897：description 被 token 配额夹断的标记（由调用方从 `parseSummarizerMeta` 透传）。
+    ...(input.descriptionTruncated === true ? { descriptionTruncated: true } : {}),
     ...(toolCalls.length > 0 ? { toolCalls } : {}),
     source: typeof input.source === "string" && input.source !== ""
       ? input.source

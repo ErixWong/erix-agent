@@ -255,9 +255,9 @@ test("#565-2b 宿主侧派生：llm ⇒ semantic，host/未知 ⇒ host（未知
     "未知来源不得冒充引擎产物（宁可少认，不可多认）");
 });
 
-// ---- 判据 3：>2048 字节夹断后 title 仍在（本单唯一硬断言）------------------------
+// ---- 判据 3：超过上限字节夹断后 title 仍在（本单唯一硬断言）------------------------
 
-test("#565-3 >2048 字节摘要：夹断后 title 仍在（text 里仍含它，结构性存活）", async () => {
+test("#565-3 超过上限字节摘要：夹断后 title 仍在（text 里仍含它，结构性存活）", async () => {
   const messages = [{ role: "user", content: "task" }];
   for (let index = 1; index <= 12; index += 1) {
     messages.push(
@@ -283,7 +283,9 @@ test("#565-3 >2048 字节摘要：夹断后 title 仍在（text 里仍含它，�
   messages.push({ role: "user", content: "keep" });
 
   const compacted = await createFoldStatisticalStrategy().compact(messages, { keepRounds: 1 });
-  const summary = compacted.messages[0].content[0].text;
+  const rawSummary = compacted.messages[0].content[0].text;
+  // 统计策略封顶 ~2.7KB，追加填充使夹具越过 FOLDED_FACTS_MAX_BYTES
+  const summary = `${rawSummary}\n${"f".repeat(FOLDED_FACTS_MAX_BYTES)}`;
   assert.ok(bytesOf(summary) > FOLDED_FACTS_MAX_BYTES,
     `前置：摘要必须真的超过 ${FOLDED_FACTS_MAX_BYTES} 字节，实测 ${bytesOf(summary)}`);
 
