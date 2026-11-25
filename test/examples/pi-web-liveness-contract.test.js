@@ -60,8 +60,8 @@ const host = TS_STRIPPING ? await import(FIXTURE_TS.href) : null;
 
 /**
  * **文件级闸**（为什么不是逐格 `{ skip }`）：缺 type-stripping 的环境里，9 格各自 skip 会凭空多出
- * **9 条** skip。全量实测过：本机基线 skip = 13，登记上限 `maxSkipped: 18`，13 + 9 = 22 ⇒
- * `check:test-summary` 报 `SKIPPED_OVER` —— 那不是掉了覆盖，却是一道靠环保险的门。
+ * **9 条** skip，把汇总里的跳过数灌成噪声——那是环境缺能力，不是掉了覆盖。#905 起数字不再对账，
+ * 真判据是 `npm test` 的退出码；文件级闸留着，是为了让 `# skipped` 读数保持干净、可解释。
  * 所以闸放在**文件级**，两条路径的读数都是实测的：
  *   · 支持直载 ⇒ 注册下面全部 9 格，`# skipped 0`；
  *   · 不支持 ⇒ **一格也不注册**，只注册**一条**带上面那句理由的 skip ⇒ `# skipped 1`。

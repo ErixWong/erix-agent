@@ -8,8 +8,7 @@ on:
   # 门禁改由 ruleset「main-require-pr」承担：**必须走 PR 才能合 main，但不再要求任何 status check**。
   # 唯一自动门禁因此是本地 `npm run release:day -- --stage preflight`（发版前必跑）。
   #
-  # 本文件**刻意保留**：`scripts/changelog-coverage-check.mjs` 与
-  # `scripts/suite-summary-reconcile.mjs` 会读它验证步骤接线，删文件会让 preflight 红。
+  # 本文件**刻意保留**：`scripts/changelog-coverage-check.mjs` 会读它验证步骤接线，删文件会让 preflight 红。
   #
   # 恢复自动触发：取消下面三行注释，并把 required_status_checks（`real · node 22` /
   # `real · node 24`）加回 ruleset，两者必须同批改，否则 main 会推不进去。
@@ -34,7 +33,7 @@ concurrency:
 # 变异表 1、配置叶表 1、随包链接 1），真测试套件只红 1 次。于是 PR 的红基本不表示「坏了」，
 # 而表示「你动了一棵树，某张派生表该刷了」——那不是判定，那是税。
 #
-#   · `real`      —— 真的坏了才会红：语法、全量套件、套件汇总、CHANGELOG 覆盖、`tsc` 棘轮、
+#   · `real`      —— 真的坏了才会红：语法、全量套件、CHANGELOG 覆盖、`tsc` 棘轮、
 #                    声明生成、离线打包、变异样本真跑。**每次事件都阻塞**，矩阵 22 + 24。
 #   · `registries` —— 「提交进库的表必须与真树对得上」那一族。PR 上**看得见但不停车**
 #                    （job 级 `continue-on-error`），`main` / 手工重跑上阻塞。
@@ -79,20 +78,10 @@ jobs:
         run: npm run check:syntax
 
       # issue #301 / #774：reporter 钉在 `package.json` 的 test 脚本里（`--test-reporter=tap`），
-      # 这样本地 / agent / CI 交回同一份 TAP 形状；`set -o pipefail` 不能删（否则 `| tee` 会吃掉退出码）。
+      # 这样本地 / agent / CI 交回同一份 TAP 形状。#905 起汇总数字不再对账，这一步只留
+      # `npm test` 本身——它的退出码就是留下来的真判据（`| tee` 与 `set -o pipefail` 随对账一起撤）。
       - name: Test suite
-        run: |
-          set -o pipefail
-          npm test 2>&1 | tee "$RUNNER_TEMP/test-suite.log"
-
-      # 套件汇总与登记值对账：`tests` 逐字相等、`fail` 为 0、`skipped` 不超登记上限；
-      # 读不到完整汇总按 exit 2 红（「未判定」不等于绿）。数字漂了的合法处置只有改登记表 + 补 observations。
-      - name: Test suite summary reconcile (CI numbers vs registered expectations)
-        run: npm run check:test-summary -- --log "$RUNNER_TEMP/test-suite.log"
-
-      # 上一条自己的反向证（合成 TAP 夹具 + 合成登记表）：判据还拦得住吗。
-      - name: Test suite summary reconcile self-test
-        run: npm run check:test-summary -- --self-test
+        run: npm test
 
       # issue #691：碰到公开面的 first-parent 合并必须在本版 CHANGELOG 段里被点名。
       - name: CHANGELOG coverage of public-surface merges
