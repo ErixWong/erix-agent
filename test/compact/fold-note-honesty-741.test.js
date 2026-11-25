@@ -383,7 +383,7 @@ test("③归档夹断丢掉原文 ⇒ droppedMessages/droppedBytes 进 compactio
     maxRounds: 2,
     // `maxFoldedPayloadBytes` 压到 600 B ⇒ 归档必然装不下本次被折负载 ⇒ 一定发生夹断。
     // 规位拼写（#498/#521 的口径）：`completion` / `reflection` 走 `config.run`，回调走
-    // `capabilities.hooks` ⇒ 本文件不在 `test/compat-pin-inventory.md` 里留新的兼容钉子。
+    // `capabilities.hooks` ⇒ 本文件不写退役的扁平拼写，不会成为 `scripts/compat-pin-allowlist.mjs` 里的清单外写点。
     config: {
       run: { completion: false, reflection: false },
       folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", maxFoldedPayloadBytes: 600 } },

@@ -230,7 +230,7 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 **已删除（#904，2026-11-25）。** 扫宿主仓等于管别人的电脑；`release:day --stage preflight` 因此从 5 步变 4 步。
 
 ## check-inventory
-兼容钉子清点表校验（issue #534）：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` 从被扫测试文件的 AST **重新推导**扁平钉子的数量，再与入库的那张表对账——任何不一致都 exit 1，并且点名是哪个文件、两个数字各是多少。它自己打印耗时与峰值内存（都在低秒级 / 低百 MB），所以在 CI 里是**阻塞**步骤 `Compatibility-pin inventory verify`，位置在 `Test suite` 之后、`Test hygiene guard` 之前（这张表清点的是测试文件，测试还没跑就验它没意义）。同一个脚本的 **`--sync`** 模式是改那张表**唯一合法**的姿势——**手改数字就是造假**——所以**任何动到兼容钉子的切片都必须同片重跑 `--sync`**：`node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md`（`--verify` 同理要带表路径）。**少了表路径会崩**：脚本用 `process.argv[4]` 当表路径，只写 `node scripts/flat-count-inventory.mjs . --sync` 就是 `readFileSync(undefined)` 的 `ERR_INVALID_ARG_TYPE`，不是「什么都不做」。开单理由：那张表自称“逐行零误差”，而 A12 交上来时带着 3 处不一致，全靠主 agent 手跑 `--verify` 才抓到。生成器自 #529 起就住在仓库里；在那之前文档里写的复跑命令指向一个 `/tmp` 副本，那正是下一片 worker 根本刷不动这张表的原因
+兼容钉子写点白名单校验（issue #534；110 KB 台账已随 #907 删）：`node scripts/flat-count-inventory.mjs . --verify` 从被扫测试文件的 AST **重新推导**扁平写点，再与白名单 `scripts/compat-pin-allowlist.mjs` 对——任一情形都 exit 1 并点名文件 / 面 / 点数：（a）清单外的文件写了退役的扁平拼写，或（b）白名单条目指向一个已不存在的文件。它自己打印耗时与峰值内存（都在低秒级 / 低百 MB），所以在 CI 里是**阻塞**步骤 `Compatibility-pin inventory verify`，位置在 `Test suite` 之后、`Test hygiene guard` 之前。台账（把每文件点数抄进一张入库的表、每动一次代码就要 `--sync` 重刷）已删：**`--sync` 不复存在、门禁也不再逐文件核点数**——清单内文件的点数怎么变都不再跑红（相对旧台账的有意行为改变）。要打印清单所依据的 AST 现值，跑 `node scripts/flat-count-inventory.mjs . --files` / `. --keys`。冷层一句：台账被删是因为 #498 的迁移片已全部迁完、表只剩历史；它兼着的那条活判据——「没登记过的文件不许写退役的扁平拼写」（0.28 破坏性退役）——正是白名单保留的东西
 
 ## check-config-leaf-values
 配置叶子值类型现状表校验（issue #586）：`node scripts/config-leaf-value-probe.mjs --verify docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` 重跑探针（每个 schema 叶子 × 8 个固定错值，每一格都过一次真的两轮 `runToolLoop`），再把重算出来的中英两张表与入库的那两张对账——任何漂移都 exit 1 并点名文件。探针**实测**每一格的结局，而不是断言愿望：`G` / `V` 在 `config` 闸口 / 语义相被拒，`S` 在 run 启动期被拒**且判词点名该叶子**，`C` 在启动期炸但**不点名**，`U` 到第一发请求之后才抛，`A` 是被接受且**真的生效**（run 的指纹变了），`·` 是被接受但**无差异**（指纹逐字相同）。「拒在哪一层」取自**栈帧**（文件名 + 函数名，从不取行号 ⇒ 无关重构撞不红它），「生效在哪」取自指纹的**第一个差异路径**，所以「悄悄接受」是一个位置加一对值，不是形容词。`--sync` 是刷这张表**唯一合法**的姿势（手改数字就是造假）；`configSchemaSelfCheck` 红、或三次基线跑的指纹不一致时，探针**拒绝出表**（`exit 2`）——指纹不稳会把 `A` / `·` 变成噪声。它自己打印耗时（约一秒级），所以在 CI 里是**阻塞**步骤 `Config-leaf value status verify`，紧跟 `Compatibility-pin inventory verify`。**它一个字都没收窄接受面**：每条类型校验都是收窄 ⇒ 要记 Breaking，裁定权留在维护者手里
@@ -240,7 +240,7 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 
 | 登记表 | 唯一的机器更新命令 |
 |---|---|
-| 兼容钉子清点表 | `node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md` |
+| 兼容钉子写点白名单（从 AST 重生成） | `node scripts/flat-count-inventory.mjs . --files`（或 `. --keys`）打印 AST 现值；照 `--files` 重建 `scripts/compat-pin-allowlist.mjs` |
 | 配置叶子现状表（中英） | `node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` |
 
 汇总对账器与它登记的地板已在 issue #905 删除（把登记的总数维持同步原来是记账税、不是判定，也刻意没有 `--sync`，因为抬地板是人的动作）。`test/static-guards.test.js` 的中英配对判据**不登记任何数字**：那个 `CHANGELOG_PAIR_FLOOR` 校准值
