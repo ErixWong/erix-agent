@@ -68,10 +68,12 @@
 | `npm run check:config-leaf-values` | 配置叶取值表对着一次实跑探针 | `#check-config-leaf-values` |
 | `node bin/cli.js …` | 本地跑 CLI，只为调试 | `#cli-local` |
 
-- CI（`.github/workflows/ci.yml`）**按判据性质分两个 job**（issue #802）：`real`（行为面，每次事件都阻塞，
-  node 22 **与** 24）与 `registries`（提交进库的表 vs 树，在 `pull_request` 上看得见但**不停车**）。
-  **没有文档 job**——文档检查是**定期由 agent 跑的一趟检查**（`docs/maintenance/doc-review-pass_cn.md`），
-  不是闸。改它 ⇒ 先读 `#ci`。`check:host-consumers` 与 `npm run soak` 必须留在 CI 之外。
+- **CI 不再由任何事件触发**（261125 用户裁决）：`.github/workflows/ci.yml` 的 `pull_request` / `push` 触发已摘除，
+  因为此前半个月的 9 次红里 6 次是派生登记表刷表、0 次是 `src/` 行为回归；只剩 `workflow_dispatch`。
+  `main` 的门禁改为 ruleset `main-require-pr`——**必须走 PR，但不要求任何 status check**——所以唯一自动门禁是
+  发版前必跑的 `npm run release:day -- --stage preflight`。文件刻意保留：`check:changelog` 与
+  `check:test-summary` 会读它验证步骤接线。恢复 CI ⇒ 先读 `#ci`，且必须同批把 `required_status_checks`
+  加回 ruleset，否则 `main` 会推不进去。`check:host-consumers` 与 `npm run soak` 仍然留在 CI 之外。
 - **闸的可复现性**：`check:docs` 与 `check:docs:strict` 必须在开发工作树里**和**在全新克隆里都 exit 0。需要
   `node_modules` 的闸在裸克隆里以 `Cannot find module 'typescript'` 失败，含义是**这道闸没能跑**，
   永远不是回归 ⇒ `#gate-reproducibility`。
