@@ -1,5 +1,4 @@
 // @ts-check
-import { foldSummaryFingerprint } from "../compact/fold-summary-journal.js";
 import { reconstructRoundsFromBoundary } from "../messages/rounds.js";
 import { Buffer } from "node:buffer";
 
@@ -7,7 +6,6 @@ import { Buffer } from "node:buffer";
  * @typedef {object} FoldEntry
  * @property {number} from - 该折覆盖的起始轮号（含）
  * @property {number} to - 该折覆盖的结束轮号（含）
- * @property {string|undefined} foldId - 该折的契约身份（可能缺失 ⇒ untrusted）
  * @property {object[]} payload - 被折掉的原始消息数组（整轮被删后按序拼接，从轮边界开始）
  */
 
@@ -73,7 +71,6 @@ export function createRecallAccessor(store, runId) {
         folds.push({
           from: record.foldedRoundRange?.from ?? 1,
           to: record.foldedRoundRange?.to ?? 1,
-          foldId: record.foldedFacts?.foldId ?? undefined,
           payload: record.foldedPayload,
         });
       }
@@ -100,7 +97,7 @@ export function createBuiltinRecallTools(options = {}) {
   const TOOL_DEFINITION = {
     name: "recall_read",
     description:
-      "按轮号取回已被折掉的归档原文（逐字）；可核对身份。when-to-use：上下文被折叠后需要取回某轮的原始消息时调用；round 是轮号（1 起），不是数组下标；scope 仅支持 run；轮数与区间对不上时返回 unmappable 而非猜测",
+      "按轮号取回已被折掉的归档原文（逐字）。when-to-use：上下文被折叠后需要取回某轮的原始消息时调用；round 是轮号（1 起），不是数组下标；scope 仅支持 run；轮数与区间对不上时返回 unmappable 而非猜测",
     inputSchema: {
       type: "object",
       properties: {
@@ -145,39 +142,13 @@ export function createBuiltinRecallTools(options = {}) {
       return JSON.stringify({ status: "not_folded", round, message: "该轮未被折叠 / 不在归档内" });
     }
 
-    const { payload, foldId, from, to } = fold;
+    const { payload, from, to } = fold;
 
     // 用引擎自己的轮规则还原被折的轮组（与 groupIntoRounds 同源，不另立口径）。
     // payload 由 selectFoldedRounds 选整轮后 flatMap 而来，天然从轮边界开始。
     const reconstructed = reconstructRoundsFromBoundary(payload);
     const reconstructedRounds = reconstructed.length;
     const expectedRounds = to - from + 1;
-
-    // 验证身份：当场用 foldSummaryFingerprint 重算与记录上的 foldId 比对。
-    const recomputed = foldSummaryFingerprint({
-      messages: payload,
-      roundRange: { from, to },
-      recoveryHint: null,
-    });
-
-    /** @type {"verified"|"untrusted"|"stale"} */
-    let trustStatus;
-    if (!foldId) trustStatus = "untrusted";
-    else if (foldId !== recomputed) trustStatus = "stale";
-    else trustStatus = "verified";
-
-    // stale：归档被改写，不给正文。
-    if (trustStatus === "stale") {
-      return JSON.stringify({
-        status: "stale",
-        round,
-        foldId,
-        recomputed,
-        message: "该折归档与身份不一致，请重读文件",
-        content: null,
-        messages: null,
-      });
-    }
 
     // 轮数对不上 ⇒ 取回不可靠：明确 unmappable，报两个数，不猜、不按下标硬取、不给正文。
     if (reconstructedRounds !== expectedRounds) {
@@ -187,7 +158,6 @@ export function createBuiltinRecallTools(options = {}) {
         foldRoundRange: { from, to },
         reconstructedRounds,
         expectedRounds,
-        trust: trustStatus,
         message: `还原轮数(${reconstructedRounds})与轮区间(to-from+1=${expectedRounds})对不上：归档可能是有界去重差分或被改写过，无法可靠定位该轮`,
         content: null,
         messages: null,
@@ -205,12 +175,10 @@ export function createBuiltinRecallTools(options = {}) {
 
     return JSON.stringify({
       status: "found",
-      trust: trustStatus,
       round,
       foldRoundRange: { from, to },
       payloadIndex: globalIndex,
       byteLength: byteLength(roundMessages),
-      foldId: foldId ?? null,
       content,
       messages: roundMessages,
     });

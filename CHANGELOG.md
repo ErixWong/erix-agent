@@ -13,23 +13,29 @@
   shared by `groupIntoRounds` and `recall_read` (splitting by "real user message" collapses
   tool-heavy payloads, where most `role:"user"` messages are `tool_result`, into one group).
   If the reconstructed round count ≠ `to - from + 1` the tool returns `unmappable` with both
-  numbers and no body (never guesses a nearby round). Identity is verified by recomputing
-  `foldSummaryFingerprint` against the stored `foldId`, yielding `verified`/`untrusted`/`stale`.
-  A companion `createRecallAccessor(store, runId)` builds the read-only accessor from the
-  transcript store. Tool definition token cost: 200 (total 11 builtin tools: 4,714 → 4,914).
-  Pins: `test/tools/recall-read-896.test.js` (nine cells, driven by a real built-in
+  numbers and no body (never guesses a nearby round). `not_folded` is returned when the round
+  is not in any archived range. **No content verification is performed**: `recall_read` reads the
+  ledger's own archived bytes — not an LLM artifact — so reading a row yields the original text;
+  recomputing `foldSummaryFingerprint` against `foldId` was pure ceremony and was removed (no
+  `trust`/`foldId` in the response, no new ledger key). A companion
+  `createRecallAccessor(store, runId)` builds the read-only accessor from the transcript store.
+  Tool definition token cost: 191 (total 11 builtin tools: 4,714 → 4,905).
+  Pins: `test/tools/recall-read-896.test.js` (eight cells, driven by a real built-in
   `sliding-window` fold covering rounds 1..11 — no hand-built payload; the core splitting,
-  multi-round, real-shape and `unmappable` cells all go red on the previous implementation).
+  multi-round, real-shape and `unmappable` cells go red on the earlier implementation, and a
+  "no validation fields" cell goes red if `trust`/`foldId` are ever reintroduced).
 - **确定性召回工具 `recall_read`（issue #896 C1）。** 新文件 `src/tools/recall.js` 导出
   `createBuiltinRecallTools`（opt-in，默认不挂进任何既有工具列表）。入参 `{ round, scope? }`，
   按轮号从已落盘的折叠归档中逐字取回原文。**轮切分回放引擎自己的规则**——`src/messages/rounds.js`
   新增导出 `reconstructRoundsFromBoundary()` 作为唯一真相来源，由 `groupIntoRounds` 与 `recall_read`
   共用（按「真实用户消息」切分会让工具密集的 payload——其中多数 `role:"user"` 是 `tool_result`——塌成一组）。
-  还原轮数 ≠ `to - from + 1` 时返回 `unmappable` 并报两个数、不给正文（绝不拿相近轮顶替）。当场重算
-  `foldSummaryFingerprint` 与记录的 `foldId` 比对（verified/stale/untrusted 三态）。配套
-  `createRecallAccessor(store, runId)` 从 store 构建只读访问器。工具定义 token 成本实测 200
-  （11 个内置工具合计 4,714 → 4,914）。判据：`test/tools/recall-read-896.test.js`（九格，全走内置
-  `sliding-window` 真折叠覆盖 round 1..11，不手搓 payload；切分/多轮/真实形态/`unmappable` 四格在旧实现下均红）。
+  还原轮数 ≠ `to - from + 1` 时返回 `unmappable` 并报两个数、不给正文（绝不拿相近轮顶替）；该轮不在任何
+  归档区间则返回 `not_folded`。**不做内容校验**：`recall_read` 读的是账本自己落盘的归档字节、不是 LLM
+  产物，读出来就是原文，重算 `foldSummaryFingerprint` 与 `foldId` 比对纯属仪式，已删除（响应里无
+  `trust`/`foldId`，也不新增账本键）。配套 `createRecallAccessor(store, runId)` 从 store 构建只读访问器。
+  工具定义 token 成本实测 191（11 个内置工具合计 4,714 → 4,905）。判据：
+  `test/tools/recall-read-896.test.js`（八格，全走内置 `sliding-window` 真折叠覆盖 round 1..11，不手搓
+  payload；切分/多轮/真实形态/`unmappable` 四格在更早实现下均红，「无校验字段」格在有人把校验加回时变红）。
 
 ### Changed
 - **fold-llm**: `description` 配额从 200 字符改为 500 token（`SUMMARIZER_DESCRIPTION_MAX_TOKENS`），用引擎 `estimateTokens` 口径夹断，新增 `descriptionTruncated` 可检测标记（#897）。

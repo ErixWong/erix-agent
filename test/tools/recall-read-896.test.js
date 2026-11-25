@@ -106,7 +106,6 @@ test("#896-1 逐字取回（真折叠）：recall_read 取回的正文与 record
   const result = JSON.parse(await executeTool({ name: "recall_read", input: { round: 3 } }));
 
   assert.equal(result.status, "found");
-  assert.equal(result.trust, "verified");
   // 核心：取回的 round 3 消息与 records 里的原文逐字相等（去 store 簿记 ts）
   assert.deepEqual(result.messages, originalFromRecords(3));
   // 逐字相等不是空对空：正文含 round 3 的判别内容，且不含相邻轮
@@ -117,7 +116,6 @@ test("#896-1 逐字取回（真折叠）：recall_read 取回的正文与 record
   assert.deepEqual(result.foldRoundRange, { from: 1, to: 11 });
   assert.equal(typeof result.payloadIndex, "number");
   assert.ok(result.byteLength > 0);
-  assert.equal(result.foldId, fold.foldedFacts.foldId);
 });
 
 // ─── 格 2：多轮——一次折 ≥5 轮，逐轮各取一次，证明 round-from 下标映射 ─────────
@@ -174,7 +172,7 @@ test("#896-4 unmappable：还原轮数与 to-from+1 对不上时返回 unmappabl
   const real = base[0];
   // 模拟有界去重差分归档：区间声称 1..10，但 payload 只够还原出更少的轮
   const dedupLike = real.payload.slice(0, 4); // 2 轮
-  const folds = [{ from: 1, to: 10, foldId: undefined, payload: dedupLike }];
+  const folds = [{ from: 1, to: 10, payload: dedupLike }];
 
   const { executeTool } = createBuiltinRecallTools({ readFoldedRounds: () => folds });
   const r = JSON.parse(await executeTool({ name: "recall_read", input: { round: 7 } }));
@@ -186,36 +184,19 @@ test("#896-4 unmappable：还原轮数与 to-from+1 对不上时返回 unmappabl
   assert.equal(r.messages, null, "unmappable 不给消息");
 });
 
-// ─── 格 5：stale——foldId 被篡改，不给正文 ─────────────────────────────────────
+// ─── 格 5：无校验字段——取回结果不含 trust / foldId 比对结论 ────────────────
 
-test("#896-5 stale：foldId 被篡改时返回 stale 且正文为空", async () => {
+test("#896-5 无校验字段：found 返回里不含 trust / foldId 比对结论", async () => {
   const { store, runId } = await buildRealFold();
-  const base = await createRecallAccessor(store, runId)();
-  const tampered = base.map((f) => ({ ...f, foldId: "sha256:TAMPERED_DOES_NOT_MATCH_000000" }));
-
-  const { executeTool } = createBuiltinRecallTools({ readFoldedRounds: () => tampered });
-  const r = JSON.parse(await executeTool({ name: "recall_read", input: { round: 3 } }));
-
-  assert.equal(r.status, "stale");
-  assert.equal(r.content, null);
-  assert.equal(r.messages, null);
-  assert.ok(r.message.includes("不一致"));
-});
-
-// ─── 格 6：untrusted——没有 foldId，仍给正文但标注 ─────────────────────────────
-
-test("#896-6 untrusted：没有 foldId 时仍给正文但带 untrusted 标记", async () => {
-  const { store, runId } = await buildRealFold();
-  const base = await createRecallAccessor(store, runId)();
-  const noId = base.map((f) => ({ ...f, foldId: undefined }));
-
-  const { executeTool } = createBuiltinRecallTools({ readFoldedRounds: () => noId });
+  const { executeTool } = createBuiltinRecallTools({ readFoldedRounds: createRecallAccessor(store, runId) });
   const r = JSON.parse(await executeTool({ name: "recall_read", input: { round: 3 } }));
 
   assert.equal(r.status, "found");
-  assert.equal(r.trust, "untrusted");
-  assert.ok(typeof r.content === "string" && r.content.includes("MARKER_R3_"));
+  assert.ok(typeof r.content === "string" && r.content.includes("MARKER_R3_"), "仍给正文");
+  assert.ok(!("trust" in r), "返回不得含 trust 字段");
+  assert.ok(!("foldId" in r), "返回不得含 foldId 比对结论");
 });
+
 
 // ─── 格 7：not_folded——没被折叠的轮号，明确不在归档内、不给正文 ────────────────
 
