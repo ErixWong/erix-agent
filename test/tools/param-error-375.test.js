@@ -11,7 +11,7 @@
 // 把六格逐字钉死），`paramErrorMode: "unified"` 时才改由 `paramError` 统一出口出词，**控制流不变**
 // （归一的仍归一、抛的仍抛）。所以这里的对账是**两次真调用**的对比，不是「看起来一样」。
 //
-// 反向证（#210 R2 惯例：变异没落地也算失败）：变异样本 M10 把 `readFile` 的 `max_bytes` 事实接线
+// 反向证（#210 R2 惯例：变异没落地也算失败）：样本清单 `scripts/mutation-samples.mjs` 的 M10 把 `readFile` 的 `max_bytes` 事实接线
 // （`value: maxBytesRequested`）断掉 ⇒ 「对账 ③」这一格必须红并点名；`npm run check:mutation:run`
 // 逐条真跑变异 → 红 → 还原 → 绿。
 import assert from "node:assert/strict";
