@@ -17,9 +17,8 @@
 //                4 `npm run check:docs:strict`          同上，告警也阻塞
 //                5 `ERIX_E2E_MODEL=1 npm run check:release:model-e2e`   真模型端点；**闸门关着 ⇒ 未判定**
 //                6 `npm run check:release`              离线：tarball / 装好的包 / TS 宿主 / 假上游 CLI
-//                7 `npm run check:host-consumers -- --hosts …`   宿主侧探针；**没给目录或目录不在 ⇒ 未判定**
 //              未判定（not-judged）**不是绿**：`ERIX_E2E_MODEL` 缺失时那一族一步都不跑，脚本明说「未判定」，
-//              整体 exit 2（不是 0）。目录不存在按探针自己的口径（`HOST_DIR_MISSING` / `HOST_DIR_NOT_DIR`）判未判定。
+//              整体 exit 2（不是 0）。
 //              第 2 步同样会答「未判定」（exit 2）：**还没切版**时它判不了「搬没搬」，那时整趟 preflight 就是
 //              未判定——先切版（bump `package.json` + 开节 + 把标题行插到条目之前），再跑 preflight。
 //   publish    脚本**不 fork `npm publish`**（理由见下）。preflight 全绿后它把「请你自己在终端跑 `npm publish`」
@@ -160,7 +159,6 @@ export const PREFLIGHT_STEPS = Object.freeze([
     gate: "ERIX_E2E_MODEL",
   },
   { id: "release", label: "check:release", argv: ["npm", "run", "check:release"] },
-  { id: "host-consumers", label: "check:host-consumers -- --hosts …", argv: ["npm", "run", "check:host-consumers"], gate: "hosts" },
 ]);
 
 /**
@@ -568,27 +566,6 @@ export function runPreflight({ root = DEFAULT_ROOT, hosts = [], deps = defaultDe
       steps.push({ id: step.id, verdict: VERDICT.NOT_JUDGED, why });
       continue;
     }
-    if (step.gate === "hosts") {
-      const usable = hosts.filter((dir) => {
-        try { return statSync(dir).isDirectory(); } catch { return false; }
-      });
-      const missing = hosts.filter((dir) => !usable.includes(dir));
-      if (!hosts.length) {
-        const why = "没给 --hosts：探针不给目录时只打印口径并 exit 0，那是「未判定」不是绿";
-        log(`${head} → **未判定**（${why}）`);
-        log("     宿主侧那一半：`npm run check:host-consumers -- --hosts <宿主仓目录> …`");
-        steps.push({ id: step.id, verdict: VERDICT.NOT_JUDGED, why });
-        continue;
-      }
-      if (!usable.length) {
-        const why = `--hosts 给的目录都不存在 / 不是目录（${missing.join(", ")}）——探针口径 HOST_DIR_MISSING / HOST_DIR_NOT_DIR，未判定不是绿`;
-        log(`${head} → **未判定**（${why}）`);
-        steps.push({ id: step.id, verdict: VERDICT.NOT_JUDGED, why });
-        continue;
-      }
-      if (missing.length) log(`     ⚠ ${missing.join(", ")} 不存在 / 不是目录（探针按 HOST_DIR_MISSING 分类，只判剩下的）`);
-      argv = [...step.argv, "--", ...usable.flatMap((dir) => ["--hosts", dir])];
-    }
     log(`${head} → 跑：${cmdline(argv, step.env ?? {})}`);
     const result = run(argv, { cwd: root, env: stepEnv });
     if (result.status !== 0) {
@@ -629,7 +606,6 @@ export const UNJUDGED_ACTIONS = Object.freeze({
       + "把标题行插到条目之前），再重跑本命令——这一格**没有闸可开**",
   },
   "release-real": { kind: "open-gate", action: "把闸开起来再发（`ERIX_E2E_MODEL=1 npm run check:release:model-e2e`）" },
-  "host-consumers": { kind: "open-gate", action: "把宿主仓目录带上再发（`--hosts <宿主仓目录> …`）" },
 });
 
 /**
@@ -1809,8 +1785,8 @@ function selfTestUnreleasedCarry(checker) {
       expect(result.verdict === VERDICT.FAIL && result.failedAt === 2 && result.failedId === "changelog-unreleased",
         "⑭h 漏搬格红 ⇒ preflight 停在第 2 步并点名 changelog-unreleased",
         `⑭h 没停在第 2 步：verdict=${result.verdict} failedAt=${result.failedAt} failedId=${result.failedId}`);
-      expect(!deps.calls.some((line) => line.includes("check:docs")),
-        "⑭h 这一格红了之后 `check:docs` / `check:release` / 宿主探针一步都没跑（它是最便宜的那一格）",
+      expect(!deps.calls.some((line) => line.includes("check:release")),
+        "⑭h 这一格红了之后 `check:release:model-e2e` / `check:release` 一步都没跑（它是最便宜的那一格）",
         `⑭h 红了还在往下跑：${deps.calls.join(" | ")}`);
 
       const notJudgedTree = treeFor(RED_CHANGELOG.replace(`${heading}\n\n`, ""));
@@ -1853,12 +1829,12 @@ function selfTestUnjudgedConclusion(checker) {
 
   // ⑮b 只有闸门类未判定 ⇒ 说开闸，**不**提切版（分叉不是恒说切版）
   {
-    const { head, lines } = unjudgedConclusion(un("release-real", "host-consumers"));
+    const { head, lines } = unjudgedConclusion(un("release-real"));
     expect(/把闸开起来再发/u.test(head) && !/先把版切了/u.test(head),
       `⑮b 只有闸门类格子未判定 ⇒ 结语是「把闸开起来再发」（head=${head}）`,
       `⑮b 闸门类格子的结语串了切版那一句：${head}`);
-    expect(/ERIX_E2E_MODEL/u.test(lines.join("\n")) && /--hosts/u.test(lines.join("\n")),
-      "⑮b 逐格动作各自点名自己的开关（`ERIX_E2E_MODEL` 与 `--hosts` 都要点名）",
+    expect(/ERIX_E2E_MODEL/u.test(lines.join("\n")),
+      "⑮b 逐格动作点名自己的开关（`ERIX_E2E_MODEL`）",
       `⑮b 逐格动作缺开关名：${lines.join(" | ")}`);
   }
 
@@ -2074,18 +2050,17 @@ function runSelfTest() {
 
   // ① preflight 某步红 ⇒ 停在那一步并点名
   {
-    const deps = fakeDeps({ override: { "npm run check:release": { status: 1 } } });
+    const deps = fakeDeps({ override: { "npm run check:changelog": { status: 1 } } });
     // issue #715：`root` 用合成树（`[Unreleased]` 空 + 本版段已开 ⇒ 第 2 步绿），于是本格不依赖本仓
     // CHANGELOG 当下的状态（本仓 `[Unreleased]` 里本来就可能有待入账条目）。
     withPreflightFixture((tree) => {
       const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
-      const releaseAt = PREFLIGHT_STEPS.findIndex((step) => step.id === "release") + 1;
-      expect(result.verdict === VERDICT.FAIL && result.failedAt === releaseAt && result.failedId === "release",
-        `① preflight 第 ${releaseAt} 步红 ⇒ 停在第 ${releaseAt} 步并点名 release（steps=${result.steps.length}）`,
-        `① 没停在第 ${releaseAt} 步：verdict=${result.verdict} failedAt=${result.failedAt} failedId=${result.failedId}`);
-      expect(!deps.calls.some((line) => line.includes("check:host-consumers")),
-        "① 红之后的最后一步一步都没跑（顺序闸）",
-        `① 红了还在往下跑：${deps.calls.filter((line) => line.includes("check:host-consumers")).join(", ")}`);
+      expect(result.verdict === VERDICT.FAIL && result.failedAt === 1 && result.failedId === "changelog",
+        `① preflight 第 1 步红 ⇒ 停在第 1 步并点名 changelog（steps=${result.steps.length}）`,
+        `① 没停在第 1 步：verdict=${result.verdict} failedAt=${result.failedAt} failedId=${result.failedId}`);
+      expect(!deps.calls.some((line) => line.includes("check:release")),
+        "① 红之后的后续步骤一步都没跑（顺序闸：末步 check:release 不该被调到）",
+        `① 红了还在往下跑：${deps.calls.filter((line) => line.includes("check:release")).join(", ")}`);
       expect(result.steps.at(-1)?.exitCode === 1, "① 红的那一步带着它的退出码（exit 1）",
         `① 红的那一步没带退出码：${JSON.stringify(result.steps.at(-1))}`);
     });
@@ -2123,33 +2098,17 @@ function runSelfTest() {
     });
   }
 
-  // ②b `--hosts` 目录不存在 ⇒ 未判定（探针口径）
-  {
-    const deps = fakeDeps();
-    withPreflightFixture((tree) => {
-      const result = runPreflight({ root: tree, hosts: ["/nonexistent/erix-host-689"], deps, dry: true });
-      const hostStep = result.steps.find((step) => step.id === "host-consumers");
-      expect(hostStep?.verdict === VERDICT.NOT_JUDGED && /HOST_DIR_/.test(hostStep?.why ?? ""),
-        "②b `--hosts` 目录不存在 ⇒ 未判定，并按探针口径点名（HOST_DIR_MISSING / HOST_DIR_NOT_DIR）",
-        `②b 目录不存在时的裁决是 ${hostStep?.verdict}（why=${hostStep?.why}）`);
-      expect(result.verdict === VERDICT.NOT_JUDGED, "②b 整体判未判定（不是绿）", `②b 整体判成了 ${result.verdict}`);
-      expect(!deps.calls.some((line) => line.includes("check:host-consumers")),
-        "②b 目录不存在时探针一步都没跑（未判定不靠 exit 0 的假绿）",
-        `②b 目录不存在却跑了探针：${deps.calls.join(", ")}`);
-    });
-  }
-
   // ②c 全绿 ⇒ pass（对照组：上面三条不是恒红）
   {
     const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_MODEL: "1" } });
     withPreflightFixture((tree) => {
       const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
       expect(result.verdict === VERDICT.PASS && result.steps.length === PREFLIGHT_STEPS.length,
-        "②c 闸门开 + 宿主目录在 + 每一步都全绿 ⇒ pass（对照组）",
+        "②c 闸门开 + 每一步都全绿 ⇒ pass（对照组）",
         `②c 对照组不绿：verdict=${result.verdict} steps=${JSON.stringify(result.steps)}`);
-      expect(deps.calls.some((line) => line.includes("check:release:model-e2e")) && deps.calls.some((line) => line.includes("--hosts")),
-        "②c 闸门开着时真模型端点与宿主探针都真跑了",
-        `②c 闸门开着却没跑：${deps.calls.join(" | ")}`);
+      expect(deps.calls.some((line) => line.includes("check:release:model-e2e")),
+        "②c 闸门开着时真模型端点真跑了",
+        `②c 闸门开着却没跑真模型端点：${deps.calls.join(" | ")}`);
     });
   }
 
@@ -2181,7 +2140,7 @@ function runSelfTest() {
       const resumed = fakeDeps({ capture: gitPlumbing({ version: "0.31.0" }) });
       const allStatus = runAll({ root: tree, deps: resumed, stateFile, dry: false, version: "0.31.0" });
       const preflightOnly = resumed.calls.filter((line) => line === "npm run check:release"
-        || line.includes("check:release:model-e2e") || line.includes("check:host-consumers"));
+        || line.includes("check:release:model-e2e"));
       expect(preflightOnly.length === 0,
         "③ 续跑**没有**重跑 preflight 的发布前置（不重复发布）",
         `③ 续跑又跑了 preflight：${preflightOnly.join(" | ")}`);

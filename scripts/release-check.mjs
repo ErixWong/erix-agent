@@ -566,7 +566,7 @@ const RUNTIME_SURFACE_FILE = "probe-runtime-exports.json";
  * 指南「已删除」声称 ↔ 装好的包的运行时导出面（issue #687）。
  *
  * 为什么必须用**装好的包**而不是仓内 `src/`：指南随包发布、读者拿到的就是那一份运行时面。仓内导出名与
- * 发布物一致是另一道闸的事（`check:exports` / `check:types-build`）；这一条断言的是「读者 `import` 到什么」。
+ * 发布物一致是另一道闸的事（`check:types-build`）；这一条断言的是「读者 `import` 到什么」。
  * 读不出（探针没产出 / 形状坏了 / 指南读不出）⇒ **exit 2**，与 `guide-removal-gate.mjs` 的退出码同一套语义：
  * 读不出真值不是绿。
  *
