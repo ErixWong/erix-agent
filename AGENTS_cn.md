@@ -31,42 +31,10 @@
 
 ## 3. 开发命令
 
-一行一道闸：它判什么，以及改那道闸管的东西之前先读哪一节（锚点都是
-`docs/maintenance/command-reference_cn.md` 的小节）。**这里只列一次改动要回答的闸**；
-完整清单看 `package.json`——只在发版或维护探针时才跑的那几个（`check:version-state-probe`、
-`check:version-states`、`check:final-guard-probe`、`check:tests`）故意不占行。
+清单归 `package.json`，本节不再复述。每道闸判什么、改它所管的东西之前先读哪个锚点，都在
+[`docs/maintenance/command-reference_cn.md`](./docs/maintenance/command-reference_cn.md)——从它顶部的索引进。
 
-| 命令 | 判什么 | 先读这一节 |
-|---|---|---|
-| `npm test` | 全量套件（`node --test`） | `#test-suite` |
-| `node --check <file>` | 单个文件的语法 | — |
-| `npm run check:syntax` | 每一个被跟踪的 `.js`/`.mjs`/`.cjs` 的语法 | `#check-syntax` |
-| `npm run check:test-summary` | 套件汇总数对着它登记的基线 | `#check-test-summary` |
-| `npm run check:changelog` | 公共面合并是否写进 CHANGELOG | `#check-changelog` |
-| `npm run check:docs` | 文档漂移 + 中英同步 | `#check-docs` |
-| `npm run check:docs:strict` | 同上，且告警也阻塞 | `#check-docs` |
-| `node scripts/docs-drift-check.mjs --self-test` | 锚点自己的反向证 | `#docs-anchors` |
-| `npm run check:docs-examples` | 两份契约与两份 README 里的 JS 代码围栏 | `#check-docs-examples` |
-| `npm run check:pack-links` | 随包 Markdown 链接 + `.d.ts` 与发布面声称 | `#check-pack-links` |
-| `npm run check:release` | 离线发布前检查清单合成一条命令 | `#check-release` |
-| `npm run check:release:model-e2e` | 真模型端点 e2e 清单（门控 `ERIX_E2E_MODEL=1`） | `#check-release-real` |
-| `npm run check:long-task-e2e` | 独立真代码长任务测试（受门控；不进发版闸门；默认只跑 L1，`--with-l2` 约 13 分钟） | `#check-long-task-e2e` |
-| `npm run release:day` | 发版日的四个 `--stage` | `#release-day` |
-| `npm run check:cli:model-e2e` | 装好的 CLI 打真模型端点（受门控） | `#check-cli-real` |
-| `npm run check:docs-spelling` | 活文档里退役的扁平选项拼写 | `#check-docs-spelling` |
-| `npm run check:agents-directives` | 本页：状态句、会过期的抄件、裸坐标、字节预算 | `#check-agents-directives` |
-| `npm run types:build` | 生成随包发布的 `src/**/*.d.ts` | `#type-surface` |
-| `npm run check:types-build` | 那些声明仍能生成、且带着入口符号 | `#type-surface` |
-| `npm run check:types` | `--checkJs` 错误数棘轮（`--with-tools`：基线 **133** / 28 个文件） | `#type-ratchets` |
-| `npm run check:types:strict` | strict 棘轮（阻塞；它的基线住在脚本里） | `#type-ratchets` |
-| `npm run check:mutation` | 已提交的变异样本表对着这棵树 | `#check-mutation` |
-| `npm run check:mutation:run` | 样本真的咬得住（变异 → 红 → 还原 → 绿） | `#check-mutation` |
-| `npm run check:exports` | 每个导出名被谁消费——**不判定**；三个入口含 `test/contract/`，另有 `internal-only` 一档 | `#check-exports` |
-| `npm run check:exports:deprecated` | 零消费者删除登记表与标记规矩 | `#check-exports-deprecated` |
-| `npm run check:host-consumers` | 宿主侧对待删名字的 import（只给 `--hosts` 才判、CI 不跑；候选清单现算） | `#check-host-consumers` |
-| `npm run check:inventory` | 兼容性钉子表对着测试的 AST | `#check-inventory` |
-| `npm run check:config-leaf-values` | 配置叶取值表对着一次实跑探针 | `#check-config-leaf-values` |
-| `node bin/cli.js …` | 本地跑 CLI，只为调试 | `#cli-local` |
+一道闸会在冷层以它的 `npm run` 脚本名和它指向的锚点小节被点名（如 `npm run check:docs`）；
 
 - **CI 只在 `workflow_dispatch` 上跑**：`main` 的门禁由 ruleset 承担（现值用
   `gh api repos/<owner>/<repo>/rulesets` 现查；今天它要求走 PR、且没有配任何 status check），所以唯一自动门禁是
