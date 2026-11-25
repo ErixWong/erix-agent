@@ -44,6 +44,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { FLAT_WRITE_ALLOWLIST } from "./compat-pin-allowlist.mjs";
 
 // `typescript` 是 CJS：按**脚本自身位置**解析（不再依赖 cwd 里有 node_modules），
 // 这样 `node scripts/flat-count-inventory.mjs /tmp/base-498` 从任意目录跑都对。
@@ -592,6 +593,34 @@ function verify(root, mdPath) {
   return bad.length;
 }
 
+/**
+ * 白名单判据（#907）：只核两件事，点数怎么变都不看。
+ *   ① AST 算出某 (文件, 面) 有点数，而白名单里没有该 (文件, 面) ⇒ 红并点名文件 / 面 / 点数；
+ *   ② 白名单条目指向已不存在的文件 ⇒ 红并点名（防清单腐烂）。
+ * 清单内文件的点数变化**不红**（相对旧台账的有意行为改变）。
+ */
+function verifyWhitelist(root) {
+  const { per } = count(root);
+  const listed = new Map();
+  for (const e of FLAT_WRITE_ALLOWLIST) {
+    if (!listed.has(e.file)) listed.set(e.file, new Set());
+    for (const s of e.surfaces) listed.get(e.file).add(s);
+  }
+  const problems = [];
+  for (const [file, v] of per) {
+    const sur = listed.get(file) || new Set();
+    if (v.cap > 0 && !sur.has("cap")) problems.push(`✗ 清单外写点：${file} 能力面（cap） ${v.cap} 点，白名单没有该 (文件, cap)`);
+    if (v.data > 0 && !sur.has("data")) problems.push(`✗ 清单外写点：${file} 数据面（data） ${v.data} 点，白名单没有该 (文件, data)`);
+  }
+  for (const e of FLAT_WRITE_ALLOWLIST) {
+    if (!fs.existsSync(path.join(root, e.file))) problems.push(`✗ 白名单条目指向已不存在的文件：${e.file}`);
+  }
+  for (const p of problems) console.log(p);
+  if (problems.length) { console.log(`白名单核对：${problems.length} 处不一致`); }
+  else console.log(`白名单核对：通过（清单 ${FLAT_WRITE_ALLOWLIST.length} 条，清单外无写点、条目无失效文件）`);
+  return problems.length;
+}
+
 function main() {
   const root = process.argv[2] || ".";
   const mode = process.argv[3] || "";
@@ -605,6 +634,7 @@ function main() {
     return;
   }
   if (mode === "--verify") { process.exitCode = verify(root, process.argv[4]) === 0 ? 0 : 1; return; }
+  if (mode === "--verify-allowlist") { process.exitCode = verifyWhitelist(root) === 0 ? 0 : 1; return; }
   if (mode === "--sync") { process.exitCode = sync(root, process.argv[4]) === 0 ? 0 : 1; return; }
   if (mode === "--keys") {
     const byKey = new Map();
