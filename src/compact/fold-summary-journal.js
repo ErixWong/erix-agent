@@ -541,6 +541,15 @@ function foldedFactsTitle(text) {
     : characters.slice(0, FOLDED_FACTS_TITLE_MAX_CHARS).join("");
 }
 
+// issue #897：模型给的 title 走同一个上限夹断（与 `foldedFactsTitle` 同口径，不另定一个）。
+/** @param {string} value @returns {string} */
+function clampFactsTitleChars(value) {
+  const characters = Array.from(value);
+  return characters.length <= FOLDED_FACTS_TITLE_MAX_CHARS
+    ? value
+    : characters.slice(0, FOLDED_FACTS_TITLE_MAX_CHARS).join("");
+}
+
 /**
  * 把 `text` 里的**清单节**投影成结构化的 `toolCalls`（issue #565）。
  *
@@ -611,6 +620,7 @@ function foldedFactsToolCalls(text) {
  *   strategy?: unknown,
  *   origin?: unknown,
  *   summary?: unknown,
+ *   title?: unknown,
  *   roundRange?: { from?: unknown, to?: unknown }|null,
  *   rounds?: unknown,
  *   degradeReason?: unknown,
@@ -630,6 +640,7 @@ function foldedFactsToolCalls(text) {
  *     truncated?: boolean, bytesBefore?: number,
  *   },
  *   summary?: string, toolCalls?: { name: string, argsSummary: string }[],
+ *   titleFallback?: boolean, summaryDropped?: boolean,
  *   source: string, strategy: string, bytes: number,
  *   from?: number, to?: number, rounds?: number,
  *   truncated?: boolean, bytesBefore?: number,
@@ -646,7 +657,12 @@ export function buildFoldedFacts(input = {}) {
   const origin = resolveFactsOrigin(input);
   // `title` 从**原始正文**取（不是从夹断后的结果取）：这样「首行」是**输入的性质**，不是夹断的副产物。
   // 夹断只削尾部 ⇒ 首行（剥掉引擎 marker 后）按构造还在 ⇒ `title` 结构性存活，不靠运气、也不需要第二份预算。
-  const title = foldedFactsTitle(raw);
+  // issue #897：title 优先用模型给的（`input.title`，同一上限夹断）；模型没给才退回上面的首行派生
+  //（今天的行为，正是 `## 阶段` 的来源）。`titleFallback` 只在语义折且没拿到模型 title 时出现，
+  // 让「退回首行」在落账形状上可检测（不静默）。
+  const modelTitle = typeof input.title === "string" ? input.title.trim() : "";
+  const title = modelTitle !== "" ? clampFactsTitleChars(modelTitle) : foldedFactsTitle(raw);
+  const titleFallback = origin === "semantic" && modelTitle === "";
   // `summary` 与 `text` 共用一个预算：语义摘要先占，剩下的留给正文；整份放不下就不写这个可选键
   //（不截断、不越界、不另立预算——机械路径给的 `summary` 在这里就被丢掉，它不许冒充语义）。
   const summaryCandidate = origin === "semantic" && typeof input.summary === "string"
@@ -655,6 +671,9 @@ export function buildFoldedFacts(input = {}) {
   const summary = summaryCandidate !== "" && bytesOf(summaryCandidate) <= maxBytes - MIN_FACTS_TEXT_BYTES
     ? summaryCandidate
     : "";
+  // issue #897：给了 description 但共用预算装不下 ⇒ 不静默丢键：写一个只在真发生时出现的
+  // `summaryDropped` 标记，让宿主分得清「被挤掉」与「模型没写」（后者 summaryCandidate 本就空）。
+  const summaryDropped = summaryCandidate !== "" && summary === "";
   const textBudget = maxBytes - bytesOf(summary);
   // issue #566：夹断逻辑抽成 `clampFactsText`，与下面「本折增量」共用同一把尺子；
   // 行为逐字不变（原来的内联二分搜索搬进去，一个参数都没改）。
@@ -712,9 +731,11 @@ export function buildFoldedFacts(input = {}) {
     // issue #565：给宿主的三键（纯加法）。`title` 取自 `text` 的首行（剥掉引擎 marker）⇒ 夹断削尾也削不掉它；
     // `origin` 必填（判据不是注释）；`toolCalls` 与 `text` 的清单节同源（同一份 `text` + 同一个解析器）。
     title,
+    ...(titleFallback ? { titleFallback: true } : {}),
     origin,
     ...(increment === undefined ? {} : { [FOLDED_FACTS_INCREMENT_KEY]: increment }),
     ...(summary !== "" ? { summary } : {}),
+    ...(summaryDropped ? { summaryDropped: true } : {}),
     ...(toolCalls.length > 0 ? { toolCalls } : {}),
     source: typeof input.source === "string" && input.source !== ""
       ? input.source

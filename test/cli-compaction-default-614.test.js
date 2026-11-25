@@ -59,6 +59,7 @@ import {
   createScriptedUpstream,
   jsonResponse,
   SEMANTIC_SUMMARY_MARKER,
+  SUMMARIZER_PROMPT_MARKER,
   semanticSummaryText,
   textResponse,
 } from "../fixtures/upstream.mjs";
@@ -374,7 +375,7 @@ test("#614 分流依据：classifyChatRequest 三类都是**正面**识别（摘
     json: {
       messages: [{
         role: "user",
-        content: "请把被折叠轮次整理成可继续工作的日志，并严格使用以下分节：\n## 阶段\n…",
+        content: `${SUMMARIZER_PROMPT_MARKER}\n## 阶段\n…`,
       }],
     },
   };
