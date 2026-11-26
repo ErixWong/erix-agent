@@ -56,9 +56,11 @@ concurrency:
 #     ⇒ **套件里本来就在跑**（`test/guide-removal-gate.test.js` / `test/release-day.test.js` 各自 spawn），
 #     CI 那两步是纯重复。
 #   · `check:inventory` ⇒ **整个闸已删**（issue #961 清单 B）。它是税闸：用 TypeScript AST 查「**测试代码**里
-#     有没有写退役扁平键」，代价是每加一个这样的测试就要往 191 条白名单里登记一条。删掉后
-#     **「测试代码里不许出现退役扁平拼写」这条边界确实没有了**（文档侧仍由 `retired-spelling-scan`
-#     判据② 看守，测试侧没有对等物——这是有意的取舍，不是遗漏）。
+#     有没有写退役扁平键」，代价是每加一个这样的测试就要往 191 条白名单里登记一条。
+#   · `check:docs-spelling` ⇒ **整个闸已删**（issue #961 清单 D）。1,640 行的扫描器 + 88 条手抄命中数钉子，
+#     而近 20 条相关 commit 里**没有一条**是它的判据抓到活文档里的退役拼写，全是钉子重钉。
+#     删掉后留下的边界缺口：一份**不可执行**的文档片段可以提到退役键名而没人红。
+#     兜底是运行期（引擎当场拒并点名规位家）与 `check:docs-examples`（真的执行契约与两份 README 的 js 围栏）。
 #   · `check:changelog` ⇒ 文档族，家在 `PREFLIGHT_STEPS[0]`（发版前置必跑）。
 #   · `check:cli:model-e2e` ⇒ CI 里闸门 `ERIX_E2E_MODEL` 是关着的，这一步只 exit 0（空转）；
 #     真跑在 `release:day --stage preflight` 的第 3 步。

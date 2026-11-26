@@ -154,8 +154,6 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 `examples/pi-extension/erix-run-e2e.test.mjs` （`npm test` 里默认 skip，真模型端点不是默认门禁的硬依赖）。需要 `node_modules` ；自清理，不写真实
 `~/.npmrc` 与 `~/.erix/config.json`
 
-## check-docs-spelling
-活文档里**退役扁平选项拼写**的**阻塞门禁**（issue #560；脚本本身是 #523 的 `scripts/retired-spelling-scan.mjs --strict`）：退役集从 `CONFIG_SURFACE_OPTION_NAMES` 减去 `RUN_TOOL_LOOP_OPTION_NAMES` 派生（从不拄清单），只在**代码语境**里算命中（围栏与行内 span；`config: { … }` 子树按叶子名跳过；`AMBIGUOUS_KEYS` 里那些「同时是别的东西的名字」不进判据），且面上每一份**入库的**文档——`docs/**/*.md` 加两份根 README（issue #572）——都**按路径**分类：现状描述（`architecture*`、`charts*`、`requirements*`、`testing*`、`maintenance-policy*`、`soak.md`）必须写成当前 API；历史记录（`decisions/*`、`v0.*`、`design/*`、`research/*`、`harness-comparison/*`、`suggestions/*`、`issue-469-*`、`tasks/*`、`host-upgrade-guide-*`）、契约（`host-consumer-contract*`）与根文档（`README.md`、`README_cn.md`，即「根文档」这一档，issue #572）正文一字不改，但**不再靠命中数钉子看守**（issue #961 A 删掉了 `HISTORY_BODY_PINS` / `CONTRACT_BODY_PINS` / `ROOT_DOC_BODY_PINS` 三张命中数钉子表、`unpinned` 与 `deadPins` 判据，连同 `SUSPECT` / `UNPINNED` / `DEAD-PIN` 判词；两份根 README 仍按 `rootdoc` 一档分类（issue #572），但这一档和 `history` / `contract` 一样不再 gating）。**文件清单只取 `git ls-files`**（issue #560）：扫描面是**入库的** `docs/**/*.md` 加两份入库的根 README（issue #572——**显式** pathspec 清单 `SCAN_PATHSPECS`，绝不是 `.`，所以面不会偷偷变成整个仓库），绝不走文件系统遍历——因为 `docs/tasks/` 与 `docs/delivery/` 是被 gitignore 的本地档案，走盘会让同一份仓库内容在开发树 `--strict` exit 1、在干净克隆 exit 0（CI 跑的是克隆，那批红永远见不到）。`git` 不可用 / 不在仓库内 / 仓库顶层不是本脚本所在目录 / 清单为空 ⇒ 扫描器**显式报错 exit 2**，**绝不**退回文件系统遍历（静默退回等于把「两个答案」留在原地，只是更难发现）。**哪份清单都不在的 `docs/**.md` 按现状类照扫**——「这张单没管到」那一类已经删了，未知分类不是免检。`check:docs` 完全不读选项拼写形态，所以这是紧跟 `check:docs:strict` 的独立阻塞步；`node scripts/retired-spelling-scan.mjs --self-test` 是这道门自己的反向证（阻塞，16 例；它拿**入库面的副本**当真扫描对象、在副本上造红——其中三例是 issue #572 扩面的反向证：往 `README.md` 里塞一句扁平拼写 ⇒ `--strict` 与 `--strict --json` 都红、还原 ⇒ 两路都绿；根文档类的 README 即便有命中也仍是 `OK`（issue #961 A：正文钉子表已删，此例只验 README 在面上且该档不 gating）。`--strict --json` 是**同一道门**的机器读法（issue #575）：红集合（`gateVerdicts()`）与「红数 → 退出码」（`gateExitCode()`）各只有一份，两条输出分支都只读它们，所以 `--strict --json` 在有红的面子上与文本分支一样答 exit 1，且 JSON 里带 `gate.{strict,gating,mode,red,counts,exitCode,wouldExitCode}` —— #575 之前 `--json` 分支无条件 `process.exitCode = 0`，任何机器消费者都把红读成绿。报告模式（`--json` 不带 `--strict`）仍是 exit 0，但照样报出同一个红数并标 `gating: false`
 
 ## check-agents-directives
 **阻塞门**（issue #726；三类文本启发式已由 issue #909 删除），判定面是**指令面**——`AGENTS.md` / `AGENTS_cn.md`，每次会话自动注入、模型不查证就照着执行的那一页。#909 之后这道闸**只有一条判据**：**字节预算**（见下一段）。它原先跑的三类文本启发式——工单状态断言、会过期的实测抄件、裸源码坐标——连同它们的例外登记表、按「文件 × 类别」钉的上限表、各自的 `--sync` 路径与 `--self-test` 夹具，全部删除。**有意的行为改变（#909）**：往 `AGENTS.md` / `AGENTS_cn.md` 里写一句假版本号、过期抄件或裸坐标**不再在这里报红**——那种「读文本猜语义」的活由 `check:docs` 的版本对账负责，不归这道字节预算闸管。文件清单仍只取 `git ls-files`（#560 红线：不退回文件系统遍历），`node scripts/agents-directive-scan.mjs --self-test` 仍在，但只测字节预算（它的夹具：往合成 `AGENTS.md` 灌 2 KB 废话必红、还原必绿）。`--sync <文件>` 是改预算格的唯一合法法，`--verify <文件>` 对任何不等于推导值的格判红（手抄 = 抄高抄低都红），CI 两步都跑
@@ -271,7 +269,7 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
     步骤爬回 `ci.yml`」。
   - 纯重复的直接删：`guide-removal-gate --self-test`、`release-day --self-test` 早就分别被
     `test/guide-removal-gate.test.js`、`test/release-day.test.js` spawn 了。
-  - 文档族（`check:docs`、`check:docs:strict`、`check:docs-spelling`、`check:docs-examples`、
+  - 文档族（`check:docs`、`check:docs:strict`、`check:docs-exampleses`、
     `check:agents-directives`、`check:changelog`）住在**已经接线的那道版本边界**上——`check:changelog` 作为
     `PREFLIGHT_STEPS[0]` 阻塞、`check:docs` 在 `release:day --stage writeback` 里重跑——其余时候由周期性 agent
     检查承担（`doc-review-pass_cn.md`，入口 `npm run docs:pass`）。背后的用户裁决是 #802：脚本只能判措辞，

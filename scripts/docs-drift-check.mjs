@@ -259,7 +259,7 @@ const ARCH_EN = "docs/architecture.md";
 const ARCH_CN = "docs/architecture_cn.md";
 const CHARTS_EN = "docs/charts.md";
 const CHARTS_CN = "docs/charts_cn.md";
-/** issue #644 ③：符号锚点声称链的新家（历史类文档，`retired-spelling-scan.mjs` 按路径把它归成 history）。
+/** issue #644 ③：符号锚点声称链的新家（历史类文档，（该闸已由 #961 删除；原 `retired-spelling-scan.mjs` 按路径把它归成 history）。
  *  它同时在锚点面内（见 `SYMBOL_DOCS_STATIC`）：搬动不能让 (符号, 文件) 组数掉下去。 */
 /** 工具事实契约常量的真值出处（工单 261014 T1）。 */
 const TOOL_FACT_SRC = "src/tool-fact.js";
