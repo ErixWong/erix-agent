@@ -52,9 +52,16 @@ concurrency:
 #   · `check:syntax`(3s)、`check:tests` 与它的 `--self-test`、`mutation-sample-check --self-test`、
 #     `pack-link-check --self-test`、`check:config-leaf-values`(1s)
 #     ⇒ **搬进 `npm test`**：`test/gate-self-tests.test.js`（实测这几条加起来 ≈ 4s）。
-#   · `check:inventory`、`guide-removal-gate --self-test`、`release-day --self-test`
-#     ⇒ **套件里本来就在跑**（`test/flat-count-inventory*.test.js` / `test/guide-removal-gate.test.js` /
-#     `test/release-day.test.js` 各自 spawn），CI 那三步是纯重复。
+#   · `guide-removal-gate --self-test`、`release-day --self-test`
+#     ⇒ **套件里本来就在跑**（`test/guide-removal-gate.test.js` / `test/release-day.test.js` 各自 spawn），
+#     CI 那两步是纯重复。
+#   · `check:inventory` ⇒ **整个闸已删**（issue #961 清单 B）。它是税闸：用 TypeScript AST 查「**测试代码**里
+#     有没有写退役扁平键」，代价是每加一个这样的测试就要往 191 条白名单里登记一条。
+#   · `check:docs-spelling` ⇒ **整个闸已删**（issue #961 清单 D）。1,640 行的扫描器 + 88 条手抄命中数钉子，
+#     而近 20 条相关 commit 里**没有一条**是它的判据抓到活文档里的退役拼写，全是钉子重钉。
+#     删掉后留下的边界缺口：一份**不可执行**的文档片段可以提到退役键名而没人红。
+#     兜底是运行期（引擎当场拒并点名规位家）与 `check:docs-examples`——但注意它的覆盖面：
+#     **只有 EN 侧的 js 围栏被 L3 真正执行**，CN 侧只校围栏数与代码骨架（不独立执行）。
 #   · `check:changelog` ⇒ 文档族，家在 `PREFLIGHT_STEPS[0]`（发版前置必跑）。
 #   · `check:cli:model-e2e` ⇒ CI 里闸门 `ERIX_E2E_MODEL` 是关着的，这一步只 exit 0（空转）；
 #     真跑在 `release:day --stage preflight` 的第 3 步。

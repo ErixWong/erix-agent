@@ -102,7 +102,6 @@ test("边界：搬进来的这几条不得再回到 CI 当步骤（重复的一�
     "node scripts/pack-link-check.mjs --self-test",
     "npm run check:config-leaf-values",
     "npm run check:changelog",
-    "npm run check:inventory",
   ]) {
     assert.ok(
       !runLines.has(cmd),

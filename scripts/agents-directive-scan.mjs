@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // agents-directive-scan.mjs — 阻塞门：**AGENTS 指令面**的字节预算（issue #726 建，issue #909 收敛为只留这一条判据）
-// （家族照 `scripts/retired-spelling-scan.mjs`：文件清单只取 `git ls-files`、`--strict` 与 `--strict --json`
+// （家族照（现已删除的）`scripts/retired-spelling-scan.mjs`：文件清单只取 `git ls-files`、`--strict` 与 `--strict --json`
 //  共用同一份红集合、自带 `--self-test` 反向证、`--sync` / `--verify` 是派生预算表的唯一合法改法与验表）。
 //
 // #909 的裁决：这张闸原先挂着**三类文本启发式**（① 工单状态句、② 会过期的实测数抄件 / 手抄件上限表、

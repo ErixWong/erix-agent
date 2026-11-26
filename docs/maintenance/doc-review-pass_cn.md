@@ -21,8 +21,9 @@
 npm run docs:pass
 ```
 
-它依次跑：`check:docs`（漂移 + 中英骨架 + 版本声称 + 引用路径）、`check:docs:strict`、`check:docs:spelling`、
-`check:docs:examples`、`check:agents-directives`。
+它依次跑：`check:docs`（漂移 + 中英骨架 + 版本声称 + 引用路径）、`check:docs:strict`、`check:docs-examples`、
+`check:agents-directives`。（`check:docs-spelling` 从前夹在那两条 strict 步之间，已由 issue #961 删除——代价写在
+`.github/workflows/ci.yml` 的注记里。）
 **它的退出码是关于脚本的证据，不是关于文档的证据**——脚本看不见「看起来对但其实错了」的句子。
 
 自 issue #908 R2（261126）起 **CI 里一条文档闸都没有**——`check:changelog` 与文档向自测都不再是流水线步骤。
@@ -61,7 +62,7 @@ npm run docs:pass
 | 闸 | 为什么留着 |
 |---|---|
 | `check:agents-directives` 的字节预算 + 状态句/过期抄件/裸坐标三类 | 指令面每轮全额重发：**长度**就是成本，而写在上面的状态句会被当成事实执行。棘轮数字一律 `--sync` 刷，不许手写。 |
-| `check:inventory` / `check:config-leaf-values` | `check:inventory` 拿 AST 与白名单 `scripts/compat-pin-allowlist.mjs` 对（清单外写点或清单条目失效 ⇒ 红）；`check:config-leaf-values` 由探针重生成一张入库的表再与树对。两者判的都是**派生值**、不判散文；动派生态只有生成器这一条合法路径（不许手改）。 |
+| `check:config-leaf-values` | `check:config-leaf-values` 由探针重生成一张入库的表再与树对。两者判的都是**派生值**、不判散文；动派生态只有生成器这一条合法路径（不许手改）。 |
 | `check:pack-links` | 随包 Markdown 的链接必须解析得到；随包 README 里一条死链是坏产物，不是过期句。 |
 | `check:changelog` | 碰到公开面的合并没有 CHANGELOG 条目是**缺记录**，不是措辞问题。 |
 

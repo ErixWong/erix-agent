@@ -25,7 +25,8 @@ npm run docs:pass
 ```
 
 That runs, in order: `check:docs` (drift + EN/CN skeleton + version claims + referenced paths), `check:docs:strict`,
-`check:docs:spelling`, `check:docs:examples`, `check:agents-directives`.
+`check:docs-examples`, `check:agents-directives`. (`check:docs-spelling` used to sit between the two strict steps; it was
+deleted by issue #961 — see the note in `.github/workflows/ci.yml` for what that costs.)
 **Its exit code is evidence about the scripts, not about the documents** — the scripts cannot see a sentence that
 is true-looking and wrong.
 
@@ -74,7 +75,7 @@ suite. Second-scale **code** gates are not this pass's business either: they run
 | Gate | Why it survives |
 |---|---|
 | `check:agents-directives` byte budget + status/expiry/bare-coordinate classes | The instruction face is re-sent every turn: its **length** is a cost, and a status sentence there is executed as truth. The ratchet numbers are `--sync`ed, never hand-written. |
-| `check:inventory` / `check:config-leaf-values` | `check:inventory` matches the AST against the whitelist `scripts/compat-pin-allowlist.mjs` (an out-of-list write point or a stale entry ⇒ red); `check:config-leaf-values` regenerates a committed table from a probe and compares it with the tree. Both judge a **derived value**, not prose; the only legitimate way to move the derived state is the generator — no hand-edits. |
+| `check:config-leaf-values` | `check:config-leaf-values` regenerates a committed table from a probe and compares it with the tree. Both judge a **derived value**, not prose; the only legitimate way to move the derived state is the generator — no hand-edits. |
 | `check:pack-links` | Packaged Markdown links must resolve; a dead link in a shipped README is a broken artifact, not a stale sentence. |
 | `check:changelog` | A public-surface merge with no CHANGELOG entry is a missing record, not a wording issue. |
 
