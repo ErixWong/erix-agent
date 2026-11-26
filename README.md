@@ -1083,9 +1083,12 @@ The shared CLI flags are:
   closing `=== 统计 ===` line gains `reasoningTokens=…` **only when the upstream reported it** —
   nothing is printed rather than a `0` standing in for "did not think" (the issue #785 P1 rule) —
   plus `effort=none→low` when the engine's one GLM translation (ADR-017) fired.
-- Context folding is always done by the LLM (`fold-llm`); there is no `--compaction` flag or
+- Context folding is done by the LLM (`fold-llm`); there is no `--compaction` flag or
   `slots.default.compaction` field any more (issue #898 removed the "explicitly pick a zero-LLM
-  strategy" escape hatch). `fold-llm` costs one extra main-model call per compaction. A host that
+  strategy" escape hatch). `fold-llm` costs one extra main-model call per compaction. **One exception,
+  and it is deliberate**: when the budget still cannot be met *after* LLM folding, the engine's last
+  resort is the mechanical `slidingWindow` layer — it leaves a detectable mark in the fold record
+  rather than pretending to be a summary. A host that
   calls the library with no strategy and no summarizer simply does not fold (the engine no longer
   silently substitutes a mechanical summary); an over-budget run fails through the existing
   `cannot_fit` / `budgetUnreachable` path. Since issue #673 `erix chat`
