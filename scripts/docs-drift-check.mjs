@@ -5303,7 +5303,37 @@ const TREE_FIXTURE_ARCHIVE_FILES = [
   "docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md",
 ];
 let SIM_TREE_SHAPE = null;   // null = 真实树（默认）；否则是上面三种形状之一
+// issue #914：裸名解析面（「能否解析」）必须取 **git manifest**，未跟踪实物一律不参与解析。
+// 本口子只给 `--self-test` 用（与 SIM_TREE_SHAPE 同一课）：模拟「磁盘上有、git 里没有」的未跟踪产物
+// （例如 agent 把 sessionDir 指在 git 树内多出的 session/outputs/<runId>/status.json）。生产默认 []。
+let SIM_UNTRACKED_FILES = [];
 let repoFilesCache = null;
+// #914：解析面的唯一来源。缓存一份 `git ls-files --cached --full-name`（已跟踪清单，含已跟踪符号链接；
+// 未跟踪实物天然不在内）。拿不到清单 ⇒ 记一条 MANIFEST_REFUSAL 口径的红、面置空，**没有**文件系统回退分支
+// （#560/#273 立的红线：退回文件系统遍历会把不入库的文件喂给判据，让门在开发树与干净克隆里给出两个答案）。
+let MANIFEST_FILES_CACHE = null;
+let MANIFEST_REFUSAL = null;   // null = 清单正常；否则是那句必须报的红
+function gitManifest() {
+  if (MANIFEST_FILES_CACHE !== null) return MANIFEST_FILES_CACHE;
+  let raw;
+  try {
+    raw = execFileSync("git", ["ls-files", "-z", "--cached", "--full-name"], {
+      cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (error) {
+    const detail = String(error?.stderr ?? error?.message ?? error).trim().split("\n").filter(Boolean)[0] ?? String(error);
+    MANIFEST_REFUSAL = "paths/manifest: 取不到入库清单（`git ls-files` 失败：" + detail + "）——裸名解析面失效："
+      + "不许退回文件系统遍历：那会把不入库的文件喂给判据，让门在开发树与干净克隆里给出两个答案（#914 / #560）";
+    MANIFEST_FILES_CACHE = [];
+    return MANIFEST_FILES_CACHE;
+  }
+  MANIFEST_FILES_CACHE = [...new Set(raw.split("\0")
+    .filter((rel) => rel.length > 0)
+    .map((rel) => rel.split(path.sep).join("/")))]
+    .sort();
+  MANIFEST_REFUSAL = null;
+  return MANIFEST_FILES_CACHE;
+}
 /** 一条被忽略的**目录规则**要不要整目录剪掉（不进 tracked / ignored 清单）。未登记的规则按「不扫」处理：
  *  未分类本身已由 collectPathErrors 直接报红，扫描面不替它兜底。跳过与否只由 `SKIPPED_DIR_KINDS` 决定，
  *  所以 `--self-test` 能拿这个谓词直接证「`.scratch/` 真的不扫」（见 #337 那一例的 assertAfter）。 */
@@ -5313,9 +5343,14 @@ function ignoredDirIsSkipped(rule) {
   return SKIPPED_DIR_KINDS.has(cls.kind);
 }
 function repoFiles(ign) {
-  const key = `${SIM_TREE_SHAPE ?? "real"}|${ign.rules.map((r) => r.pattern).join("\n")}`;
+  const key = `${SIM_TREE_SHAPE ?? "real"}|${SIM_UNTRACKED_FILES.join("\n")}|${ign.rules.map((r) => r.pattern).join("\n")}`;
   if (repoFilesCache && repoFilesCache.key === key) return repoFilesCache;
-  const tracked = [];
+  // #914：「能否解析」= 解析面，一律取 git manifest；磁盘遍历这一轮只负责两件事——
+  //   ① 认得被忽略目录（task-archive 等，供「忽略类」裁决与 #302 树形夹具）；
+  //   ② 收集磁盘上的未忽略实物（onDisk），用来识别「磁盘有、git 无」的未跟踪产物（untracked）。
+  // `tracked` 不再是磁盘遍历的结果，而是 `gitManifest()` 剔掉被 .gitignore 命中的条目（干净树里与旧遍历逐字相等，
+  // 只是不再含未跟踪实物——本单要修的正是这点）。
+  const onDisk = [];
   const ignored = [];
   const skipDir = (rel) => {
     const rule = ign.ruleFor(`${rel}/`);
@@ -5328,9 +5363,22 @@ function repoFiles(ign) {
       const rel = dir ? `${dir}/${name}` : name;
       if (skipDir(rel)) continue;
       if (statSync(path.join(ROOT, rel)).isDirectory()) down(rel, underIgnored || !!ign.ruleFor(`${rel}/`));
-      else (underIgnored || ign.ruleFor(rel) ? ignored : tracked).push(rel);
+      else (underIgnored || ign.ruleFor(rel) ? ignored : onDisk).push(rel);
     }
   })("", false);
+  // 解析面 = git manifest（已跟踪）∩ 未被 .gitignore 命中（#914）。被 gitignore 但已提交的文件（如 docs/tasks/
+  // 那批）落在「忽略类」那一侧，由 ignored 分支裁决，不进解析面。
+  const manifestSet = new Set(gitManifest());
+  const tracked = [...manifestSet].filter((rel) => !ign.ruleFor(rel)).sort();
+  const resolvableFiles = new Set(tracked);
+  // git 不列目录；引用也可能指向目录（如 `scripts/`）——凡有可解析文件落在其下，该目录即算存在。
+  const resolvableDirs = new Set();
+  for (const f of tracked) {
+    let d = path.posix.dirname(f);
+    while (d && d !== "." && d !== "/") { resolvableDirs.add(d); d = path.posix.dirname(d); }
+  }
+  // 未跟踪产物：磁盘上未被忽略、却不在 git manifest 里的实物（含 SIM 注入的探针）。
+  const untracked = [...new Set([...onDisk, ...SIM_UNTRACKED_FILES])].filter((f) => !manifestSet.has(f)).sort();
   // 树形夹具：把 task-archive 类目录这一格**整片**换成夹具声明的那份清单（真实实物一律不参与），
   // 所以三形状之间只差「那批文件在不在索引里」这一件事——声明一侧（.gitignore / 登记表 / 就地声明）不动。
   const outside = SIM_TREE_SHAPE ? ignored.filter((f) => !isUnderTaskArchive(ign, f)) : ignored;
@@ -5338,7 +5386,7 @@ function repoFiles(ign) {
     ? outside.concat(TREE_FIXTURE_ARCHIVE_FILES)
     : outside;
   repoFilesCache = {
-    key, tracked, ignored: ignoredHere,
+    key, tracked, untracked, resolvableFiles, resolvableDirs, ignored: ignoredHere,
     // #302：夹具落地检查要问「索引里那批档案到底是哪几条」，所以把它单独留一份（真实树里就是真清单）。
     archiveInIndex: ignoredHere.filter((f) => isUnderTaskArchive(ign, f)),
   };
@@ -5384,8 +5432,17 @@ function treeFixtureLanding(ign) {
 }
 
 /** 三级解析：仓库根 → 文档同目录 → 全仓唯一同名。同名只认**唯一**命中（歧义不算解析成功，
- *  要写清路径）；先查未忽略文件（克隆后仍在的那批），再查被忽略的（解到就走「忽略类」裁决）。
+ *  要写清路径）；能否解析一律取 **git manifest**（已跟踪∩未被 .gitignore，#914：未跟踪实物一律不参与解析），
+ *  再查被忽略的（解到就走「忽略类」裁决）。
  *  解不到时把命中的 .gitignore 规则一并带出，供分类使用。 */
+/** 「能否解析」的唯一口径（#914）：候选路径在解析面（已跟踪文件集）里，或是某个已跟踪文件的祖先目录。
+ *  不再问 `existsSync`——那会把未跟踪实物当实物喂给判据，让同一提交在开发树与干净克隆里给出两个答案。 */
+function resolvablePath(ign, rel) {
+  const idx = repoFiles(ign);
+  const s = rel.replace(/\/+$/, "");   // 目录引用带尾斜杠（`src/`）：去掉后再比，与 existsSync(path.join) 同口径
+  if (s === "" || s === "." || s === "./") return true;   // 仓库根恒存在
+  return idx.resolvableFiles.has(s) || idx.resolvableDirs.has(s);
+}
 function resolveRef(p, docRel, ign) {
   const fromDoc = p.startsWith("./") || p.startsWith("../");
   const clean = p.replace(/^\.\//, "");
@@ -5396,7 +5453,7 @@ function resolveRef(p, docRel, ign) {
   for (const c of cands) {
     const rule = ign.ruleFor(c);
     if (rule) return { ignoredPath: c, rule };
-    if (existsSync(path.join(ROOT, c))) return { resolved: c, via: c === clean ? "仓库根" : "文档同目录" };
+    if (resolvablePath(ign, c)) return { resolved: c, via: c === clean ? "仓库根" : "文档同目录" };
   }
   if (!clean.includes("/")) {
     const idx = repoFiles(ign);
@@ -9958,6 +10015,35 @@ const SELF_TEST_CASES = [
     simulateDateTagExemptions: [],
     expectGreen: true,
   },
+  {
+    label: "#914 正向证：开发树里多出一个未跟踪的 session/outputs/<runId>/status.json（agent 把 sessionDir 指在 git 树内）——裸名解析面只认 git manifest，未跟踪实物不参与解析 ⇒ 裸名 status.json 仍靠白名单放行 ⇒ 仍绿",
+    // 现场复现（issue #914）：以前未跟踪实物会经文件系统遍历混进「唯一同名」解析面，让裸名 status.json
+    // 从「靠白名单放行」变成「直接解析到」⇒ 白名单被判空转 ⇒ 红。现解析面取 git manifest，未跟踪实物一律不算。
+    simulateUntrackedFiles: ["session/outputs/261126-46/status.json"],
+    expectGreen: true,
+    // 只证「绿」不够：还得证这一绿来自「未跟踪实物被排除在解析面之外」，不是恒绿。
+    assertAfter: () => {
+      const idx = repoFiles(LAST_IGN);
+      if (!idx.untracked.includes("session/outputs/261126-46/status.json")) {
+        return "#914 正向证：未跟踪夹具没进 repoFiles().untracked（SIM_UNTRACKED_FILES 没接进解析面）";
+      }
+      if (idx.tracked.includes("session/outputs/261126-46/status.json")) {
+        return "#914 正向证：未跟踪实物仍混在解析面 tracked 里（解析面没改成 git manifest）";
+      }
+      return null;
+    },
+  },
+  {
+    label: "#914 反向证：往一份全仓 .md 里加一个裸名引用 zz-914-probe.json，并让磁盘上真有一个同名未跟踪实物——解析面只认 git manifest，未跟踪不算解析成功 ⇒ 该引用仍判「解不到」红（证明新判据不是「一律放过」）",
+    overlay: {
+      "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t + "\n#914 反向证探针：`zz-914-probe.json`。\n",
+    },
+    simulateUntrackedFiles: ["session/outputs/zz-914-probe.json"],
+    expect: [/`zz-914-probe\.json`（第 \d+ 行）：本仓不存在（仓库根/],
+    assertAfter: () => (repoFiles(LAST_IGN).untracked.includes("session/outputs/zz-914-probe.json")
+      ? null
+      : "#914 反向证：未跟踪探针没进 repoFiles().untracked（SIM_UNTRACKED_FILES 没接进解析面）"),
+  },
 ];
 
 
@@ -10133,6 +10219,11 @@ function runSelfTest() {
       }
       SIM_COMPACTION_DROP_WORD_IDS = c.simulateCompactionDropWordIds;
     }
+    // #914：解析面未跟踪实物的配置口子（与 SIM_TREE_SHAPE 同一课：overlay 只改文本，改不动「磁盘上有没有
+    // 那个文件」与「git 清不含它」）。用来造「磁盘有、git 无」的未跟踪产物——正向证它不参与解析（白名单照旧
+    // 放行）、反向证它也不拿实物放行引用。跑完在 finally 里还原，一条也不许留在全局。
+    const untrackedSaved = SIM_UNTRACKED_FILES;
+    SIM_UNTRACKED_FILES = c.simulateUntrackedFiles ?? [];
     let errs = [];
     let landing = null;    // #302：夹具有没有真的落上（null = 本例不挂夹具）
     let afterWhy = null;   // #337：assertAfter 必须在配置口子**还挂着**的时候问（否则临时登记已被还原）
@@ -10148,6 +10239,7 @@ function runSelfTest() {
       SIM_DATE_TAG_EXEMPTIONS = dateExemptSaved;   // #697：登记表口子同上
       SIM_DOC_VERSION_EXEMPT = docExemptSaved;     // #511：doc-version 放行表同上
       SIM_COMPACTION_DROP_WORD_IDS = wordIdsSaved; // #668 ① ③：判据词表一条也不许留在全局
+      SIM_UNTRACKED_FILES = untrackedSaved;        // #914：未跟踪实物夹具同上
       if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
       if (dirClassSaved) {                                              // 同上：临时登记的类别一条也不许留在表里
         const [pattern, prev] = dirClassSaved;
