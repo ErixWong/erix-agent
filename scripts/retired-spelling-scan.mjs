@@ -148,7 +148,8 @@ const CURRENT_DOC_PATTERNS = [
   { re: /^docs\/maintenance-policy(_cn)?\.md$/, why: "现状描述：维护策略正文" },
   { re: /^docs\/soak\.md$/, why: "现状描述：soak 操作手册，教宿主怎么把参数传给引擎" },
 ];
-/** 历史记录：当时决定的记录，正文一个字不改，只加带日期的状态横幅；命中数由钉子看守。 */
+/** 历史记录：当时决定的记录，正文一个字不改，只加带日期的状态横幅。
+ *  #961 A 起**没有命中数钉子**了：这一类的命中一律 ok（只有现状类进判据）。 */
 const HISTORY_DOC_PATTERNS = [
   { re: /^docs\/decisions\/[^/]+\.md$/, why: "历史记录：ADR，写的是当时作出的决定" },
   { re: /^docs\/v0\.[^/]*\.md$/, why: "历史记录：v0.x 契约快照（文件头自己写着「快照档案」）" },
@@ -247,9 +248,25 @@ export function scanText(text, retired) {
         if (configDepth <= 0) configDepth = 0;
         return;
       }
-      if (/(^|[\s{,])config\s*:\s*\{/.test(line)) {
-        configDepth = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
-        if (configDepth < 0) configDepth = 0;
+      // 规位子树：`config: {` 之后整体跳过，花括号配对回到 0 才恢复计数。
+      //
+      // issue #961（copilot 验收）：**只有整行就是那个 `config: {` 起点时才允许 `return`**。
+      // 旧写法对任何含 `config: {` 的行都 `return`，于是同一行里 `config` **左边**的退役键
+      // 被整行放过——`runToolLoop({ stallDetection: true, config: { … } })` 就是这样漏掉的
+      // （判据②的假阴性）。现在改成：含 `config: {` 的行只**截掉 `config` 起的尾巴**，
+      // 左半截照常过键位与 token 判据；只有「整行从 `config` 起」才整行返回。
+      const configStart = line.search(/(^|[\s{,])config\s*:\s*\{/);
+      if (configStart >= 0) {
+        const head = line.slice(0, configStart);
+        const opens = (line.slice(configStart).match(/\{/g) || []).length;
+        const closes = (line.slice(configStart).match(/\}/g) || []).length;
+        configDepth = Math.max(0, opens - closes);
+        // 左半截里如果还有别的键（`{ stallDetection: true, ` 这种），它必须先被看见。
+        if (head.trim() !== "" && head.trim() !== "{" && head.trim() !== "runToolLoop({") {
+          for (const m of head.matchAll(tokenRe)) push(lineNo, m[1], line, line);
+        }
+        // **无条件 return**：`config` 起的尾巴整段是规位子树（无论它在本行内是否已经闭合）。
+        // 闭合的话下一行 `configDepth` 已是 0，正常计数照旧。
         return;
       }
       const keyPosition = line.match(/^\s*(?:\/\/\s*)?([A-Za-z_$][\w$]*)\s*[:=,]?/);
@@ -589,6 +606,16 @@ async function selfTest(retired, manifest) {
     eq(scanText(rewritten, retired).filter((h) => h.verdict === "use").length, 0, "改写成规位形态后命中归零");
     // #961 A：历史 / 契约 / 根文档类的命中不再靠命中数钉子判红——一律 ok（只有现状类进判据）。
     eq(verdictFor({ kind: "history", uses: 1, strictUses: 1 }), "ok", "历史类有命中也不红（钉子已拆）");
+  });
+  t("`config: {` 与退役键**同一行**时，config 左边的那个键不许被整行放过（#961 copilot 验收的假阴性）", () => {
+    // 旧写法：任何含 `config: {` 的行都整行 return ⇒ `stallDetection` 藏在 config 左边就被漏掉。
+    const sameLine = "```js\nrunToolLoop({ stallDetection: true, config: { run: { maxRounds: 3 } } })\n```";
+    eq(scanText(sameLine, retired).filter((h) => h.verdict === "use").length, 1,
+      "config 左边的退役键必须被检出");
+    // 反向：键**在 config 子树里**（规位形态）⇒ 不报，否则这条修法会把规位写法全判红。
+    const insideConfig = "```js\nrunToolLoop({ config: { run: { stallDetection: true } } })\n```";
+    eq(scanText(insideConfig, retired).filter((h) => h.verdict === "use").length, 0,
+      "config 子树里的同名键是规位形态，不许报");
   });
   t("清单只取 `git ls-files`：盘上有、但没入库的文件不进扫描面；面也**不是**整个仓库", () => {
     // 独立推导一次（不调本文件的函数，pathspec 也**逐字重写一遍**）：同一棵树里 git 说了算，
