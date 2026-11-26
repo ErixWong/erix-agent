@@ -351,8 +351,20 @@ function mainRun() {
 // 内存夹具：一棵假树（一个目标文件 + 一个捕获者）+ 一份按真清单形状造的假样本数组。
 // 每条用例靠**改清单字段 / 改假树**造坏，然后断言 `validateSamples` / `run` 的裁决；
 // 变异打不上（靶 id / 靶串不在夹具里）按 #210 R2 判**失败**，不许静默变绿。
-// #906：删掉 verify/sync 的派生列夹具（行号 / sha / 合计行）后，反向证的用例数下穿，地板随之重登。
-const MIN_SELF_TEST_CASES = 16;
+// 反向证的「在场」判据（#923 ②：替换旧的 MIN_SELF_TEST_CASES 魔数地板）。
+// 旧地板按「总例数 < N」判红，代价实测过：#906 删了 verify/sync 的派生列夹具后用例数下穿，被迫把 23 刷成 16
+// ——每次正常删自测都得改这个数 = 税。改成结构判据：**每条登记过的判据 id 必须至少有一例反向证在场**；
+// 某个 id 在 SELF_TEST_CASES 里一例都没有 ⇒ 红并点名它。总例数、每条 id 有几例，都不判。
+// 为什么这里不用 import 的 `SAMPLES`（M1..M28）当登记表：那些是被 --run 变异的真实行为面，
+// 而下面的自测跑在**合成夹具**（M1..M8）上、断的是 validateSamples / run / applyMutation 的**判据**本身，
+// 与具体真实样本无对应关系；拿 28 条真实样本 id 去要求「每面一例自测」会把 16→ 重新变成例数地板。
+// 故按「每个 case 真正断言的那件事」登记判据 id（是 id 清单，不是例数）。
+const SELF_TEST_RULE_IDS = [
+  "clean-list", "dead-sample", "anchor-unique", "target-missing", "catcher-missing",
+  "empty-mutation", "short-signature", "sample-count", "id-sequence",
+  "mutation-missed", "mutation-applied", "mutation-not-caught", "red-wrong-assertion",
+  "not-restored-green", "run-full-chain", "pipe-anchor", "duplicate-sample", "duplicate-removed-green",
+];
 
 const FAKE_TARGET = "src/zz-selftest-target.js";
 const FAKE_CATCHER = "test/zz-selftest-catcher.test.js";
@@ -443,63 +455,76 @@ const ALL_SIGNATURE_RED = Array.from({ length: MIN_SAMPLES }, (_, i) => `not ok 
 
 const SELF_TEST_CASES = [
   {
+    rule: "clean-list",
     label: "① 干净清单 + 干净树 ⇒ 0 处不一致（同时证明清单形状本身就是合法的）",
     expectClean: true,
   },
   {
+    rule: "dead-sample",
     label: "④ 锚点已不在树里（真值改名）⇒ 红「样本死了」，不许静默通过",
     mutateTree: { file: FAKE_TARGET, from: "const Z5 = 5;", to: "const Z5 = 55;" },
     expect: [/^DEAD_SAMPLE M5（src\/zz-selftest-target\.js）：锚点已不在该文件里/u],
   },
   {
+    rule: "anchor-unique",
     label: "⑤ 锚点在树里出现两次 ⇒ 红「变异会打偏」（唯一性是判据，不是巧合）",
     mutateTree: { file: FAKE_TARGET, from: "const Z7 = 7;", to: "const Z7 = 7;\nconst Z7 = 7;" },
     expect: [/^M7（src\/zz-selftest-target\.js）：锚点在该文件里出现 2 次/u],
   },
   {
+    rule: "target-missing",
     label: "⑥ 目标文件不存在 ⇒ 红",
     mutateTree: { drop: FAKE_TARGET },
     expect: [/^M1（src\/zz-selftest-target\.js）：目标文件不存在/u],
   },
   {
+    rule: "catcher-missing",
     label: "⑦ 捕获者不存在 ⇒ 红（样本没有闸可咬）",
     mutateTree: { drop: FAKE_CATCHER },
     expect: [/^M1（src\/zz-selftest-target\.js）：捕获者 test\/zz-selftest-catcher\.test\.js 不存在/u],
   },
   {
+    rule: "empty-mutation",
     label: "⑧ 变异与锚点逐字相同（空变异）⇒ 红",
     mutateSample: { id: "M2", field: "mutation", to: "const Z2 = 2;" },
     expect: [/^M2（src\/zz-selftest-target\.js）：变异与锚点逐字相同/u],
   },
   {
+    rule: "short-signature",
     label: "⑨ 期望红签名被削弱（空串）⇒ 红",
     mutateSample: { id: "M4", field: "signature", to: "" },
     expect: [/^M4（src\/zz-selftest-target\.js）：期望红签名太短/u],
   },
   {
+    rule: "sample-count",
     label: "⑩ 删掉最后一条样本（8 → 7）⇒ 红在样本数下限（删样本让闸变绿不算修好）",
     dropSample: "M8",
     expect: [/样本数被削：现在 7 条，下限 8 条/u],
   },
   {
+    rule: "id-sequence",
     label: "⑪ id 不连续（改了中间一条却没重排）⇒ 红",
     mutateSample: { id: "M5", field: "id", to: "M55" },
     expect: [/^M55（src\/zz-selftest-target\.js）：id 不连续，第 5 条应为 M5/u],
   },
   {
+    rule: "mutation-missed",
     label: "⑭ applyMutation：锚点不在 ⇒ missed（变异没落地，不许当成「没变化=成功」；#210 R2）",
     expectMutationMissed: true,
   },
   {
+    rule: "mutation-applied",
     label: "⑮ applyMutation：锚点在 ⇒ 恰好替换一处，其余字节不动",
     expectMutationApplied: true,
   },
   {
+    rule: "mutation-not-caught",
     label: "⑯ run：变异后捕获者仍绿 ⇒ 红「变异没被抓住」",
     runScript: { red: { status: 0, output: "ok 1 - 自测签名 1\n" }, green: { status: 0, output: "ok 1 - 自测签名 1\n" } },
     expect: [/^M1：变异没被抓住/u],
   },
   {
+    rule: "red-wrong-assertion",
     label: "⑰ run：红了但红在别的断言上 ⇒ 红「不是该报的那条」（非 0 退出不等于咬住；不许退化成「有红就行」）",
     runScript: {
       red: { status: 1, output: "not ok 1 - 别的断言\n" },
@@ -508,6 +533,7 @@ const SELF_TEST_CASES = [
     expect: [/^M1：红了，但不是该报的那条/u],
   },
   {
+    rule: "not-restored-green",
     label: "⑱ run：还原后仍红 ⇒ 红「不能归因给变异」（基线本来就不干净）",
     runScript: {
       red: { status: 1, output: ALL_SIGNATURE_RED },
@@ -516,12 +542,14 @@ const SELF_TEST_CASES = [
     expect: [/^M1：还原后仍红/u],
   },
   {
+    rule: "dead-sample",
     label: "⑲ run 先验清单：真值已被改掉（锚点不在）⇒ 红「样本死了」，不许当「变异没落地也就没红」糊过去",
     runTree: { file: FAKE_TARGET, from: "const Z1 = 1;", to: "const Z1 = 100;" },
     runScript: { red: { status: 0, output: "" }, green: { status: 0, output: "" } },
     expect: [/^DEAD_SAMPLE M1（src\/zz-selftest-target\.js）：锚点已不在该文件里/u],
   },
   {
+    rule: "run-full-chain",
     label: "⑳ run 整条链对（变异 → 红在该报的断言上 → 还原 → 绿）⇒ 0 处问题、8 条全过",
     runScript: {
       red: { status: 1, output: ALL_SIGNATURE_RED },
@@ -530,17 +558,20 @@ const SELF_TEST_CASES = [
     expectRunClean: true,
   },
   {
+    rule: "pipe-anchor",
     label: "㉑ 锚点里含 `||`（M6 那种）⇒ 在 JS 清单里逐字命中、验清单绿（清单不转义也不拆列，锚点就是真竖线）",
     pipeSample: true,
     minSamples: 1,
     expectClean: true,
   },
   {
+    rule: "duplicate-sample",
     label: "㉒ 重复样本（同一目标文件 + 同一锚点，只差编号）⇒ 红并点名两条编号（#646 ④ / #906 语义口径）",
     duplicateSample: { fromId: "M1", newId: "M9" },
     expect: [/^M1 与 M9：重复样本——同一目标文件 src\/zz-selftest-target\.js \+ 同一锚点/u],
   },
   {
+    rule: "duplicate-removed-green",
     label: "㉓ 删掉重复样本 ⇒ 绿（反向证的还原半边：重复是红的原因，不是清单的底色）",
     duplicateSample: { fromId: "M3", newId: "M9" },
     dropSample: "M9",
@@ -554,8 +585,12 @@ function runSelfTest() {
 
   // 期望自己也要被看守（与 docs-drift-check / test-hygiene-check 同一课）：能匹配空串的期望等于没有断言；
   // 既不是放行证、也没写任何期望的一例 = 整例被跳过；用例数低于下限 = 有用例被删。
-  if (SELF_TEST_CASES.length < MIN_SELF_TEST_CASES) {
-    failures.push(`用例数被削：现在 ${SELF_TEST_CASES.length} 例，下限 ${MIN_SELF_TEST_CASES} 例——删用例 / 整例跳过不算修好`);
+  // 某条登记判据 id 被掏空（整个 SELF_TEST_CASES 里一例都没有）= 有用例被删。
+  const coveredRuleIds = new Set(SELF_TEST_CASES.map((c) => c.rule));
+  for (const id of SELF_TEST_RULE_IDS) {
+    if (!coveredRuleIds.has(id)) {
+      failures.push(`判据家族被掏空：id "${id}" 在 SELF_TEST_CASES 里一例都没有——删用例 / 整例跳过不算修好`);
+    }
   }
   for (const [i, c] of SELF_TEST_CASES.entries()) {
     const who = c.label ?? `第 ${i + 1} 例`;

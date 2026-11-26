@@ -606,7 +606,20 @@ export function checkPackLinks({ root = ROOT, runPack = runNpmPackDryRun } = {})
 // **变异没落上也算红**（#210 R2 的约定）。最后一例跑在**本仓真树**上（packed 取 `files` 条目），
 // 用它证明真登记表没有空转条目——它只读 `package.json` 与 `test/contract/` 的实物，不跑 pack。
 
-const MIN_SELF_TEST_CASES = 18;
+// 反向证的「在场」判据（#923 ②：替换旧的 MIN_SELF_TEST_CASES 魔数地板）。
+// 旧地板按「总例数 < N」判红，代价：每次正常增删自测都得刷这个数 = 税。改成结构判据：
+// **每条登记过的判据 id 必须至少有一例反向证在场**；某个 id 在 SELF_TEST_CASES 里一例都没有
+// ⇒ 红并点名它。总例数、每条 id 有几例，都不判。
+// 为什么用显式 SELF_TEST_RULE_IDS 而不是从现成常量表推导：脚本里唯一带 id 的 `const [...]={id}`
+// 表是 DECLARATION_CLAIM_PATTERNS（cn-应列出 / en-should-list），那是 checkDeclarationClaims 对账
+// `.d.ts` 声称数的判据（#895/#802 的地盘），与下面这 18 例（test/contract 发布面判据 1/2/3 + 豁免表）无对应；
+// 发布面各判据只以报错字符串形式存在、没有 id 表可推。故按「每个 case 真正断言的那件事」显式登记（是 id 清单、不是例数）。
+const SELF_TEST_RULE_IDS = [
+  "clean-fixture", "exemption-count-cap", "unlisted-on-disk", "dead-entry", "mutation-miss",
+  "exemption-pass", "exemption-dangling", "exemption-packaged", "exemption-empty-why",
+  "exemption-path-not-file", "exemption-count-under", "dir-not-dead-entry",
+  "not-applicable", "test-only-green", "real-tree-green",
+];
 
 /**
  * 基准夹具：形状对齐**搬家后**的真树（issue #549 S8）——`files` 逐个列举 `test/contract/*.js`，
@@ -691,6 +704,7 @@ function withPacked(packed, item) {
 
 const SELF_TEST_CASES = [
   {
+    rule: "clean-fixture",
     name: "干净夹具（豁免表空 + 上限 0，= #549 搬家后的真树形状）⇒ 绿（判据 1/2 都不红，判据 3 打印 2 个 *.test.js + 0 条豁免）",
     build: () => contractFixture(),
     expectGreen: true,
@@ -703,6 +717,7 @@ const SELF_TEST_CASES = [
     ],
   },
   {
+    rule: "exemption-count-cap",
     name: "上限 0 时塞一条**完全合法**的豁免（文件在盘上、没随包、理由写清）⇒ 红：判的是条数，不是条目质量",
     build: () => contractFixture({
       diskFiles: [...contractFixture().diskFiles, "test/contract/another-harness.js"],
@@ -715,6 +730,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "unlisted-on-disk",
     name: "从 files 里删一条真实存在的 test/contract/*.js ⇒ 判据 1 红并点名该文件",
     // 真实的「忘了加进 files」= 清单与包里都没有它：两边一起删（只改 files 不改 pack 清单是假变异）。
     build: () => {
@@ -730,12 +746,14 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "dead-entry",
     name: "往 files 里加一条不存在的 test/contract/ghost.js ⇒ 判据 2 红并点名（死条目）",
     build: () => contractFixture({ files: [...contractFixture().files, "test/contract/ghost.js"] }),
     expect: [/files 里列的 test\/contract\/ghost\.js 在磁盘上不存在——死条目/],
     expectCount: 1,
   },
   {
+    rule: "mutation-miss",
     name: "变异没落上也算红：删一个不在 files 里的靶子 ⇒ 夹具构建就该抛错",
     build: () => contractFixture({
       files: withoutItem(contractFixture().files, "test/contract/does-not-exist.js"),
@@ -743,6 +761,7 @@ const SELF_TEST_CASES = [
     expectMutationMiss: true,
   },
   {
+    rule: "unlisted-on-disk",
     name: "磁盘上新增一个未登记的 harness（test/contract/new-harness.js）⇒ 判据 1 红并点名",
     build: () => contractFixture({
       diskFiles: [...contractFixture().diskFiles, "test/contract/new-harness.js"],
@@ -751,6 +770,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "exemption-pass",
     name: "登记表放行证：一条合法豁免（文件在盘上、不随包、理由写清）⇒ 绿，且判据 3 打印它（证明豁免分支真被读到，不是恒绿）",
     build: () => exemptFixture(),
     expectGreen: true,
@@ -759,6 +779,7 @@ const SELF_TEST_CASES = [
     expectLines: [/sample-harness\.js：已登记豁免（不随包）——夹具/],
   },
   {
+    rule: "exemption-dangling",
     name: "登记表空转：登记的文件从磁盘消失 ⇒ 红",
     build: () => exemptFixture({
       diskFiles: withoutItem(exemptFixture().diskFiles, EXEMPT_HARNESS),
@@ -767,6 +788,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "exemption-packaged",
     name: "登记表过期：登记的文件已经随包 ⇒ 红（两个说法不能同时成立）",
     build: () => exemptFixture({
       packedPaths: withPacked(exemptFixture().packedPaths, EXEMPT_HARNESS),
@@ -775,6 +797,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "exemption-empty-why",
     name: "登记表缺理由：why 只有空白 ⇒ 红（「宿主不需要」这种结论不算理由）",
     build: () => exemptFixture({
       exemptions: [{ path: EXEMPT_HARNESS, why: "   " }],
@@ -783,6 +806,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "exemption-path-not-file",
     name: "登记项 path 写成目录（test/contract/）⇒ 红",
     // 用 exemptFixture 做底（上限 1、靶子在盘上），把靶子换成坏路径并把原靶子从盘上撤掉：
     // 于是唯一该红的就是「path 不是具体文件」这一条，条数/判据 1 都不掺进来。
@@ -794,6 +818,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "exemption-path-not-file",
     name: "登记项 path 在别的目录（test/helpers/tmp.js）⇒ 红",
     build: () => exemptFixture({
       diskFiles: withoutItem(exemptFixture().diskFiles, EXEMPT_HARNESS),
@@ -803,6 +828,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "exemption-count-cap",
     name: "登记表想长到 2 条（第二份 harness 不搬走就加豁免）⇒ 红并提示「先问该不该放进发布面目录」",
     build: () => exemptFixture({
       exemptions: [
@@ -814,6 +840,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "exemption-count-under",
     name: "登记表反向：条目删了却没降上限（余量）⇒ 红",
     build: () => contractFixture({
       exemptions: [],
@@ -823,17 +850,20 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "dir-not-dead-entry",
     name: "files 里列目录 test/contract 不算死条目 ⇒ 绿",
     build: () => contractFixture({ files: [...contractFixture().files, "test/contract"] }),
     expectGreen: true,
     expectTestFileLines: 2,
   },
   {
+    rule: "not-applicable",
     name: "树里没有 files 数组（合成夹具 / 非本仓）⇒ 不适用，不判红",
     build: () => contractFixture({ files: undefined }),
     expectNotApplicable: true,
   },
   {
+    rule: "test-only-green",
     name: "只有 *.test.js 的树 ⇒ 绿，且逐条打印「不随包发布」+ 谁跑它（判据 3 不红）",
     build: () => contractFixture({
       files: ["src"],
@@ -848,6 +878,7 @@ const SELF_TEST_CASES = [
     ],
   },
   {
+    rule: "real-tree-green",
     name: "本仓真树 + 真登记表（空表、上限 0，packed 取 files 条目，不跑 npm）⇒ 绿：没有空转条目，也没有豁免条目",
     build: () => {
       const facts = readContractSurfaceFacts(ROOT);
@@ -877,10 +908,12 @@ function runSelfTest() {
     "pack-link-check --self-test：test/contract/ 发布面判据三口的内存反向证"
     + "（改坏 → 红、干净 → 绿、登记表空转 → 红；变异没落上也算失败）",
   );
-  if (SELF_TEST_CASES.length < MIN_SELF_TEST_CASES) {
-    failures.push(
-      `用例数被削：现在 ${SELF_TEST_CASES.length} 例，下限 ${MIN_SELF_TEST_CASES} 例——删用例 / 整例跳过不算修好`,
-    );
+  // 每条登记判据 id 至少一例反向证在场；被掏空（整个 SELF_TEST_CASES 里一例都没有）⇒ 红并点名该 id。
+  const coveredRuleIds = new Set(SELF_TEST_CASES.map((c) => c.rule));
+  for (const id of SELF_TEST_RULE_IDS) {
+    if (!coveredRuleIds.has(id)) {
+      failures.push(`判据家族被掏空：id "${id}" 在 SELF_TEST_CASES 里一例都没有——删用例 / 整例跳过不算修好`);
+    }
   }
   for (const [index, testCase] of SELF_TEST_CASES.entries()) {
     const who = `[${index + 1}] ${testCase.name}`;
