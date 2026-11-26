@@ -10,19 +10,25 @@
   (real relay responses — the substring list is copied verbatim from the pre-existing sibling regex in
   `src/compact/fold-llm.js`; the real-relay sample is recorded in the `src/compact/provider-summarizer.js` comment and
   copied into three fold-llm fixtures) was written off as unrecoverable. Now a
-  400/422 whose body matches those markers becomes `context_window_exceeded` (`retryable: true`); the orchestrator catches it,
-  forces **one** compaction through the already-assembled LLM fold strategy (budget = the model window × 0.7) and retries
-  **exactly once** — a second overflow fails the run instead of looping. The forced fold is stamped on the ledger with
-  `trigger: "context_window_exceeded"` (also mirrored into `foldSummary.degradeReason` so it survives `<runId>.state.json` rebuilds):
-  silent self-heal is not allowed. Other 400s still stay `invalid_request` — zero compaction, zero retry.
+  400/422 whose body matches those markers becomes `context_window_exceeded` and the orchestrator catches it, forces **one**
+  compaction through the already-assembled LLM fold strategy — **reusing that fold's own budget, not an invented target** —
+  and retries **exactly once**; a second overflow fails the run instead of looping. `retryable` stays **false**: the same
+  request is not retryable, only the post-compaction one is, and that retry is the explicit branch (marking it retryable
+  would let the in-round retry loop resend the identical oversized request up to three times). The forced fold is stamped on
+  the ledger with `trigger: "context_window_exceeded"` — a first-class optional field that `normalizeCompactionStats` also
+  passes through, so it survives `<runId>.state.json` rebuilds: silent self-heal is not allowed. The one-shot quota is
+  persisted as `deterministic.contextWindowRecovery.used` (same discipline as `guardExtension`: a cost gate that must not
+  reset across resume). Other 400s still stay `invalid_request` — zero compaction, zero retry.
 - **上下文超窗现在单独分类，并拿到一次有界自恢复（issue #930，任务 261126-52）。** `classifyHttpError` 把 400/422 一律
   归成不可重试的 `invalid_request`，于是一个上游用 400（body 写着 `context_length_exceeded` / `maximum context length` /
   `is longer than configured context length`，真机 relay 就是这么回——子串清单逐字照抄自 `src/compact/fold-llm.js` 里的同源
   正则，真机样本记在 `src/compact/provider-summarizer.js` 的注释里、并粘进三份 fold-llm 夹具）打回来的、本来压一次就能继续的 run 被判成不可恢复。现在命中这些字样的
-  400/422 归成 `context_window_exceeded`（`retryable: true`）；orchestrator 捕获后**强制一发**压缩（用已装配的 LLM 折叠策略，
-  预算 = 窗口 × 0.7）并**恰好重试一次**——第二次还超窗就直接失败、不循环。这一发强制压缩在账本上打 `trigger:
-  "context_window_exceeded"`（同时镜像进 `foldSummary.degradeReason`，故能过 `<runId>.state.json` 重建）：静默自愈不允许。其余 400
-  仍保持 `invalid_request`——零压缩、零重试。
+  400/422 归成 `context_window_exceeded`，orchestrator 捕获后**强制一发**压缩（走已装配的 LLM 折叠策略，**复用那一发自己的
+  预算、不发明目标**）并**恰好重试一次**——第二次还超窗就直接失败、不循环。`retryable` 保持 **false**：**同一个请求不可重试，
+  只有压缩之后的新请求可重试**，而那一次重试由显式分支负责（标成 retryable 会让轮内重试循环把同一份超大请求原样发最多三遍）。
+  这一发强制压缩在账本上打 `trigger: "context_window_exceeded"`——它是一等的可选字段，`normalizeCompactionStats` 也会透传，
+  故能过 `<runId>.state.json` 重建：静默自愈不允许。一次性配额落盘在 `deterministic.contextWindowRecovery.used`
+  （与 `guardExtension` 同一条纪律：成本闸，跨 resume 不许重置）。其余 400 仍保持 `invalid_request`——零压缩、零重试。
 
 ### Changed
 - **The contribution rule now says "always by PR", because that is what the live ruleset enforces (issue #933, task 261126-57).**

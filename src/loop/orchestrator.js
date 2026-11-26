@@ -2083,6 +2083,11 @@ export async function runToolLoop(options) {
     // 「跑 → 崩 → resume」每次都领一份新配额 = 无界成本，所以它随 run-state 落盘、由
     // `resume-manager.js` 恢复（见 `deterministic.guardExtension`）。
     guardExtensionUsed: false,
+    // issue #930：上下文超窗自恢复的**一次性配额**，与 `guardExtensionUsed` 同一条纪律——
+    // 必须**跨 resume 不重置**，否则「跑 → 崩 → resume」每次都领一份新配额 = 无界成本。
+    // 为什么不能只靠 `compactionStats` 里那条 `trigger` 记录：那份列表是 32 条**滚动窗口**，
+    // 32 次折叠之后记录会被挤掉 ⇒ 配额静默重置（copilot 验收点出来的）。
+    contextWindowRecoveryUsed: false,
     // issue #473：`judge_done` 的「无交付物正文」降级配额（见 `JUDGE_DONE_GAP_NUDGE_LIMIT`）。
     judgeDoneGapNudges: 0,
     noToolStreak: 0,
@@ -3509,6 +3514,8 @@ export async function runToolLoop(options) {
       compactionStats,
       // issue #386 切片 3：guard 补跑配额随 run-state 落盘（**跨 resume 不重置**的成本闸）。
       guardExtensionUsed: governorState.guardExtensionUsed,
+      // issue #930：超窗自恢复配额随 run-state 落盘（同上，跨 resume 不重置）。
+      contextWindowRecoveryUsed: governorState.contextWindowRecoveryUsed,
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {
@@ -5731,10 +5738,17 @@ export async function runToolLoop(options) {
       // `compactionStats` 里已经有一条带这个 `trigger` 的记录 ⇒ 配额已用完。
       // 账本本来就过 `state.json` 重建（`normalizeCompactionStats` 透传 `trigger`），
       // 所以 resume 后天然看得见，且**不需要新增任何持久化键**。
+      // 配额判据**两条腿**，任一为真即算用完：
+      //   ① 持久化的一次性配额（`contextWindowRecoveryUsed`，随 run-state 落盘、跨 resume 不重置）
+      //      ——这是**主判据**，与 `guardExtensionUsed` 同一条纪律；
+      //   ② 账本里那条 `trigger` 记录 —— 兜底，覆盖「旧档没有这个键」的 resume（旧档读成 false，
+      //      但它的 `compactionStats` 里如果已经有恢复记录，仍然算用完）。
+      // 只留 ② 是不够的：`compactionStats` 是 32 条滚动窗口，32 次折叠后记录被挤掉 ⇒ 静默重置。
       const recoveredPerLedger = compactionStats.some(
         (stat) => stat?.trigger === CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER,
       );
       if (error?.code !== "context_window_exceeded"
+        || governorState.contextWindowRecoveryUsed === true
         || recoveredPerLedger
         || contextWindowExceededRecoveries >= CONTEXT_WINDOW_EXCEEDED_RECOVERY_ATTEMPTS
         // 没装配折叠策略（`compactionContext?.strategy` 空）时无折可压，#898 也不允许退回机械摘要
@@ -5743,6 +5757,8 @@ export async function runToolLoop(options) {
         throw error;
       }
       contextWindowExceededRecoveries += 1;
+      // 落盘配额（跨 resume 不重置的主判据）。
+      governorState.contextWindowRecoveryUsed = true;
       // 强制一发压缩——**复用既有折叠入口**：不传任何预算覆盖，让它按 run 作用域 `budgetTokens`
       // 自己折。`trigger` 只是账本留痕（静默自愈不允许）。（旧写法这里传一个「窗口 × 0.7」的
       // `targetBudgetTokens`，已删：没有实测依据，还可能比刚被上游拒掉的预算更大 ⇒ 压了等于没压。）

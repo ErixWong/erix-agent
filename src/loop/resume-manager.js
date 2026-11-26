@@ -487,6 +487,10 @@ export async function restoreResume(ctx) {
     // 这个 run 走完，否则「跑 → 崩 → resume」每次都能领一份 = 无界成本。
     // 旧档没有 `deterministic.guardExtension`（增量字段）⇒ 读成 `false`，与今天的 run 等价。
     ctx.governorState.guardExtensionUsed = deterministic.guardExtension?.used === true;
+    // issue #930：超窗自恢复配额与上面那条**同一类**（一次性成本闸，跨 resume 不许重置）。
+    // 旧档没有 `deterministic.contextWindowRecovery`（增量字段）⇒ 读成 `false`，
+    // 此时仍由「账本里有没有那条 `trigger` 记录」兜底（见 orchestrator 的判据两条腿）。
+    ctx.governorState.contextWindowRecoveryUsed = deterministic.contextWindowRecovery?.used === true;
     ctx.governorState.filesWritten = Array.isArray(deterministic.filesWritten)
       ? deterministic.filesWritten.map((path) => ({ path }))
       : [];

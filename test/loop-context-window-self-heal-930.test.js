@@ -430,3 +430,32 @@ test("P1 resume 后账本判据仍生效：局部计数器归零也不许再自�
   );
   assert.equal(secondStats.length, 1, "账本里仍然只有第一次那一条（没有新增）");
 });
+
+// ---------------------------------------------------------------------------
+// issue #930 P1-b（copilot 二轮验收）：**账本判据会被滚动窗口挤掉**。
+// `compactionStats` 只保留最近 `COMPACTION_STATS_STATE_LIMIT`（32）条，32 次折叠之后那条
+// `trigger` 记录就不在了 ⇒ 只靠账本推导的配额会**静默重置**，同一个 run 又能领一次自恢复。
+// 所以主判据是**落盘的一次性配额** `contextWindowRecoveryUsed`（与 `guardExtensionUsed` 同一条
+// 纪律：一次性成本闸，跨 resume 不许重置），账本那条只作旧档兜底。
+// 这一格直接钉持久化形状：run-state 里必须出现 `contextWindowRecovery: { used: true }`。
+// ---------------------------------------------------------------------------
+test("P1-b 自恢复用过一次 ⇒ run-state 里落盘 contextWindowRecovery.used（滚动窗口挤掉也丢不了）", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "930-quota-persisted";
+  const strategy = createCountingStrategy();
+  const options = baseOptions(strategy, undefined);
+  options.provider = createFakeProvider([{ throw: cwError(400) }, { throw: cwError(400) }]);
+  options.store = store;
+  options.runId = runId;
+
+  await runDirect(options).catch((error) => error);
+  assert.equal(strategy.tally.compact, 1, "前置：自恢复应发生一次");
+
+  const persisted = await store.loadRunState(runId);
+  assert.equal(
+    persisted?.deterministic?.contextWindowRecovery?.used,
+    true,
+    `run-state 必须落盘一次性配额（否则 32 次折叠后账本记录被挤掉 ⇒ 配额静默重置）：`
+      + JSON.stringify(persisted?.deterministic?.contextWindowRecovery),
+  );
+});
