@@ -509,7 +509,12 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
 > 折叠与锚点那几面仍然拿它找真实用户轮。写旧 `context` 键的处理与 #499 之后的 `context.onFoldSummary` 逐字同口径：
 > 装配口一条 `context_unknown_option`、直连静默放行、**都不抛**；而 `capabilities.hooks.protectedMessage`
 > 作为未知的 `hooks` 成员被拒。删了保护不丢信息：被折轮的原文仍可用 `recall_read`（issue #896）
-> 从账本按轮号**逐字**取回。
+> 从账本按轮号**逐字**取回。它还接 `pattern`——**在账本上做 grep**：默认子串，`pattern` 带正则元字符时
+> 按正则（正则非法则回落子串、不抛）。于是「我记得写过，但记不得在第几轮」不必先想起轮号。两种模式都有硬顶
+> （单段 300 token、最多 5 段、单次 1500 token），而且**一定报自己处在哪个状态**：`found` /
+> `no_match`（搜过、确实没有）/ `truncated`（归档夹断过这段，未命中可能是残片）/ `unrecoverable`
+> （轮在、正文没存）/ `empty`（一条都没写过）。`no_match` 刻意**不**并进 `empty`：如果只是被夹断却告诉
+> 模型「没有」，模型会断定这段历史不存在。
 
 只指一站等于让宿主照做再撞第二次：把 `onBeforeFold` 写进 `config.folding.context` 会被
 「`config` 只装数据」拒，那时它才被告知 `capabilities.hooks.onBeforeFold`。两站必须在**同一句**里
