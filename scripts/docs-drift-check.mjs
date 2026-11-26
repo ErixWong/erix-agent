@@ -265,6 +265,15 @@ const CHARTS_CN = "docs/charts_cn.md";
 const TOOL_FACT_SRC = "src/tool-fact.js";
 
 /**
+ * issue #856：非 ENOENT 的读失败（读不出 = exit 2，永远不等于绿）。
+ *
+ * ⚠ 声明位置是**判据的一部分**：`read()` 的第一次调用发生在 `CURRENT_CLAIMS` 那个循环里
+ * （远早于本文件后半段），把累加器放在后面会让那次读失败在 catch 里撞 TDZ
+ * （`Cannot access 'DOC_READ_FAILURES' before initialization`）——闸崩掉而不是给 exit 2。
+ */
+const DOC_READ_FAILURES = [];
+
+/**
  * 测试注入（issue #856 的反向证入口）：`ERIX_DOCS_FAULT_READ=a.md,b.md` ⇒ 读这两个相对路径时
  * 抛一个**非 ENOENT** 的读失败（EACCES）。只在设置了该环境变量时生效，正常跑永远不触发。
  *
@@ -2017,8 +2026,6 @@ const JS_CONTROL_KEYWORDS = new Set(["if", "else", "case", "default", "return", 
  * 早先的版本拿「长度 + 首尾 32 字」当文本身份，`src/a/b.js:12` → `src/a/c.js:12` 这种**等长**变异
  * 会命中旧缓存，自测里直接假绿（改了却不红）——所以身份判据必须是「是否被 overlay 覆盖」。 */
 const FILE_LINE_CACHE = new Map();   // rel → { text, lines, decls, literals }
-/** issue #856：非 ENOENT 的读失败（读不出 = exit 2，永远不等于绿）。 */
-const DOC_READ_FAILURES = [];
 
 function fileRecord(rel) {
   const hit = FILE_LINE_CACHE.get(rel);

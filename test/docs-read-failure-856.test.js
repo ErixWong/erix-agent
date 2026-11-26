@@ -52,3 +52,14 @@ test("#856 ③ 不注入时仍是绿（新分支不许把正常树判成未判�
   assert.equal(code, 0, `正常树必须 exit 0，实测 ${code}：\n${out.slice(-2000)}`);
   assert.doesNotMatch(out, /读不出/u);
 });
+
+test("#856 ⑤ 早读路径（CURRENT_CLAIMS 的版本声明行）读失败 ⇒ 也是 exit 2，不许撞 TDZ 崩掉", async () => {
+  // copilot 审查抓到的真缺陷：`DOC_READ_FAILURES` 原来声明在文件后半段，而 `read()` 的**第一次**
+  // 调用发生在 `CURRENT_CLAIMS` 那个循环里（`README.md` 的当前发布行）。那次读失败会在 catch 里撞
+  // `Cannot access 'DOC_READ_FAILURES' before initialization` ⇒ 闸崩掉（exit 1 + 栈），
+  // 而不是它承诺的 exit 2。本格钉的就是「早读路径也必须走同一条出口」。
+  const { code, out } = await runCheck({ ERIX_DOCS_FAULT_READ: "README.md" });
+  assert.equal(code, 2, `早读路径的读失败也必须是 exit 2（未判定），实测 ${code}：\n${out.slice(-2000)}`);
+  assert.match(out, /README\.md: 读失败（EACCES）/u, "必须点名是哪份文档读不出");
+  assert.doesNotMatch(out, /before initialization|ReferenceError/u, "不许撞 TDZ / 崩栈");
+});
