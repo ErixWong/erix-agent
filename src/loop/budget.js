@@ -452,7 +452,9 @@ export async function safeTruncateMessages(messages, budgetTokens, stubFor) {
   });
 
   /**
-   * @param {"protected_message_exceeds_budget"|"cannot_fit"|undefined} budgetUnreachable
+   * @param {"cannot_fit"|undefined} budgetUnreachable
+   *   issue #898：`"protected_message_exceeds_budget"` 这个值随 `protectedMessage` 机制一起退役
+   *   （它描述的正是「单条受保护消息装不下」），现在只剩 `"cannot_fit"`。
    */
   const finish = (budgetUnreachable) => {
     const uniqueStubs = [...new Set(foldedStubs)];

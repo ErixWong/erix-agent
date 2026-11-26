@@ -493,15 +493,23 @@ A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决�
 
 `context` 这一条比另外两个多一句**必须读**的话：它是一个**混装壳**——同时容得下数据成员
 （`budgetTokens` / `keepRounds` / `strategy` 名字）与行为成员（`onBeforeFold` / `onAfterFold` /
-`stubFor` / `protectedMessage` / `recoveryHint` 五个函数，加上 `strategy` 的对象形态），而 `config`
+`stubFor` / `recoveryHint` 四个函数，加上 `strategy` 的对象形态），而 `config`
 **只装数据**（子树必须过 JSON round-trip 等值）。所以顶层 `context` 被拒时，文案**一次点名两站**：
 
 ```text
 unknown runToolLoop option: "context" (its canonical home is config.folding.context; the flat spelling is rejected)
   — this shell holds both data and functions: write data as config.folding.context.<leaf>,
     and behaviour members as capabilities.hooks.<name>
-    (onBeforeFold / onAfterFold / stubFor / protectedMessage / recoveryHint) or capabilities.ports.strategy
+    (onBeforeFold / onAfterFold / stubFor / recoveryHint) or capabilities.ports.strategy
 ```
+
+> **已退役（issue #898，BREAKING）。** `protectedMessage`——那个把消息标为「不可折叠」的旋钮——
+> 两种写法都没了（`config.folding.context.protectedMessage` 与 `capabilities.hooks.protectedMessage`），
+> `compactionStats[].protectedDowngraded` 也没了（不再有任何「降级」，那份计数失去意义）。
+> 现在折不折只看预算。写旧 `context` 键的处理与 #499 之后的 `context.onFoldSummary` 逐字同口径：
+> 装配口一条 `context_unknown_option`、直连静默放行、**都不抛**；而 `capabilities.hooks.protectedMessage`
+> 作为未知的 `hooks` 成员被拒。删了保护不丢信息：被折轮的原文仍可用 `recall_read`（issue #896）
+> 从账本按轮号**逐字**取回。
 
 只指一站等于让宿主照做再撞第二次：把 `onBeforeFold` 写进 `config.folding.context` 会被
 「`config` 只装数据」拒，那时它才被告知 `capabilities.hooks.onBeforeFold`。两站必须在**同一句**里
@@ -1251,7 +1259,7 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 
 | 命名空间 | 成员 |
 | --- | --- |
-| `capabilities.hooks` | 20 个成员 —— **18 个回调**（下方逐个列出）**加两个形态多态旋钮** `protectedMessage` / `recoveryHint`（函数形态在这里、数据形态留在 `config.folding.context`）：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`、`continuityProvider`、`nextUserTurn`——外加两个形态多态旋钮的**函数形态**：`protectedMessage`、`recoveryHint` |
+| `capabilities.hooks` | 19 个成员 —— **18 个回调**（下方逐个列出）**加一个形态多态旋钮** `recoveryHint`（函数形态在这里、数据形态留在 `config.folding.context`）；issue #898 退役了这对旋钮里的另一个 `protectedMessage`：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`、`continuityProvider`、`nextUserTurn`——外加这个形态多态旋钮的**函数形态**：`recoveryHint` |
 | `capabilities.checks` | `deliverables`（每项 `{ name, check }`；`check` 是函数、`name` 是标签） |
 | `capabilities.ports` | `sleepImpl`、`judgeProvider`、`strategy`——见下面「`capabilities.ports`」那一节 |
 
@@ -1263,8 +1271,8 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 - **冲突不静默** —— 两种写法给了**不同的值**时，引擎在第一轮之前发一条 `config_override_conflict`：
   `conflicts: [{ path, key }]`，其中 `path` 点名该叶子的**目的地**：有扁平孪生的回调是
   `hooks.<name>`（`{ path: "hooks.onEvent", key: "onEvent" }`），端口槽是 `ports.<slot>`
-  （`{ path: "ports.sleepImpl", key: "sleepImpl" }`），两个形态多态旋钮则点名该旋钮的**配置侧**路径
-  （`{ path: "folding.context.protectedMessage", key: "protectedMessage" }`）——因为它们的两侧是
+  （`{ path: "ports.sleepImpl", key: "sleepImpl" }`），形态多态旋钮则点名该旋钮的**配置侧**路径
+  （`{ path: "folding.context.recoveryHint", key: "recoveryHint" }`；#898 退役了另一个 `protectedMessage`）——因为它们的两侧是
   「config 里的数据」对「hooks 里的函数」，宿主需要知道该改哪一边。
   同一条事件、同一套字段、不新增事件类型：载荷说的是「这个旋钮有两个真相来源」，path 说明目的地在哪。
   在这条事件上抛错的观察者与其他观察者通道同口径被隔离。
@@ -1296,9 +1304,10 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
   `capabilities: { ports: {} }` 照常通过校验、展开后一个键都不产生、不发 `config_override_conflict`、
   也不遮蔽任何扁平键：三组同一条口径，因为空对象被读成「没有」，不是「有但是空」。
   （`checks: { deliverables: [] }` 是同一件事往下一层：空数组 = 未声明。）
-- **11 个叶子没有扁平别名**（issue #498 S4c 登记了头九个：`ports.sleepImpl`、`ports.judgeProvider`、
+- **10 个叶子没有扁平别名**（issue #498 S4c 登记了头八个：`ports.sleepImpl`、`ports.judgeProvider`、
   `ports.strategy`、`hooks.onReflection`、`hooks.onBeforeFold`、`hooks.onAfterFold`、`hooks.stubFor`、
-  `hooks.protectedMessage`、`hooks.recoveryHint`；issue #568 又加了 `hooks.continuityProvider`、issue #753 C1 加了 `hooks.nextUserTurn`）——它们**从来不是顶层选项**，所以 0.28.0 给它们发明的是
+  `hooks.recoveryHint`；issue #568 又加了 `hooks.continuityProvider`、issue #753 C1 加了 `hooks.nextUserTurn`；
+  issue #898 退役了 `hooks.protectedMessage`——它曾是这里的成员，现在又变回未知键）——它们**从来不是顶层选项**，所以 0.28.0 给它们发明的是
   **容器成员位**，不是新的扁平键。去向登记在 `CAPABILITY_SLOT_DESTINATIONS`
   （`src/loop/capabilities-namespace.js`）里，展开走侧信道而不是写新的扁平键——这就是为什么顶层
   白名单在那一刀仍是 **67** 条、恒等式当时是三向（43 配置面 + 22 能力面 + 2 容器）。issue #527
@@ -4794,9 +4803,9 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
   例如请求尾部是一条还缺 `tool_result` 的 assistant `tool_use`——则通过既有 `onEvent` 观察者通道上报
   `continuity_injection_skipped`。
 
-- **带块的轮永远不是折叠候选**：`roundHoldsContinuityBlock` (`src/compact/helpers.js`) 与
-  `isProtectedMessage` (`src/compact/helpers.js`) 走同一条受保护判据，接进 `selectFoldedRounds`
-  (`src/compact/helpers.js`)。于是块正文不会进 `foldedPayload`、折叠摘要或 `summarizeFoldedPayload`
+- **带块的轮永远不是折叠候选**：`roundHoldsContinuityBlock` (`src/compact/helpers.js`) 是
+  `selectFoldedRounds` (`src/compact/helpers.js`) 里**唯一剩下的**内容型不可折判据——issue #898 连着
+  整条机制一起退役了同族的 `isProtectedMessage` (`src/compact/helpers.js`)。于是块正文不会进 `foldedPayload`、折叠摘要或 `summarizeFoldedPayload`
   (`src/compact/fold-statistical.js`)——`keepRounds: 0` 也一样：在「一条都不留」下，一份当前状态快照曾被当成历史扫走
   （issue #589）。「把块挪出 `messages`」并**不是**修法：那会把上面那条计入规则废掉。
 - `ensureUserTurnView` (`src/loop/request-user-view.js`) 不会把块复制成一条用户查询——快照不是查询——

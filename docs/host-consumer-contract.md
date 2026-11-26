@@ -611,8 +611,8 @@ rest would be a regression:
 | `erix-agent/tools` subpath export and the tool registry (`src/tools/index.js`) | capability surface | **untouched** — a module export, not an option key |
 
 The `context` row carries one sentence that **must** be read: it is a **mixed shell** — it holds
-data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the five
-functions `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`, plus the
+data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the four
+functions `onBeforeFold` / `onAfterFold` / `stubFor` / `recoveryHint`, plus the
 object form of `strategy`), while `config` holds **data only** (the subtree must survive a JSON
 round-trip unchanged). So when the top-level `context` is rejected, the message names **both
 stations in one sentence**:
@@ -621,8 +621,18 @@ stations in one sentence**:
 unknown runToolLoop option: "context" (its canonical home is config.folding.context; the flat spelling is rejected)
   — this shell holds both data and functions: write data as config.folding.context.<leaf>,
     and behaviour members as capabilities.hooks.<name>
-    (onBeforeFold / onAfterFold / stubFor / protectedMessage / recoveryHint) or capabilities.ports.strategy
+    (onBeforeFold / onAfterFold / stubFor / recoveryHint) or capabilities.ports.strategy
 ```
+
+> **Retired (issue #898, BREAKING).** `protectedMessage` — the knob that marked a message as
+> un-foldable — is gone from both spellings (`config.folding.context.protectedMessage` and
+> `capabilities.hooks.protectedMessage`), and so is `compactionStats[].protectedDowngraded` (nothing
+> is downgraded any more, so the counter had no meaning). Rounds are now folded on the budget alone.
+> Writing the old `context` key is treated exactly like `context.onFoldSummary` after #499 — one
+> `context_unknown_option` on the assembly-port route, silence on the fine-grained route, **no throw**
+> — while `capabilities.hooks.protectedMessage` is refused as an unknown `hooks` member. Nothing is
+> lost with the knob: a folded round's original text stays reachable verbatim through `recall_read`
+> (issue #896), which reads it out of the ledger by round number.
 
 Naming only one station sends the host into a second wall: putting `onBeforeFold` into
 `config.folding.context` is refused by "`config` holds data only", and only *that* message mentions
@@ -1529,7 +1539,7 @@ one registered exception described below (eleven leaves that never were top-leve
 
 | namespace | members |
 | --- | --- |
-| `capabilities.hooks` | 20 members — **18 callbacks** (listed below) **plus the two polymorphic knobs** `protectedMessage` / `recoveryHint` (function form here, data form stays in `config.folding.context`):  `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor`, `continuityProvider`, `nextUserTurn` — plus the **function form** of the two polymorphic knobs, `protectedMessage` and `recoveryHint` |
+| `capabilities.hooks` | 19 members — **18 callbacks** (listed below) **plus the polymorphic knob** `recoveryHint` (function form here, data form stays in `config.folding.context`); issue #898 retired `protectedMessage`, which was the second member of that pair:  `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor`, `continuityProvider`, `nextUserTurn` — plus the **function form** of the polymorphic knob, `recoveryHint` |
 | `capabilities.checks` | `deliverables` (each entry `{ name, check }`; `check` is a function, `name` is a label) |
 | `capabilities.ports` | `sleepImpl`, `judgeProvider`, `strategy` — see “`capabilities.ports`” below |
 
@@ -1543,9 +1553,10 @@ Six rules, deliberately symmetric with `config` (two containers, one set of rule
   `config_override_conflict` event before the first round, with `conflicts: [{ path, key }]` where
   `path` names the **destination** of the leaf: `hooks.<name>` for a callback that also has a flat
   key (`{ path: "hooks.onEvent", key: "onEvent" }`), `ports.<slot>` for a port slot
-  (`{ path: "ports.sleepImpl", key: "sleepImpl" }`), and — for the two polymorphic knobs — the
-  **config-side** path of the same knob (`{ path: "folding.context.protectedMessage", key:
-  "protectedMessage" }`), because there the two sides are "data in the config namespace" versus
+  (`{ path: "ports.sleepImpl", key: "sleepImpl" }`), and — for the polymorphic knob (issue #898
+  retired the other one, `protectedMessage`) — the
+  **config-side** path of the same knob (`{ path: "folding.context.recoveryHint", key:
+  "recoveryHint" }`), because there the two sides are "data in the config namespace" versus
   "function in the capability namespace" and the host has to know which side to change. Same event,
   same fields, no new event type: the payload says "this knob has two sources of truth" and the path
   says where the destination is. An observer that throws on it is isolated like every other observer
@@ -1586,10 +1597,11 @@ Six rules, deliberately symmetric with `config` (two containers, one set of rule
   all, emit no `config_override_conflict`, and shadow nothing: same behaviour for all three groups,
   because an empty object is read as "absent", not as "present but empty". (`checks: { deliverables:
   [] }` is the same story one level down: an empty array is "not declared".)
-- **Eleven leaves have no flat alias** (issue #498 S4c registered the first nine: `ports.sleepImpl`,
+- **Ten leaves have no flat alias** (issue #498 S4c registered the first eight: `ports.sleepImpl`,
   `ports.judgeProvider`, `ports.strategy`, `hooks.onReflection`, `hooks.onBeforeFold`, `hooks.onAfterFold`,
-  `hooks.stubFor`, `hooks.protectedMessage`, `hooks.recoveryHint`; issue #568 later added `hooks.continuityProvider`
-  and issue #753 C1 added `hooks.nextUserTurn`) — all of them **never were top-level options**, so 0.28.0
+  `hooks.stubFor`, `hooks.recoveryHint`; issue #568 later added `hooks.continuityProvider`
+  and issue #753 C1 added `hooks.nextUserTurn`; issue #898 retired `hooks.protectedMessage`, which was
+  a member here and is now an unknown key again) — all of them **never were top-level options**, so 0.28.0
   invents a container member slot for them instead of a new flat key. Their destinations are
   registered in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`) and expansion
   hands them to the engine on a side channel rather than writing new flat keys — which is why the
@@ -6111,8 +6123,10 @@ visible marker, and the shortfall is stated in the block itself rather than left
   the existing `onEvent` observer channel.
 
 - The round that holds the block is **never a fold candidate**: `roundHoldsContinuityBlock`
-  (`src/compact/helpers.js`) joins the same protected-round test as `isProtectedMessage`
-  (`src/compact/helpers.js`) inside `selectFoldedRounds` (`src/compact/helpers.js`). So the block's text never
+  (`src/compact/helpers.js`) is the one content-based non-foldable round test left inside
+  `selectFoldedRounds` (`src/compact/helpers.js`) — issue #898 retired `isProtectedMessage`
+  (`src/compact/helpers.js`), the other member of that family, together with the whole mechanism.
+  So the block's text never
   reaches `foldedPayload`, a fold summary, or `summarizeFoldedPayload`
   (`src/compact/fold-statistical.js`) — including `keepRounds: 0`, where "keep nothing" used to sweep a
   current-state snapshot away as history (issue #589). Moving the block out of `messages` was **not** the fix:
