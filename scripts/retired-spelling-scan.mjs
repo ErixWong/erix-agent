@@ -218,6 +218,65 @@ const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  * @param {Map<string, string>} retired 键 → 规位路径
  * @returns {Array<{line: number, key: string, canonical: string, verdict: "use"|"mention", excerpt: string}>}
  */
+/**
+ * 逐字符扫一行围栏内代码，收集「**深度 0 且不在字符串里**的退役键位」，返回跨行延续的
+ * `config` 子树深度（issue #961）。
+ *
+ * 为什么不用正则：`config: {` 子树的边界是**花括号配对**，而正则不数括号；字符串字面量里的
+ * 同名文本也不是键位，而正则不看引号。两版正则实现各自漏了一个方向（见调用点的注释）。
+ *
+ * @param {string} line
+ * @param {Map<string,string>} retired
+ * @param {number} lineNo
+ * @param {(lineNo:number, key:string, raw:string, excerpt:string) => void} push
+ * @param {number} depthIn 上一行结束时的 `config` 子树深度
+ * @returns {number} 本行结束时的深度
+ */
+function scanCodeLine(line, retired, lineNo, push, depthIn) {
+  let depth = depthIn > 0 ? depthIn : 0;
+  let inString = null;
+  const n = line.length;
+  const isWord = (ch) => /[\w$]/.test(ch);
+  for (let i = 0; i < n;) {
+    const ch = line[i];
+    if (inString !== null) {
+      if (ch === "\\") { i += 2; continue; }
+      if (ch === inString) inString = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") { inString = ch; i += 1; continue; }
+    if (ch === "/" && line[i + 1] === "/") break;      // 行尾注释，后面都不是代码
+    if (!isWord(ch) || (i > 0 && isWord(line[i - 1]))) {
+      // 非标识符起点（或标识符内部）：只跟踪花括号
+      if (ch === "{") { if (depth > 0) depth += 1; }
+      else if (ch === "}") { if (depth > 0) depth -= 1; }
+      i += 1;
+      continue;
+    }
+    // 标识符起点：`.` 前面那一截是属性访问，不是键位（`config.run.stallDetection` 不报）
+    const afterDot = i > 0 && line[i - 1] === ".";
+    let j = i;
+    while (j < n && isWord(line[j])) j += 1;
+    const name = line.slice(i, j);
+    let k = j;
+    while (k < n && /\s/.test(line[k])) k += 1;
+    const next = k < n ? line[k] : "";
+    const isKeyPos = next === ":" || next === "=" || next === "," || next === "";
+    if (name === "config" && next === ":") {
+      // 进入规位子树：找到它的 `{`（跳过字符串里的花括号已由上面的分支保证）
+      let b = k;
+      while (b < n && line[b] !== "{" && line[b] !== "," && line[b] !== "}") b += 1;
+      if (line[b] === "{") { depth += 1; i = b + 1; continue; }
+    }
+    if (depth === 0 && isKeyPos && !afterDot && retired.has(name)) {
+      push(lineNo, name, line, line);
+    }
+    i = j;
+  }
+  return depth;
+}
+
 export function scanText(text, retired) {
   const keys = [...retired.keys()].sort((a, b) => b.length - a.length);
   const tokenRe = new RegExp(`(?<![\\w.$-])(${keys.map(escapeRe).join("|")})(?![\\w$])`, "g");
@@ -242,43 +301,17 @@ export function scanText(text, retired) {
       return;
     }
     if (inFence) {
-      // 规位子树：`config: {` 之后整体跳过，花括号配对回到 0 才恢复计数。
-      if (configDepth > 0) {
-        configDepth += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
-        if (configDepth <= 0) configDepth = 0;
-        return;
-      }
-      // 规位子树：`config: {` 之后整体跳过，花括号配对回到 0 才恢复计数。
+      // issue #961（copilot 两轮验收）：围栏里的「键位」判定**不许用正则凑**。
+      // 前两版都是正则：① 见到 `config: {` 就整行 return（`stallDetection` 藏在 config 左边就漏）；
+      // ② 改成「截掉 config 起的尾巴」后，又漏掉 config 子树**之后**的兄弟键
+      //    （`{ config: { run: {} }, stallDetection: true }`），并且会把**字符串里**的
+      //    `label: "stallDetection"` 当成键位（假阳性）。两个方向都不能靠再加一条正则解决。
       //
-      // issue #961（copilot 验收）：**只有整行就是那个 `config: {` 起点时才允许 `return`**。
-      // 旧写法对任何含 `config: {` 的行都 `return`，于是同一行里 `config` **左边**的退役键
-      // 被整行放过——`runToolLoop({ stallDetection: true, config: { … } })` 就是这样漏掉的
-      // （判据②的假阴性）。现在改成：含 `config: {` 的行只**截掉 `config` 起的尾巴**，
-      // 左半截照常过键位与 token 判据；只有「整行从 `config` 起」才整行返回。
-      const configStart = line.search(/(^|[\s{,])config\s*:\s*\{/);
-      if (configStart >= 0) {
-        const head = line.slice(0, configStart);
-        const opens = (line.slice(configStart).match(/\{/g) || []).length;
-        const closes = (line.slice(configStart).match(/\}/g) || []).length;
-        configDepth = Math.max(0, opens - closes);
-        // 左半截里如果还有别的键（`{ stallDetection: true, ` 这种），它必须先被看见。
-        if (head.trim() !== "" && head.trim() !== "{" && head.trim() !== "runToolLoop({") {
-          for (const m of head.matchAll(tokenRe)) push(lineNo, m[1], line, line);
-        }
-        // **无条件 return**：`config` 起的尾巴整段是规位子树（无论它在本行内是否已经闭合）。
-        // 闭合的话下一行 `configDepth` 已是 0，正常计数照旧。
-        return;
-      }
-      const keyPosition = line.match(/^\s*(?:\/\/\s*)?([A-Za-z_$][\w$]*)\s*[:=,]?/);
-      if (keyPosition !== null && retired.has(keyPosition[1])) {
-        const bare = line.trim().replace(/,$/, "");
-        const name = keyPosition[1];
-        if (bare === name || /[:=,]/.test(line.trim().slice(name.length, name.length + 1))) {
-          push(lineNo, name, line, line);
-          return;
-        }
-      }
-      for (const m of line.matchAll(tokenRe)) push(lineNo, m[1], line, line);
+      // 现在逐字符走：跳过字符串字面量与行尾注释，跟踪 `config: {` 子树的**花括号深度**
+      // （可跨行），只收集**深度 0、且不在字符串里**的键位。
+      // 键位 = 标识符后面（允许空白）跟 `:` / `=` / `,` 或行尾；`.` 前面的标识符不是键位
+      // （`config.run.stallDetection` 是规位形态，不报）。
+      configDepth = scanCodeLine(line, retired, lineNo, push, configDepth);
       return;
     }
     // 行内代码 span（围栏外）
@@ -607,15 +640,24 @@ async function selfTest(retired, manifest) {
     // #961 A：历史 / 契约 / 根文档类的命中不再靠命中数钉子判红——一律 ok（只有现状类进判据）。
     eq(verdictFor({ kind: "history", uses: 1, strictUses: 1 }), "ok", "历史类有命中也不红（钉子已拆）");
   });
-  t("`config: {` 与退役键**同一行**时，config 左边的那个键不许被整行放过（#961 copilot 验收的假阴性）", () => {
-    // 旧写法：任何含 `config: {` 的行都整行 return ⇒ `stallDetection` 藏在 config 左边就被漏掉。
-    const sameLine = "```js\nrunToolLoop({ stallDetection: true, config: { run: { maxRounds: 3 } } })\n```";
-    eq(scanText(sameLine, retired).filter((h) => h.verdict === "use").length, 1,
-      "config 左边的退役键必须被检出");
-    // 反向：键**在 config 子树里**（规位形态）⇒ 不报，否则这条修法会把规位写法全判红。
-    const insideConfig = "```js\nrunToolLoop({ config: { run: { stallDetection: true } } })\n```";
-    eq(scanText(insideConfig, retired).filter((h) => h.verdict === "use").length, 0,
-      "config 子树里的同名键是规位形态，不许报");
+  t("围栏内的键位判定：`config` 子树的两侧 + 字符串 + 点号属性，八个方向都对（#961 copilot 两轮验收）", () => {
+    // 病根：前两版都是正则。①「见到 `config: {` 整行 return」漏掉 config **左边**的键；
+    // ②「截掉 config 起的尾巴」漏掉子树**之后**的兄弟键，还把字符串里的同名文本当键位。
+    // 现在 `scanCodeLine` 逐字符走（跳字符串、数花括号），下面八格把它钉死。
+    const cases = [
+      ["裸退役键", "```js\nrunToolLoop({ stallDetection: true })\n```", 1],
+      ["键在 config 左边", "```js\nrunToolLoop({ stallDetection: true, config: { run: {} } })\n```", 1],
+      ["键在 config 右边（子树已闭合）", "```js\nrunToolLoop({ config: { run: {} }, stallDetection: true })\n```", 1],
+      ["键在 config 子树内（规位形态）", "```js\nrunToolLoop({ config: { run: { stallDetection: true } } })\n```", 0],
+      ["字符串里提到键名", "```js\nconst x = { label: \"stallDetection\" };\n```", 0],
+      ["点号属性（规位形态）", "```js\nconst v = config.run.stallDetection;\n```", 0],
+      ["跨行 config 子树", "```js\nrunToolLoop({\n  config: {\n    run: { stallDetection: true },\n  },\n})\n```", 0],
+      ["跨行子树闭合后再出现", "```js\nrunToolLoop({\n  config: {\n    run: {},\n  },\n  stallDetection: true,\n})\n```", 1],
+    ];
+    for (const [name, text, want] of cases) {
+      const uses = scanText(text, retired).filter((h) => h.verdict === "use").length;
+      eq(uses, want, `${name}：期望 ${want} 处，实测 ${uses} 处`);
+    }
   });
   t("清单只取 `git ls-files`：盘上有、但没入库的文件不进扫描面；面也**不是**整个仓库", () => {
     // 独立推导一次（不调本文件的函数，pathspec 也**逐字重写一遍**）：同一棵树里 git 说了算，
