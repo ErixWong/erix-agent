@@ -3133,6 +3133,15 @@ What a host can observe, and what it must not conclude:
   **retention floor whose minimum effective value is 5** (`MIN_KEEP_ROUNDS`, issue #873 — keeping one round
   is the same as keeping none), so `keepRounds: 0` (or 1–4) folds as if it were 5, and the newest round stays
   in the retained window rather than being folded into the summary.
+  **The declared overhead is a *synchronous* upper bound, and it is deliberately conservative (issue #895).**
+  The selector has to know the summary cost **before** the summary exists, so it can only use what is
+  computable synchronously: TTL-collected stubs and a literal `recoveryHint`. The production path then runs the
+  async resolvers — `resolveFoldStubs` (which calls the host's `stubFor`) and `resolveFoldRecoveryHint` (which
+  resolves the function form) — so when a host supplies **either**, the real summary is **larger** than the
+  declared bound. The selector therefore stops folding slightly earlier than the exact 0.65 target, and the fold
+  lands **above** it. That direction is safe (nothing is dropped; the next round folds again) and it is the
+  accepted boundary, not an oversight: the alternative — a two-pass fold that re-measures after the fact — buys
+  accuracy at the price of a second selection loop for a case that only shows up with those two hooks.
   **Folding depth is budget-relative, not round-count relative (issue #873):** `selectFoldedRounds`
   (`src/compact/helpers.js`) folds the **oldest** rounds first and stops as soon as the local estimate
   (including the fold-summary overhead) is at or below `FOLD_TARGET_RATIO` (0.65) of `budgetTokens`; the
