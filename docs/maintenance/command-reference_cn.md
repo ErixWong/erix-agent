@@ -223,18 +223,15 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 ## check-host-consumers
 **已删除（#904，2026-11-25）。** 扫宿主仓等于管别人的电脑；`release:day --stage preflight` 因此从 5 步变 4 步。
 
-## check-inventory
-兼容钉子写点白名单校验（issue #534；110 KB 台账已随 #907 删）：`node scripts/flat-count-inventory.mjs . --verify` 从被扫测试文件的 AST **重新推导**扁平写点，再与白名单 `scripts/compat-pin-allowlist.mjs` 对——任一情形都 exit 1 并点名文件 / 面 / 点数：（a）清单外的文件写了退役的扁平拼写，或（b）白名单条目指向一个已不存在的文件。它自己打印耗时与峰值内存（都在低秒级 / 低百 MB），所以在 CI 里是**阻塞**步骤 `Compatibility-pin inventory verify`，位置在 `Test suite` 之后、`Test hygiene guard` 之前。台账（把每文件点数抄进一张入库的表、每动一次代码就要 `--sync` 重刷）已删：**`--sync` 不复存在、门禁也不再逐文件核点数**——清单内文件的点数怎么变都不再跑红（相对旧台账的有意行为改变）。要打印清单所依据的 AST 现值，跑 `node scripts/flat-count-inventory.mjs . --files` / `. --keys`。冷层一句：台账被删是因为 #498 的迁移片已全部迁完、表只剩历史；它兼着的那条活判据——「没登记过的文件不许写退役的扁平拼写」（0.28 破坏性退役）——正是白名单保留的东西
 
 ## check-config-leaf-values
-配置叶子值类型现状表校验（issue #586）：`node scripts/config-leaf-value-probe.mjs --verify docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` 重跑探针（每个 schema 叶子 × 8 个固定错值，每一格都过一次真的两轮 `runToolLoop`），再把重算出来的中英两张表与入库的那两张对账——任何漂移都 exit 1 并点名文件。探针**实测**每一格的结局，而不是断言愿望：`G` / `V` 在 `config` 闸口 / 语义相被拒，`S` 在 run 启动期被拒**且判词点名该叶子**，`C` 在启动期炸但**不点名**，`U` 到第一发请求之后才抛，`A` 是被接受且**真的生效**（run 的指纹变了），`·` 是被接受但**无差异**（指纹逐字相同）。「拒在哪一层」取自**栈帧**（文件名 + 函数名，从不取行号 ⇒ 无关重构撞不红它），「生效在哪」取自指纹的**第一个差异路径**，所以「悄悄接受」是一个位置加一对值，不是形容词。`--sync` 是刷这张表**唯一合法**的姿势（手改数字就是造假）；`configSchemaSelfCheck` 红、或三次基线跑的指纹不一致时，探针**拒绝出表**（`exit 2`）——指纹不稳会把 `A` / `·` 变成噪声。它自己打印耗时（约一秒级），所以在 CI 里是**阻塞**步骤 `Config-leaf value status verify`，紧跟 `Compatibility-pin inventory verify`。**它一个字都没收窄接受面**：每条类型校验都是收窄 ⇒ 要记 Breaking，裁定权留在维护者手里
+配置叶子值类型现状表校验（issue #586）：`node scripts/config-leaf-value-probe.mjs --verify docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` 重跑探针（每个 schema 叶子 × 8 个固定错值，每一格都过一次真的两轮 `runToolLoop`），再把重算出来的中英两张表与入库的那两张对账——任何漂移都 exit 1 并点名文件。探针**实测**每一格的结局，而不是断言愿望：`G` / `V` 在 `config` 闸口 / 语义相被拒，`S` 在 run 启动期被拒**且判词点名该叶子**，`C` 在启动期炸但**不点名**，`U` 到第一发请求之后才抛，`A` 是被接受且**真的生效**（run 的指纹变了），`·` 是被接受但**无差异**（指纹逐字相同）。「拒在哪一层」取自**栈帧**（文件名 + 函数名，从不取行号 ⇒ 无关重构撞不红它），「生效在哪」取自指纹的**第一个差异路径**，所以「悄悄接受」是一个位置加一对值，不是形容词。`--sync` 是刷这张表**唯一合法**的姿势（手改数字就是造假）；`configSchemaSelfCheck` 红、或三次基线跑的指纹不一致时，探针**拒绝出表**（`exit 2`）——指纹不稳会把 `A` / `·` 变成噪声。它自己打印耗时（约一秒级），所以在 CI 里是**阻塞**步骤 `Config-leaf value status verify`。**它一个字都没收窄接受面**：每条类型校验都是收窄 ⇒ 要记 Breaking，裁定权留在维护者手里
 
 ## registry-updates
 派生格只用该登记表所属的生成器刷新，不手改：
 
 | 登记表 | 唯一的机器更新命令 |
 |---|---|
-| 兼容钉子写点白名单（从 AST 重生成） | `node scripts/flat-count-inventory.mjs . --files`（或 `. --keys`）打印 AST 现值；照 `--files` 重建 `scripts/compat-pin-allowlist.mjs` |
 | 配置叶子现状表（中英） | `node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` |
 
 汇总对账器与它登记的地板已在 issue #905 删除（把登记的总数维持同步原来是记账税、不是判定，也刻意没有 `--sync`，因为抬地板是人的动作）。`test/static-guards.test.js` 的中英配对判据**不登记任何数字**：那个 `CHANGELOG_PAIR_FLOOR` 校准值
@@ -272,8 +269,8 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
     `syntax-check`、`test-hygiene-check`（验证态与 `--self-test`）、`mutation-sample-check --self-test`、
     `pack-link-check --self-test`、`config-leaf-value-probe --verify`，并且有一格钉住「这些命令不许再作为重复
     步骤爬回 `ci.yml`」。
-  - 纯重复的直接删：`check:inventory`、`guide-removal-gate --self-test`、`release-day --self-test` 早就分别被
-    `test/flat-count-inventory.test.js`、`test/guide-removal-gate.test.js`、`test/release-day.test.js` spawn 了。
+  - 纯重复的直接删：`guide-removal-gate --self-test`、`release-day --self-test` 早就分别被
+    `test/guide-removal-gate.test.js`、`test/release-day.test.js` spawn 了。
   - 文档族（`check:docs`、`check:docs:strict`、`check:docs-spelling`、`check:docs-examples`、
     `check:agents-directives`、`check:changelog`）住在**已经接线的那道版本边界**上——`check:changelog` 作为
     `PREFLIGHT_STEPS[0]` 阻塞、`check:docs` 在 `release:day --stage writeback` 里重跑——其余时候由周期性 agent
@@ -295,7 +292,7 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
   （`PREFLIGHT_STEPS`）。
 
 ## gate-reproducibility
-- 门禁可复现口径（issue #280）：`npm run check:docs` 与 `npm run check:docs:strict` 在开发工作树里和在全新 clone 里（`git archive HEAD | tar -x -C <空目录>` 解出来的那棵树）必须同样 exit 0。「本机档案」这一类——`docs/tasks/` 下的文件，该目录被 `.gitignore` 整目录忽略、故意不入库，因此任何 clone 里都不存在——按**声明**裁决（`LOCAL_ARCHIVE_REFS` 逐条登记，或引用就地写明「本机 / 不入库 / 归档」），实物只在那个目录恰好在场时顺便核实，核不到不得把门禁判红。真正有本机前置的，是那一批需要 `node_modules`（两个 dev 包 `typescript` + `@types/node`，issue #213）的门禁：`npm run check:inventory`（它拿 TypeScript AST 去解每一个被扫的测试文件）、`npm run check:types`、`npm run check:types:strict` 与 `npm run check:types-build`（三张都直接驱动 `tsc`），以及 `npm run check:pack-links` / `npm run check:release`（它们 shell out 去跑 `npm pack`，而 `npm pack` 的 `prepack` 钩子会重生声明文件，再加 `tsc`）。没有 `node_modules` 的检出里这些闸会非 0 退出并报 `Cannot find module 'typescript'`——那是「**这道闸没跑起来**」，从来不是回归；先 `npm install --include=dev`。**除此之外没有任何闸读工具链**。
+- 门禁可复现口径（issue #280）：`npm run check:docs` 与 `npm run check:docs:strict` 在开发工作树里和在全新 clone 里（`git archive HEAD | tar -x -C <空目录>` 解出来的那棵树）必须同样 exit 0。「本机档案」这一类——`docs/tasks/` 下的文件，该目录被 `.gitignore` 整目录忽略、故意不入库，因此任何 clone 里都不存在——按**声明**裁决（`LOCAL_ARCHIVE_REFS` 逐条登记，或引用就地写明「本机 / 不入库 / 归档」），实物只在那个目录恰好在场时顺便核实，核不到不得把门禁判红。真正有本机前置的，是那一批需要 `node_modules`（两个 dev 包 `typescript` + `@types/node`，issue #213）的门禁：`npm run check:types`、`npm run check:types:strict` 与 `npm run check:types-build`（三张都直接驱动 `tsc`），以及 `npm run check:pack-links` / `npm run check:release`（它们 shell out 去跑 `npm pack`，而 `npm pack` 的 `prepack` 钩子会重生声明文件，再加 `tsc`）。没有 `node_modules` 的检出里这些闸会非 0 退出并报 `Cannot find module 'typescript'`——那是「**这道闸没跑起来**」，从来不是回归；先 `npm install --include=dev`。**除此之外没有任何闸读工具链**。
 - **并发判读禁令（issue #799）**：同一棵树里还有 `npm test` 在跑的时候，
   不得判读 `npm run check:docs`、`npm run check:docs:strict` 或
   `node scripts/docs-drift-check.mjs`。下面那组形状是**当次实测的读数**
