@@ -298,3 +298,25 @@ test("#896B-6e truncated 是 run 级事实：夹断记录落在检索窗口外�
   assert.equal(r.status, "truncated", "窗口外的夹断记录也必须让结果变成 truncated");
   assert.equal(r.clamped, true);
 });
+
+test("#896B-9 整包硬顶：控制字符把 JSON 转义撑大时，丢段而不是击穿预算", async () => {
+  // copilot #964 第三轮：三个硬顶量的是**原文**，模型读到的却是 JSON 串。
+  // NUL 在 JSON 里被转义成 6 个字符（`\u0000`）⇒ 原文 ~300 tok 的摘录序列化后 ≈6 倍。
+  // 这里让正则命中一长串 NUL（匹配本身够长，摘录就不会被 80 字符的上下文窗口夹小），
+  // 5 条命中拼出来的整包会远超 1500+500 ⇒ 必须丢段，且如实报 truncated / segmentsOmitted。
+  const rows = Array.from({ length: 5 }, (_, index) => ({
+    round: index + 1,
+    messages: [{ role: "user", content: `X${"\u0000".repeat(1200)}Y` }],
+  }));
+  const raw = await tool(rows).executeTool({ name: "recall_read", input: { pattern: "\\u0000{800}" } });
+  const parsed = JSON.parse(raw);
+  assert.equal(parsed.status, "found");
+  assert.equal(parsed.matchedBy, "regex");
+  assert.ok(
+    estimateTokens(raw) <= 1500 + 500,
+    `序列化后的整包必须 ≤ 1500+500 tok，实际 ${estimateTokens(raw)}`,
+  );
+  assert.ok(parsed.segments.length < 5, "这一组输入必须真的被整包硬顶丢掉过段");
+  assert.equal(parsed.truncated, true, "丢过段就必须报 truncated");
+  assert.ok(parsed.segmentsOmitted > 0, "丢过段就必须报 segmentsOmitted");
+});

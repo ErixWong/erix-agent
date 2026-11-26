@@ -410,7 +410,11 @@ export function createBuiltinRecallTools(options = {}) {
     const overviewRaw = `pattern "${echo.text}" 在轮 [${windowFrom}, ${windowTo === Number.MAX_SAFE_INTEGER ? "∞" : windowTo}] 命中 ${hits.length} 处，返回 ${segments.length} 段（matchedBy=${matchedBy}${segmentsOmitted > 0 ? `，省略 ${segmentsOmitted} 段` : ""}）。`;
     const overview = fitPrefix(overviewRaw, MAX_OVERVIEW_TOKENS).text;
 
-    return JSON.stringify({
+    // copilot #964 第三轮：上面的三个硬顶（单段 / 段数 / 总 1500）都是拿 `estimateTokens` 量**原文**的，
+    // 而模型读到的其实是 `JSON.stringify` 之后的串。控制字符（`\u0000` 等）在 JSON 里会被转义成 6 个字符，
+    // 于是「原文 296 tok 的摘录」序列化后可以远超它——把预算击穿。这里对**序列化后的整包**再收一次口：
+    // 超了就从末尾丢段（并如实报 `segmentsOmitted` / `truncated`），丢到只剩一段仍超就只留概览。
+    const build = () => ({
       status: "found",
       pattern: echo.text,
       patternTruncated: echo.truncated,
@@ -424,6 +428,15 @@ export function createBuiltinRecallTools(options = {}) {
       clamped: archiveClamped,
       overview,
     });
+    // 概览是单独的一条预算（issue：概览 500 tok），整包预算 = 1500 + 500。
+    const PACKAGE_TOKEN_BUDGET = MAX_TOTAL_TOKENS + MAX_OVERVIEW_TOKENS;
+    let payload = build();
+    while (estimateTokens(JSON.stringify(payload)) > PACKAGE_TOKEN_BUDGET && payload.segments.length > 0) {
+      payload.segments = payload.segments.slice(0, -1);
+      payload.segmentsOmitted = hits.length - payload.segments.length;
+      payload.truncated = true;
+    }
+    return JSON.stringify(payload);
   }
 
   /**
