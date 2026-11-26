@@ -120,13 +120,11 @@ test/
 ├── integration/
 │   └── memento-scenario.test.js
 ├── messages/
-│   ├── anthropic.test.js
 │   ├── canonical.test.js
 │   ├── openai-normalization.test.js
 │   ├── rounds.test.js
 │   └── v020-alpha.test.js
 ├── providers/
-│   ├── anthropic.test.js
 │   ├── openai-stream.test.js
 │   ├── openai.test.js
 │   ├── v020-alpha.test.js
@@ -172,7 +170,7 @@ test/
 
 | 区域 | 文件 | 覆盖内容 |
 |---|---|---|
-| Provider/message 版本回归 | `test/providers/v020-alpha.test.js`、`test/providers/v020-beta.test.js`、`test/providers/v020-rc.test.js`、`test/messages/v020-alpha.test.js` | 可选 provider payload、reasoning 和 image block、provider options、流式 reasoning/tool 事件、timeout 阶段、重试分类、transport 转发和 Anthropic system summary |
+| Provider/message 版本回归 | `test/providers/v020-alpha.test.js`、`test/providers/v020-beta.test.js`、`test/providers/v020-rc.test.js`、`test/messages/v020-alpha.test.js` | 可选 provider payload、reasoning 和 image block、provider options、流式 reasoning/tool 事件、timeout 阶段、重试分类、transport 转发|
 | Loop 版本回归 | `test/loop-v020.test.js`、`test/loop-v020-beta.test.js`、`test/loop-v020-rc.test.js` | 消息重新校验、continuation 压缩、snapshot 重试、结构化和位置式工具执行、完成默认值、压缩预算、checkpoint 行为和持久化失败处理 |
 | Resume 与 run state | `test/loop-resume.test.js`、`test/run-state.test.js` | 恢复时不重放付费 provider 调用或已执行工具、部分工具结果、折叠 checkpoint、有界 run state（agent 层凭据脱敏已退役，#55）、schema 可用性、幂等替换和持久化的工具事实 |
 | Store 与压缩 | `test/store/file.test.js`、`test/store/v020-rc.test.js`、`test/compact/fold-llm.test.js`、`test/compact/v020-rc.test.js`、`test/tool-result-ttl.test.js` | JSONL append/load、畸形尾部和崩溃安全处理、原子 state 写入、去重、注入的 LLM summarizer、尺寸执法、受保护轮次、全局轮次偏移、image 清理、request-view TTL 折叠、warning round、navigation digest 和 JSON skeleton |

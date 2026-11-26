@@ -1,7 +1,7 @@
 <!-- doc-version: 0.35.0 -->
 # 宿主升级指南：0.35.0
 
-> 范围：0.35.0 这一版切割。**这是一次公开面的破坏性变更，不是引擎的破坏性变更。** 有五个名字不再从
+> 范围：0.35.0 这一版切割。**这是一次公开面的破坏性变更，不是引擎的破坏性变更。** 有八个名字不再从
 > 包根（`.`）导出；它们所在的模块原地不动，`bin/` 仍按模块路径直引，所以 CLI 不受影响。承担
 > 「从 store 拿定义 → 造连接」这条链的三个名字被保留，且是官方替代。已经在跑的进程不做原地迁移。
 
@@ -90,6 +90,29 @@ function resolveApiKey(config, env = process.env) {
 它当初被导出，是为了让宿主算「哪个键属于初始化、哪个属于每次调用」。这份绑定现在是
 `src/loop/config-namespace.js` 的内部件（引擎在同一处对着 `CONFIG_NAMESPACE_SCHEMA` 跟它对账）。
 需要这一拆分的宿主应改读契约里的 config 面那一节，而不是 import 这张表。
+
+## 2.4 三个 Anthropic 协议助手已退役（issue #926）
+
+0.35.0 同时落地**内置 Anthropic 线协议适配器**的退役，连带三个原本从包根导出的名字。它们与配置层同一次
+切割被摘掉，理由相同：那是一层**转换**，而本包现在只说**一种**线协议（OpenAI 兼容）。
+
+| 从包入口摘掉 | 原本做什么 | 代码原址 |
+|---|---|---|
+| `canonicalToAnthropicRequest` | canonical 消息/工具 → Anthropic 请求体 | `src/messages/anthropic.js` |
+| `anthropicResponseToCanonical` | Anthropic 响应 JSON → canonical 响应 | `src/messages/anthropic.js` |
+| `createAnthropicStreamAssembler` | Anthropic SSE → 流式 canonical 增量 | `src/messages/anthropic.js` |
+
+**替代做法。** 包内**没有**一对一替代，以后也不会有：引擎不再携带第二种线协议方言。具体地：
+
+- **OpenAI 兼容端点** —— 什么都不用做。`createOpenAIProvider` 未变，它仍是包外通向线协议的唯一一道门。
+- **Anthropic 端点** —— 由**宿主**提供 provider。`runToolLoop` 接受任何 `{ protocol, model, chat, chatStream }`
+  形状的对象；自己造这个对象，按你面向的 Anthropic API 实现请求编码、响应映射与流装配。你必须产出/消费的
+  canonical 形状见 `docs/host-consumer-contract.md`（消息、工具调用、usage、`stopReason`）。
+- **压缩摘要** —— 不受影响。`summaryRole: "system"` 仍然是「把摘要前置成 system 消息」；线协议归宿主时，
+  把它并进 provider 自己的 `system` 字段是**宿主**的事（这段合并原本住在被退役的适配器里）。
+
+如果你原来直接调这三个助手去对接 Anthropic，迁移就是：保留你的 HTTP 代码，删掉这些 import，
+按契约文档读 canonical 形状，而不是从退役的转换器读。
 
 ## 3. 不变的部分
 

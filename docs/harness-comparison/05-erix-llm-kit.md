@@ -33,9 +33,10 @@
 - 引擎唯一的系统提示词拼装是 `mainSystem = (wrapup === false ? system : system + "\n\n" + WRAPUP_INSTRUCTION)`：
   宿主给的 `system` 在前，引擎追加的收官指令在后（src/loop/orchestrator.js:764-766）。`WRAPUP_INSTRUCTION` 要求
   「不再调工具时输出 `{"done":true,"summary":...,"output":...}`」（src/loop/reflection.js:3-6）。可用 `ERIX_NO_WRAPUP_INSTRUCTION=1` 关掉（src/loop/orchestrator.js:762-763）。
-- 请求体只有 `system / messages / tools / signal`（src/loop/provider-runner.js:58-63）。Anthropic 侧会把
-  `messages` 中 role=system 的条目抽出来按序合并进 `request.system`（src/providers/anthropic.js:80-97），
-  这给压缩摘要「以 system 角色前置」留了口子（`summaryRole: "system"`，src/compact/fold-llm.js:66-82）。
+- 请求体只有 `system / messages / tools / signal`（src/loop/provider-runner.js:58-63）。
+  **内置只有一条线协议**（OpenAI 兼容）；`src/providers/anthropic.js` 与它那段「role=system 抽出来并进
+  `request.system`」的逻辑已随 issue #926 退役。宿主自带 Anthropic provider 时，那段合并由**宿主**自己做；
+  引擎侧的压缩摘要仍可要求「以 system 角色前置」（`summaryRole: "system"`，src/compact/fold-llm.js:66-82）。
 
 **CLI（宿主）侧拼装：一句话 + 一段工具/纪律说明 + 一段归档公告。**
 

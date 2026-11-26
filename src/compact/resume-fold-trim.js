@@ -2,7 +2,7 @@
 // issue #462：折叠水位线 `foldedThrough` 的**读侧**。#460 只修了写侧（归档改成有界差分），
 // 而 resume 至今从不按水位线裁正文 —— `restoreResume()` 把整段账本折成上下文
 // （`src/loop/resume-manager.js` 的 `ctx.messages = ledgerMessages`），于是续跑的第一次折叠
-// **每次都是从 round 1 重折**：真机探针（`scripts/probe-462-resume-refold.mjs`，fake provider，
+// **每次都是从 round 1 重折**：真机探针（原 `scripts/probe-462-resume-refold.mjs`，已随 #926/#898 的前提退役删除：它同时依赖已退役的 `cacheStablePrefix` 与 `fold-statistical` 两个前提，无法直接复跑；需要时用 `git show <sha>:scripts/probe-462-resume-refold.mjs` 取回，fake provider，
 // budget 4000，16 轮、每 2 轮 resume 一次）实测
 //   · 喂进 compact 的消息数 8→11→16→21→26→31→36（线性），折走区间恒为 `{from:1,…}`，
 //     `foldedRounds` 7→10→13→16→19（那时只新增了 2 轮）；
