@@ -1372,7 +1372,8 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 
 **绑定事实是机器可读的。** 每个配置叶子都在 `CONFIG_LEAF_BINDING`（`src/loop/config-namespace.js`）
 里标成 `"init"` 或 `"call"` —— 它是 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`）旁边
-**唯一**手写的那张表。它从包根导出，并由 `configSchemaSelfCheck`
+**唯一**手写的那张表。自 #929 起它**不再从包根导出** —— 这张表留在
+`src/loop/config-namespace.js` 里作为引擎自检的对账面，不再是给宿主取的值，并由 `configSchemaSelfCheck`
 （`src/loop/config-namespace.js`）对着 schema 对账：加了叶子忘标绑定 ⇒ 红，绑定指向一个不存在的
 叶子 ⇒ 红，而且**没有第二份手抄名单**可以跟它各改各的。两档的确切含义：
 
@@ -2030,8 +2031,9 @@ status，再回落读取旧 `.state.json` 数据内嵌的 `state`。`loadRunStat
 [ADR-019](https://github.com/ErixWong/erix-agent/blob/main/docs/decisions/019-run-state-store-authority.md)。
 
 `modelConfig` 始终是 resolver 形态的 `ModelConfigProvider`——即便它是随 `assemblyPort`
-一起显式提供的覆盖项。plain 配置对象会被拒绝并给出迁移提示，请用
-`createModelConfigResolver(config)`（或 `createStaticModelConfigProvider(config)`）包装。
+一起显式提供的覆盖项。plain 配置对象会被拒绝并给出迁移提示。自 #929 起配置工厂
+（`createModelConfigResolver` / `createStaticModelConfigProvider`）已从包入口摘掉，宿主自己
+提供一个带 `async resolve(slot)` 的对象：读配置（或留在内存里）并返回选中的 slot。
 
 既有的细粒度 `runToolLoop` 选项继续受支持。两种形式同时存在时，先解析 AssemblyPort，
 显式提供的细粒度选项覆盖对应的装配值。这样端口留在组合边界上，不包裹也不改动循环的注入
@@ -2196,6 +2198,8 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
   `{ "slots": { "<name>": { … } } }`；`createStaticModelConfigProvider` 接内存里的同构形状。
   两者都是**原样**返回 slot，只额外物化一个 `apiKey`
   （`apiKey` → `apiKeyEnv` → `apiKeyFile`，`resolveApiKey`（`src/config/api-key.js`））。
+  **自 #929 起这三个已从包根（`.`）摘掉**：模块为 `bin/` 与引擎留在原处，但宿主现在自己
+  读这份同构配置（或用 `loadModelSlot` 取 `default` 槽位）。
 
 ### 字段契约
 
@@ -2223,7 +2227,7 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 被覆盖的 slot 字段是另一张面，一字未动。
 
 **slot 里的未知字段是惰性的，也是安全的——除了现在变成已知字段的预算键。** 内置 provider 原样拷贝 slot
-（`createJsonFileModelConfigProvider`（`src/config/json-file.js`）、`createStaticModelConfigProvider`（`src/config/static.js`）），两个工厂又只读固定的
+（配置 provider `createJsonFileModelConfigProvider`（`src/config/json-file.js`）与 `createStaticModelConfigProvider`（`src/config/static.js`）—— 留在原处，但自 #929 起不再从包入口导出），两个工厂又只读固定的
 参数列表（`createOpenAIProvider`（`src/providers/openai.js`）），
 所以认不出的键既上不了线，也不会抛错。这条安全声明只覆盖
 **slot 对象**：*顶层* `runToolLoop` 选项写错名仍会抛 `TypeError`（见「`runToolLoop`
@@ -2356,9 +2360,20 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 ```
 
 ```js
-import { createJsonFileModelConfigProvider, createOpenAIProvider, runToolLoop } from "erix-agent";
+import { createOpenAIProvider, runToolLoop } from "erix-agent";
+import { readFile } from "node:fs/promises";
 
-const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
+// #929 把 JSON-file 配置 provider 从包入口摘掉了：宿主自己读那个文件，并把同样的
+// `modelConfig.resolve(slot)` 契约交给循环。
+const modelConfig = {
+  async resolve(name) {
+    const { slots } = JSON.parse(await readFile(configPath, "utf8"));
+    const entry = slots[name ?? "default"];
+    return entry?.apiKey === undefined && entry?.apiKeyEnv !== undefined
+      ? { ...entry, apiKey: process.env[entry.apiKeyEnv] }
+      : entry;
+  },
+};
 
 // per-run 的槽位选择跟着 run 走，不跟着进程走。
 // 省略槽位 ⇒ 解析 "default" 槽；显式给出不认识的名字 ⇒ 启动期抛

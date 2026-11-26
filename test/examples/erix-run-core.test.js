@@ -14,7 +14,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { createMemoryTranscriptStore, createFileTranscriptStore, createJsonFileModelConfigProvider, runToolLoop } from "../../src/index.js";
+import { createMemoryTranscriptStore, createFileTranscriptStore, runToolLoop } from "../../src/index.js";
+// issue #929：createJsonFileModelConfigProvider 已从包入口摘掉；本测试只把它当配置夹具，按模块路径直引。
+import { createJsonFileModelConfigProvider } from "../../src/config/json-file.js";
 // #313：层 id 与观测器直取引擎声明（`COMPACTION_LAYER_IDS` 由 `COMPACTION_PIPELINE` 的 id 派生），
 // 单测用它钉住「终局面不许自创层名」。
 import { COMPACTION_LAYER_IDS, createEmptyCompactionLayers, observeCompactionLayer } from "../../src/compact/pipeline.js";

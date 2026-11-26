@@ -918,8 +918,9 @@ export async function loadErixAgent({
       failures.push(`${candidate.source}: ${textOf(error)}`);
       continue;
     }
-    const missing = ["runToolLoop", "createOpenAIProvider", "createJsonFileModelConfigProvider",
-      "createMemoryTranscriptStore", "resolveApiKey"]
+    // issue #929：配置间接层（createJsonFileModelConfigProvider / resolveApiKey）已从包入口摘掉，
+    // 本层自己读配置、自己落 key，因此入口只剩这三个必需名。
+    const missing = ["runToolLoop", "createOpenAIProvider", "createMemoryTranscriptStore"]
       .filter((name) => typeof index?.[name] !== "function");
     if (missing.length > 0) {
       failures.push(`${candidate.source}: 入口缺少导出 ${missing.join(", ")}`);
@@ -994,8 +995,32 @@ export async function loadErixAgent({
 }
 
 /**
- * 读 `~/.erix/config.json` 的 `slots.default`（库自带 createJsonFileModelConfigProvider 负责
- * 槽位选取 + apiKey/apiKeyEnv/apiKeyFile 落值），支持 `model` 参数覆盖槽位里的模型名。
+ * 自己解析槽位的 API key（issue #929：入口不再导出 resolveApiKey）。
+ * 优先级与旧的 resolveApiKey 一致：`apiKey` 直取 → `apiKeyEnv` 查环境 → `apiKeyFile` 读文件。
+ *
+ * @param {Record<string, any>} config
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<Record<string, any>>}
+ */
+async function resolveSlotApiKey(config, env = process.env) {
+  if (config.apiKey !== undefined && config.apiKey !== null) {
+    return { ...config, apiKey: config.apiKey };
+  }
+  if (config.apiKeyEnv !== undefined && env[config.apiKeyEnv] !== undefined) {
+    return { ...config, apiKey: env[config.apiKeyEnv] };
+  }
+  if (config.apiKeyFile !== undefined) {
+    if (typeof config.apiKeyFile !== "string" || config.apiKeyFile.trim() === "") {
+      throw new TypeError("apiKeyFile must be a non-empty string path");
+    }
+    return { ...config, apiKey: readFileSync(config.apiKeyFile, "utf8").trim() };
+  }
+  return { ...config };
+}
+
+/**
+ * 读 `~/.erix/config.json` 的 `slots.default`（issue #929 之后本层自读配置、自己
+ * 落 apiKey/apiKeyEnv/apiKeyFile），支持 `model` 参数覆盖槽位里的模型名。
  *
  * ⚠ **已升进 `src/config/slot-provider.js`（#406 B2-a），本份是 B2-b 要删的遗留件，勿在此演进。**
  * 新代码一律用包根导出的那份（`import { loadModelSlot } from "erix-agent"`）；本份只为了让
@@ -1039,14 +1064,17 @@ export async function loadModelSlot({
     );
   }
 
-  const providerFactory = lib?.createJsonFileModelConfigProvider;
-  if (typeof providerFactory !== "function") {
-    throw new ErixRunError("lib_missing", "erix-agent 入口未导出 createJsonFileModelConfigProvider");
-  }
-
+  // issue #929：入口不再导出 createJsonFileModelConfigProvider，本份自己读配置：
+  // 读 JSON → 取 slots.default → 自己落 apiKey/apiKeyEnv/apiKeyFile（宿主自己拼 key）。
   let slot;
   try {
-    slot = await providerFactory({ path: resolvedPath }).resolve("default");
+    const parsed = JSON.parse(readFileSync(resolvedPath, "utf8"));
+    const slots = parsed?.slots;
+    const isRecordValue = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+    if (!isRecordValue(slots) || !Object.hasOwn(slots, "default") || !isRecordValue(slots.default)) {
+      throw new Error("配置槽位不存在: default");
+    }
+    slot = await resolveSlotApiKey({ ...slots.default }, env);
   } catch (error) {
     throw new ErixRunError(
       "config_invalid",
