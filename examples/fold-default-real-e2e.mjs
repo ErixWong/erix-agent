@@ -543,6 +543,12 @@ test("真模型端点 e2e（统计臂反向证）：显式 fold-statistical ⇒ 
     `统计臂的块里没有统计摘要标记：${arm.block.slice(0, 400)}`);
   assert.equal(arm.counts.summarizer, 0,
     `显式 fold-statistical 竟然调了摘要器 ${arm.counts.summarizer} 次 ⇒ 判据 ② 的计数口径不可信`);
+  // copilot 验收 nit：原来这条只过滤「不是 fold-statistical 的」，空数组也能过 ⇒ 不能正面证明
+  // 「统计臂的折叠记录里真的有一条 fold-statistical」。先正面钉一条，再钉「没有别的策略」。
+  assert.ok(
+    arm.stats.some((stat) => stat.strategy === "fold-statistical"),
+    `统计臂的 compactionStats 里必须真有一条 strategy="fold-statistical"：${JSON.stringify(arm.stats)}`,
+  );
   assert.deepEqual(
     arm.stats.map((stat) => stat.strategy).filter((name) => name !== undefined && name !== "fold-statistical"),
     [],
