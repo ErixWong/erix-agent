@@ -264,8 +264,52 @@ const CHARTS_CN = "docs/charts_cn.md";
 /** 工具事实契约常量的真值出处（工单 261014 T1）。 */
 const TOOL_FACT_SRC = "src/tool-fact.js";
 
+/**
+ * 测试注入（issue #856 的反向证入口）：`ERIX_DOCS_FAULT_READ=a.md,b.md` ⇒ 读这两个相对路径时
+ * 抛一个**非 ENOENT** 的读失败（EACCES）。只在设置了该环境变量时生效，正常跑永远不触发。
+ *
+ * 为什么要这个钩子：`fileRecord()` 的 fail-closed 分支（读失败 ⇒ exit 2）**没有任何真文件**能在
+ * 测试里稳定造出来（chmod 会污染工作树、EMFILE 不可控），而「读不出 ≠ 绿」这条判据恰恰只在
+ * 读失败时才成立。没有注入就只能靠人肉 chmod 验一次，然后它就再也没人验过了。
+ */
+const FAULT_READ = new Set(
+  (process.env.ERIX_DOCS_FAULT_READ ?? "").split(",").map((x) => x.trim()).filter(Boolean),
+);
+
 function read(rel) {
-  return readFileSync(path.join(ROOT, rel), "utf8");
+  try {
+    // 注入点必须在 try 里面：它要走的正是「非 ENOENT 读失败」那条真实分支，否则反向证证的
+    // 不是这条判据，而是「注入器自己会不会抛」。
+    if (FAULT_READ.has(rel)) {
+      const injected = new Error(`EACCES: permission denied, open '${rel}'（ERIX_DOCS_FAULT_READ 注入）`);
+      injected.code = "EACCES";
+      throw injected;
+    }
+    return readFileSync(path.join(ROOT, rel), "utf8");
+  } catch (error) {
+    // issue #856：**读失败不许变成「这份文档没有内容」**。
+    //
+    // 病：`fileRecord()` 原来的 `catch { return null; }` 把 EACCES / EMFILE / EISDIR 与 ENOENT 一起
+    // 吞掉，下游十来处 `if (!rec) continue;` 于是静默少扫一份文档 ⇒ 计数型判据（bare-lines 棘轮、
+    // 符号锚点面、cell-axes）的**实测数往下掉** ⇒ 「实测 > 基线」这类红凭空消失 ⇒ **红树被判绿**。
+    //
+    // 分档（在这里一次收口，因为 `textOf` 有三十来个直调点，逐个 try/catch 既不彻底也会漂）：
+    //   · `ENOENT` = 文件真的不存在 ⇒ **照旧抛**，由 `fileRecord` 的 catch 返回 null，
+    //     后续「锚点是死的」那条判据照常点名（不许被本分支抢走，否则是假红）；
+    //   · 其余任何读失败 ⇒ 记进 `DOC_READ_FAILURES`（最终 exit 2「未判定」，与本脚本既有的
+    //     `READ_FAILURES` 同一口径，issue #690 ③），并返回空串让判据继续跑完——
+    //     空串不会被印成「文档写错了」，因为 exit 2 时那段错误清单根本不打印。
+    if (error?.code === "ENOENT") throw error;
+    // 同一份文档被十来个判据各读一次，逐次 push 会让「读不出」清单变成噪声 ⇒ 按 rel 去重。
+    if (!DOC_READ_FAILURES.some((item) => item.rel === rel)) {
+      DOC_READ_FAILURES.push({
+        rel,
+        message: `${rel}: 读失败（${error?.code ?? error?.message ?? "unknown"}）——`
+          + "少扫一份文档会让计数型判据的实测数往下掉，红会被吞掉；读不出既不是绿也不是红",
+      });
+    }
+    return "";
+  }
 }
 
 const errors = [];
@@ -1973,12 +2017,20 @@ const JS_CONTROL_KEYWORDS = new Set(["if", "else", "case", "default", "return", 
  * 早先的版本拿「长度 + 首尾 32 字」当文本身份，`src/a/b.js:12` → `src/a/c.js:12` 这种**等长**变异
  * 会命中旧缓存，自测里直接假绿（改了却不红）——所以身份判据必须是「是否被 overlay 覆盖」。 */
 const FILE_LINE_CACHE = new Map();   // rel → { text, lines, decls, literals }
+/** issue #856：非 ENOENT 的读失败（读不出 = exit 2，永远不等于绿）。 */
+const DOC_READ_FAILURES = [];
 
 function fileRecord(rel) {
   const hit = FILE_LINE_CACHE.get(rel);
   if (hit) return hit;
   let text;
-  try { text = textOf(rel); } catch { return null; }
+  try { text = textOf(rel); }
+  catch {
+    // issue #856：走到这里**只可能是 ENOENT**（文件真的不存在）——非 ENOENT 的读失败已经在
+    // `read()` 里收口成 `DOC_READ_FAILURES` + 空串，不会再抛到这里。返回 null 保留原语义：
+    // 「这份文档不在扫描面里」，由「锚点是死的」那条判据点名。
+    return null;
+  }
   const rec = { text, lines: text.split("\n"), decls: null, literals: null };
   FILE_LINE_CACHE.set(rel, rec);
   return rec;
@@ -7305,7 +7357,10 @@ const NOT_JUDGED = collectChangelogDateErrors.notJudged ?? [];
 // issue #690 ③：**读不出 = 红，而且是 exit 2**。这一族与「文档与真值打架」（exit 1）分开：
 // 前者是「判据没有真值可判」（§4 找不到 / 本版 CHANGELOG 段读不到 / 名字解析为空），后者是「判得了且判出漂移」。
 // 把两者印成同一个退出码，等于让「闸自己坏了」与「文档写错了」在 CI 里长得一模一样。
-const READ_FAILURES = collectUnchangedSurfaceErrors.readFailures ?? [];
+const READ_FAILURES = [
+  ...(collectUnchangedSurfaceErrors.readFailures ?? []),
+  ...DOC_READ_FAILURES.map((item) => item.message),   // issue #856：读失败并进同一个「读不出 = exit 2」出口
+];
 for (const e of collectMarkerLiteralErrors()) err(e);
 for (const n of collectMarkerLiteralErrors.notes ?? []) note(n);
 const pkgBlock = checkPkgBlocks();
