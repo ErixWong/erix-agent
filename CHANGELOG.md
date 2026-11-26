@@ -4,6 +4,17 @@
 ## [Unreleased]
 
 ### Changed
+- **`truncateBody`'s 500-character cap gets its regression guard back (task 261126-50, issue #938 ①).** The
+  only case that ever asserted the cap lived in `test/providers/anthropic.test.js`, which was deleted wholesale
+  with the Anthropic protocol retirement (#926) — but `truncateBody` (`src/providers/http-shared.js`) is still
+  on the live path: `src/providers/openai.js` calls it to build error bodies in five places. No test asserted the
+  cap afterwards, so widening it (or dropping the `slice`) would have gone green. The new case feeds a 700-character
+  non-JSON body through the OpenAI provider and pins both the length (500) and the shape (a prefix slice).
+- **`truncateBody` 的 500 字符上限把回归判据装回去了（任务 261126-50，issue #938 ①）。** 唯一断言过这个上限的用例
+  原本住在 `test/providers/anthropic.test.js`，那个文件随 Anthropic 协议退役（#926）整删——但
+  `truncateBody`（`src/providers/http-shared.js`）**仍在活路径上**：`src/providers/openai.js` 有五个地方用它
+  构造错误体。删完之后没有任何测试断言这个上限，把它改宽（或删掉 `slice`）会全绿。新用例让 OpenAI provider
+  吃一份 700 字符的非 JSON 正文，同时钉住长度（500）与形状（取前缀）。
 - **The plan directive now asks for batched tool calls (task 261126-44).** The sentence appended to the CLI
   system prompt read `每轮开始先用一句话（≤30字）说明当前计划，再调用工具` — singular "调用工具", which framed the
   loop as one action per round. Measured on one dispatched run: **112 of 120 rounds carried exactly one
