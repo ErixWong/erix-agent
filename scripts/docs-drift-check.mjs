@@ -242,10 +242,8 @@ const VERBOSE = process.argv.includes("--verbose");
 
 const PKG = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
 const PKG_VERSION = PKG.version;
-/** `--self-test` 要连 package.json 一侧的改动一起测，所以清单真值走这个口子（有内存副本就用副本）。 */
 function pkgNow() {
-  const overlay = OVERLAY.get("package.json");
-  return overlay ? JSON.parse(overlay) : PKG;
+  return PKG;
 }
 
 const README_EN = "README.md";
@@ -964,8 +962,7 @@ for (const rule of DEFAULT_RULES) {
 //   所以本单的修前红证据靠后者（它在修前就是 #280 那条「改了但没红」的假 fail-open）。
 
 /** `--self-test` 用：把某个文件的文本换成内存副本（不落盘、不动工作树）。 */
-const OVERLAY = new Map();
-const textOf = (rel) => OVERLAY.get(rel) ?? read(rel);
+const textOf = (rel) => read(rel);
 
 /** 双向对称的集合差：缺什么、多什么、写了重复成员。 */
 function diffSets(truth, doc) {
@@ -1150,7 +1147,7 @@ function arrowByteClaims(src) {
 // 病根（#284 / #285）：同一个事实的「谁拥有哪个字段」在构造器、文档、契约测试三处各写一份。
 // 修法是把它写成导出常量，本规则接上其中「文档 ↔ 常量」那条边：**双向**比成员。
 // 真值从 `src/tool-fact.js` 的**源码文本**抽（不 import）：门禁要在没有生成物、没有
-// node_modules 的树里能跑，且必须能吃 `--self-test` 的内存副本（OVERLAY）。
+// node_modules 的树里能跑。
 // 声明面有五个（都在中英两份契约里各自存一份，所以下面逐面做中英处数对账）：
 //   ① 散文清单「以 `erix.<field>` 寻址：`a` / `b` / …」
 //   ② 字段归属表（第一格是字段、第二格是 Owner）——含命名空间名本身
@@ -1795,7 +1792,7 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
  *  写法必须保持这一行不变形（自测要改这个数）。 */
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟指南改名到不匹配模式。 */
-let SIM_RENAMED_GUIDES = new Set();
+
 let LAST_SCAN_DOC_COUNT = -1;   // 自测据此判断树形口子有没有真的落上（#279 的「变异没落上」同一条纪律）
 
 /** 覆盖面：13 份点名文档 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
@@ -1803,7 +1800,7 @@ function refScanDocs() {
   const guides = readdirSync(path.join(ROOT, "docs"))
     .filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
     .map((f) => `docs/${f}`)
-    .filter((f) => !SIM_RENAMED_GUIDES.has(f))
+
     .sort();
   const docs = [...SYMBOL_DOCS_STATIC, ...guides];
   LAST_SCAN_DOC_COUNT = docs.length;
@@ -1827,35 +1824,6 @@ function collectRefScanCoverageErrors() {
 }
 
 /* ── #635 ①：文档里「点名几份 + 实扫几份 = 下限」这类**份数声称**必须等于实测 ─────────────
- * 病根：那句话是散文。脚本按目录实扫、测试侧另抄一份清单，两边自己算得没错，可**文档里写着的数**
- * 没人核对——现场：`README.md` 同一句里写着「That is 43 documents」又说「13 pinned + 32 …（= 45）」，
- * 两个数互相矛盾，而所有门禁一路绿（唯一被机器校过的是 `REF_SCAN_DOCS_MINIMUM = N` 那个常量声称）。
- * 判据（**静态对账**：一次目录扫描 + 几次正则，不跑 tsc、不跑 npm）：
- *   · 每份登记文档必须命中它登记的正则——句子被删也要红（否则「删掉这句话」就是合法逃逸）；
- *   · 每个捕获到的份数必须等于本文件自己算出来的真值（点名 = `SYMBOL_DOCS_STATIC.length`、
- *     实扫指南 = 目录里匹配的份数、合计、下限常量），红时点名「哪份文档的哪个数、声称多少、实测多少」。
- * 为什么真值取 `refScanDocs()`：它与覆盖面判据同源（自测的「改名一份指南」树形口子也照同一条路走），
- * 拿另算一份的目录数会让那条例外反向证多出一条与主题无关的红。
- */
-const REF_SCAN_COUNT_CLAIMS = [
-  {
-    doc: README_EN,
-    rules: [
-      { re: /\((\d+) today, discovered from the directory\)/g, groups: ["guides"],
-        label: "upgrade guides discovered from the directory" },
-      { re: /That is (\d+) documents \(`REF_SCAN_DOCS_MINIMUM = (\d+)`: (\d+) pinned \+ the (\d+) upgrade-guide files/g,
-        groups: ["total", "floor", "pinned", "guides"], label: "live-document count" },
-    ],
-  },
-  {
-    doc: README_CN,
-    rules: [
-      { re: /（当前 (\d+) 份，按目录实扫）/g, groups: ["guides"], label: "按目录实扫到的升级指南份数" },
-      { re: /共 (\d+) 份（`REF_SCAN_DOCS_MINIMUM = (\d+)`：(\d+) 份点名 \+ 按目录实扫到的 (\d+) 份升级指南）/g,
-        groups: ["total", "floor", "pinned", "guides"], label: "活文档份数" },
-    ],
-  },
-];
 
 /** 份数声称的真值（与覆盖面判据同源：`refScanDocs()`）。 */
 function refScanCountTruth() {
@@ -2007,12 +1975,11 @@ const JS_CONTROL_KEYWORDS = new Set(["if", "else", "case", "default", "return", 
 const FILE_LINE_CACHE = new Map();   // rel → { text, lines, decls, literals }
 
 function fileRecord(rel) {
-  const overlaid = OVERLAY.has(rel);
   const hit = FILE_LINE_CACHE.get(rel);
-  if (hit && hit.overlaid === overlaid && (!overlaid || hit.text === textOf(rel))) return hit;
+  if (hit) return hit;
   let text;
   try { text = textOf(rel); } catch { return null; }
-  const rec = { text, overlaid, lines: text.split("\n"), decls: null, literals: null };
+  const rec = { text, lines: text.split("\n"), decls: null, literals: null };
   FILE_LINE_CACHE.set(rel, rec);
   return rec;
 }
@@ -3270,9 +3237,8 @@ const CLI_FLAG_EXEMPTIONS = [
   // { doc: README_CN, command: "repl", flag: "--example", why: "……" }
 ];
 
-/** `--self-test` 用：临时替换放行表（与 `SIM_TREE_SHAPE` 同一课：overlay 只改文本，改不动运行时数组）。 */
-let SIM_CLI_FLAG_EXEMPTIONS = null;
-const cliFlagExemptions = () => SIM_CLI_FLAG_EXEMPTIONS ?? CLI_FLAG_EXEMPTIONS;
+/** 放行表的读取口（曾经有 `--self-test` 的临时替换开关，随 261126-59 一并删除）。 */
+const cliFlagExemptions = () => CLI_FLAG_EXEMPTIONS;
 
 /** `erix chat …` / `erix repl …` 两条 usage 行（帮助与 README 同一句式，所以同一个提取器）。 */
 function cliUsageLines(text) {
@@ -3529,11 +3495,11 @@ const COMPACTION_DEFAULT_WORDS = Object.freeze([
 /** `--self-test` 用：临时**抽掉**一条判据词（与 `SIM_CLI_FLAG_EXEMPTIONS` 同一课：overlay 只改文本，
  *  改不动运行时那个数组）。**不是豁免开关**：生产路径永远读 `COMPACTION_DEFAULT_WORDS` 全集，
  *  而「全集被清空」本身会报红（`collectCompactionDefaultErrors` 里的空转判据）。 */
-let SIM_COMPACTION_DROP_WORD_IDS = null;
+
 
 /** ③ 实际使用的判据词（自测可临时抽掉一条，见上）。 */
 function compactionDefaultWords() {
-  const drop = new Set(SIM_COMPACTION_DROP_WORD_IDS ?? []);
+  const drop = new Set();
   return COMPACTION_DEFAULT_WORDS.filter((word) => !drop.has(word.id));
 }
 
@@ -5130,7 +5096,7 @@ function bareNameNearest(p, ign) {
 
 /** 无斜杠裸名走通用四类裁决的文档（= 已跟踪 .md 减去 CROSS_REPO_DOCS）。新增文档默认纳面，
  *  要豁免只能进 CROSS_REPO_DOCS 点名写理由——不允许默默放行。 */
-const BARE_NAME_ADJUDICATED = true;   // 开关只为了 self-test 里能跑「扩面前后」对比，不是豁免开关
+const BARE_NAME_ADJUDICATED = true;   // 裸名裁决开关（原为 `--self-test` 的「扩面前后」对比留的，自测已删）
 
 /** 跳仓/宿主对照文档：**逐份**点名（禁止目录通配）+ 一句理由。这里的裸名不裁决（它们指的不是本仓实物），
  *  但条目本身被反向校：这份文档里已经没有任何裸名需要被豁免 → 红（防条目烂在那里）。 */
@@ -5181,38 +5147,8 @@ function gitignoreMatcher(text) {
  *  但安装位置、工作副本与丢弃型临时目录剪掉（node_modules/ / .worktrees/ / .scratch/ 里不是仓库内容：
  *  前两个是一整份别的仓库，后一个是复现脚本与对照树）。哪些类别被剪由 `SKIPPED_DIR_KINDS` 显式点名。
  *
- * `SIM_TREE_SHAPE`（#280 引入、#302 改造成**合成树夹具**；只给 `--self-test` 用，**不是豁免开关**）：
- * 「本机档案目录」这一格渗进裁决的地方只有两处——`resolveRef` 的裸名同名索引与 `bareNameNearest`
- * 的实物清单（都读这份清单的 `ignored` 那一半），外加一个 `taskArchiveDirPresent()` 谓词。
- * 所以「树形」在这份脚本里的**全部**含义就是这三样，夹具就声明在这三样上，与检查机上恰好有没有
- * `docs/tasks/` 无关：
- *   · `no-archive-dir`     —— 全新 clone / CI / 一次性沙箱：那个目录整片不在；
- *   · `empty-archive-dir`  —— 目录在、里面一条档案都没有（`npm test` 的端到端探针造过这个形状）；
- *   · `filled-archive-dir` —— 目录在、里面有本仓文档真的引用的那几条登记物（= 开发机）。
- * 声明一侧（.gitignore 规则、就地声明、登记表）一个字都不动：要证的正是「裁决只依赖声明时，
- * 三种树形必须给同一个结论」。
- *
- * #302 的病：旧口子 `SIM_ABSENT_TASK_ARCHIVE` 只有「摘掉实物」这一个动作，于是自测自己的落地检查
- * 拿**真实实物数量**当判据（「本机有档案目录却一条都没摘掉 ⇒ 口子没接线」）——在「目录在、里面是空的」
- * 机器上恒真地误报 2 例（CI 的干净检出上却是 0 例）。夹具化之后落地检查比对的是**夹具声明的那份清单**
- * （`treeFixtureLanding`），同一提交在三种树形上给同一个结论。
- * 缓存键必须带上它，否则同一个进程里三种树形会互相吃到对方的缓存。 */
-const TREE_SHAPE_NO_DIR = "no-archive-dir";
-const TREE_SHAPE_EMPTY = "empty-archive-dir";
-const TREE_SHAPE_FILLED = "filled-archive-dir";
 /** `filled-archive-dir` 里那几条档案：本仓文档真的引用到的登记物（路径与开发机上同名同位置，内容不重要）。
  *  它把「实物在场」那一支也覆盖到：登记物解得到 ⇒ `localArchiveVerdict` 走「已核实」而不是「按声明放行」。 */
-const TREE_FIXTURE_ARCHIVE_FILES = [
-  "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs",
-  "docs/tasks/active/261010-13-erix-run-async/e2e-wake.mjs",
-  "docs/tasks/active/task-20260830-touwaka-full-integration/BRANCH.md",
-  "docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md",
-];
-let SIM_TREE_SHAPE = null;   // null = 真实树（默认）；否则是上面三种形状之一
-// issue #914：裸名解析面（「能否解析」）必须取 **git manifest**，未跟踪实物一律不参与解析。
-// 本口子只给 `--self-test` 用（与 SIM_TREE_SHAPE 同一课）：模拟「磁盘上有、git 里没有」的未跟踪产物
-// （例如 agent 把 sessionDir 指在 git 树内多出的 session/outputs/<runId>/status.json）。生产默认 []。
-let SIM_UNTRACKED_FILES = [];
 let repoFilesCache = null;
 // #914：解析面的唯一来源。缓存一份 `git ls-files --cached --full-name`（已跟踪清单，含已跟踪符号链接；
 // 未跟踪实物天然不在内）。拿不到清单 ⇒ 记一条 MANIFEST_REFUSAL 口径的红、面置空，**没有**文件系统回退分支
@@ -5249,7 +5185,7 @@ function ignoredDirIsSkipped(rule) {
   return SKIPPED_DIR_KINDS.has(cls.kind);
 }
 function repoFiles(ign) {
-  const key = `${SIM_TREE_SHAPE ?? "real"}|${SIM_UNTRACKED_FILES.join("\n")}|${ign.rules.map((r) => r.pattern).join("\n")}`;
+  const key = `${ign.rules.map((r) => r.pattern).join("\n")}`;
   if (repoFilesCache && repoFilesCache.key === key) return repoFilesCache;
   // #914：「能否解析」= 解析面，一律取 git manifest；磁盘遍历这一轮只负责两件事——
   //   ① 认得被忽略目录（task-archive 等，供「忽略类」裁决与 #302 树形夹具）；
@@ -5283,14 +5219,11 @@ function repoFiles(ign) {
     let d = path.posix.dirname(f);
     while (d && d !== "." && d !== "/") { resolvableDirs.add(d); d = path.posix.dirname(d); }
   }
-  // 未跟踪产物：磁盘上未被忽略、却不在 git manifest 里的实物（含 SIM 注入的探针）。
-  const untracked = [...new Set([...onDisk, ...SIM_UNTRACKED_FILES])].filter((f) => !manifestSet.has(f)).sort();
-  // 树形夹具：把 task-archive 类目录这一格**整片**换成夹具声明的那份清单（真实实物一律不参与），
+  // 未跟踪产物：磁盘上未被忽略、却不在 git manifest 里的实物。
+  const untracked = [...new Set(onDisk)].filter((f) => !manifestSet.has(f)).sort();
+  // 历史说明（#302 的树形夹具已随 --self-test 一并删除，261126-59）：真实实物一律参与，下面三行只剩恒等变换。），
   // 所以三形状之间只差「那批文件在不在索引里」这一件事——声明一侧（.gitignore / 登记表 / 就地声明）不动。
-  const outside = SIM_TREE_SHAPE ? ignored.filter((f) => !isUnderTaskArchive(ign, f)) : ignored;
-  const ignoredHere = SIM_TREE_SHAPE === TREE_SHAPE_FILLED
-    ? outside.concat(TREE_FIXTURE_ARCHIVE_FILES)
-    : outside;
+  const ignoredHere = ignored;
   repoFilesCache = {
     key, tracked, untracked, resolvableFiles, resolvableDirs, ignored: ignoredHere,
     // #302：夹具落地检查要问「索引里那批档案到底是哪几条」，所以把它单独留一份（真实树里就是真清单）。
@@ -5307,7 +5240,6 @@ function isUnderTaskArchive(ign, rel) {
 /** 本机是否真的有 task-archive 类目录。夹具挂着时由**夹具**回答（#302：否则这个谓词读的是检查机上的
  *  文件系统，同一提交在「目录在」与「目录不在」两台机器上就不同判）。 */
 function taskArchiveDirPresent(ign) {
-  if (SIM_TREE_SHAPE) return SIM_TREE_SHAPE !== TREE_SHAPE_NO_DIR;
   return [...IGNORED_DIR_CLASSES.entries()]
     .filter(([, c]) => c.kind === "task-archive")
     .some(([dir]) => existsSync(path.join(ROOT, dir)));
@@ -5322,20 +5254,6 @@ function taskArchiveDirPresent(ign) {
  *  `taskArchiveDirPresent()` 那一句看着像同义反复，其实是唯一能证明「这个谓词由夹具回答」的断言：
  *  三种形状要求它依次返回 false / true / true，而真实文件系统只可能给其中一个值 ⇒ 三格同时绿
  *  只可能是夹具真的接管了它。返回 null = 落上了。 */
-function treeFixtureLanding(ign) {
-  const want = SIM_TREE_SHAPE === TREE_SHAPE_FILLED ? TREE_FIXTURE_ARCHIVE_FILES : [];
-  const got = repoFiles(ign).archiveInIndex;
-  const problems = [];
-  const missing = want.filter((f) => !got.includes(f));
-  const extra = got.filter((f) => !want.includes(f));
-  if (missing.length) problems.push(`夹具声明的档案没进索引（${missing.join(", ")}）——SIM_TREE_SHAPE 没接进 repoFiles`);
-  if (extra.length) problems.push(`索引里还有夹具没声明的档案（${extra.join(", ")}）——真实树的实物漏进了裁决面，树形没解耦`);
-  const wantDir = SIM_TREE_SHAPE !== TREE_SHAPE_NO_DIR;
-  if (taskArchiveDirPresent(ign) !== wantDir) {
-    problems.push(`taskArchiveDirPresent() 与夹具形状 ${SIM_TREE_SHAPE} 不一致（应为 ${wantDir}）——口子没接进这条谓词`);
-  }
-  return problems.length ? problems.join("；") : null;
-}
 
 /** 三级解析：仓库根 → 文档同目录 → 全仓唯一同名。同名只认**唯一**命中（歧义不算解析成功，
  *  要写清路径）；能否解析一律取 **git manifest**（已跟踪∩未被 .gitignore，#914：未跟踪实物一律不参与解析），
@@ -5532,7 +5450,7 @@ function collectPathErrors() {
   const out = [];
   const notes = [];
   const ign = gitignoreMatcher(textOf(".gitignore"));
-  LAST_IGN = ign;   // #280：`--self-test` 的树形例子要靠它拿到同一份 .gitignore 规则（见 runSelfTest）
+  LAST_IGN = ign;   // 记住最近一份 .gitignore 规则（曾经供 #280 的树形自测用，自测已随 261126-59 删除）
   for (const u of ign.unsupported) {
     out.push(`paths: .gitignore:${u.line} 用了取反规则 \`${u.pattern}\`，本脚本的极简匹配器不认——`
       + `要么改 .gitignore，要么在这里支持取反（不能默默把它当没忽略）`);
@@ -5821,8 +5739,7 @@ const DOC_VERSION_EXEMPT = new Map([
 
 /** `--self-test` 用：临时替换放行表（与 `SIM_CLI_FLAG_EXEMPTIONS` 同一课：overlay 只改文本，改不动运行时
  *  那个 Map）。「登记了却没人用 ⇒ 红」这条反向证要靠它把一条假条目塞进表里才证得到。 */
-let SIM_DOC_VERSION_EXEMPT = null;
-const docVersionExemptions = () => SIM_DOC_VERSION_EXEMPT ?? DOC_VERSION_EXEMPT;
+const docVersionExemptions = () => DOC_VERSION_EXEMPT;
 
 function allGuideDocs() {
   return readdirSync(path.join(ROOT, "docs"))
@@ -6268,9 +6185,9 @@ const CHANGELOG_DATE_TAG_EXEMPTIONS = [
 ];
 
 /** 自测口子：临时替掉登记表（overlay 只改文本，改不动运行时数组）。 */
-let SIM_DATE_TAG_EXEMPTIONS = null;
+
 function dateTagExemptions() {
-  return SIM_DATE_TAG_EXEMPTIONS ?? CHANGELOG_DATE_TAG_EXEMPTIONS;
+  return CHANGELOG_DATE_TAG_EXEMPTIONS;
 }
 
 /** epoch 秒 → UTC+8 本地日历日（本仓发版时区；tag 的 tagger/author 时间戳换成这一天）。 */
@@ -6315,30 +6232,16 @@ function probeTagDates() {
     source: "`git for-each-ref refs/tags`（附注 tag 取 tagger date，轻量 tag 取所指提交的 author date）" };
 }
 
-let SIM_TAG_FACTS = null;   // 自测口子：{ ok, dates: Map<version, {date, kind}>, source }
+
 let TAG_FACTS = null;
 
 /** tag 面事实（一次进程只读一次）。`--self-test` 走内存夹具。 */
 function tagDateFacts() {
-  if (SIM_TAG_FACTS) return SIM_TAG_FACTS;
+
   if (!TAG_FACTS) TAG_FACTS = probeTagDates();
   return TAG_FACTS;
 }
 
-/** `--self-test` 的 tag 面夹具（**只给自测用**：生产路径永远走 `probeTagDates()`）。
- *  从 CHANGELOG 派生：带日期且没标未发布的版本段 = 已发布，tag 日期**取段首那天**（= 一致）；
- *  登记在 `CHANGELOG_DATE_TAG_EXEMPTIONS` 里的版本故意错开一天（复现「历史段与 tag 不一致」这个真实形状，
- *  否则那两条登记会在自测里变成空转条目）。要证「门禁真读到了 tag 面」时用 `simulateTagFacts` 显式拨开。 */
-function selfTestTagFacts() {
-  const dates = new Map();
-  const exempt = new Set(dateTagExemptions().map((e) => e.version));
-  for (const s of changelogSections() ?? []) {
-    if (!s.dated || hasUnpublishedMark(s)) continue;
-    dates.set(s.version, { date: exempt.has(s.version) ? shiftDay(s.date, 1) : s.date, kind: "annotated" });
-  }
-  return { ok: true, dates,
-    source: "self-test 夹具（CHANGELOG 派生；登记在 CHANGELOG_DATE_TAG_EXEMPTIONS 里的版本故意错开一天）" };
-}
 
 /** §17b 的判据本体。`out` = 红（exit 1）；`notJudged` = 未判定（`TAG_MISSING`，主路径 exit 2）。 */
 function collectChangelogDateErrors() {
@@ -6422,7 +6325,7 @@ function collectChangelogDateErrors() {
 //   · 所以本判据干脆**禁止**这两句里出现日期/「实测」字样：句子只留可当场对账的字面量。
 const OFFLINE = process.argv.includes("--offline");
 const REGISTRY_PKG = "erix-agent";
-let SIM_REGISTRY = null;        // 自测口子：{ ok, authoritative, latest, versions, source }
+
 let REGISTRY_FACTS = null;
 
 /**
@@ -6490,7 +6393,7 @@ function probeRegistry() {
 
 /** registry 事实（一次进程只读一次）。`--self-test` 走内存夹具，`--registry-json` 走探针桩，`--offline` 直接跳过。 */
 function registryFacts() {
-  if (SIM_REGISTRY) return SIM_REGISTRY;
+
   if (REGISTRY_FACTS) return REGISTRY_FACTS;
   REGISTRY_FACTS = REGISTRY_FIXTURE ?? (OFFLINE
     ? { ok: false, why: "`--offline`：本脚本在离线口径下不读 registry（缓存可能落后于 registry，把过期数据当真理会把「刚发布」判成红）" }
@@ -6498,25 +6401,6 @@ function registryFacts() {
   return REGISTRY_FACTS;
 }
 
-/** `--self-test` 的 registry 夹具（**只给自测用**：生产路径永远走 `probeRegistry()`）。
- *  把「已发布」定义成 CHANGELOG 里**带日期且没标未发布**的版本段（`hasUnpublishedMark`，与判据 3 同源），
- *  `latest` 默认取那份名单里的**最高版本**（= 这一版从 CHANGELOG 能推出来的发布行）。
- *  为什么不是 `package.json` 的版本：切版（发版准备）那一刻两者**有意不同**——树内已经是 0.30.0，
- *  registry 还是 0.29.0（`## [0.30.0] - …（未发布 / unpublished）`）。拿 `PKG_VERSION` 当 latest 会让
- *  「AGENTS 的发布行句」在所有放行证里假红，而那句恰好是对的。派生自 `versions` 则两个事实同源。
- *  为什么从 CHANGELOG 派生、而不写死一份 registry 快照：写死的快照会在下一次真实发布那天过期，
- *  而过期那天**所有** registry 类用例会一起变红，没人分得清是真回归还是夹具陈了（#292 的教训：
- *  硬编码 121/164 一降基线就变成空操作）。派生版的唯一风险是「夹具与被测文档同源」——所以每条用例
- *  都用 `exclude` / `latest` 把**要证的那一个事实**拨到与文档不同的值上，证的是「门禁读到了它」。 */
-function selfTestRegistry({ exclude = [], latest } = {}) {
-  const versions = (changelogSections() ?? [])
-    .filter((s) => s.dated && !hasUnpublishedMark(s))
-    .map((s) => s.version)
-    .filter((v) => !exclude.includes(v));
-  const derivedLatest = [...versions].sort(cmpSemver).at(-1) ?? PKG_VERSION;
-  return { ok: true, authoritative: true, latest: latest ?? derivedLatest, versions,
-    source: "self-test 夹具（CHANGELOG 派生）" };
-}
 
 // ── `--self-test` 的**版本面**夹具（issue #724：版本面由自测自己合成）─────────────────────────
 // 病根（#724 现场）：`#697` 那 8 例与 `#511 评论` 那 1 例把「要判的那一版」抄成了 **0.30.x 发版窗口**的
@@ -6539,45 +6423,9 @@ function selfTestRegistry({ exclude = [], latest } = {}) {
 //   因为发版而复发：锚点不是抄来的字符串，而是本夹具这一轮刚写进 overlay 的那一行。
 // registry 桩 / tag 面仍从 CHANGELOG 派生（`selfTestRegistry` / `selfTestTagFacts`），派生口径与判据同源：
 // `inflight` 段没有日期 ⇒ 它自然不在 `versions` 里、`latest` 自然停在 `released` 上。
-let SELF_TEST_VERSION_FACE = null;
 
-/** 次版本号 +1（`0.31.0` → `0.32.0`）。合成「在飞的那一版」用，**不落在任何一棵真树上**。 */
-function bumpMinor(version) {
-  const [major, minor] = version.split(".").map(Number);
-  return `${major}.${minor + 1}.0`;
-}
 
-/** `--self-test` 的版本面（见上面的节头）。派生一次，全自测共用同一份。
- *  @returns {{released: object, previous: object|null, inflight: object, historicalMarked: object|null}} */
-function selfTestVersionFace() {
-  if (SELF_TEST_VERSION_FACE) return SELF_TEST_VERSION_FACE;
-  const sections = changelogSections() ?? [];
-  const published = sections
-    .filter((s) => s.dated && !hasUnpublishedMark(s))
-    .sort((a, b) => cmpSemver(a.version, b.version));
-  const released = published.at(-1);
-  if (!released) {
-    // 真值缺位就报错（#164 口径）：没有已发布段 ⇒ 没有「发布行」这个事实，夹具无从合成。
-    throw new Error("docs-drift-check --self-test: CHANGELOG 里没有任何「带日期且没标未发布」的版本段 ⇒ "
-      + "版本面夹具没有 released 这个基准（#724）");
-  }
-  const exempt = new Set(CHANGELOG_DATE_TAG_EXEMPTIONS.map((e) => e.version));
-  const previous = published
-    .filter((s) => cmpSemver(s.version, released.version) < 0 && !exempt.has(s.version))
-    .at(-1) ?? null;
-  const inflightExisting = sections
-    .filter((s) => hasUnpublishedMark(s) && cmpSemver(s.version, released.version) > 0)
-    .sort((a, b) => cmpSemver(b.version, a.version))[0] ?? null;
-  const inflight = inflightExisting ?? { version: bumpMinor(released.version), date: null, heading: null };
-  const historicalMarked = sections
-    .filter((s) => s.dated && hasUnpublishedMark(s) && cmpSemver(s.version, released.version) < 0)
-    .sort((a, b) => cmpSemver(b.version, a.version))[0] ?? null;
-  SELF_TEST_VERSION_FACE = { released, previous, inflight, historicalMarked };
-  return SELF_TEST_VERSION_FACE;
-}
 
-/** 在飞那一段的**规范未发布段首**（夹具自己写下的那一行 = 所有 #697 变异的锚点）。 */
-const faceInflightHeading = () => `## [${selfTestVersionFace().inflight.version}]（未发布 / unpublished）`;
 /** 本仓另一种**合法**无日期形状（⑤ 放行证用它：换一种合法写法仍绿）。 */
 
 /** 自测变异器：把**某一段的段首整行**换成 `build(那一行)`（#724）。
@@ -6586,22 +6434,6 @@ const faceInflightHeading = () => `## [${selfTestVersionFace().inflight.version}
  *  行锚定（`^## [x.y.z]…$`）把靶子限定在「那一段的标题行」，散文里提到同一个版本号抢不走枪。
  *  找不到 / 不止一处都原样返回 ⇒ 由 harness 的「变异没落上」报红（#210 R2）。 */
 
-/** 把版本面落到 CHANGELOG 文本上（`simulateVersionFace` 的落点，见节头）：
- *  · 树里已有在飞那一段 ⇒ 只把**段首整行**改写成规范未发布形（其余字节一字不动）；
- *  · 没有那一段 ⇒ 在最高已发布段前**开一段**（合法无日期形 + 一句夹具自述，不描述任何代码事实）。
- *  已经是这个形状 ⇒ 原样返回（幂等：同一副版本面上重复落不会叠加）。 */
-function renderVersionFace(text) {
-  const face = selfTestVersionFace();
-  const canonical = faceInflightHeading();
-  if (face.inflight.heading) {
-    return text.split(face.inflight.heading).length === 2
-      ? text.replace(face.inflight.heading, canonical) : text;
-  }
-  const anchor = `## [${face.released.version}]`;
-  if (text.split(`\n${anchor}`).length !== 2) return text;   // 锚行找不到 ⇒ 原样返回（由用例的「变异没落上」报红）
-  const block = `${canonical}\n\n### Changed\n\n- 自测夹具合成的一节：在飞的那一版（issue #724 的版本面夹具，不描述任何代码事实）。\n\n`;
-  return text.replace(`\n${anchor}`, `\n${block}${anchor}`);
-}
 
 /** 版本面的 tag 面（最小面：只给 `released` / `previous` 两段的 tag，日期取各自段首）。
  *  为什么不给全：多给就会把 `CHANGELOG_DATE_TAG_EXEMPTIONS` 那两条历史不一致卷进来，而本族用例都
@@ -6923,7 +6755,6 @@ const SURFACE_GUIDE_EN = `docs/host-upgrade-guide-${PKG_VERSION}.md`;
 
 // ── 自测期望里「当前版」的真值面（issue #699 ③）───────────────────────────────
 /** 把一份路径变成可嵌进 `new RegExp` 的字面量（`docs/host-upgrade-guide-0.30.0.md` 里的点必须转义）。 */
-const rePath = (rel) => String(rel).replace(/[.*+?^${}()|()[\]\\]/g, "\\$&");
 /** **当前版指南的路径在自测期望里必须现读**（#699 ③）。把 `0.30.0` 抄进期望正则，切版当天就是
  *  「判据点对 0.31 那份指南，期望还在要 0.30 那份」⇒ 整族反向证在切版树上集体红（合成 0.31 树实测 6 例：
  *  #690 读不出 ①② 与 #511 判据 2c 中英两条）。生产判据一侧本来就是动态的（上面 `SURFACE_GUIDE_EN/CN`），
@@ -7060,7 +6891,6 @@ function putSurfaceBullet(lang, cellId, body) {
 /** #636 那一例的**目标名字**（#699 ③(a)）：`preferred` 在本版仍是「代码侧名单里的名字」、而本版段又把它
  *  算成这一版加的 ⇒ 直接用它（0.30 是这种，红话与改前逐字相同）；本版段没有这笔加法 ⇒ 从代码侧名单里
  *  取一个真实成员当目标，并回报「加法句要注入」。名字一律现取，不抄 `compaction` 这一笔历史事实。 */
-const GUIDE_COVERAGE_TARGETS = new Map();
 
 /** 往本版段里补一条**加法句**（`guide-coverage` 的证人：`ADDITION_VERBS` + 反引号里的名字）。 */
 const addGuideCoverageClaim = (name) => (text) => {
@@ -7554,10 +7384,6 @@ function mutateRef(from, to, opts = {}) {
 /** #677：**只少一条腿**（单配置那段不再说「这是形态差异、不是未知回落 default」）——中英背离那一格用它。 */
 
 /** #677（#475）：§7 资格句的**句尾标记**——打靶时只换到这一行为止，§7 后面的事实一字不动。 */
-const FORCED_FINAL_ELIGIBILITY_END = Object.freeze({
-  [CONTRACT_EN]: /wrote not a single character\./u,
-  [CONTRACT_CN]: /一个字都没写过。/u,
-});
 
 /**
  * #677（#475）自测用的「§7 资格句」打靶器：把 §7 里**那一段资格陈述**整段换成 `build()`。
@@ -7600,17 +7426,8 @@ const FORCED_FINAL_ELIGIBILITY_END = Object.freeze({
  * 的靶子从 #770 起一律打不上 ⇒ 由 harness 的「变异没落上」判据报红（#210 R2 口径）。
  * @returns {number} 行下标；命中 0 处或不止一处 ⇒ -1（⇒ 变异原样返回 ⇒ 照旧报红）
  */
-const cellAxesAnchorTableRow = (text, includes) => {
-  const lines = text.split("\n");
-  const from = lines.findIndex((l) => l.startsWith("export const CELL_AXES_ANCHORS = ["));
-  if (from < 0) return -1;
-  const hits = lines.map((l, i) => (i > from && includes(l) ? i : -1)).filter((i) => i >= 0);
-  return hits.length === 1 ? hits[0] : -1;
-};
 
 /** `status` 写点那一条登记（#770 之后是一条 `kind: "comment"` 锚点）在登记表里的行下标。 */
-const cellAxesStatusWriteAnchorRow = (text) => cellAxesAnchorTableRow(
-  text, (l) => l.includes('key: "status", axis: "write"') && l.includes("anchor:"));
 
 /**
  * 把登记表里那一行的 `anchor:` 换成别的内容（转义交给 `JSON.stringify`）。那一行不在场或没改成 ⇒
@@ -7662,47 +7479,8 @@ const cellAxesStatusWriteAnchorRow = (text) => cellAxesAnchorTableRow(
  * #772 R4 M-B 的靶子（现算）：每个**双锚点组**（同 key+axis+同名第几行+同文件上有两条登记）
  * 里挑一条，连同它在两份表里的那条引用一起删 ⇒ 剩下的仍然自洽（旧行为：两道闸全绿）。
  */
-const CELL_AXES_R4_PAIR_VICTIMS = (() => {
-  const bySlot = new Map();
-  for (const entry of CELL_AXES_ANCHORS_SHIPPED) {
-    const gk = cellAxesAnchorGroupKey(entry.key, entry.axis, entry.row ?? 0, entry.codePath);
-    bySlot.set(gk, [...(bySlot.get(gk) ?? []), entry]);
-  }
-  const out = [];
-  for (const [, list] of bySlot) {
-    if (list.length < 2) continue;
-    const entry = list[list.length - 1];
-    const hits = cellAxesAnchorHitLines(textOf(entry.codePath).split("\n"), entry).hits ?? [];
-    if (hits.length !== 1) continue;
-    out.push({ entry, literal: JSON.stringify(entry.anchor), citation: `${entry.codePath}:${hits[0]}` });
-  }
-  return out.length > 0 ? out : null;
-})();
 
-/** #772 R4 M-B：把双锚点组里那 N 条登记从表里摸掉（每条靠自己的锚点字面量定位）。 */
-const dropCellAxesAnchorEntries = (text) => {
-  if (CELL_AXES_R4_PAIR_VICTIMS === null) return text;
-  let out = text;
-  for (const { literal, entry } of CELL_AXES_R4_PAIR_VICTIMS) {
-    const needle = `{ key: "${entry.key}", axis: "${entry.axis}"`;
-    const lines = out.split("\n");
-    const at = lines.findIndex((l) => l.includes(needle) && l.includes(literal));
-    if (at < 0) return text;
-    out = [...lines.slice(0, at), ...lines.slice(at + 1)].join("\n");
-  }
-  return out;
-};
 
-/** #772 R4 M-B：把双锚点组里那 N 条引用从一份表里摸掉（只动写/读两格，不碰别的散文）。 */
-const dropCellAxesCitations = (text) => {
-  if (CELL_AXES_R4_PAIR_VICTIMS === null) return text;
-  let out = text;
-  for (const { citation } of CELL_AXES_R4_PAIR_VICTIMS) {
-    if (!out.includes(citation)) return text;
-    out = out.split(`\`${citation}\``).join("").replace(/\s*[，,、]\s*(?=[（(])/gu, "");
-  }
-  return out;
-};
 
 // issue #811：下面 #635 ① 那三例的锚点份数**由 `refScanCountTruth()` 现算**，不再写死。
 // 写死那一份要求「每次覆盖面落地都有人记得回来改脚本」——0.32.0 中英指南落地把
