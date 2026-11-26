@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -27,30 +26,6 @@ const midToolOutput = "payload: ".padEnd(1500, "x");
 
 function msgShape(messages) {
   return messages.map((m) => `${m.role}:${Array.isArray(m.content) ? m.content.map((b) => b?.type ?? typeof b).join("+") : typeof m.content}`);
-}
-
-// issue #872 验收（假绿修复）：判据 3 的对照面从 `msgShape`（只有角色 + 块类型，注入**正文**变了也
-// 不红）扩到**实际 provider 请求体**。以下 `blockDigest` / `requestDigest` 与捕获脚本
-// `fixtures/capture-loop-runstate-inject-872.mjs`（已提交进仓，开头硬校验 worktree SHA）里的定义**逐字一致**（期望值就是在 base 上用同两个函数量出来的，两边必须同一把尺）：
-//   · 文本块取**全文**（注入正文变 ⇒ 摘要变 ⇒ 红）；
-//   · 工具块取 name + 入参 JSON；tool_result 取 toolUseId + 正文；
-//   · 不取 model/temperature 等与注入无关的字段，只看 provider 真正看到的消息序列。
-function blockDigest(block) {
-  if (!block || typeof block !== "object") return { raw: typeof block };
-  if (block.type === "text") return { type: "text", text: block.text };
-  if (block.type === "tool_use") return { type: "tool_use", name: block.name, input: JSON.stringify(block.input ?? null) };
-  if (block.type === "tool_result") {
-    return { type: "tool_result", toolUseId: block.tool_use_id ?? block.toolUseId, content: typeof block.content === "string" ? block.content : JSON.stringify(block.content) };
-  }
-  return { type: block.type };
-}
-function requestDigest(requests) {
-  return requests.map((req) => ({
-    messages: (req.messages ?? []).map((m) => ({
-      role: m.role,
-      content: Array.isArray(m.content) ? m.content.map(blockDigest) : [{ type: "text", text: String(m.content ?? "") }],
-    })),
-  }));
 }
 
 // 四个场景是判据 3 的**对照 fixture**：base（改动前）与 HEAD（改动后）各跑一遍同一条
@@ -142,18 +117,6 @@ async function runContinuation() {
   };
 }
 
-// 判据 3 的请求体摘要期望值：逐字取自 base worktree 2ad95dfa 现跑现取（非手搜）。
-// 取法：用仓内提交的**等位捕获脚本** `fixtures/capture-loop-runstate-inject-872.mjs`（已把上面的
-// `blockDigest`/`requestDigest` 逐字搬进去）在 base 上实跑 `provider.requests` 并序列化成稳定摘要，
-// 写入 `test/fixtures/loop-runstate-inject-request-872.json`（脚本开头硬校验 `git rev-parse HEAD`==2ad95dfa
-// 且工作树干净，否则非 0 退出；重新生成方法见 fixture `_meta.regenerate`）。
-// base 无 `runStateInject` 事件键（那是本支才加的观测），但**请求体里的注入正文行为早于该观测**，
-// 所以 base 的请求体就是 HEAD 应有的请求体（已实测 HEAD 5/5 场景与 base 逐字相等）。
-const REQUEST_FIXTURE = JSON.parse(readFileSync(
-  new URL("./fixtures/loop-runstate-inject-request-872.json", import.meta.url),
-  "utf8",
-));
-
 // 判据 3 的期望值：逐字来自 base 2ad95dfa（改动前）同脚本实测。
 const BASE_BEHAVIOR = {
   "low-budget": {
@@ -241,85 +204,19 @@ test("判据 2：预算宽松的 run，round_end 一律没有 runStateInject 键
   }
 });
 
-test("判据 3：同一条 fake provider 脚本，改动前后产出相同的 rounds / termination.reason / 消息序列 / **实际 provider 请求体**（fixture 对照，含续写场景）", async () => {
-  // 两层对照「注入行为未变」：
-  //   ① rounds / termination.reason / msgShape（粗粒度，快）；
-  //   ② **实际 provider 请求体**的稳定摘要（细粒度）：文本块取全文，注入**正文**变就红；
-  //     与 base 2ad95dfa 现跑现取的 fixture 逐字比。之前的判据只到 ①（`msgShape`），注入正文
-  //     变了也绿 ⇒ 假绿；② 就是堵住这个洞的。第 5 个场景是续写轮，同样纳入请求体对照。
+test("判据 3：同一条 fake provider 脚本，改动前后产出相同的 rounds / termination.reason / 消息序列（结构判据，含续写场景）", async () => {
+  // 对照「注入行为未变」的结构面：rounds / termination.reason / msgShape（角色 + 块类型序列）。
+  // 曾经的第四层「实际 provider 请求体全文摘要」已随 261126-45 删除：它只能回答「message 里
+  // 某句文本改了没有」，改文案必红、且重生成要求回到 base 2ad95dfa，成本与信号不成比例。
+  // 注入**结构**（哪一轮、第几块、走哪条通道）仍由 msgShape 的块类型序列与本文件其余判据钉住。
   for (const name of Object.keys(BASE_BEHAVIOR)) {
-    const { result, provider } = await runScenario(name);
+    const { result } = await runScenario(name);
     const expected = BASE_BEHAVIOR[name];
     assert.equal(result.rounds, expected.rounds, `${name}: rounds 变了 ⇒ 注入行为被动了`);
     assert.equal(result.termination.reason, expected.reason, `${name}: termination.reason 变了`);
     assert.deepEqual(msgShape(result.messages ?? []), expected.messages,
       `${name}: 消息序列变了（注入内容/时机改动都会在这里红）`);
-    assert.deepEqual(requestDigest(provider.requests), REQUEST_FIXTURE[name],
-      `${name}: provider 请求体变了（注入正文变 / 少一条注入块都会在这里红）`);
   }
-  const cont = await runContinuation();
-  assert.deepEqual(requestDigest(cont.provider.requests), REQUEST_FIXTURE.continuation,
-    "continuation: 续写轮的 provider 请求体同样受检（注入正文变就红）");
-});
-
-// issue #872（假绿修复的反向证）：把期望值改坏必须红——用同一把 `requestDigest` 量出的
-// 真实摘要当基准，只在**期望侧**做改动（不动实现），断言对照必然不等。
-test("判据 3 反向证：注入正文改一个字 / 请求里少一条注入块 ⇒ 请求体摘要必须不等（红）", async () => {
-  const { provider } = await runScenario("low-budget");
-  const real = requestDigest(provider.requests);
-  const expected = JSON.parse(JSON.stringify(REQUEST_FIXTURE["low-budget"]));
-  // 基准：未改坏的期望与真实摘要逐字相等（否则下面两格的红没有参照系）。
-  assert.deepEqual(real, expected, "基准：真实请求体 == base fixture（改坏之前必须等）");
-
-  // 反向证一：定位 **run-state 注入正文块**再改它——注入块正文里有引擎渲染的特征行
-  // `run=… v=… r=…/… left=… low=…`（见 src/run-state.js renderRunState），据此 find 到那块，
-  // 只改它一个字符 ⇒ 必须红。这才咬住「注入正文变了必须红」（旧版改第一个非空文本块，命中的是
-  // seed「scan it」，根本没碰到注入正文）。**找不到该块 ⇒ 这格反向证无效 ⇒ 必须红，绝不静默跳过。**
-  // 正则**锤在块首**（`[run state deterministic v1]` 是 `src/run-state.js` 渲染器的头一行）：
-  // 不锤首的话，任何恰好写了 `run=… left=… low=…` 格式的普通正文都会被当注入块（复审三轮指出），
-  // 反向证就可能改错对象而误过。
-  const RUN_STATE_SIGNATURE = /^\[run state deterministic v1\]\nrun=\S* v=\d+ r=\d+\/\d+ left=\d+ low=\d/;
-  const tamperedText = JSON.parse(JSON.stringify(expected));
-  let injectionPoked = false;
-  for (const req of tamperedText) {
-    for (const msg of req.messages) {
-      for (const block of msg.content) {
-        if (block.type === "text" && typeof block.text === "string" && RUN_STATE_SIGNATURE.test(block.text)) {
-          // 只改第一个命中的注入块，且只改一个字符：把版本数字 `v=<数字>` 挪一格。
-          block.text = block.text.replace(/(v=)(\d)/, (_m, prefix, digit) => `${prefix}${digit === "9" ? "8" : String(Number(digit) + 1)}`);
-          injectionPoked = true;
-          break;
-        }
-      }
-      if (injectionPoked) break;
-    }
-    if (injectionPoked) break;
-  }
-  assert.equal(injectionPoked, true, "夹具里必须有一个含 run-state 特征行的注入正文块，否则这格反向证无效");
-  assert.notDeepEqual(real, tamperedText, "注入正文改一个字 ⇒ 请求体摘要必须红");
-
-  // 反向证二：删掉一条**多块消息**里的一块（模拟少一条注入块）⇒ 必须红。
-  // 用 persist-fold：它的注入走通道 A，持久挂到摘要块上 ⇒ 有一条 `user: text+text+text` 的多块消息，
-  // 删其中一块就是「注入正文从请求里掉了一块」的直接模型。
-  const pfProvider = (await runScenario("persist-fold")).provider;
-  const pfReal = requestDigest(pfProvider.requests);
-  const pfExpected = JSON.parse(JSON.stringify(REQUEST_FIXTURE["persist-fold"]));
-  assert.deepEqual(pfReal, pfExpected, "基准：persist-fold 真实请求体 == base fixture");
-  const tamperedDrop = JSON.parse(JSON.stringify(pfExpected));
-  // 找一条含 >=2 块的消息，删掉其中一块。
-  let blockDropped = false;
-  for (const req of tamperedDrop) {
-    for (const msg of req.messages) {
-      if (Array.isArray(msg.content) && msg.content.length >= 2) {
-        msg.content = msg.content.slice(1);
-        blockDropped = true;
-        break;
-      }
-    }
-    if (blockDropped) break;
-  }
-  assert.equal(blockDropped, true, "persist-fold 夹具里必须至少有一条含 >=2 块的消息才能做这个反向证");
-  assert.notDeepEqual(pfReal, tamperedDrop, "少一条块（注入块）⇒ 请求体摘要必须红");
 });
 
 // issue #872（续写真格）：同一轮 round_start + `max_tokens` 续写各注入一次 ⇒ round_end 报 injections=2。

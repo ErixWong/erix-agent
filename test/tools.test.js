@@ -25,6 +25,7 @@ import {
 import * as notes from "../src/tools/notes.js";
 // #867：readFile 返回末尾的 token 估值行（剥掉它才能逐字比正文）。
 import { withoutTokenEstimate } from "./contract/file-tools.js";
+import { CLI_TOOLS_SYSTEM_PROMPT_PLAN_BULLET } from "../bin/tools.js";
 
 async function withDirectory(callback) {
   const directory = await makeTmp("erix-cli-tools-test-");
@@ -72,7 +73,7 @@ test("buildCliToolsSystemPrompt({ todo: false }) removes all todo mentions (issu
   // （#184：工具清单行后面插了一句 vendor 默认 + 开关名）
   assert.match(disabled, /执行 shell 命令并返回输出。\n搜索与目录类工具/u);
   assert.match(disabled, /include_vendor=true、include_hidden=true。\n\n\[你的处境\]/u);
-  assert.match(disabled, /复杂任务先规划并逐步执行\n/u);
+  assert.ok(disabled.includes(`${CLI_TOOLS_SYSTEM_PROMPT_PLAN_BULLET}\n`));
   assert.match(disabled, /note_take/u);
   // 默认路径与导出常量逐字节一致（golden 锁定）
   assert.equal(buildCliToolsSystemPrompt(), CLI_TOOLS_SYSTEM_PROMPT);

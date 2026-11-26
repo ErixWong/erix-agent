@@ -20,6 +20,19 @@
   recorded prose could only ever say "you changed prose", while the real invariants (prompt names ⊆ registered
   surface, `note_*` visible, build-time throw on either direction) stay pinned by the remaining eight cases in
   `test/examples/erix-run-tool-list.test.js` and by `assertPromptPhraseTableMatches`.
+- **计划句现在要求同轮批量发工具调用（任务 261126-44）。** 追加到 CLI 系统提示词的那句原文是
+  `每轮开始先用一句话（≤30字）说明当前计划，再调用工具`——单数的"调用工具"，把循环塑造成一步一轮。
+  一次派工实测：**120 轮里 112 轮只带一个 `tool_use` 块**，5 条独立 grep 被拆成 5 次往返；43 分钟墙钟里
+  **35 分钟是模型往返，工具执行合计只有 4.3 分钟**（工具耗时中位 7 毫秒）。引擎本来就会执行一条
+  assistant 消息里的所有 `tool_use` 块（`src/loop/orchestrator.js`），结果按 `tool_use_id` 配对，
+  缺的只是这句话。计划句现在是**唯一真值**：`PLAN_DIRECTIVE` 从 `bin/system-prompt.js` 导出，
+  `bin/delegation.js` 改为 import 而不是保留副本，`examples/pi-extension/erix-run-core.js` 保留同一段
+  文案并写明坐标注释（该层只能通过 `lib.binTools` 拿到 `bin/tools.js`）。**行为变化：提示词现在要求
+  互不依赖的调用同轮发出。** 同时删掉两处文案钉：`--no-agents` 的用例不再与手写 legacy 字面量逐字节比
+  （改钉三段结构与 `endsWith(PLAN_DIRECTIVE)`），`R4 兜底文案 golden` 快照用例与
+  `test/fixtures/inner-tool-list-golden.json` 一并删除——记录文案的夹具只能说出"你改了文案"，而真不变量
+  （提示词名字 ⊆ 注册面、`note_*` 可见、任一方向漏项在 build 期抛错）仍由该文件剩下的 8 条用例与
+  `assertPromptPhraseTableMatches` 钉住。
 - **CI keeps only clean-environment truth; the documentation-claims subsystem is deleted (issue #908 R2,
   261126 operator ruling).** Two rulings land together. ① *Doc family out of CI*: `check:changelog` and the
   remaining doc-oriented self-tests are no longer pipeline steps; they run where they were already wired

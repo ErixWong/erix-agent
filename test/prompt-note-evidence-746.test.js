@@ -25,12 +25,16 @@ import test from "node:test";
 import { aggregateStubText } from "../src/loop/aggregate-budget.js";
 import {
   NOTE_HINT_GATES,
+  NOTE_RECALL_CLAUSE,
   hasNoteToolSurface,
   noteRecallHint,
 } from "../src/loop/note-prompt-hint.js";
 import { NOTE_RECALL_REASONS, noteToolNamesOnSurface } from "../src/loop/tool-result-ttl.js";
 import { decideRoundAction } from "../src/reflection/governor.js";
-import { buildArchiveNotice, buildCliToolsSystemPrompt } from "../bin/tools.js";
+import { buildArchiveNotice, buildCliToolsSystemPrompt,
+  CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES,
+  CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NO_NOTES,
+} from "../bin/tools.js";
 import { buildCliSystemPrompt, notesOnToolSurface } from "../bin/system-prompt.js";
 
 // —— 夹具 ——
@@ -157,7 +161,7 @@ test("S1 聚合超限桩：四格无证据 ⇒ 不提 note_*，改说重读；�
       toolInput: { path: "src/a.js", offset: 0, limit: 120 },
     }),
   });
-  assert.match(evidenced, /先用 note_list 查找记录，再用 note_read 读取/u);
+  assert.match(evidenced, new RegExp(NOTE_RECALL_CLAUSE, "u"));
   assert.match(evidenced, /sed -n '1,120p' 'src\/a\.js'/u, "有证据且 retrievalCommandFor 给出命令 ⇒ 命令在场");
 });
 
@@ -212,7 +216,12 @@ test("B1 CLI 系统提示：`--no-notes` 面 ⇒ 三处一个 note_* 都不出�
   assert.match(prompt, /重读源文件/u, "没有笔记工具时必须给「重读源文件」这条真路");
   // 事实面（上下文会折叠 / 会真的忘）不许被顺手删掉——那是它整段的存在理由。
   assert.match(prompt, /上下文会被折叠/u);
-  assert.match(prompt, /具体数值必须来自当前工具返回，不得编造/u, "「数值来源」那条 bullet 也不许留 note_read");
+  // 261126-45：不拿字面量钉「数值来源」那条 bullet——文案的家在 `bin/tools.js`，手抄一份进测试
+  // 就变成「改文案要同时改两处」。改钉**导出的常量本体**（无笔记面那一份）。
+  assert.ok(prompt.includes(CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NO_NOTES),
+    "「数值来源」那条 bullet 也不许留 note_read");
+  assert.equal(CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NO_NOTES.includes("note_read"), false,
+    "无笔记面的那份 bullet 本身不许指名 note_read");
 });
 
 test("B1 缺省（有笔记工具面）逐字节不变 ⇒ 这条改动不是拿默认路径改措辞", () => {
@@ -220,14 +229,16 @@ test("B1 缺省（有笔记工具面）逐字节不变 ⇒ 这条改动不是拿
   const d = buildCliToolsSystemPrompt();
   assert.match(d, /立刻 note_take/u);
   assert.match(d, /先 note_list 再 note_read/u);
-  assert.match(d, /具体数值必须来自当前工具返回或 note_read/u);
+  // 261126-45：同样钉常量（有笔记面那一份），不再手抄文案。
+  assert.ok(d.includes(CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES));
 });
 
 test("B1 归档提示：`notes:false` 不提笔记，缺省逐字不变", () => {
   const off = buildArchiveNotice("/tmp/arc", { notes: false });
   assert.equal(/note_/u.test(off), false, `归档提示不许留 note_*（现文：${off}）`);
   assert.match(off, /重读源文件/u);
-  assert.match(buildArchiveNotice("/tmp/arc"), /先用 note_list 查找记录，再用 note_read 读取/u);
+  // 261126-45：归档提示里的取回指引钉常量（唯一措辞之家：`NOTE_RECALL_CLAUSE`）。
+  assert.ok(buildArchiveNotice("/tmp/arc").includes(NOTE_RECALL_CLAUSE));
   assert.equal(buildArchiveNotice(undefined, { notes: false }), "", "没有归档目录时一个字节都不许多");
 });
 
@@ -299,7 +310,7 @@ test("S2 真跑：整族在面上**且**账本有成功写入 ⇒ 才给 note_li
     surface: [{ name: "readFile" }, { name: "note_take" }, { name: "note_list" }, { name: "note_read" }],
     noteWrite: true,
   });
-  assert.match(stub, /先用 note_list 查找记录，再用 note_read 读取/u);
+  assert.ok(stub.includes(NOTE_RECALL_CLAUSE));
   assert.equal(/无可复原的决策记录/u.test(stub), false, "有证据 ⇒ 不该出现未知口径");
 });
 

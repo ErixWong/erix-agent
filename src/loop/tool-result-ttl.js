@@ -247,6 +247,9 @@ export function unverifiedRecallClause(reason) {
 }
 
 /** 有笔记证据时的取回指引（沿用 #224/#241 的口径：值没记下来就省略，别猜）。 */
+/** 占位符里「没记就别编」那半句（261126-45 导出：测试逐字钉过它）。 */
+export const OMIT_UNRECORDED_CLAUSE = "未记录且无法确定性重算时请省略，不要猜测";
+
 const NOTE_RECALL_HINT = "后续需要时先用 note_list 查找，再用 note_read 读取；未记录且无法确定性重算时请省略，不要猜测";
 
 /**
@@ -259,7 +262,7 @@ function unverifiedRetrievalHint(retrievalCommand, reason) {
     ? "需要原文请重读源文件（路径见本条工具调用）"
     : "需要原文请执行下方「取回」行那一条命令";
   // 「不要猜测」半句**保留**：本切片修的是「有没有记录」，不是放松反幻觉约束。
-  return `${lead}；${unverifiedRecallClause(reason)}；未记录且无法确定性重算时请省略，不要猜测`;
+  return `${lead}；${unverifiedRecallClause(reason)}；${OMIT_UNRECORDED_CLAUSE}`;
 }
 
 /** 入参没给 limit 时的重读窗口（行数）；比 readFile 的默认 200 窄，宁小不许谎称是全文。 */

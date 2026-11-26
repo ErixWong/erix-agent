@@ -27,6 +27,7 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
+import { RERUN_VALUE_DRIFT_CLAUSE, CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES } from "../bin/tools.js";
 
 // issue #81：runChat 的 MCP 代理默认解析 ~/.erix/mcp.json（可能配了真实远端 server），
 // 每个用例必须注入空配置，彻底与真实 home 隔离。
@@ -97,7 +98,11 @@ function normalizeGoldenEnvironment(value, cwd, fixtureCwd, goldenDirs = []) {
     input,
   );
   if (typeof value === "string") {
-    return text(value);
+    // 计划句**不进 golden**（261126-45）：它是会被反复改写的正文，钉进快照就把「改提示词」
+    // 变成「还得改一份夹具」——#927 改计划句时正是这样把 main 弄红的。这里两侧同剥，
+    // 这份 golden 继续钉「没有项目约定文件时提示词的其余部分逐字节不变」。
+    // 按**句子模式**剥（新老文案都剥得掉），不比对某个字面量：夹具里存的是历史文案。
+    return text(value).replace(/每轮开始先用一句话[^\n]*\n?/gu, "");
   }
   if (Array.isArray(value)) {
     return value.map((entry) => normalizeGoldenEnvironment(entry, cwd, fixtureCwd, goldenDirs));
@@ -115,9 +120,9 @@ function normalizeGoldenEnvironment(value, cwd, fixtureCwd, goldenDirs = []) {
 
 test("CLI prompt constrains provenance of one-shot values", () => {
   // ADR-016：重跑风险降为提示语一行（不再提幂等分类）
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /重跑同一命令可能得到不同的值/u);
+  assert.ok(CLI_TOOLS_SYSTEM_PROMPT.includes(RERUN_VALUE_DRIFT_CLAUSE));
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /后续需要精确值时先 note_take 记下/u);
-  assert.match(CLI_TOOLS_SYSTEM_PROMPT, /具体数值必须来自当前工具返回或 note_read/u);
+  assert.ok(CLI_TOOLS_SYSTEM_PROMPT.includes(CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES));
   assert.match(CLI_TOOLS_SYSTEM_PROMPT, /不要主动读取密钥、凭据或 \.env/u);
 });
 

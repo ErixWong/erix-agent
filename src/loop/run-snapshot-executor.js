@@ -12,6 +12,11 @@ import { describeToolArgumentsParseError } from "../messages/tool-arguments.js";
 import {
   aggregateStubText,
   aggregateUnrecoverableStubText,
+  ARCHIVED_HEAD,
+  ARCHIVED_INFIX,
+  ARCHIVED_SUFFIX,
+  FINDINGS_OMISSION_CLAUSE,
+  NO_RERUN_SIDE_EFFECT_CLAUSE,
   createRoundAggregateGate,
   errorSnippet,
 } from "./aggregate-budget.js";
@@ -363,11 +368,10 @@ export function createRunSnapshotExecutor(ctx) {
       execution = {
         ...execution,
         content: `${fullText.slice(0, ctx.outputHygieneLimit)}`
-          + `\n[完整输出已由引擎归档（第 ${round} 轮，共 ${fullText.length} 字符）。`
+          + `\n[${ARCHIVED_HEAD}${round}${ARCHIVED_INFIX}${fullText.length}${ARCHIVED_SUFFIX}`
           + `后续需要该值：${retrievalHintFor(toolName, block.input).clause}；`
-          + "若未记录且无法确定性重算，请省略对应 findings 声明，不要猜测。不要重跑有副作用的命令。"
-          + `若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；`
-          + "改用只读方式复核。]",
+          + `${FINDINGS_OMISSION_CLAUSE}，不要猜测。不要重跑有副作用的命令。`
+          + NO_RERUN_SIDE_EFFECT_CLAUSE + "]",
       };
     }
     // 单轮聚合预算：逐条阈值与聚合阈值**串联且独立**——逐条先跑，聚合再判；

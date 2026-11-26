@@ -93,6 +93,12 @@ const DECLARATION_CLAIM_PATTERNS = [
 ];
 
 /**
+ * 声称值对不上时那句「这个数字从哪来」的说明（261126-45：导出）。
+ * 它被 `test/pack-link-check.test.js` 逐字钉过 ⇒ 改这句要同时改两处；现在测试只写常量名。
+ */
+export const PACK_CLAIM_MISMATCH_NOTE = "这个数由本门禁与包内容对账，不许手抄";
+
+/**
  * 把文档里的 `.d.ts` 现值声称与**随包声明数**对账（不为了数数再跑一次 tsc：数字来自同一次
  * `npm pack --dry-run --json` 的文件清单）。
  *
@@ -128,7 +134,7 @@ export function checkDeclarationClaims({ root, packedDeclarationCount, reclaim }
           console.error(
             `pack-link-check: ${rel}:${line} 声称「装包应列 ${claimed} 个 .d.ts」（句式 ${id}），` 
             + `但同一次 npm pack 的清单里有 ${packedDeclarationCount} 个 src/**/*.d.ts——` 
-            + "这个数由本门禁与包内容对账，不许手抄：把文档改成实测值（历史值要写成历史值）。",
+            + `${PACK_CLAIM_MISMATCH_NOTE}：把文档改成实测值（历史值要写成历史值）。`,
           );
         }
       }

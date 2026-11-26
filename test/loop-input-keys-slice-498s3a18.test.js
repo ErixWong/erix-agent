@@ -49,6 +49,7 @@ import {
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { withSeed } from "./helpers/run-direct.js";
+import { WRAPUP_INSTRUCTION } from "../src/loop/reflection.js";
 
 /** 本片退役的键。家由 schema 派生（`configPathForOption`），不手抄。 */
 const KEY = "wrapup";
@@ -193,7 +194,7 @@ test("R2 真 run：规位 false 仍关掉整条收尾协议，不给（缺省 tr
     provider: on,
     config: { input: { system: "SYS", cacheStablePrefix: false } },
   }));
-  assert.match(on.requests[0].system, /任务完成或需要给出结论时/u, "缺省 wrapup:true 仍追加收尾协议");
+  assert.ok(on.requests[0].system.includes(WRAPUP_INSTRUCTION), "缺省 wrapup:true 仍追加收尾协议");
 });
 
 // ================================================================ N. `input` 组收口（派生）

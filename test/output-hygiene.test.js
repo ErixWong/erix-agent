@@ -5,6 +5,7 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { NO_RERUN_JUDGE_CLAUSE, NO_RERUN_RERUN_CLAUSE, FINDINGS_OMISSION_CLAUSE } from "../src/loop/aggregate-budget.js";
 
 const BIG_TAIL = "UNIQUE_TAIL_MARKER_ADR015_尾部证据";
 function bigOutput() {
@@ -253,9 +254,9 @@ test("archive stub warns about side effects of the truncated command", async () 
   assert.equal(/note_/u.test(stub), false, `无笔记工具面 ⇒ 桩里不许出现 note_*（现文：${stub}）`);
   assert.match(stub, /重读源文件|只读方式复核/u);
   // issue #32：补副作用提示——不得仅凭截断输出判成败，也不得为重跑补全而重复副作用命令
-  assert.match(stub, /若原命令有副作用，不要仅凭截断输出判断成败/);
-  assert.match(stub, /也不要为补全输出重跑有副作用的命令/);
-  assert.match(stub, /若未记录且无法确定性重算，请省略对应 findings 声明/);
+  assert.ok(stub.includes(NO_RERUN_JUDGE_CLAUSE));
+  assert.ok(stub.includes(NO_RERUN_RERUN_CLAUSE));
+  assert.ok(stub.includes(FINDINGS_OMISSION_CLAUSE));
 });
 
 // 载体已退役（#838 S2）：runSnapshot 的 toolOutputs 副本不再存在；结果正文未进入账本时无从恢复，
