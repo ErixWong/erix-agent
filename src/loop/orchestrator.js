@@ -4178,6 +4178,20 @@ export async function runToolLoop(options) {
     let userTurnGuard;
     let userTurnGuardChannel;
     if (strategyRequestsCompaction || overBudget) {
+      // issue #898 第二刀：**折叠必须由 LLM 完成**。宿主没配策略（`capabilities.ports.strategy`
+      // / `context.strategy`）就不是「用机械折叠兑一下」，而是**装配错误**：直接报错，不再静默
+      // 退回引擎库层的 `sliding-window`（那产出 `工具足迹：exec×5` 这种零语义文本，等于把历史
+      // 丢进一个看起来像摘要的壳里）。预算兜底（下面 `budgetFallbackStrategy`）是另一回事：
+      // 它跑在 LLM 折完之后、同一折预算仍超时那一格，保留但已可检测（`degradeReason`）。
+      if (!configuredStrategy) {
+        throw new KitError(
+          "compaction_strategy_required",
+          'compaction requires an LLM folding strategy: the host must provide a compactionStrategy '
+          + '(e.g. createFoldLlmStrategy({ summarizer })) or a summarizer; no strategy is configured '
+          + 'and mechanical folding is no longer available as a silent fallback',
+          { retryable: false },
+        );
+      }
       const [budgetFallbackLayer, safetyFallbackLayer] = getCompactionFallbackChain();
       const strategy = strategyRequestsCompaction
         ? configuredStrategy
@@ -4874,7 +4888,9 @@ export async function runToolLoop(options) {
         strategy: actualFolderName ?? "unknown",
         roundRange: foldedRoundRange ?? undefined,
         rounds: foldedRounds,
-        degradeReason: strategyFoldSummary?.degradeReason,
+        degradeReason: budgetFallbackFoldedRounds > 0
+          ? "budget_fallback_mechanical"
+          : strategyFoldSummary?.degradeReason,
         fingerprint: foldedFingerprint,
         // issue #470-D：夹断上界开了 `context` 旋钮（默认不变 = `FOLDED_FACTS_MAX_BYTES`），
         // 让宿主的「输入上限 / 输出预算 / 容器上限」三者可以同源；非法值（非正整数）
