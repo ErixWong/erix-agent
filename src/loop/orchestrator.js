@@ -1672,14 +1672,26 @@ export async function runToolLoop(options) {
   // 推断成 `any`，下游十来处使用点都按「已判非 undefined」写。收窄成 `number | undefined` 会在那些
   // 使用点新增 strict 错误（本轮不还这笔债），而这里也不该靠 `!` 掩盖——`validateBudget` 就在下一行
   // 做真正的运行期校验。
+  // issue #892（copilot 验收 P1）：**「派生」这一支有两条来路**——引擎自己从完整元数据算（下面第一支），
+  // 或者宿主/CLI 已经算好了带着 `budgetSource: "derived"` 交进来（`src/loop/budget.js` 的
+  // `resolveBudgetTokens` 对 `contextBudgetTokens` 原样返回）。只处理第一支会漏掉第二支：
+  // 后者在元数据不齐时**永远拿不到工具项扣减**，折叠判据于是又变回乐观口径。
+  // 两条来路都不许各自减一次（`resolveBudgetTokens` 自己从不扣），所以这里按来源**恰好扣一次**。
   const resolvedBudgetTokens = resolvedBudget.budgetTokens;
-  const budgetTokens = /** @type {any} */ (resolvedBudget.source === "derived" && budgetMetadataComplete
-    ? computeBudget({
-      contextWindowTokens: metadata.contextWindowTokens,
-      maxOutputTokens: metadata.maxOutputTokens,
-      toolDefinitionTokens,
-    })
-    : resolvedBudgetTokens);
+  const derivedBudgetTokens = resolvedBudget.source === "derived"
+    ? (budgetMetadataComplete
+      ? computeBudget({
+        contextWindowTokens: metadata.contextWindowTokens,
+        maxOutputTokens: metadata.maxOutputTokens,
+        toolDefinitionTokens,
+      })
+      // 元数据不齐、但宿主已给出「派生」值：公式不在本层（拿不到窗口），只做这一次扣减；
+      // 扣成非正数由下面的 `validateBudget` 以 `invalid_budget` 拒掉（与 `computeBudget` 内部同口径）。
+      : (typeof resolvedBudgetTokens === "number"
+        ? resolvedBudgetTokens - toolDefinitionTokens
+        : resolvedBudgetTokens))
+    : resolvedBudgetTokens;
+  const budgetTokens = /** @type {any} */ (derivedBudgetTokens);
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
   // issue #182：预算推不出来且原因确实是元数据不齐（宿主自己给了 context.budgetTokens 时
   // 压缩仍然启用，不该告警）——发一次性诊断事件。

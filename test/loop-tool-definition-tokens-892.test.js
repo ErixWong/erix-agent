@@ -102,6 +102,32 @@ function recordingStrategy(captured) {
   };
 }
 
+/**
+ * 同 `runCapturingBudget`，但走**另一条「派生」来路**（copilot 验收 P1）：宿主/CLI 已经算好预算，
+ * 带着 `budgetSource: "derived"` 交进来，而**预算元数据不齐**（不传 `modelMetadata`）。
+ * 这一支在 #892 第一版里被漏掉过——`resolveBudgetTokens` 对 `contextBudgetTokens` 原样返回，
+ * 元数据不齐时 orchestrator 的重算分支进不去，工具项就永远扣不掉。
+ */
+async function runCapturingPrecomputedDerived({ tools, precomputed }) {
+  const captured = {};
+  await runDirect({
+    provider: makeQuietProvider(),
+    runId: `s-892-pre-${tools.length}`,
+    store: createMemoryTranscriptStore(),
+    initialUserMessage: "开始任务",
+    tools,
+    executeTool: async () => "ok",
+    maxRounds: 3,
+    completion: false,
+    wrapup: false,
+    stallDetection: false,
+    capabilities: { ports: { strategy: recordingStrategy(captured) } },
+    // 关键：`budgetSource: "derived"` + **没有** `metadata.modelMetadata`。
+    config: { folding: { context: { keepRounds: 1, budgetTokens: precomputed, budgetSource: "derived" } } },
+  });
+  return captured.value;
+}
+
 async function runCapturingBudget({ tools }) {
   const captured = {};
   const runId = `s-892-${tools.length}-tool-def-tokens`;
@@ -177,11 +203,42 @@ test("#892 ②③④ 折叠判据收到的预算 = computeBudget(含工具) = �
   assert.equal(captured, reducedBudget, "折叠判据收到的预算必须等于 computeBudget(含 toolDefinitionTokens)");
   // 格 ③ 的反面确认：这个数确实小于未扣值（不是逐字不变那格）。
   assert.ok(captured < fullBudget, `已扣预算必须小于未扣预算：captured=${captured} full=${fullBudget}`);
-  // 格 ④（反向必红）：差额恰好等于 toolDefinitionTokens。若这个数没被消费（等价于人为置 0），
-  // 差额会是 0 ⇒ 断言当场变红，证明它真的进了预算与折叠判据。
   assert.equal(
     fullBudget - captured,
     tdt,
-    "预算必须比无工具时少掉恰好一个 toolDefinitionTokens（反向证：置 0 则此处变红）",
+    "预算必须比未扣值少掉恰好一个 toolDefinitionTokens",
+  );
+});
+
+// 格 ④ 的真反向证（copilot 验收 nit：原来那一格只是把期望值再断言一遍，不是反事实）。
+// 反事实 = **同一次 run 形状，只把工具面换掉**（工具面换掉 ⇒ `toolDefinitionTokens` 就是 0，
+// 也就是「这个数没被消费」的等价现场）。两次捕获的预算必须差**恰好**一个 `toolDefinitionTokens`；
+// 若扣减没接线，两次会**相等**，这一格当场红。
+test("#892 ④ 反事实：同一 run 只换工具面，折叠判据的预算差额恰好 = toolDefinitionTokens", async () => {
+  const tdt = estimateToolDefinitionTokens(TOOLS);
+  assert.ok(tdt > 0, "前置：工具面的估算必须非零，否则本格退化成恒等");
+
+  const withTools = await runCapturingBudget({ tools: TOOLS });
+  const withoutTools = await runCapturingBudget({ tools: [] });
+  assert.ok(withTools !== undefined && withoutTools !== undefined, "两次都必须真的触发折叠判据");
+  assert.equal(
+    withoutTools - withTools,
+    tdt,
+    `只换工具面就该差出恰好一个 toolDefinitionTokens：without=${withoutTools} with=${withTools} tdt=${tdt}`
+      + "（差额为 0 ⇒ 扣减没接线，本格红）",
+  );
+});
+
+test("#892 ②（P1）宿主预置的「派生」预算也扣工具项——元数据不齐那条来路不许漏", async () => {
+  const tdt = estimateToolDefinitionTokens(TOOLS);
+  assert.ok(tdt > 0, "前置：工具面的估算必须非零");
+  const precomputed = 40_000;
+
+  const captured = await runCapturingPrecomputedDerived({ tools: TOOLS, precomputed });
+  assert.equal(
+    captured,
+    precomputed - tdt,
+    `预置的派生预算也必须扣掉工具项：captured=${captured} expected=${precomputed - tdt}`
+      + "（不扣 ⇒ 这条来路的折叠判据又变回乐观口径，本格红）",
   );
 });
