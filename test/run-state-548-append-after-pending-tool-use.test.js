@@ -37,6 +37,7 @@ import assert from "node:assert/strict";
 import { appendRunStateToRequestView, renderRunState } from "../src/run-state.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 
 const filler = (count, char) => char.repeat(count);
 const MARKER = "[run state deterministic v1]";
@@ -130,7 +131,7 @@ function baseOptions({ provider, budgetTokens = 400000, maxRounds = 3, stream = 
       folding: {
         toolResultTtl: 1,
         toolResultFoldMinTokens: 1,
-        context: { strategy: "fold-statistical", budgetTokens, keepRounds: 2, task: "issue #548" },
+        context: { strategy: createFoldStatisticalStrategy(), budgetTokens, keepRounds: 2, task: "issue #548" },
       },
     },
   };

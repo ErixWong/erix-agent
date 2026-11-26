@@ -10,7 +10,6 @@ import {
   buildCompactionContext,
   defaultConfigPath,
   loadCliConfig,
-  normalizeCompactionOption,
   resetCompactionDisabledWarning,
   resolveCompactionBudget,
 } from "../bin/config.js";
@@ -358,76 +357,11 @@ test("loadCliConfig preserves the existing missing endpoint and API key error", 
   });
 });
 
-test("buildCompactionContext honours the configured strategy name and defaults to fold-llm (#167/#614)", () => {
-  const base = { contextWindowTokens: 20000, maxOutputTokens: 2000 };
-  // issue #614：默认值是 fold-llm；显式名字（含统计摘要）仍然逐字生效。
-  assert.equal(buildCompactionContext(base).strategy, "fold-llm");
-  assert.equal(buildCompactionContext(base, 8000).strategy, "fold-llm");
-  for (const name of ["sliding-window", "fold-statistical", "fold-llm"]) {
-    const withName = { ...base, compaction: name };
-    assert.equal(buildCompactionContext(withName).strategy, name);
-    assert.equal(buildCompactionContext(withName, 8000).strategy, name);
-    assert.equal(buildCompactionContext(withName, 8000, "hint", () => "stub").strategy, name);
-    assert.equal(buildCompactionContext(withName, 8000).budgetTokens, 8000);
-  }
-  assert.throws(
-    () => buildCompactionContext({ ...base, compaction: "psyche" }),
-    /未知压缩策略[\s\S]*sliding-window \| fold-statistical \| fold-llm/u,
-  );
-});
-
-test("normalizeCompactionOption validates CLI values and config feeds the strategy name (#167)", async () => {
-  assert.equal(normalizeCompactionOption(" fold-llm "), "fold-llm");
-  assert.throws(() => normalizeCompactionOption("llm-fold"), { name: "Error" });
-  assert.throws(() => normalizeCompactionOption(""), { message: /sliding-window/u });
-
-  await withDirectory(async (directory) => {
-    const configPath = await writeConfig(directory, {
-      slots: {
-        default: {
-          endpoint: "https://file.example.invalid",
-          apiKey: "file-config-key",
-          model: "file-model",
-          contextWindowTokens: 32768,
-          compaction: "fold-llm",
-        },
-      },
-    });
-    await withEnvironment({}, async () => {
-      assert.equal((await loadCliConfig({ configPath })).compaction, "fold-llm");
-    });
-
-    const defaultPath = await writeConfig(directory, {
-      slots: {
-        default: {
-          endpoint: "https://file.example.invalid",
-          apiKey: "file-config-key",
-          model: "file-model",
-        },
-      },
-    });
-    await withEnvironment({}, async () => {
-      assert.equal((await loadCliConfig({ configPath: defaultPath })).compaction, undefined);
-    });
-
-    const badPath = await writeConfig(directory, {
-      slots: {
-        default: {
-          endpoint: "https://file.example.invalid",
-          apiKey: "file-config-key",
-          model: "file-model",
-          compaction: "nope",
-        },
-      },
-    });
-    await withEnvironment({}, async () => {
-      await assert.rejects(
-        loadCliConfig({ configPath: badPath }),
-        /未知压缩策略[\s\S]*fold-statistical/u,
-      );
-    });
-  });
-});
+// issue #898-2（第二刀）删 #24/#25 两格：它们钉的是「`buildCompactionContext` 读 `compaction`
+// 字段可显式选零 LLM 策略名（sliding-window / fold-statistical）/ `normalizeCompactionOption` 校验
+// `--compaction` 多值 / `loadCliConfig().compaction` 把名字喂进链」——这一整层「用户可显式选零 LLM
+// 策略」的退路已被 #898-2 删除（`--compaction` 与 `config.compaction` 均删，内置名只剩 fold-llm，
+// 不再可选）。默认恒 fold-llm 仍由 cli-compaction-default-614 / mandatory-llm-folding-898b 钉住。
 
 // ── issue #682：压缩预算做成配置项 + 两处兜底合一 + 缺窗口要出声 ──────────────────────────
 test("#682 判据：压缩预算优先级四态各一格（旗标 > 配置叶子 > 窗口派生 > 关闭）", () => {

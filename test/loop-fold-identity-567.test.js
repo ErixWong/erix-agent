@@ -332,7 +332,7 @@ test("⑥resume：账本里的 seq 灌回分配器 ⇒ 新折叠接在最大号�
     capabilities: { hooks: { onFoldSummary: (payload) => { resumedPayloads.push(payload); } } },
     config: {
       run: { resume: true, runId, maxRounds: 4, completion: false, reflection: false },
-      folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "sliding-window" } },
+      folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: createSlidingWindowStrategy() } },
     },
   });
   assert.ok(resumedPayloads.length >= 1, "前提：resume 出来的 run 必须真的折叠过");

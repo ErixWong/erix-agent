@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { runDirect } from "./helpers/run-direct.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import {
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
   ensureUserTurnView,
   hasUserTurn,
   isUserTurnGuardAction,
@@ -98,7 +99,7 @@ function toolLoopOptions({ budgetTokens, stream, provider, initialMessages }) {
       system: "每轮都必须调用 pad 工具，最后一次直接回答。",
       messages: initialMessages,
     }, folding: { toolResultTtl: 1, toolResultFoldMinTokens: 1, context: {
-      strategy: "fold-statistical",
+      strategy: createFoldStatisticalStrategy(),
       budgetTokens,
       keepRounds: 2,
       task: "issue #292 复现",

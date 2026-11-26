@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { ensureUserTurnView } from "../src/loop/request-user-view.js";
 import { validateMessages } from "../src/messages/rounds.js";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 
 const filler = (count, char) => char.repeat(count);
 
@@ -98,7 +99,7 @@ function baseOptions({
       },
       input: { system: "call pad each round, then answer", messages },
       ...(folding
-        ? { folding: { context: { strategy: "fold-statistical", budgetTokens, keepRounds: 2, task: "issue #296" } } }
+        ? { folding: { context: { strategy: createFoldStatisticalStrategy(), budgetTokens, keepRounds: 2, task: "issue #296" } } }
         : {}),
     },
   };
