@@ -1,15 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { projectTranscriptForDisplay } from "../../src/display/projection.js";
-import { projectTranscriptForDisplay as exportedProjection } from "../../src/index.js";
+import { projectTranscriptForDisplay } from "../../bin/display/projection.js";
 import { runDirect } from "./../helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistical.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 
-test("projection is exported from the public entry point", () => {
-  assert.equal(exportedProjection, projectTranscriptForDisplay);
-});
+// issue #928：`projectTranscriptForDisplay` 已从 `src/index.js` 公共面摘除（搬到
+// `bin/display/projection.js`），旧「从公共入口导出」那一格已删；反向「不再导出」的
+// 断言钉在 `test/cli-transcript.test.js`。
 
 test("plain round: assistant text, tool call summary with key args, tool result preview", () => {
   const entries = projectTranscriptForDisplay([{

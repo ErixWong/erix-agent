@@ -2653,7 +2653,7 @@ that shape) cannot carry a single blanket verdict, and `unsafe` is the honest an
    present in the messages, the engine **rewrites that block in place**
    (`isLowBudget` at `src/loop/orchestrator.js`) instead of appending a second one, so a host that
    diffs messages must expect a mutation rather than an addition. `executionStatus` rides
-   into the display projection (`toolResultsOf` (`src/display/projection.js`)), and afterwards the
+   into the display projection (`toolResultsOf` (`bin/display/projection.js`)), and afterwards the
    interrupted result is ordinary round text: only `intercepted` results are excluded from
    the aggregate-budget count (`createRoundAggregateGate` (`src/loop/aggregate-budget.js`)).
 6. **Handle the partial output.** `partialOutputAvailable` says whether anything was found;
@@ -6431,7 +6431,7 @@ row **already holds that round's folded body** (`foldMessageRows`, exported from
 package root), which is what keeps the “both copies” shape from doubling the body.
 
 **Still fold it yourself.** That fallback covers the **resume path only**. The display
-projection (`projectTranscriptForDisplay`, `src/display/projection.js`) reads `load()`
+projection (`projectTranscriptForDisplay`, `bin/display/projection.js`) reads `load()`
 output directly and is still wrong on an unfolded store, and so is every other reader you
 wrote against `records.flatMap((record) => record.messages ?? [])`. Folding belongs inside
 `load()`; `foldMessageRows` is now reachable from a packed install so that the obligation
@@ -6541,7 +6541,7 @@ Two halves to keep straight:
 2. **Reads stay for one generation.** Records written before this upgrade may still carry
    those names, and every reader prefers `erix` and falls back to the top level: the TTL fold
    (`src/loop/tool-result-ttl.js`, the age marker), the display projection
-   (`src/display/projection.js`, execution status), the resume replay path
+   (`bin/display/projection.js`, execution status), the resume replay path
    (`src/loop/orchestrator.js`, which returns the recorded block as it is instead of
    recomputing or back-filling), the per-round aggregate budget (`src/loop/aggregate-budget.js`,
    “an interception is not output”), the judge timeline and conversation renderer
@@ -6885,11 +6885,15 @@ The transcript is the model-context truth: `RoundRecord` is byte-faithful for
 replay and carries both model-facing payloads and display-oriented fields. Hosts
 that need a human-readable chat view must derive it from the transcript instead
 of maintaining a second lossy message table. `projectTranscriptForDisplay` is
-the official, host-agnostic projection helper:
+the official, host-agnostic projection helper — **but as of issue #928 it is no longer an
+`erix-agent` export** (BREAKING). The engine's only obligation is a self-describing ledger after
+`store.load()`; rendering it is the host's taste. The implementation lives in the CLI tree at
+`bin/display/projection.js` (a living example, consumed by `erix transcript <runId>`) and has no
+`src/` coupling beyond `FOLD_SUMMARY_MARKER`. A host that wants it copies that file into its own
+project:
 
 ```js
-import { projectTranscriptForDisplay } from "erix-agent";
-
+// Copy bin/display/projection.js into your project, then import it locally:
 const turns = projectTranscriptForDisplay(await store.load(runId));
 // [{ key, role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```

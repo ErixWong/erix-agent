@@ -105,7 +105,7 @@ export const TOOL_RESULT_CONTRACT = deepFreeze({
   /**
    * **退役名单**（T2 起不再是「双写对照表」）：这些顶层名引擎**已经不再写**，
    * 但升级前落盘的旧记录（run snapshot / transcript）里可能仍有 —— 读路径保留一代，
-   * 共三处：`src/loop/tool-result-ttl.js`（年龄标记）、`src/display/projection.js`（执行状态）、
+   * 共三处：`src/loop/tool-result-ttl.js`（年龄标记）、`bin/display/projection.js`（执行状态）、
    * `src/loop/orchestrator.js` 的续跑复放（原值直接带回，不重算也不补写）。
    */
   legacy: {

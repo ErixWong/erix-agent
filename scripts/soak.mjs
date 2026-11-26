@@ -17,12 +17,14 @@ import {
   estimateTokens,
   extractL0Facts,
   KitError,
-  projectTranscriptForDisplay,
   runToolLoop,
   TOOL_RESULT_CONTRACT,
   validateMessages,
 } from "../src/index.js";
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
+// issue #928：`projectTranscriptForDisplay` 不再是 `src/index.js` 公共导出（实现已搬进 `bin/`）；
+// soak 是仓内脚本而非宿主，直引实现。
+import { projectTranscriptForDisplay } from "../bin/display/projection.js";
 
 // 中止/重试路径上，被抛弃的 in-flight 请求可能在 run 已经收口之后才拒绝。Node 22 默认
 // `--unhandled-rejections=throw` 会**直接把进程打死**（真机 soak 实测：abort 之后报告根本没写出来）。

@@ -41,10 +41,11 @@ import {
   canonicalToOpenAIMessages,
   createFileTranscriptStore,
   createOpenAIProvider,
-  projectTranscriptForDisplay,
   runToolLoop,
   TOOL_RESULT_CONTRACT,
 } from "../src/index.js";
+// issue #928：`projectTranscriptForDisplay` 已从 `src/index.js` 公共面摘除，直接引实现（已搬到 `bin/`）。
+import { projectTranscriptForDisplay } from "../bin/display/projection.js";
 import { foldToolResultsForRequest } from "../src/loop/tool-result-ttl.js";
 // 选项名闸（`RUN_TOOL_LOOP_OPTION_NAMES` 的唯一执行点）。本文件下面那条「始终跑、不联网」的
 // 前置格用它把**真模型端点格实际交给 `runToolLoop` 的那两份对象**过一遍——理由见文件头 ③。

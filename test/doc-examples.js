@@ -48,6 +48,11 @@ export const CONTRACT_TESTS_URL = pathToFileURL(
 // 所以文档里「宿主注册文件工具」的示例必须按这个说明符导入；三层验证也要能解析它，
 // 否则示例只能写成 text 围栏（那就没人验证它跑得通）。
 export const TOOLS_URL = pathToFileURL(join(REPO_ROOT, "src", "tools", "index.js")).href;
+// issue #928：展示投影不再是 erix-agent 导出，实现搬进 `bin/display/projection.js`；
+// 契约里「投影怎么用」那格不再从包根导入（包根已无此名），改由 preamble 从这个真件注入。
+export const PROJECTION_URL = pathToFileURL(
+  join(REPO_ROOT, "bin", "display", "projection.js"),
+).href;
 export const FAKE_PROVIDER_URL = pathToFileURL(
   join(REPO_ROOT, "test", "helpers", "fake-provider.js"),
 ).href;
@@ -517,8 +522,12 @@ rmSync(__editDir__, { recursive: true, force: true });
 `,
   },
   // fence #11（projectTranscriptForDisplay 展示投影）
+  // issue #928：投影不再是 erix-agent 导出，围栏不再写 `from "erix-agent"`（那个名已从包根摘除），
+  // 而是靠 linkImports 从 `bin/display/projection.js` 注入真实件（宿主自己把那个文件抄进项目）。
   {
-    linkImports: [],
+    linkImports: [
+      `import { projectTranscriptForDisplay } from ${JSON.stringify(PROJECTION_URL)};`,
+    ],
     stubs: `
 const __storeLoads__ = { count: 0 };
 const runId = "doc-example-projection-run";

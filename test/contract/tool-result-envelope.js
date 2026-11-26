@@ -22,6 +22,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+// issue #928：展示投影已从包入口搬进 `bin/display/projection.js`（不再是 erix-agent 导出），本契约直引实现。
+import { projectTranscriptForDisplay } from "../../bin/display/projection.js";
 
 const TOOL_CALL_KEY_PATTERN = /^tc_[0-9a-f]{12}$/u;
 const DONE = { content: [{ type: "text", text: "all done" }], stopReason: "end_turn" };
@@ -1018,7 +1020,6 @@ export function toolResultEnvelopeContract(label, getEntry) {
 
   // ── 投影：B 的派生视图新增两字段，legacy 记录一律缺省 ─────────────────────────
   test(`${label}: 投影带出 toolCallKey 与 durationMs，旧记录（无 erix）两字段缺省`, async () => {
-    const { projectTranscriptForDisplay } = await entry();
     const { records } = await runCase(async () => "body");
     const calls = projectTranscriptForDisplay(records)
       .flatMap((turn) => turn.toolCalls ?? []);

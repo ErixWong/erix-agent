@@ -260,8 +260,6 @@ src/
     json-file.js                   JSON-file model configuration
     slot-provider.js               Model slot → provider constructors: loadModelSlot / createProviderForSlot (issue #406)
     static.js                      Static model configuration
-  display/
-    projection.js                  Host display projection over RoundRecord[] (read side)
   reflection/
     governor.js                    Deterministic round governance
     judge.js                       Objective timeline and judge prompt/response parsing
@@ -299,8 +297,7 @@ src/
 ```
 
 `src/index.js` exports the providers, canonical message conversions, token
-and compaction helpers, transcript stores, run-state helpers, the host display
-projection (`projectTranscriptForDisplay`), the multi-turn pre-write helper
+and compaction helpers, transcript stores, run-state helpers, the multi-turn pre-write helper
 (`appendUserTurn`), configuration providers, `runToolLoop`, and reflection
 helpers, plus the model-output normalization substrate (`normalizeModelJson`, issue
 #406 — the asynchronous entry with deterministic repair plus an optional LLM
@@ -311,6 +308,12 @@ canonical file and notes factories, and the skill-package loader
 (`discoverSkills` / `loadSkill` / `buildSkillTools`, issue #197 — the bundled skill
 root is passed in as `bundledDir`; the library never infers it from its own file
 location); model-facing retrieval is note-first (`note_list` → `note_read`).
+
+The host display projection is **not** an engine export (issue #928, BREAKING): the engine's only
+obligation is a self-describing ledger after `store.load()`, and how a host renders it is the
+host's taste. The implementation now lives at `bin/display/projection.js` (a living example, no
+longer a `src/` module) and is consumed by the `erix transcript <runId>` subcommand; a host that
+wants it copies that file into its own project (it has no `src/` coupling beyond `FOLD_SUMMARY_MARKER`).
 
 The engine does not implement constrained decoding: `response_format` is forwarded to the
 provider verbatim, and whether the endpoint actually applies it as a grammar / JSON-schema
