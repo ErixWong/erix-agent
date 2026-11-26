@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 
 import { createBuiltinRecallTools } from "../../src/index.js";
 import { estimateTokens } from "../../src/tokens.js";
+// 硬顶一律**引常量**，不手抄数字（copilot #964 ②）。
+import { MAX_OVERVIEW_TOKENS, MAX_PATTERN_ECHO_CHARS, MAX_TOTAL_TOKENS } from "../../src/tools/recall.js";
 
 /** @param {any[]} rows */
 const tool = (rows) => createBuiltinRecallTools({ readLedgerRows: () => rows });
@@ -112,6 +114,25 @@ test("#896B-5b 硬顶·单段：超长命中 ⇒ 单段≤300 tok、truncated:tr
   assert.ok(per[0] <= 300, `单段必须 ≤300 tok，实得 ${per[0]}`);
   assert.equal(r.truncated, true, "单段被夹到硬顶必须带 truncated:true");
   assert.ok(big.startsWith(r.segments[0].excerpt), "excerpt 必须是逐字原文的切片（前缀）");
+
+  // ④（copilot #964）：摘录必须是**某一个原文块**的切片，绝不跨块拼接边界。
+  const blocks = [
+    { type: "text", text: "BOUNDARY_HEAD one" },
+    { type: "text", text: "BOUNDARY_TAIL two" },
+  ];
+  const blockRows = [{ round: 6, messages: [{ role: "assistant", content: blocks }] }];
+  const inSecond = JSON.parse(await tool(blockRows)
+    .executeTool({ name: "recall_read", input: { pattern: "BOUNDARY_TAIL" } }));
+  assert.equal(inSecond.status, "found");
+  assert.ok(blocks[1].text.includes(inSecond.segments[0].excerpt),
+    "excerpt 必须是第二个原始块的切片（不得含拼接出来的跨块文本）");
+
+  // 拼成整条正文（旧实现 join("\n")）后这个 pattern 会命中「one\nBOUNDARY_TAIL」——
+  // 逐块匹配后必须 no_match：那个换行是拼接造出来的，原文里没有。
+  const spansBoundary = JSON.parse(await tool(blockRows)
+    .executeTool({ name: "recall_read", input: { pattern: "one\nBOUNDARY_TAIL" } }));
+  assert.equal(spansBoundary.status, "no_match",
+    "跨拼接边界的 pattern 不得命中（那拼接符不是原文）");
 });
 
 // ─── 格 6：三态各一格（empty / unrecoverable / truncated）──────────────────────────
@@ -166,6 +187,62 @@ test("#896B-7 no_match 与 empty 分得开：两种输入 ⇒ 两种 status", as
   assert.notEqual(noMatch.status, empty.status, "no_match 与 empty 必须是不同 status");
 });
 
+// ─── 格 8：pattern 回显硬顶与返回 JSON 总量（copilot ②）────────────────────────
+
+test("#896B-8 pattern 回显硬顶：超长 pattern ⇒ 截到 200 字符、patternTruncated:true、返回 JSON 总 token ≤ 1500+500", async () => {
+  // pattern 无元字符⇒子串匹配；它同时是检索目标，所以既能撞满段硬顶又能撞回显顶。
+  const bigPattern = "D".repeat(8000);
+  const rows = [{
+    round: 1,
+    messages: Array.from({ length: 8 }, (_, i) => ({ role: "user", content: `lead ${i} ${bigPattern} tail` })),
+  }];
+  const raw = await tool(rows).executeTool({ name: "recall_read", input: { pattern: bigPattern } });
+  const r = JSON.parse(raw);
+  assert.equal(r.status, "found");
+
+  // 真比：未截断的 pattern 单独就该爆预算——否则这格证明不了截断真在做事。
+  assert.ok(estimateTokens(bigPattern) > MAX_TOTAL_TOKENS + MAX_OVERVIEW_TOKENS,
+    `原样回显的 pattern 单独就该超预算（实际 ${estimateTokens(bigPattern)} tok），否则测不出硬顶作用`);
+
+  assert.equal(r.pattern.length, MAX_PATTERN_ECHO_CHARS, `回显 pattern 必须截到 ${MAX_PATTERN_ECHO_CHARS} 字符`);
+  assert.equal(r.patternTruncated, true, "截了必须带 patternTruncated:true");
+  assert.ok(bigPattern.startsWith(r.pattern), "回显必须是原 pattern 的前缀（不许造字符）");
+
+  const total = estimateTokens(raw);
+  assert.ok(total <= MAX_TOTAL_TOKENS + MAX_OVERVIEW_TOKENS,
+    `返回 JSON 总 token 必须 ≤ ${MAX_TOTAL_TOKENS}+${MAX_OVERVIEW_TOKENS}，实得 ${total}`);
+});
+
+// ─── 格 9/10：元字符两种情况（copilot ⑤ 点名没覆盖的两个例子）───────────────────────
+
+test("#896B-9 含元字符但正则非法：'foo(bar' ⇒ 不抛、回落子串、命中字面量 foo(bar", async () => {
+  const rows = [{ round: 3, messages: [{ role: "assistant", content: "render foo(bar) with care" }] }];
+  let r;
+  try {
+    r = JSON.parse(await tool(rows).executeTool({ name: "recall_read", input: { pattern: "foo(bar" } }));
+  } catch (err) {
+    assert.fail(`非法正则必须回落子串、绝不抛，实际抛出：${err && err.message}`);
+  }
+  assert.equal(r.status, "found");
+  assert.equal(r.matchedBy, "substring", "'foo(bar' 含 '(' 但正则非法，必须回落 substring");
+  assert.equal(r.segments[0].matchedBy, "substring");
+  assert.ok(r.segments[0].excerpt.includes("foo(bar"), "命中的是字面量 foo(bar");
+});
+
+test("#896B-10 含元字符且正则合法：'a.b' ⇒ matchedBy=regex、且能命中 axb（证明没回落成子串）", async () => {
+  const rows = [
+    { round: 1, messages: [{ role: "user", content: "the token axb appears here" }] },
+    { round: 2, messages: [{ role: "user", content: "and the literal a.b too" }] },
+  ];
+  const r = JSON.parse(await tool(rows).executeTool({ name: "recall_read", input: { pattern: "a.b" } }));
+  assert.equal(r.status, "found");
+  assert.equal(r.matchedBy, "regex", "'a.b' 含 '.' 且正则合法，必须走 regex");
+  assert.equal(r.matchCount, 2, "axb 与 a.b 都应命中");
+  assert.equal(r.segments[0].round, 1, "round 1（axb）必须进了命中");
+  assert.ok(r.segments[0].excerpt.includes("axb"),
+    "只有真走正则才能命中 axb；若回落成子串，axb 不会命中");
+});
+
 // ─── 逐字模式回归：无 pattern 时行为不变 ──────────────────────────────────────────
 
 test("#896B-reg 逐字模式回归：给 round 无 pattern ⇒ 仍返回逐字 messages；缺轮 not_folded", async () => {
@@ -190,4 +267,13 @@ test("#896B-invalid：fromRound>toRound / pattern 非字符串 ⇒ invalid", asy
   const badPattern = JSON.parse(await tool([{ round: 1, messages: [{ content: "x" }] }])
     .executeTool({ name: "recall_read", input: { pattern: 7 } }));
   assert.equal(badPattern.status, "invalid");
+
+  // ①（copilot #964 P0）：schema 不再 hard-require round，“round 与 pattern 至少给一个”由代码校。
+  const { definitions } = createBuiltinRecallTools({ readLedgerRows: () => [] });
+  assert.deepEqual(definitions[0].inputSchema.required ?? [], [],
+    "inputSchema.required 不得再含 round（否则合规调用方没法只给 pattern）");
+
+  const neither = JSON.parse(await tool([{ round: 1, messages: [{ content: "x" }] }])
+    .executeTool({ name: "recall_read", input: {} }));
+  assert.equal(neither.status, "invalid", "round 与 pattern 都没给 ⇒ invalid");
 });

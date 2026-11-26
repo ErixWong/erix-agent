@@ -6,10 +6,16 @@ import { estimateTokens } from "../tokens.js";
 /** 硬顶（issue #896 §3-B 写死的数，照抄）：单段摘录 300 tok、最多 5 段、单次返回总 1500 tok、概览 500 tok。 */
 const MAX_SEGMENT_TOKENS = 300;
 const MAX_SEGMENTS = 5;
-const MAX_TOTAL_TOKENS = 1500;
-const MAX_OVERVIEW_TOKENS = 500;
+/** 单次返回的段 token 总顶与概览顶——导出给测试引用（别在测试里手抄数字）。 */
+export const MAX_TOTAL_TOKENS = 1500;
+export const MAX_OVERVIEW_TOKENS = 500;
 /** 摘录前后各保留的上下文字符数（§3-B「前后各留一点上下文窗口以便模型读懂」）。 */
 const CONTEXT_CHARS = 80;
+/**
+ * 回显 `pattern` 的字符上限（copilot #964 ②）：pattern 也计入返回总量，无上限原样回显
+ * 会让「段 ≤1500 + 概览 ≤500」的预算被一个超长 pattern 击穿。截断带 `patternTruncated:true`。
+ */
+export const MAX_PATTERN_ECHO_CHARS = 200;
 
 /** 含这些字符 ⇒ pattern 走正则；正则非法时回落子串（不许抛）。 */
 const REGEX_META = /[.*+?()[\]{}|^$\\]/;
@@ -29,15 +35,17 @@ function isPositiveInt(v) {
 }
 
 /**
- * 从一条消息里取出可逐字检索的正文（string 直接用；块数组只取 text 块原文，不改写）。
+ * 从一条消息里取出**逐块**的原文数组（copilot #964 ④：绝不拼接）。
+ * 拼成整条正文再 grep 会让正则跨拼接边界命中，返回的 excerpt 就成了「原文里没有的切片」。
+ * string content ⇒ 单元素；块数组 ⇒ 每个 text 块一项（string 块直接用其原文，不改写）；其余 ⇒ 空数组。
  * @param {any} message
- * @returns {string}
+ * @returns {string[]}
  */
-function messageText(message) {
-  if (message === null || typeof message !== "object") return "";
+function messageTextUnits(message) {
+  if (message === null || typeof message !== "object") return [];
   let content = message.content;
   if (content === undefined) content = message.text;
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return [content];
   if (Array.isArray(content)) {
     return content
       .map((/** @type {any} */ block) => {
@@ -45,10 +53,9 @@ function messageText(message) {
         if (block && block.type === "text" && typeof block.text === "string") return block.text;
         return "";
       })
-      .filter(Boolean)
-      .join("\n");
+      .filter(Boolean);
   }
-  return "";
+  return [];
 }
 
 /**
@@ -68,6 +75,17 @@ function fitPrefix(s, cap) {
     else hi = mid - 1;
   }
   return { text: s.slice(0, lo), cut: true };
+}
+
+/**
+ * 把回显给调用方的 `pattern` 截到 {@link MAX_PATTERN_ECHO_CHARS} 字符（copilot #964 ②）。
+ * 只取前缀，绝不改写：返回的截断值必须是原 pattern 的切片。
+ * @param {string} pattern
+ * @returns {{ text: string, truncated: boolean }}
+ */
+function clipPattern(pattern) {
+  if (pattern.length <= MAX_PATTERN_ECHO_CHARS) return { text: pattern, truncated: false };
+  return { text: pattern.slice(0, MAX_PATTERN_ECHO_CHARS), truncated: true };
 }
 
 /**
@@ -151,17 +169,18 @@ export function createBuiltinRecallTools(options = {}) {
   const TOOL_DEFINITION = {
     name: "recall_read",
     description:
-      "从账本逐字取回历史（不做任何改写、摘录是原文切片）。两种模式：① 给 round ⇒ 取回该轮整段原始消息；② 给 pattern ⇒ 在 fromRound..toRound（含端点）里做 grep 式确定性回忆——默认子串匹配，pattern 含正则元字符时按正则匹配（正则非法自动回落子串）。when-to-use：需要取回某轮落盘的原始消息、或在被折叠的历史里按字面/正则定位片段时调用——无论是否已折，账本始终保留每轮正文；round 是账本记录的轮号（1 起）不是下标；scope 仅支持 run。返回 status：found 有命中/正文；no_match 区间内逐字搜过确实没有；empty 账本里一条正文都没有（没折过也没跑过）；unrecoverable 有轮行但正文没存；truncated 命中的归档夹断过、可能只是残片（比 no_match 更保守）。截断时带 truncated:true 与 segmentsOmitted，不静默截",
+      "从账本逐字取回历史（不做任何改写、摘录是原文切片）。两种模式：① 给 round ⇒ 取回该轮整段原始消息；② 给 pattern ⇒ 在 fromRound..toRound（含端点）里做 grep 式确定性回忆——默认子串匹配，pattern 含正则元字符时按正则匹配（正则非法自动回落子串）。when-to-use：需要取回某轮落盘的原始消息、或在被折叠的历史里按字面/正则定位片段时调用——无论是否已折，账本始终保留每轮正文；round 是账本记录的轮号（1 起）不是下标；round 与 pattern 至少给一个（两个都没给 ⇒ status=invalid）；scope 仅支持 run。返回 status：found 有命中/正文；no_match 区间内逐字搜过确实没有；empty 账本里一条正文都没有（没折过也没跑过）；unrecoverable 有轮行但正文没存；truncated 命中的归档夹断过、可能只是残片（比 no_match 更保守）。截断时带 truncated:true 与 segmentsOmitted，不静默截",
     inputSchema: {
       type: "object",
       properties: {
         round: { type: "integer", minimum: 1 },
-        pattern: { type: "string", minLength: 1, description: "grep 式检索；含 . * + ? ( ) [ ] { } | ^ $ \\ 时按正则，否则按子串" },
+        pattern: { type: "string", minLength: 1, description: "grep 式检索；含 . * + ? ( ) [ ] { } | ^ $ \\ 时按正则，否则按子串；回显时截到 200 字符并带 patternTruncated" },
         fromRound: { type: "integer", minimum: 1, description: "检索轮区间下界（含端点）" },
         toRound: { type: "integer", minimum: 1, description: "检索轮区间上界（含端点）" },
         scope: { type: "string", enum: ["run"], default: "run" },
       },
-      required: ["round"],
+      // ①（copilot #964 P0）：不再 required:["round"]——本功能的全部价值就是「记不得第几轮」时
+      // 用 pattern 检索，硬 required 会让合规调用方没法只给 pattern。“至少给一个”在入口处校。
       additionalProperties: false,
     },
   };
@@ -174,9 +193,20 @@ export function createBuiltinRecallTools(options = {}) {
   }
 
   async function recallRead(/** @type {any} */ input) {
+    // ①（copilot #964 P0）：round 与 pattern 至少给一个——schema 已不再 required round，
+    // 两个都没给才在这里判 invalid（只给 round 的逐字模式行为逐字不变）。
+    const hasPattern = input.pattern !== undefined && input.pattern !== null;
+    const hasRound = input.round !== undefined && input.round !== null;
+    if (!hasPattern && !hasRound) {
+      return JSON.stringify({
+        status: "invalid",
+        reason: "round 与 pattern 至少给一个（round 逐字取回整轮，pattern 做 grep 式检索）",
+      });
+    }
+
     // 给了 pattern（哪怕类型不对）⇒ 进 grep 模式，那里再校验；不给 pattern 才走逐字模式，
     // 逐字模式先校验 round 再校验 scope（与既有行为逐字一致）。
-    if (input.pattern !== undefined && input.pattern !== null) {
+    if (hasPattern) {
       return grepRead(input);
     }
 
@@ -250,6 +280,8 @@ export function createBuiltinRecallTools(options = {}) {
     if (pattern.length === 0) {
       return JSON.stringify({ status: "invalid", reason: "pattern 不能为空字符串" });
     }
+    // ②（copilot #964）：回显的 pattern 截到 200 字符，否则硬顶管不住返回 JSON 总量。
+    const echo = clipPattern(pattern);
 
     const { fromRound, toRound } = input;
     if (fromRound !== undefined && !isPositiveInt(fromRound)) {
@@ -280,7 +312,8 @@ export function createBuiltinRecallTools(options = {}) {
     if (!ledgerHasAnyMessage && !ledgerHasRoundRows) {
       return JSON.stringify({
         status: "empty",
-        pattern,
+        pattern: echo.text,
+        patternTruncated: echo.truncated,
         message: "账本里一条正文都没有（既没折过、也没跑过任何轮）",
         segments: [],
         matchCount: 0,
@@ -291,7 +324,8 @@ export function createBuiltinRecallTools(options = {}) {
     if (!ledgerHasAnyMessage && ledgerHasRoundRows) {
       return JSON.stringify({
         status: "unrecoverable",
-        pattern,
+        pattern: echo.text,
+        patternTruncated: echo.truncated,
         message: "账本里有轮行，但没有任何 messages（正文没存）",
         segments: [],
         matchCount: 0,
@@ -306,14 +340,17 @@ export function createBuiltinRecallTools(options = {}) {
     const windowTo = toRound ?? anchor ?? Number.MAX_SAFE_INTEGER;
 
     const { match: matcher, matchedBy } = compileMatcher(pattern);
-    const { hits, clampedInWindow } = collectHits(rows, windowFrom, windowTo, matcher);
+    // ③（copilot #964）：夹断是 **run 级事实**，扫全部行、不受检索窗口限制
+    // ⇒ 宁可多报 truncated，不许漏报（变量名也从 clampedInWindow 改为 archiveClamped）。
+    const { hits, archiveClamped } = collectHits(rows, windowFrom, windowTo, matcher);
 
     if (hits.length === 0) {
-      // 无命中：窗口内归档夹断过 ⇒ 报 truncated（比 no_match 更保守），否则 no_match。
-      if (clampedInWindow) {
+      // 无命中：本次 run 的归档曾经夹断过 ⇒ 报 truncated（比 no_match 更保守），否则 no_match。
+      if (archiveClamped) {
         return JSON.stringify({
           status: "truncated",
-          pattern,
+          pattern: echo.text,
+          patternTruncated: echo.truncated,
           matchedBy,
           fromRound: windowFrom,
           toRound: windowTo === Number.MAX_SAFE_INTEGER ? null : windowTo,
@@ -327,7 +364,8 @@ export function createBuiltinRecallTools(options = {}) {
       }
       return JSON.stringify({
         status: "no_match",
-        pattern,
+        pattern: echo.text,
+        patternTruncated: echo.truncated,
         matchedBy,
         fromRound: windowFrom,
         toRound: windowTo === Number.MAX_SAFE_INTEGER ? null : windowTo,
@@ -369,12 +407,13 @@ export function createBuiltinRecallTools(options = {}) {
     }
 
     const truncated = segmentsOmitted > 0 || segmentClamped;
-    const overviewRaw = `pattern "${pattern}" 在轮 [${windowFrom}, ${windowTo === Number.MAX_SAFE_INTEGER ? "∞" : windowTo}] 命中 ${hits.length} 处，返回 ${segments.length} 段（matchedBy=${matchedBy}${segmentsOmitted > 0 ? `，省略 ${segmentsOmitted} 段` : ""}）。`;
+    const overviewRaw = `pattern "${echo.text}" 在轮 [${windowFrom}, ${windowTo === Number.MAX_SAFE_INTEGER ? "∞" : windowTo}] 命中 ${hits.length} 处，返回 ${segments.length} 段（matchedBy=${matchedBy}${segmentsOmitted > 0 ? `，省略 ${segmentsOmitted} 段` : ""}）。`;
     const overview = fitPrefix(overviewRaw, MAX_OVERVIEW_TOKENS).text;
 
     return JSON.stringify({
       status: "found",
-      pattern,
+      pattern: echo.text,
+      patternTruncated: echo.truncated,
       matchedBy,
       fromRound: windowFrom,
       toRound: windowTo === Number.MAX_SAFE_INTEGER ? null : windowTo,
@@ -382,57 +421,68 @@ export function createBuiltinRecallTools(options = {}) {
       segments,
       segmentsOmitted,
       truncated,
-      clamped: clampedInWindow,
+      clamped: archiveClamped,
       overview,
     });
   }
 
   /**
-   * 在 `[fromRound, toRound]` 区间内收集命中（每条命中 = 某轮某条消息的首次匹配）。
+   * 在 `[fromRound, toRound]` 区间内收集命中（每条命中 = 某轮某条消息**某一个原文块**的首次匹配）。
    * 轮内顺序：消息行按 seq 升序（seq 相同按落盘先后），其后接轮载体行——与逐字模式同口径。
-   * 同时回报区间内是否有轮被归档夹断（foldedPayloadMeta.droppedMessages/droppedBytes>0）。
+   * ④（copilot #964）：逐块匹配、摘录只从一块里切——拼成整条正文会让正则跨 `"\n"` 拼接边界
+   * 命中，返回的 excerpt 就不是任何原始块的切片（等于自己造了原文里没有的字符）。
+   * 同时回报「本次 run 的归档曾经夹断过正文」：这是 run 级事实（foldedPayloadMeta 挂在归档行上，
+   * 描述的是“归档到此轮之前的正文被夹断过”），③（copilot #964）**扫全部行、不受窗口限制**：
+   * 窗口收窄到受影响的轮时，旧实现会把夹断记录切在窗口外⇒漏报 truncated。
    * @param {any[]} rows
    * @param {number} fromRound
    * @param {number} toRound
    * @param {(text: string) => { matched: boolean, start: number, end: number }} matcher
-   * @returns {{ hits: { round: number, messageIndex: number, text: string, start: number, end: number }[], clampedInWindow: boolean }}
+   * @returns {{ hits: { round: number, messageIndex: number, text: string, start: number, end: number }[], archiveClamped: boolean }}
    */
   function collectHits(rows, fromRound, toRound, matcher) {
-    /** @type {Map<number, { items: { message: any, order: number }[], clamped: boolean }>} */
+    // 夹断检测：故意比窗口更粗（宁可多报，不许漏报）。
+    let archiveClamped = false;
+    for (const /** @type {any} */ row of rows) {
+      const meta = row?.foldedPayloadMeta;
+      if (meta && ((meta.droppedMessages > 0) || (meta.droppedBytes > 0))) archiveClamped = true;
+    }
+
+    /** @type {Map<number, { items: { message: any, order: number }[] }>} */
     const byRound = new Map();
     rows.forEach((/** @type {any} */ row, /** @type {number} */ index) => {
       const round = row?.round;
       if (!isPositiveInt(round) || round < fromRound || round > toRound) return;
+      if (!Array.isArray(row?.messages)) return;
       const isMsg = isMessageRow(row);
-      const entry = byRound.get(round) ?? { items: [], clamped: false };
-      const meta = row?.foldedPayloadMeta;
-      if (meta && ((meta.droppedMessages > 0) || (meta.droppedBytes > 0))) entry.clamped = true;
-      if (Array.isArray(row?.messages)) {
-        // 消息行按 seq 排在前面，载体行排后面；order 单调，保证轮内确定性顺序。
-        const orderBase = isMsg ? (Number.isSafeInteger(row.seq) ? row.seq : 0) : Number.MAX_SAFE_INTEGER - 1;
-        row.messages.forEach((/** @type {any} */ message, /** @type {number} */ mi) => {
-          entry.items.push({ message, order: orderBase * 1e6 + index * 1000 + mi });
-        });
-      }
+      const entry = byRound.get(round) ?? { items: [] };
+      // 消息行按 seq 排在前面，载体行排后面；order 单调，保证轮内确定性顺序。
+      const orderBase = isMsg ? (Number.isSafeInteger(row.seq) ? row.seq : 0) : Number.MAX_SAFE_INTEGER - 1;
+      row.messages.forEach((/** @type {any} */ message, /** @type {number} */ mi) => {
+        entry.items.push({ message, order: orderBase * 1e6 + index * 1000 + mi });
+      });
       byRound.set(round, entry);
     });
 
+    /** @type {{ round: number, messageIndex: number, text: string, start: number, end: number }[]} */
     const hits = [];
-    let clampedInWindow = false;
     const rounds = [...byRound.keys()].sort((a, b) => a - b);
     for (const round of rounds) {
       const entry = byRound.get(round);
       if (entry === undefined) continue;
-      if (entry.clamped) clampedInWindow = true;
       entry.items.sort((a, b) => a.order - b.order);
       entry.items.forEach((/** @type {any} */ item, /** @type {number} */ messageIndex) => {
-        const text = messageText(item.message);
-        if (text === "") return;
-        const m = matcher(text);
-        if (m.matched) hits.push({ round, messageIndex, text, start: m.start, end: m.end });
+        for (const unit of messageTextUnits(item.message)) {
+          if (unit === "") continue;
+          const m = matcher(unit);
+          if (!m.matched) continue;
+          // 只记命中所在那一个块：excerpt 从这块里切，永远是原文块的切片。
+          hits.push({ round, messageIndex, text: unit, start: m.start, end: m.end });
+          break;
+        }
       });
     }
-    return { hits, clampedInWindow };
+    return { hits, archiveClamped };
   }
 
   return {
