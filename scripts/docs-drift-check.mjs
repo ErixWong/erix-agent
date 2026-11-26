@@ -9375,10 +9375,17 @@ const SELF_TEST_CASES = [
     overlay: {
       [COMPACTION_CLI_CONST_SRC]: (t) => t.replace('export const DEFAULT_COMPACTION_STRATEGY = "fold-llm";', 'export const DEFAULT_COMPACTION_STRATEGY = "fold-statistical";'),
     },
-    // #925/#926 之后 README 里**没有**「CLI 层默认是 X」这类声明了（那条声明随 `--compaction` 帮助行一起没了），
-    // 所以这里只要求契约 EN 那一处红——不是判据放宽，是**该红的样本只剩一处**（实测见 `--self-test` 的实测行）。
-    expect: [/compaction-default\/cli: docs\/host-consumer-contract\.md:\d+ 说CLI 层默认是 `fold-llm`/],
-    expectFiles: [CONTRACT_EN],
+    // 实测（改常量后跑一遍）：红的**恰好四处** —— 契约 EN/CN + `docs/requirements.md` / `_cn.md`。
+    // README 里没有「CLI 层默认是 X」这类**带标记的默认声称**（那条随 `--compaction` 帮助行一起没了），
+    // 所以不在这里要求它；README 那句「折叠恒由 LLM 完成」是**另一类**声称（见下面 `fold-llm` 的措辞修正），
+    // 不在 `compaction-default` 的判定面里 —— 别把两件事混成一句。
+    expect: [
+      /compaction-default\/cli: docs\/host-consumer-contract\.md:\d+ 说CLI 层默认是 `fold-llm`/,
+      /compaction-default\/cli: docs\/host-consumer-contract_cn\.md:\d+ 说CLI 层默认是 `fold-llm`/,
+      /compaction-default\/cli: docs\/requirements\.md:\d+ 说CLI 层默认是 `fold-llm`/,
+      /compaction-default\/cli: docs\/requirements_cn\.md:\d+ 说CLI 层默认是 `fold-llm`/,
+    ],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN, "docs/requirements.md", "docs/requirements_cn.md"],
   },
   {
     label: "#668 ①：只改中文契约的库层声明（`sliding-window` → `fold-statistical`）⇒ 红（中英成对，只改一边就红）",
