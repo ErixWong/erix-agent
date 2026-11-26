@@ -136,8 +136,10 @@ npm run release:day -- --stage finalize      # tag the version cut → dual push
   a rejected push can leave the mirror ahead of GitHub — read both sides back before deciding anything.
 - **GitHub is the workflow truth**: issues, PRs and reviews live there. Gitea is a code mirror only (no Actions
   pipeline; its issue/PR area is a frozen archive — do not open or reply there).
-- Contribution flow: branch `feat-YYMMDD-NN-<描述>` / `fix-YYMMDD-NN-<描述>` → PR into `main` for anything touching
-  the public surface; small fixes and documentation may skip the PR, but never land directly on `main` — branch first. Commit messages: conventional commits + 中文摘要.
+- Contribution flow: branch `feat-YYMMDD-NN-<描述>` / `fix-YYMMDD-NN-<描述>` → **PR into `main`, always** — the live
+  ruleset (`main-require-pr`) rejects a direct push with `GH013`, and `origin` has two push URLs that run independently,
+  so a push that GitHub rejects can still land on the Gitea mirror and leave the two sides forked. Push the branch, open
+  the PR, merge it, then read `refs/heads/main` back on both URLs. Commit messages: conventional commits + 中文摘要.
 
 ## 6. Runtime data and local environment
 
