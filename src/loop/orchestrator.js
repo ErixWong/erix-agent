@@ -616,7 +616,6 @@ function mergeFoldedRoundRanges(first, second) {
  *       onReflection?: (info: {round: number, decision: object, extendedTo: number}) => void,
  *       onBeforeFold?: (payload: object) => void|Promise<void>, onAfterFold?: (payload: object) => void|Promise<void>,
  *       stubFor?: (message: object) => string|Promise<string|undefined>, // per-message fold stub text
- *       protectedMessage?: (message: object) => boolean, // function form of the polymorphic knob (string / string[] is the config-side data form)
  *       continuityProvider?: (payload: {runId?: string, state: object, previous?: object}) => {text: string, version?: number}|Promise<{text: string, version?: number}>, // issue #568: session continuity block content source (sectioned by [contract] / [unfinished] / [evidence]; nested-slot leaf, no flat alias)
  *       recoveryHint?: (context: object) => string|Promise<string>}, // function form of the polymorphic knob
  *     checks?: {deliverables?: {name: string, check: (facts: object) => any}[]},
@@ -727,18 +726,19 @@ function mergeFoldedRoundRanges(first, second) {
  *     `onPersistenceError` / `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` /
  *     `onToolCall` / `onUsage` / `onFoldSummary` / `finalGuard` / `onReflection` / `onBeforeFold` /
  *     `onAfterFold` / `stubFor`; see `CAPABILITY_HOOK_NAMES`
- *     (`src/loop/capabilities-namespace.js`)) **plus** the function form of the two polymorphic knobs
- *     (`protectedMessage` / `recoveryHint`, see `CAPABILITY_POLYMORPHIC_HOOK_NAMES`). Every `hooks`
- *     value must be a function (that is not relaxed for those two);
+ *     (`src/loop/capabilities-namespace.js`)) **plus** the function form of the one remaining
+ *     polymorphic knob (`recoveryHint`, see `CAPABILITY_POLYMORPHIC_HOOK_NAMES`; `protectedMessage`
+ *     was retired by #898). Every `hooks`
+ *     value must be a function (that is not relaxed for it);
  *   · `checks` — deliverables checks (`deliverables`, each entry `{name, check}`, `check` a function);
  *   · `ports` — infrastructure / strategy implementations the engine **dereferences or calls**
  *     (#498 S4c): `sleepImpl` / `judgeProvider` (a callable or a `{chat}` object) / `strategy` (a
  *     strategy object). The difference from `hooks`: a port slot may be an object, a hook must be
  *     callable.
  *   The flat top-level spellings of the 12 observer channels / `finalGuard` / `deliverables` **keep
- *   working** (the published 0.26 surface; this release removes none of them); the nine leaves added
+ *   working** (the published 0.26 surface; this release removes none of them); the eight leaves added
  *   by this slice (`ports.*` and
- *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`) have **no**
+ *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,recoveryHint}`) have **no**
  *   top-level flat alias (they never were top-level options) — which is why none of them ever entered the allowlist.
  *   Unknown sub-keys (`capabilities.hoks` / `capabilities.check` / `capabilities.ports.sleeplmp`) and
  *   "given but wrong shape" all throw at startup with the full path named. The `config.observers`
@@ -883,7 +883,7 @@ export async function runToolLoop(options) {
   // `CAPABILITY_SLOT_DESTINATIONS` in `src/loop/capabilities-namespace.js`). They are the canonical
   // home of behaviour carriers that used to live in a nested shell slot (`retry.sleepImpl`,
   // `reflection.judge.provider`, `context.strategy`, `reflection.onReflection`,
-  // `context.{onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`). Expansion hands them
+  // `context.{onBeforeFold,onAfterFold,stubFor,recoveryHint}`). Expansion hands them
   // over on this side channel instead of inventing flat keys, so the top-level allowlist stays at 67;
   // every consumption point below resolves `capabilityPorts.X ?? shell.X` (the container wins, the
   // same direction `config.*` wins over the flat key).
@@ -1885,7 +1885,7 @@ export async function runToolLoop(options) {
         // #498 S4c: the capability hooks that live in the `context` shell win over the nested slot
         // (container over legacy spelling, the same direction as everywhere else). They reach the
         // strategies exactly where the old slot did: `compactOptions` below copies
-        // `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` out of this object, and
+        // `onBeforeFold` / `onAfterFold` / `stubFor` out of this object, and
         // `resolveCompactionStrategy` reads `recoveryHint` / `stubFor` for the name-form strategies.
         ...capabilityFoldHooks,
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
@@ -4157,7 +4157,7 @@ export async function runToolLoop(options) {
     let strategyFoldSummary = undefined;
     /** @type {ReturnType<typeof buildFoldedFacts>} 投影到本轮轮记录的 `foldedFacts`（#470-B 已夹字节） */
     let pendingFoldedFacts = undefined;
-    let /** @type {number} */ protectedDowngraded = 0, /** @type {"protected_message_exceeds_budget"|"cannot_fit"|undefined} */ budgetUnreachable;
+    let /** @type {"protected_message_exceeds_budget"|"cannot_fit"|undefined} */ budgetUnreachable;
     // issue #608：**预算不足显式劣化**的现场（三个数 + `repeatStreak` + `foldLayersOverBudget`）。
     // 只在循环判据（工作集 > 预算 ∧ 模型在重读同一入参，连续 `WORKING_SET_LOOP_ATTEMPTS` 次）成立时
     // 赋值——那一格再折就是把模型马上要用的东西拿走，引擎停手并交主循环明确收尾
@@ -4279,7 +4279,6 @@ export async function runToolLoop(options) {
       });
       for (const key of [
         "summaryRole",
-        "protectedMessage",
         "stripHistoricalImages",
         "onBeforeFold",
         "onAfterFold",
@@ -4360,7 +4359,6 @@ export async function runToolLoop(options) {
         : 0;
       foldedRounds = strategyFoldedRounds;
       compacted = result.compacted === true;
-      protectedDowngraded = 0;
       let tokensAfter = estimateMessageTokens(compactedMessages);
       if (selectedLayer !== undefined && foldedRounds > 0) {
         observeCompactionLayer(layers, selectedLayer.id, {
@@ -4405,7 +4403,6 @@ export async function runToolLoop(options) {
         const fallback = await foldWithinBudget(budgetFallbackStrategy, compactedMessages, {
           budgetTokens,
           workingSetRecentRounds,
-          protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
           stubFor: compactionContext.stubFor,
           roundOffset: runLoopState.foldedThrough,
@@ -4585,22 +4582,21 @@ export async function runToolLoop(options) {
       //   · **读者 B（落盘归档与折叠身份）**：`buildFoldedRecordArchive` 与 `foldSummaryFingerprint`
       //     读下面的**全量** `foldedPayload`，与增量读者不是同一份，`record.foldedPayload` 的内容
       //     与 `foldedFingerprint`（= `foldId`）逐字不变——这一条是刻意的：不拿契约面换内部自洽。
-      // 病根现场：下面安全层那一发（`safeTruncateMessages`）会把被降级的受保护消息追加进
-      // `foldedPayload`，但 `foldedRoundRange` / `foldedRounds` **不跟着涨**（安全层降级不是
+      // 病根现场：下面安全层那一发（`safeTruncateMessages`）会把**它逐条删掉的消息**追加进
+      // `foldedPayload`（#898 之前追加的是「被降级的受保护消息」），但 `foldedRoundRange` /
+      // `foldedRounds` **不跟着涨**（安全层逐条删不是
       // 「折了几轮」）⇒ 拿「此刻的全量 payload」现算正文、却用不涨的区间声明 from/to/count，
       // 正文就盖到区间外（实测：声明 `from=1,to=6,rounds=6` 的增量正文里出现属第 7 轮的
       // `PROCTOOL_R7`）。两个产生点形状相同，两处都得改：只切 ⓪ 会漏 ③。
       // ⇒ 取点：**策略那一折 + 预算兜底那一折都已定稿（包括兜底摘要 prepend），而安全层与
       //   user-turn 守卫都还没动手**的这一刻（与 #738 钉摘要块身份同一个时刻）。快照只喂读者 A：
       //   ⓪ `budgetFallbackFoldedRounds > 0` 那一支、③ `computeFactsFallbackText()`。
-      // 累计体 `factsText` 也调 `computeFactsFallbackText()` ⇒ 它因此**不再含**安全层降级的那几条，
+      // 累计体 `factsText` 也调 `computeFactsFallbackText()` ⇒ 它因此**不再含**安全层删掉的那几条，
       //   这是**有意**的：那几条不是这一折折掉的轮次，而它们的**原文仍在归档里**（读者 B 仍读
       //   全量）⇒ 证据不丢，只是不再冒充「本折删掉的东西」。别以为这里漏了。
-      // ⚠ 不要写成「此处不可能读到安全层追加的内容」——那是假话：`bin/config.js` 里
-      //   `protectedMessage: isRealUser` 至今仍开着（实测探针 commit 2c5ad310），这条路径今天还活着。
-      // ⚠ 过渡期：`protectedMessage` 已**批准**退役（#898 已定，硬前置 `recall_read` 先落地，
-      //   **尚未实施**——今天 `bin/config.js` 仍设着 `protectedMessage: isRealUser`，见上一条）；
-      //   退役后这条触发路径不可达，本块与 `test/compact/fold-increment-safety-scope-894.test.js` 一起删。
+      // ⚠ 不要写成「此处不可能读到安全层追加的内容」——那是假话：#898 把 `protectedMessage` 退役后，
+      //   安全层逐条删掉的全部消息都追加进归档（旧口径只归档「曾被保护、后被降级」的那几条），
+      //   这条追加路径比退役之前**更常发生**，不是历史。
       // ⇒ 快照是**真拷贝**而不是别名：今天安全层那几处都是**重新赋值**
       //   （`foldedPayload = [...foldedPayload, …]`，见下方安全层那一发），所以上面那个别名
       //   **此刻**不会出错；但别名下那份「快照」只是一个约定：只要将来有人把某一发改成就地
@@ -4651,14 +4647,12 @@ export async function runToolLoop(options) {
         const fallback = await safeTruncateMessages(
           compactedMessages,
           apiAwareBudget,
-          compactionContext.protectedMessage,
           compactionContext.stubFor,
         );
         compactedMessages = fallback.messages;
         foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
-        compacted = compacted || fallback.protectedDowngraded > 0;
         tokensAfter = fallback.tokensAfter;
-        ({ protectedDowngraded, budgetUnreachable } = fallback);
+        ({ budgetUnreachable } = fallback);
         observeCompactionLayer(layers, safetyFallbackLayer?.id, {
           tokensBefore: safetyTokensBefore,
           tokensAfter,
@@ -4957,7 +4951,6 @@ export async function runToolLoop(options) {
       };
       recordCompactionStat({
         ...compactionStat,
-        protectedDowngraded,
         // issue #464 A：写实例上的名字（含库层兜底的 `"sliding-window"`），不是配置项原文。
         // issue #657：而「实例」必须是**真正干了这一折活的那个**——配置策略折 0 轮、预算兜底
         // 替它折了时写兜底实例名（`undefined` ⇒ 不写键，与「无事实 ⇒ 无键」同口径）。

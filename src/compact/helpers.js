@@ -4,7 +4,7 @@
 // （sliding-window / fold-statistical / fold-llm 三个调用点各写一遍 = 下一个策略一定会漏），
 // 而块的身份（marker 前缀）只有 `continuity-block.js` 一个权威。这个 import **不成环**：
 // `continuity-block.js` 只依赖 `../tokens.js` 与 `./pending-tool-result.js`，两者都不碰 `compact/`。
-// 方向也不是「compact 依赖 loop 的编排面」——它是一个**叶子谓词**，与 `isProtectedMessage` 同族。
+// 方向也不是「compact 依赖 loop 的编排面」——它是一个**叶子谓词**。
 import { isContinuityMessage } from "../loop/continuity-block.js";
 import { estimateMessageTokens } from "../tokens.js";
 // issue #741：笔记可用性的判定住在 TTL 模块（那里是工具面/账本证据的原点），本模块只负责
@@ -106,13 +106,6 @@ export function optionValue(callOptions, factoryOptions, key, fallback) {
     return factoryOptions[key];
   }
   return fallback;
-}
-
-export function isProtectedMessage(message, guard) {
-  if (typeof guard === "function") return guard(message) === true;
-  if (typeof guard === "string") return message?.role === guard;
-  if (Array.isArray(guard)) return guard.includes(message?.role);
-  return false;
 }
 
 export function isRealUser(message) {
@@ -244,7 +237,7 @@ export function suggestedBudgetTokens(tokens) {
  *      当前状态的旧快照（#564/#565/#566 那一轮修的就是这个病）；
  *   ② 体积放大 —— 块按预算可到 1200 token。
  *
- * 修法是「这一轮不可折」，与既有的 `isProtectedMessage` 同一条纪律（不是把块挪出 `messages`：
+ * 修法是「这一轮不可折」（不是把块挪出 `messages`：
  * 那会打掉 #568 判据 3 的「块计入本地估算」）。
  *
  * @param {{messages: any[]}} round
@@ -298,7 +291,7 @@ export const MIN_KEEP_ROUNDS = 5;
  *      摘要文本这一层还没生成 ⇒ 由调用方**声明**摘要开销上界 `target.summaryOverheadTokens`
  *      （`number | ((foldedCount, foldedIndexes)=>number)`），语义「这次折叠最多带进多少 token 的摘要」；缺席 ⇒
  *      按 `0` 处理（= 调用方声明没有摘要开销）。回调的第二参 `foldedIndexes` 是**此刻实际选中**的轮索引
- *      （升序）：选择器折的不是连续前缀（保护轮 / 连续性块 / 工作集地板会被跳过），只给轮数会被回调
+ *      （升序）：选择器折的不是连续前缀（连续性块 / 工作集地板会被跳过），只给轮数会被回调
  *      当成「前 N 轮」重建摘要 ⇒ 估算对象与实际被折轮次不符（issue #873，PR #893 copilot ②）。
  *      为何改接口而不是在本函数里猜（issue #873
  *      验收阻断②）：三策略摘要来源各不相同（`fold-llm` 是模型写的、生成前拿不到长度；
@@ -311,7 +304,6 @@ export const MIN_KEEP_ROUNDS = 5;
  *
  * @param {object[]} rounds
  * @param {number} keepRounds 保留下限（新口径，有效值 = `max(keepRounds, MIN_KEEP_ROUNDS)`，最小 5）/ 保留目标（旧口径）
- * @param {unknown} protectedMessage
  * @param {number} [workingSetRecentRounds] 工作集地板（#608）
  * @param {{ targetTokens?: number, headMessages?: any[],
  *   summaryOverheadTokens?: number | ((foldedCount: number, foldedIndexes: number[]) => number) }} [target]
@@ -322,7 +314,6 @@ export const MIN_KEEP_ROUNDS = 5;
 export function selectFoldedRounds(
   rounds,
   keepRounds,
-  protectedMessage,
   workingSetRecentRounds = 0,
   target = {},
 ) {
@@ -334,8 +325,7 @@ export function selectFoldedRounds(
   // 纯「永不折」的口径会退化成「小预算 run 一次都折不了 ⇒ 安全层整轮丢掉、连摘要都没有」，
   // 信息只会更少（#608 第一版的实测教训）。
   const floorIndex = workingSetFloorIndex(rounds, workingSetRecentRounds);
-  const foldable = (round) => !roundHoldsContinuityBlock(round)
-    && !round.messages.some((message) => isProtectedMessage(message, protectedMessage));
+  const foldable = (round) => !roundHoldsContinuityBlock(round);
 
   const rawTargetTokens = target?.targetTokens;
   const targetTokens = Number.isFinite(rawTargetTokens) && rawTargetTokens > 0
@@ -362,7 +352,7 @@ export function selectFoldedRounds(
     // 若地板把**所有**可折轮次都挡住了（`folded` 为空，而调用方确实要求折：`target > 0`）⇒ 照旧折
     // **最老的那一轮**。调用方（引擎）是在「这一发请求已经超预算」时才要求折的，一次都不折等于把
     // 超预算的请求原样发出去，而安全层随后会整轮丢掉——比「折掉工作集」更差（连摘要都没有）。
-    // 连续性块 / `protectedMessage` 仍然不在此列：它们不是「地板挡住了」，是**不可折**。
+    // 连续性块仍然不在此列：它不是「地板挡住了」，是**不可折**。
     if (folded.length === 0 && countTarget > 0) {
       const index = rounds.findIndex((round) => foldable(round));
       if (index >= 0) {
@@ -604,7 +594,6 @@ export function foldOptions(factoryOptions, callOptions = {}) {
     // issue #741：本 run 工具面上的笔记工具名（引擎在 `compactOptions` 里显式传；不传 ⇒ 证据缺席
     // ⇒ 默认广告语走显式未知口径）。它只决定措辞，不决定任何机制。名字清单住在 TTL 模块。
     noteTools: optionValue(callOptions, factoryOptions, "noteTools"),
-    protectedMessage: optionValue(callOptions, factoryOptions, "protectedMessage"),
     stripHistoricalImages: optionValue(
       callOptions,
       factoryOptions,

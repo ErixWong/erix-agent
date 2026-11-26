@@ -26,13 +26,14 @@
 //     `onBeforeFold` / `onAfterFold` (fold notifications, consumed by `runFoldHook`
 //     (`src/compact/helpers.js`)) and `stubFor` (the per-message stub decision, consumed by
 //     `resolveFoldStubs` in the same file).
-//   · Two **polymorphic** knobs, `protectedMessage` / `recoveryHint`: the data form (`string` /
-//     `string[]`) stays in `config.folding.context`, the function form moves to `capabilities.hooks`.
+//   · The **polymorphic** knob `recoveryHint` (`protectedMessage` was retired by #898): the data form
+//     (`string` / `string[]`) stays in `config.folding.context`, the function form lives in
+//     `capabilities.hooks`.
 //     Both sides set to **inequivalent** values ⇒ exactly one `config_override_conflict` (the same
 //     container-conflict machinery, no new outlet).
-//   ⚠ The nine new leaves of this slice get **no new top-level flat alias**: `sleepImpl` /
+//   ⚠ The new leaves of this slice get **no new top-level flat alias**: `sleepImpl` /
 //   `judgeProvider` / `strategy` / `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor` /
-//   `protectedMessage` / `recoveryHint` never were top-level options, so what is invented here is a
+//   `recoveryHint` never were top-level options, so what is invented here is a
 //   **container member slot**, not a move ⇒ the top-level allowlist **stays at 67**. Their home is the
 //   **nested slot** registered in `CAPABILITY_SLOT_DESTINATIONS` (below; `context.onBeforeFold` and
 //   friends), and expansion does not write them into `effectiveOptions` as flat keys — it hands them
@@ -147,12 +148,13 @@ export const CAPABILITY_HOOK_NAMES = Object.freeze([
 ]);
 
 /**
- * The **two polymorphic knobs** (issue #498 S4c): the function form lives in `capabilities.hooks`,
+ * The **remaining polymorphic knob** (issue #498 S4c; `protectedMessage` was retired by #898, so this
+ * list is down to one entry): the function form lives in `capabilities.hooks`,
  * the data form (`string` / `string[]`) in `config.folding.context` (or the flat `context`).
  *
- * They are the one "same knob, two homes" risk of this slice: both sides set to **inequivalent**
+ * It is the one "same knob, two homes" risk of this slice: both sides set to **inequivalent**
  * values ⇒ exactly one `config_override_conflict` (`path` names the knob's **config-side** path, e.g.
- * `folding.context.protectedMessage`); equivalent (`isDeepStrictEqual`, functions by identity) ⇒ zero
+ * `folding.context.recoveryHint`); equivalent (`isDeepStrictEqual`, functions by identity) ⇒ zero
  * events. The value validator keeps the **same rule** as every other `hooks` leaf: given ⇒ it must be
  * a function — it is deliberately *not* relaxed to "function or object" (that relaxation is the
  * degradation route C would have introduced by stuffing these into `hooks` as ordinary members).
@@ -160,15 +162,14 @@ export const CAPABILITY_HOOK_NAMES = Object.freeze([
  * @type {readonly string[]}
  */
 export const CAPABILITY_POLYMORPHIC_HOOK_NAMES = Object.freeze([
-  "protectedMessage",
   "recoveryHint",
 ]);
 
 /**
- * The five `hooks` leaves whose shell is `context` (`onReflection` is not one of them: it lives in the
- * `reflection` shell).
+ * The `hooks` leaves whose shell is `context` (`onReflection` is not one of them: it lives in the
+ * `reflection` shell; `protectedMessage` was dropped here by #898).
  *
- * They are listed separately so the orchestrator merges **exactly these five** into the folding
+ * They are listed separately so the orchestrator merges **exactly these four** into the folding
  * context (`compactionContext`) — `onReflection` is not a `context` sub-key, and spreading it in
  * would only add a key nobody reads.
  *
@@ -178,7 +179,6 @@ export const CAPABILITY_CONTEXT_HOOK_NAMES = Object.freeze([
   "onBeforeFold",
   "onAfterFold",
   "stubFor",
-  "protectedMessage",
   "recoveryHint",
 ]);
 
@@ -215,7 +215,7 @@ export const CAPABILITY_CHECK_NAMES = Object.freeze(["deliverables"]);
  * A leaf name either is verbatim a top-level key in `RUN_TOOL_LOOP_OPTION_NAMES` (a flat alias, the
  * same constraint the `config` container follows), or it registers a **nested slot** in
  * `CAPABILITY_SLOT_DESTINATIONS` (issue #498 S4c: `sleepImpl` / `judgeProvider` / `strategy` /
- * `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`
+ * `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor` / `recoveryHint`
  * never were top-level options, so what is invented is a container member slot, not a move).
  * Each group has its own **value shape** (`hooks` = functions, `checks` = `{name, check}[]`,
  * `ports` = a function / a `{chat}` object / a strategy object), carried by
@@ -245,8 +245,8 @@ export const CAPABILITIES_NAMESPACE_SCHEMA = Object.freeze({
  *   · `path[0]` must be a top-level option (a shell always is on the allowlist);
  *   · `conflictPath` is the `path` of the conflict event — it **names the real destination**, not a
  *     vague "capability surface". Ports and ordinary hooks use the capability path
- *     (`ports.sleepImpl` / `hooks.onBeforeFold`); the two polymorphic knobs use their **config-side**
- *     path (`folding.context.protectedMessage`), because their two sides are "data in `config`"
+ *     (`ports.sleepImpl` / `hooks.onBeforeFold`); the polymorphic knob uses its **config-side**
+ *     path (`folding.context.recoveryHint`), because its two sides are "data in `config`"
  *     versus "a function in `hooks`" and the host has to know which side to change.
  *
  * Why not write them back as top-level keys: that would take the allowlist from 67 to 76 (inventing
@@ -646,7 +646,7 @@ function isCapabilitiesObject(value) {
  * (`{ hooks: { onBeforeFold: fn }, ports: { sleepImpl: fn } }`) and the orchestrator resolves them
  * against the shell's old slot with a `??` chain (the port wins). **The conflict comparison still
  * happens**: the path registered in `CAPABILITY_SLOT_DESTINATIONS` is used to read the current value
- * (e.g. `context.protectedMessage` — config expansion already ran, so the config-side data form is
+ * (e.g. `context.recoveryHint` — config expansion already ran, so the config-side data form is
  * right there); if it is not deeply equal, one conflict is recorded with `path` = `conflictPath`
  * (the real destination).
  *

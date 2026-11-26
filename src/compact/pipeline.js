@@ -140,7 +140,6 @@ export function observeCompactionLayer(
  *   tokensBefore?: number,
  *   tokensAfter?: number,
  *   budgetUnreachable?: "protected_message_exceeds_budget"|"cannot_fit",
- *   protectedDowngraded?: number,
  *   userTurnGuard?: string,
  *   userTurnGuardChannel?: string,
  *   layers?: Record<string, { triggered: number, tokensSaved: number }>,
@@ -153,7 +152,6 @@ export function observeCompactionLayer(
  *   tokensAfter: number,
  *   layers: Record<string, { triggered: number, tokensSaved: number }>,
  *   budgetUnreachable?: "protected_message_exceeds_budget"|"cannot_fit",
- *   protectedDowngraded?: number,
  *   userTurnGuard?: string,
  *   userTurnGuardChannel?: string,
  *   strategyName?: string,
@@ -178,7 +176,7 @@ export function observeCompactionLayer(
  *   foldArchive?: { droppedMessages: number, droppedBytes: number, capBytes?: number, dedupedMessages?: number }
  * }}
  *   `foldArchive`（issue #741）：归档夹断丢掉原文时的计数，**只在真丢了东西时出现**（口径同
- *   `protectedDowngraded` / `foldSummary` 的「无事实不写键」）。宿主侧契约见 docs/host-consumer-contract.md
+ *   `foldSummary` 的「无事实不写键」；#898 退役了 `protectedMessage`，那份计数一并消失）。宿主侧契约见 docs/host-consumer-contract.md
  *   的 `compaction` 事件格。
  */
 export function createCompactionStat({
@@ -187,10 +185,10 @@ export function createCompactionStat({
   tokensBefore = 0,
   tokensAfter = tokensBefore,
   budgetUnreachable,
-  protectedDowngraded = 0,
   // issue #292（additive）：请求视图 / 持久列表定稿处的 user 轮守卫生效时的动作
   // （"preserved_latest_user_turn" | "abandoned_fold"）与所在侧（chat/chatStream/persisted）。
-  // 与 protectedDowngraded 同一口径：只在真的发生时才出现，既有宿主的读取形状不变。
+  // 只在真的发生时才出现，既有宿主的读取形状不变（issue #898：`protectedDowngraded` 已随
+  // `protectedMessage` 机制一起退役，这份计数不再存在）。
   userTurnGuard,
   userTurnGuardChannel,
   layers,
@@ -225,9 +223,6 @@ export function createCompactionStat({
     || budgetUnreachable === "cannot_fit"
   ) {
     Object.assign(stat, { budgetUnreachable });
-  }
-  if (Number.isSafeInteger(protectedDowngraded) && protectedDowngraded > 0) {
-    stat.protectedDowngraded = protectedDowngraded;
   }
   if (typeof userTurnGuard === "string" && userTurnGuard !== "") {
     stat.userTurnGuard = userTurnGuard;
@@ -337,7 +332,6 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
     tokensBefore: entry?.tokensBefore,
     tokensAfter: entry?.tokensAfter,
     budgetUnreachable: entry?.budgetUnreachable,
-    protectedDowngraded: entry?.protectedDowngraded,
     userTurnGuard: entry?.userTurnGuard,
     userTurnGuardChannel: entry?.userTurnGuardChannel,
     // issue #464 A：`strategyName` 同样要过这道重建——runState / `state.json` 里那份是从上一份
