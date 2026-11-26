@@ -247,6 +247,7 @@ export function formatAsyncResult(outcome) {
     lines.push(steered
       ? `已投进 run ${details.runId} 的转向收件箱（steerPending=${details.steerPending}，本条排第 ${outcome?.position ?? details.steerPending}）：`
         + "内层 run 会在下一个轮边界取走队首那一条（一次只消费一条）；注入账目看终局的 diagnostics.steer。"
+        + "注意边界：run 若在下一个轮边界之前进终态（自然结束 / 撞轮数上限 / 看门狗 abort / 被取消），这句不会被注入——它会留在 steerLog 里 injected:false，diagnostics.steer.injected 也不涨（投进收件箱 ≠ 被消费）。"
       : `steer 没投进去（${outcome?.code ?? "steer_unavailable"}/${outcome?.reason ?? "?"}）：${outcome?.message ?? ""}`);
   } else if (kind === "unknown-run" || kind === "error") {
     isError = true;
@@ -277,7 +278,11 @@ export function formatAsyncResult(outcome) {
       // issue #753 C2 判据 4：**收件箱队列长度进文本面**。它是内存队列的当下长度（入队 +1、被内层
       // run 取走一条 -1）；注入账目在下一行的 `diagnostics.steer` 里。两个数同框才是完整事实：
       // 「还堆着 3 条」与「已经读到 1 条」不是一回事。
-      + ` steerPending=${view?.steerPending ?? 0}`,
+      + ` steerPending=${view?.steerPending ?? 0}`
+      // issue #942：裸计数读者分不清「没投成」与「没消费」——N>0 时点明「投进收件箱 ≠ 被消费」。
+      + ((view?.steerPending ?? 0) > 0
+        ? `（${view?.steerPending} 条未被消费 ⇒ 模型没读过；看 view.steerLog 里 injected:false 的那几条正文）`
+        : ""),
     );
     // #665：**投递诊断进文本面**。以前投递事实只落在盘上（`delivery` / `notifyError` / `notifyRetries`），
     // 会话面完全静默 —— 投失败、owner 会话已不在、派工时没会话身份，调用方看到的都只是「`resumable=true`
