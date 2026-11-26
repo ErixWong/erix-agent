@@ -4177,21 +4177,15 @@ export async function runToolLoop(options) {
     // "preserved_latest_user_turn" | "abandoned_fold" | "unrecoverable"
     let userTurnGuard;
     let userTurnGuardChannel;
-    if (strategyRequestsCompaction || overBudget) {
-      // issue #898 第二刀：**折叠必须由 LLM 完成**。宿主没配策略（`capabilities.ports.strategy`
-      // / `context.strategy`）就不是「用机械折叠兑一下」，而是**装配错误**：直接报错，不再静默
-      // 退回引擎库层的 `sliding-window`（那产出 `工具足迹：exec×5` 这种零语义文本，等于把历史
-      // 丢进一个看起来像摘要的壳里）。预算兜底（下面 `budgetFallbackStrategy`）是另一回事：
-      // 它跑在 LLM 折完之后、同一折预算仍超时那一格，保留但已可检测（`degradeReason`）。
-      if (!configuredStrategy) {
-        throw new KitError(
-          "compaction_strategy_required",
-          'compaction requires an LLM folding strategy: the host must provide a compactionStrategy '
-          + '(e.g. createFoldLlmStrategy({ summarizer })) or a summarizer; no strategy is configured '
-          + 'and mechanical folding is no longer available as a silent fallback',
-          { retryable: false },
-        );
-      }
+    if ((strategyRequestsCompaction || overBudget) && configuredStrategy) {
+      // issue #898 第二刀（修订设计）：**折叠必须由 LLM 完成**的含义是「不许用机械折叠冒充摘要」，
+      // 不是「不给策略就不许跑」。所以宿主没给 `compactionStrategy` / 没给 summarizer（即
+      // `configuredStrategy` 为空）时，引擎**根本不触发折叠**——不再抛错、也不再静默退回引擎库层
+      // 的 `sliding-window`（那产出 `工具足迹：exec×5` 这种零语义文本，等于把历史丢进一个看起来像
+      // 摘要的壳里）。不给策略 = 你放弃了折叠能力，就明明白白地不折；上下文超预算时**已有的**报错
+      // 路径（`cannot_fit` / `budgetUnreachable` 那套）会大声失败，比偷偷塞一段机械文本诚实得多。
+      // 预算兜底（下面 `budgetFallbackStrategy`）是另一回事：它跑在 LLM 折完之后、同一折预算仍超时
+      // 那一格，保留机械路径但已可检测（`degradeReason = "budget_fallback_mechanical"`）。
       const [budgetFallbackLayer, safetyFallbackLayer] = getCompactionFallbackChain();
       const strategy = strategyRequestsCompaction
         ? configuredStrategy

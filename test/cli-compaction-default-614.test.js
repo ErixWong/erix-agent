@@ -64,11 +64,6 @@ import {
   textResponse,
 } from "../fixtures/upstream.mjs";
 import { upstreamFields, writeConfigHome } from "../fixtures/config-shape.mjs";
-import {
-  buildCompactionContext,
-  DEFAULT_COMPACTION_STRATEGY,
-  resolveCompactionStrategyName,
-} from "../bin/config.js";
 import { FOLD_SUMMARY_MARKER } from "../src/compact/fold-statistical.js";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -250,29 +245,14 @@ function excerpt(body, needle, radius = 260) {
 // 判据 1 / 2（纯函数层）：默认值、显式选择、非法值
 // ---------------------------------------------------------------------------
 
-test("#614 判据1/2：默认策略是 fold-llm，显式选择仍生效，非法值仍在 load 期报错", () => {
-  assert.equal(DEFAULT_COMPACTION_STRATEGY, "fold-llm", "CLI 默认压缩策略必须是 fold-llm");
-  assert.equal(resolveCompactionStrategyName(undefined), "fold-llm", "不传 --compaction ⇒ fold-llm");
-  assert.equal(resolveCompactionStrategyName(null), "fold-llm", "null 与 undefined 同口径");
-  assert.equal(resolveCompactionStrategyName("fold-statistical"), "fold-statistical", "显式统计仍生效");
-  assert.equal(resolveCompactionStrategyName(" sliding-window "), "sliding-window", "显式滑动窗口仍生效");
-  assert.equal(resolveCompactionStrategyName("fold-llm"), "fold-llm");
-
-  // `buildCompactionContext` 是 CLI 真正交给引擎的那一格：默认值必须落到 `strategy` 上，
-  // 否则「默认 fold-llm」只活在常量里、根本没进 run。
-  assert.equal(buildCompactionContext({}, 4000).strategy, "fold-llm", "默认策略必须真的进 context");
-  assert.equal(
-    buildCompactionContext({ compaction: "fold-statistical" }, 4000).strategy,
-    "fold-statistical",
-    "config.compaction 显式选择必须盖过默认值",
-  );
-
-  // 非法值：load 期报错并列出**全部**合法值（既有行为，本单不许改坏）。
-  assert.throws(
-    () => resolveCompactionStrategyName("psyche"),
-    /未知压缩策略[\s\S]*sliding-window \| fold-statistical \| fold-llm[\s\S]*（默认：fold-llm）/u,
-  );
-});
+// issue #898 第二刀：删除两格钉已删行为的既有判据——
+//   • `#614 判据1/2：默认策略是 fold-llm，显式选择仍生效，非法值仍在 load 期报错`
+//     （钉 `resolveCompactionStrategyName("sliding-window"/"fold-statistical")` 可解、
+//      `buildCompactionContext({compaction:"fold-statistical"})` 显式选择——两个零 LLM 可选名已退）
+//   • `#614 判据2（进程级）：--compaction fold-statistical ⇒ 零摘要器请求`
+//     （钉 CLI 旗标 `--compaction` 透传，该旗标已删；CLI 不认它的行为改由
+//      mandatory-llm-folding-898b ④a 钉）
+// 保留仍绿的两格：判据1/4a（不传→默认 fold-llm 语义折叠）、判据3/4b（摘要器失败→终局码 5）。
 
 // ---------------------------------------------------------------------------
 // 判据 1 + 4a：默认走 fold-llm，摘要器给合法分节 ⇒ 折叠块含语义分节
@@ -342,29 +322,8 @@ test("#614 判据3/4b：摘要器返回错误 ⇒ run 失败（退出码 5），
 });
 
 // ---------------------------------------------------------------------------
-// 判据 2（进程级）：显式 --compaction fold-statistical ⇒ 零摘要器请求
+// 判据 2（进程级）已删（见上方 #898 注）：`--compaction fold-statistical` 零摘要器请求。
 // ---------------------------------------------------------------------------
-
-test("#614 判据2（进程级）：--compaction fold-statistical ⇒ 零摘要器请求，折叠块是统计形态", async (t) => {
-  const run = await runFoldScenario(t, { compaction: "fold-statistical" });
-
-  assert.equal(run.code, EXIT_NOT_VERIFIED, `显式统计策略的 chat 退出码 ${run.code}，期望 ${EXIT_NOT_VERIFIED}`
-    + `\nstdout(tail)=${run.stdout.slice(-800)}\nstderr(tail)=${run.stderr.slice(-800)}`);
-  assert.match(run.stdout, /compacted=true/u, "显式统计策略也必须真的折叠（否则「零摘要器请求」毫无意义）");
-
-  const summarizerRequests = run.requests.filter(({ kind }) => kind === "summarizer");
-  assert.equal(
-    summarizerRequests.length,
-    0,
-    `--compaction fold-statistical 是零 LLM 路径，不该有摘要器请求（实际 ${summarizerRequests.length} 发）`,
-  );
-  const statistical = mainRequestWith(run.requests, FOLD_SUMMARY_MARKER);
-  assert.ok(statistical !== undefined, `折叠块里没有统计摘要头部（${FOLD_SUMMARY_MARKER}）`);
-  assert.ok(
-    !statistical.body.includes(SEMANTIC_SUMMARY_MARKER),
-    "显式统计策略的折叠块里出现了语义摘要夹具的指纹（说明默认值偷偷覆盖了显式选择）",
-  );
-});
 
 // ---------------------------------------------------------------------------
 // 分流依据本身：三类正面识别（fixture 的自证，别让「分流」变成一句注释）
