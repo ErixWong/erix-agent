@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { projectTranscriptForDisplay } from "../../src/display/projection.js";
+import { projectTranscriptForDisplay } from "../../bin/display/projection.js";
 
 function allKeys(turns) {
   return turns.flatMap((turn) => [

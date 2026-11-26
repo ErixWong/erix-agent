@@ -9,11 +9,14 @@ import {
   DEFAULT_REFLECTION_MIN_ROUNDS,
   appendUserTurn,
   createBuiltinNotesTools,
+  createFileTranscriptStore,
   createOpenAIProvider,
   resolveNotesDir,
   runToolLoop,
 } from "../src/index.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
+// issue #928：显示投影已从 `src/index.js` 公共面摘除，`erix transcript` 直接引 `bin/` 侧的实现。
+import { projectTranscriptForDisplay } from "./display/projection.js";
 import { safeRunId } from "../src/store/file.js";
 // issue #433 T0：idle 看门狗只有 bin/idle.js 一份实现（此前本文件与 bin/repl.js 各有一份逐字同构的
 // createIdleTimeout）。`DEFAULT_IDLE_TIMEOUT_SECONDS` 这个名字保留，真值来自共享模块。
@@ -104,6 +107,7 @@ const HELP_TEXT = `用法：
   erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>] [--no-agents]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
+  erix transcript <runId> [--dir <path>] [--json]  读取某个 run 的 transcript 并打印（--json 打投影原始结构）
   （无参数直接进入交互式模式，等同 erix repl）
 
   --stream              流式输出模型文本
@@ -214,7 +218,7 @@ const HELP_TEXT = `用法：
 
 退出码：
   0  成功（开了 --final-guard 时为 verified）
-  1  用法错误 / 会话不存在（--session 或 -c 找不到可续跑的 transcript）
+  1  用法错误 / 会话不存在（--session 或 -c 找不到可续跑的 transcript；transcript 的 runId 不存在）
   2  终稿核验未通过（unverified）
   3  核验过程出错（error）
   4  核验未执行（skipped：没有归档输出或归档里无可核验值）
@@ -224,6 +228,18 @@ const MCP_HELP_TEXT = `用法：
   erix mcp [--config <path>]
 
 列出 ~/.erix/mcp.json 或当前目录 .mcp.json 中配置的 MCP server 及连接状态。`;
+
+const TRANSCRIPT_HELP_TEXT = `用法：
+  erix transcript <runId> [--dir <path>] [--json]
+
+读取 <runId> 的 transcript，用显示投影（bin/display/projection.js）渲染后打印到 stdout。
+
+  <runId>          要读取的 run id（即 transcript 档档名去掉 .jsonl 后那个 id）
+  --dir <path>     Transcript 存档目录（缺省同 chat：~/.erix/transcripts）
+  --json           以 JSON 打印显示投影的原始结构（逐字等于 projectTranscriptForDisplay 的返回）
+  -h, --help       显示本帮助
+
+runId 在 --dir 下没有非空 transcript 时，在 stderr 点名 runId 并以退出码 1 退出。`;
 
 class CliError extends Error {
   constructor(message, { showHelp = false } = {}) {
@@ -852,6 +868,116 @@ async function runMcp({ configPath }) {
     const state = status[server] ?? "idle";
     console.log(`  - ${server}：${state}`);
   }
+}
+
+/**
+ * 解析 `erix transcript` 的参数（issue #928）。
+ *
+ * store 目录缺省与 chat 一致（`~/.erix/transcripts`）——**不新造配置入口**，
+ * 只复用现成的 `--dir` 语义与缺省值。
+ *
+ * @param {string[]} args `args.slice(1)`
+ */
+function parseTranscriptArgs(args) {
+  const parsed = {
+    runId: "",
+    dir: join(homedir(), ".erix", "transcripts"),
+    json: false,
+    showHelp: false,
+  };
+  const positional = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "-h" || arg === "--help") {
+      parsed.showHelp = true;
+      continue;
+    }
+    if (arg === "--json") {
+      parsed.json = true;
+      continue;
+    }
+    if (arg === "--dir") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("-")) {
+        usageError("--dir 需要一个路径值");
+      }
+      parsed.dir = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--dir=")) {
+      parsed.dir = arg.slice("--dir=".length);
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      usageError(`未知参数：${arg}`);
+    }
+    positional.push(arg);
+  }
+  if (parsed.showHelp) return parsed;
+  if (positional.length === 0) usageError("erix transcript 需要 <runId>");
+  if (positional.length > 1) usageError(`多余的参数：${positional.slice(1).join(" ")}`);
+  parsed.runId = positional[0];
+  return parsed;
+}
+
+function oneLine(value) {
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
+/** 把显示投影（`DisplayTurn[]`）渲染成人能读的纯文本。 */
+export function formatTranscriptText(turns) {
+  const lines = [];
+  for (const turn of turns) {
+    const roundLabel = Number.isInteger(turn.round) ? `#${turn.round}` : "#?";
+    const ts = typeof turn.ts === "string" && turn.ts !== "" ? ` ${turn.ts}` : "";
+    lines.push(`${roundLabel} [${turn.role}]${ts}`);
+    if (turn.folded === true) lines.push("  (折叠摘要)");
+    if (typeof turn.reasoning === "string" && turn.reasoning !== "") {
+      lines.push(`  思考：${oneLine(turn.reasoning)}`);
+    }
+    if (typeof turn.text === "string" && turn.text !== "") {
+      for (const textLine of turn.text.split("\n")) lines.push(`  ${textLine}`);
+    }
+    for (const call of turn.toolCalls ?? []) {
+      let line = `  → ${call.name}`;
+      if (call.argsSummary) line += `(${oneLine(call.argsSummary)})`;
+      if (call.resultPreview) line += ` = ${oneLine(call.resultPreview)}`;
+      if (call.isError === true) line += " [error]";
+      if (typeof call.durationMs === "number") line += ` (${call.durationMs}ms)`;
+      lines.push(line);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").replace(/\s+$/, "");
+}
+
+/**
+ * `erix transcript <runId>` 的实现（issue #928）：读 store → 投影 → 打印。
+ *
+ * 投影实现已从 `src/index.js` 公共面搬进 `bin/display/projection.js`，本命令是它
+ * 在包内的**真实消费者**（否则搬迁就是 `bin/` 里的孤儿）。runId 不存在时抛
+ * `CliError`（**不新造退出码**，复用「会话不存在」= exit 1），错误文案点名 runId。
+ *
+ * @param {{runId:string, dir:string, json:boolean, output?:{log:Function}}} options
+ * @returns {Promise<object[]>} 投影结果（供测试直接对比）
+ */
+export async function runTranscript({ runId, dir, json = false, output = console }) {
+  const store = createFileTranscriptStore({ dir });
+  const records = await store.load(runId);
+  if (records.length === 0) {
+    throw new CliError(
+      `找不到 runId=${runId}：${dir} 下没有它的非空 transcript`
+      + `（可用 erix chat -r 列出可续跑的会话，或 --session <完整 id>）。`,
+    );
+  }
+  const projection = projectTranscriptForDisplay(records);
+  if (json) {
+    output.log(JSON.stringify(projection, null, 2));
+  } else {
+    output.log(formatTranscriptText(projection));
+  }
+  return projection;
 }
 
 // ---------------------------------------------------------------------------
@@ -1652,6 +1778,15 @@ async function main(args) {
       return;
     }
     await runMcp(mcpArgs);
+    return;
+  }
+  if (command === "transcript") {
+    const transcriptArgs = parseTranscriptArgs(args.slice(1));
+    if (transcriptArgs.showHelp) {
+      console.log(TRANSCRIPT_HELP_TEXT);
+      return;
+    }
+    await runTranscript(transcriptArgs);
     return;
   }
   if (command !== "chat") {

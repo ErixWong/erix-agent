@@ -1,7 +1,6 @@
 // 引擎新 API 契约套件（issue #95/#97 收口）：锁定包入口（src/index.js，经
-// package.json exports 对宿主暴露）必须导出 appendUserTurn 与
-// projectTranscriptForDisplay，且 appendUserTurn 对一个最小 store stub 能完成
-// 一次预写。用法：
+// package.json exports 对宿主暴露）必须导出 appendUserTurn，且 appendUserTurn 对一个
+// 最小 store stub 能完成一次预写。用法：
 //   import { engineApiContract } from "erix-agent/contract-tests";
 //   engineApiContract("reference", () => import("erix-agent"));
 // 同 dedupKey 的跨实例崩溃重跑属单测职责（test/store/append-user-turn.test.js），
@@ -11,16 +10,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTmp } from "../helpers/tmp.js";
+// issue #928：展示投影已从包入口搬进 `bin/display/projection.js`（不再是 erix-agent 导出）；
+// 本契约只靠它验证「预写行能被投影消费」这条衔接，故直接引实现。
+import { projectTranscriptForDisplay } from "../../bin/display/projection.js";
 
 /**
  * @param {string} label 实现名（测试标题前缀）
  * @param {() => object | Promise<object>} getEntry 返回包入口命名空间
  */
 export function engineApiContract(label, getEntry) {
-  test(`${label}: 包入口导出 appendUserTurn 与 projectTranscriptForDisplay 且均为 function`, async () => {
+  test(`${label}: 包入口导出 appendUserTurn（function）；展示投影已搬出包入口（issue #928）`, async () => {
     const entry = await getEntry();
     assert.equal(typeof entry.appendUserTurn, "function");
-    assert.equal(typeof entry.projectTranscriptForDisplay, "function");
+    // BREAKING（#928）：`projectTranscriptForDisplay` 不再是包入口导出；实现已搬到
+    // `bin/display/projection.js`，由 `erix transcript` 消费。
+    assert.ok(!("projectTranscriptForDisplay" in entry),
+      "projectTranscriptForDisplay 不应再从包入口导出");
   });
 
   test(`${label}: 包入口导出 parseReflectionDecision 且返回对象带 via 来源标记（issue #305）`, async () => {
@@ -62,8 +67,8 @@ export function engineApiContract(label, getEntry) {
     ]);
     assert.equal(typeof records[0].ts, "string");
 
-    // 预写行可被展示投影消费（两个新 API 的最小衔接）
-    const turns = entry.projectTranscriptForDisplay(records);
+    // 预写行可被展示投影消费（两个 API 的最小衔接；投影现住在 bin/，见文件头）
+    const turns = projectTranscriptForDisplay(records);
     assert.deepEqual(turns.map((turn) => `${turn.role}:${turn.text}`), [
       "user:contract pre-write",
     ]);

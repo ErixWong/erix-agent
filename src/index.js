@@ -43,7 +43,9 @@ export { createFileTranscriptStore } from "./store/file.js";
 // 为 false，深路径 `erix-agent/src/store/message-rows.js` 又是 `ERR_PACKAGE_PATH_NOT_EXPORTED`。
 // `isRoundCarrier` 是内部判据，刻意**不外露**（载体形态属于实现口径，宿主不该依赖它）。
 export { foldMessageRows } from "./store/message-rows.js";
-export { projectTranscriptForDisplay } from "./display/projection.js";
+// issue #928：`projectTranscriptForDisplay` 已从公共面摘除（BREAKING）——它是**一个具体宿主**的
+// 渲染口味，不是库的契约。实现搬到了 `bin/display/projection.js`（活示例 + `erix transcript` 消费），
+// 想继续用这份投影的宿主把那个文件抄进自己项目即可（对 `src/` 只有一处 `FOLD_SUMMARY_MARKER` 依赖）。
 export { appendUserTurn } from "./store/append-user-turn.js";
 export {
   createAssemblyPort,

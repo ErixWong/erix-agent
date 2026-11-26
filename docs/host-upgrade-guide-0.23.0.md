@@ -104,7 +104,7 @@ rows. Never merge both unconditionally — that is the double-feed bug the engin
 
 ## 5. Display projection must be fed the folded `load()` output
 
-**Symptom.** `projectTranscriptForDisplay` (`src/display/projection.js`) takes transcript records and
+**Symptom.** `projectTranscriptForDisplay` (`bin/display/projection.js`) takes transcript records and
 turns them into display entries. Fed **raw journal rows**, it now produces **duplicate entries and
 missing execution facts**.
 

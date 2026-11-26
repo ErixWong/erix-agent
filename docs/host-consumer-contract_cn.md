@@ -2132,7 +2132,7 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
    消息里已经存在该调用 id 的 `tool_result` 块，引擎会**原地重写那个块**
    （`isLowBudget`，`src/loop/orchestrator.js`）而不是追加第二条，所以差量比对消息的宿主必须
    预期一处变更而不是新增。`executionStatus` 会进入 display 投影
-   （`toolResultsOf`（`src/display/projection.js`）），且此后这条 interrupted 结果就是普通的本轮文本：
+   （`toolResultsOf`（`bin/display/projection.js`）），且此后这条 interrupted 结果就是普通的本轮文本：
    只有 `intercepted` 结果被排除在聚合预算计数之外（`createRoundAggregateGate`（`src/loop/aggregate-budget.js`））。
 6. **处理部分输出。**`partialOutputAvailable` 说明有没有找到可展示的内容；为 true 时结果
    文本以 `Previously captured partial output:` 段结尾，内容由中止那轮已归档的输出加上
@@ -5028,7 +5028,7 @@ store——必须按 `round` 归并、按 `dedupKey` 去重，不得假设记录
 那种形状不会把正文翻倍。
 
 **但仍然建议宿主自己折。** 这层兜底只管 **resume 路径**。展示投影
-（`projectTranscriptForDisplay`，`src/display/projection.js`）直接读 `load()` 的输出，未折叠的 store
+（`projectTranscriptForDisplay`，`bin/display/projection.js`）直接读 `load()` 的输出，未折叠的 store
 在它那里仍然是歪的；你自己按 `records.flatMap((record) => record.messages ?? [])` 写的每一个读方同理。
 折叠属于 `load()`；`foldMessageRows` 现在从打包安装里拿得到，这条义务才真的可履行，
 而 `test/contract/transcript-store.js` 现在会断言它——三格判据，原样存取的 store 会红
@@ -5117,7 +5117,7 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
    宿主扩展键也再也盖不动协议字段了，它的家在 `metadata.content` / `metadata.is_error`。
 2. **读侧仍留一代。** 升级前落盘的记录里可能仍带着这些名字，而所有读路径都是**引擎命名空间优先、
    顶层只作旧记录回退**：TTL 折叠（`src/loop/tool-result-ttl.js`，年龄标记）、投影
-   （`src/display/projection.js`，执行状态）、续跑复放（`src/loop/orchestrator.js`，原样带回
+   （`bin/display/projection.js`，执行状态）、续跑复放（`src/loop/orchestrator.js`，原样带回
    已记录的那一块，不重算也不补写）、单轮聚合预算（`src/loop/aggregate-budget.js`，
    「拦截不是输出」）、judge 的时间线与对话渲染（`src/reflection/judge.js`）、L0 客观事实
    （`src/reflection/l0.js`）、以及 `hasSuccessfulToolResult`（`src/loop/messages.js`）。
@@ -5419,11 +5419,13 @@ DELETE FROM run_events
 
 transcript 就是模型上下文真相：`RoundRecord` 为回放保持字节保真，同时携带模型面对的
 负载与面向展示的字段。需要人类可读聊天视图的宿主应从 transcript 派生，而不是维护第二
-张有损消息表。`projectTranscriptForDisplay` 是官方、宿主无关的投影助手：
+张有损消息表。`projectTranscriptForDisplay` 是官方、宿主无关的投影助手——**但自 issue #928 起，
+它不再是 `erix-agent` 导出**（BREAKING）。引擎唯一义务是 `store.load()` 后账本自描述，怎么渲染是宿主的
+品味。实现住在 CLI 树里的 `bin/display/projection.js`（活示例，由 `erix transcript <runId>` 消费），
+除 `FOLD_SUMMARY_MARKER` 外对 `src/` 无耦合。想继续用它的宿主把那个文件抄进自己项目：
 
 ```js
-import { projectTranscriptForDisplay } from "erix-agent";
-
+// 把 bin/display/projection.js 抄进自己项目，再就地局部导入：
 const turns = projectTranscriptForDisplay(await store.load(runId));
 // [{ key, role, text, blocks, toolCalls?, reasoning?, folded?, round, ts, meta }]
 ```

@@ -94,7 +94,7 @@
 
 ## 5. 展示投影必须喂 `load()` 的折叠输出
 
-**现象。** `projectTranscriptForDisplay`（`src/display/projection.js`）吃 transcript 记录、产出展示
+**现象。** `projectTranscriptForDisplay`（`bin/display/projection.js`）吃 transcript 记录、产出展示
 条目。喂**原始 journal 行**，它现在会**重复出条目**，并且**缺执行事实**。
 
 **反例，具体到可复现。** 拿 §2 那个两轮 run，把原始行而不是 `load()` 的输出喂给投影：

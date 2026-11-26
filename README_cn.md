@@ -208,8 +208,6 @@ src/
     json-file.js                    基于 JSON 文件的模型配置
     slot-provider.js                模型槽位 → provider 构造件：loadModelSlot / createProviderForSlot（issue #406）
     static.js                       静态模型配置
-  display/
-    projection.js                   宿主展示投影（RoundRecord[] 的读侧视图）
   normalization/
     parse-model-json.js             模型输出归一化：normalizeModelJson——L1 保字节修复、闸门判原始字节、可选 L2 LLM 兜底（issue #406）
   reflection/
@@ -245,9 +243,13 @@ src/
                                    不做事件转发
 ```
 
-`src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、宿主展示投影（`projectTranscriptForDisplay`）、多轮预写辅助函数（`appendUserTurn`）、配置 provider、`runToolLoop` 以及 reflection 辅助函数，另有模型输出归一化底座（`normalizeModelJson`，issue #406——带确定性修复与可选 LLM 兜底的**异步**入口，**不**取代同步 L0 的 `parseModelJson`）与槽位 → provider 构造件（`loadModelSlot` / `createProviderForSlot`）。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数、文件与 notes 的规范工厂，
+`src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、多轮预写辅助函数（`appendUserTurn`）、配置 provider、`runToolLoop` 以及 reflection 辅助函数，另有模型输出归一化底座（`normalizeModelJson`，issue #406——带确定性修复与可选 LLM 兜底的**异步**入口，**不**取代同步 L0 的 `parseModelJson`）与槽位 → provider 构造件（`loadModelSlot` / `createProviderForSlot`）。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数、文件与 notes 的规范工厂，
 以及技能包 loader（`discoverSkills` / `loadSkill` / `buildSkillTools`，issue #197——内置技能
 目录由调用方以 `bundledDir` 传入，库内不按自身文件层级猜路径）；模型侧取回采用 note-first（`note_list` → `note_read`）。
+
+宿主展示投影**不是**引擎导出（issue #928，BREAKING）：引擎唯一义务是 `store.load()` 后账本自描述，
+宿主怎么渲染它是宿主的品味。实现现在住在 `bin/display/projection.js`（活示例，不再是 `src/` 模块），
+并被 `erix transcript <runId>` 子命令消费；想继续用它的宿主把那个文件抄进自己项目（对 `src/` 除 `FOLD_SUMMARY_MARKER` 外无耦合）。
 
 引擎**不实现约束解码**：`response_format` 只被原样转发给 provider，端点是否真把它当语法 /
 JSON-schema 约束执行，是端点自己的能力——200 既不能证有也不能证无，而本包没有任何东西

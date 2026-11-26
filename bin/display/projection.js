@@ -1,4 +1,4 @@
-import { FOLD_SUMMARY_MARKER } from "../compact/fold-statistical.js";
+import { FOLD_SUMMARY_MARKER } from "../../src/compact/fold-statistical.js";
 
 /**
  * Host display projection (issue #95).
