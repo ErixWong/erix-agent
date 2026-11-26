@@ -558,7 +558,7 @@ test("S6-D 离线 e2e：四件套 / verification.status / sessionDir 产物位�
     const upstream = scriptedFetch([endTurnResponse("任务已完成：改好了 a.js 第 2 行")]);
     const progressLines = [];
     const payload = await core.runErixRun(
-      { task: "修 bug", cwd: dir, maxRounds: 4, strategy: "sliding-window", timeoutMs: 60_000, sessionDir },
+      { task: "修 bug", cwd: dir, maxRounds: 4, strategy: "fold-llm", timeoutMs: 60_000, sessionDir },
       { ...offlineDeps({ dir, fetchImpl: upstream.fetchImpl, slot: SCRIPTED_SLOT }), onProgress: (line) => progressLines.push(line) },
     );
 

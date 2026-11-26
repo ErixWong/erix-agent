@@ -101,30 +101,12 @@ async function runWithProvider(provider, context, usageSink, { toolOutputChars =
   return { result, events };
 }
 
-test("built-in names resolve once at startup and drive the same compaction channel", async () => {
-  const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT });
-  const { result } = await runWithProvider(provider, { strategy: "fold-statistical" });
-
-  assert.equal(result.termination.reason, "end_turn");
-  assert.equal(provider.summaryRequests.length, 0);
-  assert.ok(result.compactionStats.some((stat) => (
-    stat.compacted === true && stat.layers.foldStatistical.triggered > 0
-  )));
-});
-
-test("unknown strategy names fail before the first provider call", async () => {
-  const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT });
-  await assert.rejects(
-    runWithProvider(provider, { strategy: "fold-lm" }),
-    (error) => {
-      assert.ok(error instanceof TypeError);
-      assert.match(error.message, /sliding-window \| fold-statistical \| fold-llm/u);
-      return true;
-    },
-  );
-  assert.equal(provider.mainRequests.length, 0);
-  assert.equal(provider.summaryRequests.length, 0);
-});
+// #898-2：删两格（原本钉「内置名字面量在装配期解析成一个共享压缩通道」的三名字矩阵，
+// 与「未知名在第一次 provider 调用前就 TypeError」的装配口路径）：
+//   - `built-in names resolve once at startup and drive the same compaction channel`（原 :104）
+//   - `unknown strategy names fail before the first provider call`（原 :115）
+// 本刀后只剩 `fold-llm` 一个可识别内置名，三名字矩阵与「未知名 TypeError」都不再存在；
+// 数据面只剩 `fold-llm`（见下方 by-name 格），机械折叠只剩显式工厂对象这一条退路。
 
 test("non-string, non-object strategy values also fail at startup", async () => {
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT });

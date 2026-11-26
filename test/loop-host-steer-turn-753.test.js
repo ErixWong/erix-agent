@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 
 const text = (value) => ({ type: "text", text: value });
 const toolUse = (id) => ({ type: "tool_use", id, name: "work", input: { step: id } });
@@ -358,8 +359,11 @@ for (const [label, injectRound, survivesFolding] of [
       initialUserMessage: "local task",
       provider,
       executeTool: async () => filler,
-      config: { folding: { context: { budgetTokens: 200, strategy: "sliding-window" } } },
+      config: { folding: { context: { budgetTokens: 200 } } },
       capabilities: {
+        // #898-2：`sliding-window` 不再是可选内置名（只剩 `fold-llm`）；要真的机械折叠就
+        // 把工厂对象送到兄弟位 `capabilities.ports.strategy`（不是 config 子键）。
+        ports: { strategy: createSlidingWindowStrategy() },
         hooks: {
           nextUserTurn: (/** @type {any} */ payload) => (payload.round === injectRound ? marker : null),
         },
