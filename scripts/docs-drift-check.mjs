@@ -8249,17 +8249,10 @@ const SELF_TEST_CASES = [
     expectFiles: [CONTRACT_EN, CONTRACT_CN],
   },
   // —— anchors：内置压缩策略名 ——
-  {
-    label: "README EN 的压缩策略名清单删一个 `fold-llm`",
-    overlay: { [README_EN]: (t) => t.replace('"sliding-window" | "fold-statistical" | "fold-llm"', '"sliding-window" | "fold-statistical"') },
-    expect: [/缺 策略名 "fold-llm"/],
-  },
-  {
-    label: "源码加一个内置策略名 → 中英四处都红",
-    overlay: { "src/compact/strategy-resolution.js": (t) => t.replace('  "fold-llm": createFoldLlmStrategy,', '  "fold-llm": createFoldLlmStrategy,\n  "zzz-window": createFoldLlmStrategy,') },
-    expect: [/缺 策略名 "zzz-window"/],
-    expectFiles: [README_EN, README_CN, CONTRACT_EN, CONTRACT_CN],
-  },
+  // issue #926 退役：内置策略名收口到唯一一项（`fold-llm`），「清单成员对称」那条 anchor 规则随之退役
+  // （`runListRule` 需要 ≥2 项才有成员可比）。原来那两条自测的变异靶子——README 里的三值清单、
+  // `strategy-resolution.js` 里的第二条策略名——都已经不存在了。名字真值仍由 `compaction-default`
+  // 逐处对账常量与四份文档，它的自测在下面（#668 ① 那一族）。
   // —— anchors：formatSize 单位档位与示例映射 ——
   {
     label: "契约 EN 的单位清单删一处 `TB`（issue 正文的盲区复现）",
@@ -9375,19 +9368,17 @@ const SELF_TEST_CASES = [
     expectFiles: [CONTRACT_EN],
   },
   {
-    label: "#668 ①：`bin/cli.js` 帮助文本只改一处默认 ⇒ 红（CLI 层三处字样必须同源，否则源码自己就不自洽）",
-    overlay: { [COMPACTION_CLI_SRC]: (t) => t.replace("（默认：fold-llm）", "（默认：fold-statistical）") },
-    expect: [/compaction-default: CLI 层的三处字样彼此不一致/],
-  },
-  {
-    label: "#668 ①：CLI 层三处字样一起改成 `fold-statistical`（源码自洽、文档没跟）⇒ 红（文档侧 CLI 声明与真值不符）",
+    // issue #925/#926：`--compaction` 旗标与 `config.compaction` 退路删除之后，CLI 层的真值来源
+    // 从三处收口到**一处**（常量 `DEFAULT_COMPACTION_STRATEGY`），所以「三处字样必须同源」那两条自测
+    // 的靶子没了。换成钉**单源**：改这个常量 ⇒ 文档侧 CLI 声明与真值不符 ⇒ 红。
+    label: "#668 ①：CLI 层单源常量改成 `fold-statistical`（源码自洽、文档没跟）⇒ 红（文档侧 CLI 声明与真值不符）",
     overlay: {
-      [COMPACTION_CLI_SRC]: (t) => t.replace("（默认：fold-llm）", "（默认：fold-statistical）").replace("，默认 fold-llm；", "，默认 fold-statistical；"),
       [COMPACTION_CLI_CONST_SRC]: (t) => t.replace('export const DEFAULT_COMPACTION_STRATEGY = "fold-llm";', 'export const DEFAULT_COMPACTION_STRATEGY = "fold-statistical";'),
     },
-    expect: [/compaction-default\/cli: docs\/host-consumer-contract\.md:\d+ 说CLI 层默认是 `fold-llm`/,
-      /compaction-default\/cli: README\.md:\d+ 说CLI 层默认是 `fold-llm`/],
-    expectFiles: [CONTRACT_EN, README_EN],
+    // #925/#926 之后 README 里**没有**「CLI 层默认是 X」这类声明了（那条声明随 `--compaction` 帮助行一起没了），
+    // 所以这里只要求契约 EN 那一处红——不是判据放宽，是**该红的样本只剩一处**（实测见 `--self-test` 的实测行）。
+    expect: [/compaction-default\/cli: docs\/host-consumer-contract\.md:\d+ 说CLI 层默认是 `fold-llm`/],
+    expectFiles: [CONTRACT_EN],
   },
   {
     label: "#668 ①：只改中文契约的库层声明（`sliding-window` → `fold-statistical`）⇒ 红（中英成对，只改一边就红）",
