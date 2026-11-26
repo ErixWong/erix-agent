@@ -43,8 +43,11 @@ points at (e.g. `npm run check:docs`);
 
 - **CI runs only on `workflow_dispatch`**: `main` is gated by a ruleset (measure it live with
   `gh api repos/<owner>/<repo>/rulesets`; today it requires a PR and configures no status check), so the only
-  automatic gate is `npm run release:day -- --stage preflight`, run before every release. The workflow file stays
-  because `check:changelog` asserts its step wiring. Restoring auto-triggers ⇒ read `#ci`
+  automatic gate is `npm run release:day -- --stage preflight`, run before every release. **A step no event
+  triggers is a dashboard, not a gate; if a judgement runs only in CI, it runs nowhere** (issue #908 R2). The
+  workflow keeps only clean-checkout / second-node truth; second-scale code gates run inside `npm test`
+  (`test/gate-self-tests.test.js`), doc gates at the version boundary and on the `docs:pass` schedule.
+  Which steps `ci.yml` keeps and where each removed step went ⇒ `#ci`. Restoring auto-triggers ⇒ read `#ci`
   first and decide `required_status_checks` from the live ruleset. `npm run soak` stays out of CI.
 - **Gate reproducibility**: `check:docs` and `check:docs:strict` must exit 0 in a development worktree *and* on a
   fresh clone. A gate that needs `node_modules` failing with `Cannot find module 'typescript'` in a bare checkout

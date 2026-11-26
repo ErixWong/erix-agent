@@ -245,23 +245,53 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 本地运行 CLI（无需安装）
 
 ## ci
-- **按判据性质分三个 job（issue #802）**——分层的事实依据：最近 200 次运行的红率是 25%（138 成功 / 49 失败 /
-  13 取消），而抽样的 12 次失败里有 9 次是**登记表漂移**（「提交进库的表与树对不上」），不是行为坏了。三层：
-  - **`real`**（矩阵 node 22 + 24，**每次事件都阻塞**）：语法 → `npm test`（reporter 钉在
-    `package.json`）→ `check:changelog` → `check:tests` +
-    `--self-test` → 四个 `tsc` 棘轮步骤（按顺序）→ `check:types-build` → `check:cli:model-e2e` →
-    `check:release`（只在 node 22）→ `check:mutation:run`（放最后：它会改写 tracked 源文件）。
-  - **`registries`**（node 22，`continue-on-error` **只在 `pull_request` 上生效**）：`check:inventory`、
-    `check:config-leaf-values`、`mutation-sample-check --self-test`、`check:pack-links` + `--self-test`、
-    `check:exports:deprecated` + `--self-test`、`guide-removal-gate --self-test`、`release-day --self-test`。
-  - **~~`docs`~~ —— 已整个移出 CI（261109，用户裁决）。** 脚本只能判措辞，而那一类判据造出了 25% 的红率，
-    却几乎抓不到真缺陷。真正值钱的两类（引用完整性、派生值抄件）改由 **agent 定期跑一次文档检查**来找——
-    清单在 `doc-review-pass_cn.md`。那些命令仍然存在、仍可按需跑（`npm run docs:pass`），但没有任何 CI 事件
-    会因它们红。`docs-drift-check --self-test` 在 261109 本机独占实测约 7 分钟；它现在属于那趟手动检查，
-    不属于 CI。
-  - **分层改的是「PR 停不停车」，不改「发版有多严」**：`npm run release:day -- --stage preflight` 仍然把剩下
-    那两族（行为面 + 登记表）全部当阻塞步骤跑（`PREFLIGHT_STEPS`，七步→五步：文档那两步也按同一条裁决摘掉了）。
-- CI（issue #187）：`.github/workflows/ci.yml` **自 2026-11-25 起不由任何事件触发**——`pull_request` 与 `push` 两个触发按用户裁决摘除（此前半个月 9 次红里 6 次是派生登记表刷表、0 次是 `src/` 行为回归），只剩 `workflow_dispatch`；`main` 的门禁是 ruleset `main-require-pr`（必须走 PR，不要求任何 status check）。下面描述的是手动跑一次仍会执行的步骤，触发方式是 `workflow_dispatch`（手工重跑入口；注意 `POST …/dispatches` 在 GitHub **第一次见过**这份 workflow 之前一直返 **404**，推上分支 + 跑过任意一次就注册好了，之后 dispatch 返 204）三种触发下跑，矩阵是 **node 22 与 node 24**、`fail-fast: false` —— 22 既是 `engines` 声明的最低版本，**也是宿主实际在跑的那个**，所以门禁验证的是用户真在用的运行时；24 则是 agent 与新宿主实际会落到的 runner。issue #774 把第二格加进来的理由是**只在某一个 runner 上成立的判定根本不算判定**：`scripts/mutation-sample-check.mjs` 的变异用例 spawn 子进程时没点名 reporter，而 Node 24 的默认 reporter 是 spec ⇒ 它断言的那行 `not ok …③…` 永远不会出现——只有一格的矩阵也永远看不见另一格的红。装依赖用的是 `npm install --include=dev`，**绝不是** `npm ci`——本仓故意把 `package-lock.json` 整份 gitignore（见 `.gitignore` 里「npm lockfile 不入库」那条注释），而那两个 dev 包（`typescript` + `@types/node`，issue #213）正是 `check:types` / `check:types-build` / `check:pack-links` / `check:release` 能跑起来的前提。按顺序**阻塞**的步骤：`check:syntax` → `test`（全量套件——它的退出码就是闸；issue #905 删掉了那个曾把本步输出 tee 进 `$RUNNER_TEMP`、再与登记表对账的汇总对账器，所以没有 tee、没有 `set -o pipefail`、也没有 `NOT_TAP_LOG` 判定了；`npm test` 仍在 `package.json` 里钉 `--test-reporter=tap`——issue #774：一次跑要产出的那份 reporter 必须写在 argv 里，不能去继承 runner 的默认）→ `check:docs` → `check:docs:strict`（今天它就是绿的 ⇒ 直接阻塞，issue #187 提案里的 `continue-on-error` 在落地前已作废）→ `check:agents-directives`（issue #642：指令面扫描器——工单状态句、过期数字抄件、裸源码坐标）→ `node scripts/agents-directive-scan.mjs --self-test` → `check:docs-spelling`（issue #560：退役扁平拼写硬门，`scripts/retired-spelling-scan.mjs --strict`）→ `node scripts/retired-spelling-scan.mjs --self-test` → `check:docs-examples` → `check:pack-links` → `node scripts/pack-link-check.mjs --self-test` → `check:inventory`（issue #534 / #907：从 AST 重新推导扁平写点并与白名单 `scripts/compat-pin-allowlist.mjs` 对，清单外写点或清单条目失效即红；它自己打印耗时并阻塞）→ `check:config-leaf-values`（issue #586：重跑配置叶子值类型探针、把重算出来的中英两张现状表与入库的比对；它自己打印耗时并阻塞）→ `mutation-sample-check --self-test`（同一套判据跑在内存夹具上：锚点死了 / 锚点重复 / 捕获者没了 / 空变异 / 签名被削弱红，删掉一条样本红在样本数下限，变异没落地也红——#210 R2 的口径；issue #774 起这条自测还读它自己的源码：spawn 捕获者必须钉 `--test-reporter=tap`，把那个字面量换成 `spec` 必须红——Node 24 上没钉的 `node --test` 打的是 spec，于是每条样本都会被误读成「红了，但不是该报的那条」）→ `check:exports:deprecated`（issue #429：把 `check:exports` 现算的零消费者候选清单与源码里的 `@deprecated` 登记对账——候选没登记、**有消费者**的名字被标 0.31 删除、版本不是**唯一合法的那个**（`NEXT_BREAKING_VERSION`，当前 0.31）、账本条目带了别的版本号、账本的 `hostFacts` 在标记里找不到、标记自称发布阻塞却没有账本条目、没写迁移目标、标记块不是紧贴声明那一个，逐条红并点名 `符号 @ 文件:行`）→ `deprecated-export-check --self-test`（真树内存副本上的反向证，含本票要的那一条：给有消费者的符号也标上 ⇒ 红并点名，有消费者的名字打上更晚的版本 ⇒ 仍红，空转的账本条目 ⇒ 红，账本条目写 0.30 ⇒ 红并点名而合法的 0.31 不红，把标记里的宿主事实句删掉而账本还在 ⇒ 红并点名缺哪一条）→ `guide-removal-gate --self-test`（issue #687：`check:release` 里那条「指南声称已删除 ↔ 装好的包的运行时导出面」闸的反向证——登记表清空 ⇒ 每个仍导出的名字逐条红，空 `why`、空转条目、名表解析不出各有自己那一枪，变异没落上算失败；例数由命令自己打印）→ `check:tests` → `test-hygiene-check --self-test` → `check:types` → `check:types -- --with-tools`（工具档单独一道阻断步骤：#653 之前这一档根本没有 CI 闸，基线常量过期了也没人看见）→ `check:types:strict`（issue #417：strict 棘轮——同一张图加 `--strict`，两档基线住在 `scripts/type-check-ratchet.mjs`）→ `check:types:strict -- --with-tools`→ `check:types-build` → `check:cli:model-e2e`（CI 里 `ERIX_E2E_MODEL` 闸门是关着的 ⇒ 它 exit 0 并打分类原因：它自证的是这套自检装置本身没坏，不是真模型端点可用的信号）→ `if: matrix.node == 22` 的 `check:release`（离线且自清；今天矩阵有两格 ⇒ 这条护栏从 issue #774 起真的在做事，这一族仍然只跑一次、跑在包声明的那个版本上）→ `docs-drift-check --self-test` → `check:mutation:run`（issue #257 T7：逐条变异 → 捕获者必须红在点名的断言上 → 还原 → 绿；排在**最后**是因为它是唯一会改写 tracked 源文件的步骤，也因为它跑的是单个测试文件，前面那套测试必须已经绿了，「变异后的红」才可归因；耗时由命令自己打印）。 `node scripts/test-hygiene-check.mjs --self-test` 是卫生守卫自己的反向证，自 issue #374 起**阻塞**：同一张规则表跑在**内存里的假文件集合**上（不落盘、不碰 `test/`）——`mkdtempSync(...)` / `mkdtemp(...)` / `fs.mkdtemp(...)` 各必须红、`makeTmp(...)` 必须绿、`test-hygiene-exempt: <理由>` 绿而缺理由的写法红且点名行号、`test/helpers/tmp.js` 自身不计数，变异没落上也算失败（#210 R2 的口径）。它刻意与 `check:tests` 分成两个 CI 步骤：`check:tests` 证的是「今天的 `test/` 干净」，这条证的是「规则表还拦得住」——改坏规则表时前者照样绿，而这一步自己的 `--self-test` 会红在「那个变异不再抓得住」的那几例上（例数由命令打印）。`npm run soak` 需要真实 relay 配置与 key ⇒ **绝不进**默认 CI。`node scripts/docs-drift-check.mjs --self-test` 自 issue #302 起是**阻塞**项：它的期望集合与「被 gitignore 的 `docs/tasks/` 目录在不在」彻底解耦——`#280` 那两条树形用例现在跑在**合成树夹具**上（无档案目录 / 空档案目录 / 有档案目录，三种形状各跑一遍），落地检查比对的是夹具声明的档案清单，而不是这台机器上的真实实物数。三种形状各在一棵 `git archive HEAD | tar -x` 造出来的树上跑一遍，例数与红数都由命令自己打印（本文两个数都不抄）——issue #281 在管的那批干净克隆红数（预期红 3 例、树里有个空 `docs/tasks/` 时 5 例）**已经不存在**，所以那个年代的 `continue-on-error: true` 已摘掉转阻塞。仍然会红、且本来就该红的两种形状都不是回归：**在 `.gitignore` 里新增一条目录规则却没在 `IGNORED_DIR_CLASSES` 里登记类别**（检查器会点名那条规则本身：`.gitignore:N 的目录规则 … 没在 IGNORED_DIR_CLASSES 里分类`），以及自 #302 起的**反向**——`IGNORED_DIR_CLASSES` 里有类别、而 `.gitignore` 里已经没有对应规则（空转条目；`test/static-guards.test.js` 双向看守这一对，那条 `build-output` 死条目（dist 目录：`.gitignore` 里从来没有过它的规则）就是这么被找出来删掉的）。`docs/delivery/` 因此既像 `docs/tasks/` 一样登记类别，也保持不入库，**交付证据的持久落点是 PR/issue 评论，不是仓库树**。 Gitea 只是代码镜像：那边**不建** Actions，GitHub 仍是唯一执行方。
+- **`.github/workflows/ci.yml` 自 2026-11-25 起不由任何事件触发**——`pull_request` 与 `push` 两个触发按用户裁决
+  摘除（此前半个月 9 次红里 6 次是派生登记表刷表、0 次是 `src/` 行为回归）。只剩 `workflow_dispatch`；
+  `main` 的门禁是 ruleset `main-require-pr`（必须走 PR，不要求任何 status check）。**由此得出的结论就是本节的
+  组织性事实：没有事件触发的步骤是仪表盘，不是闸**（issue #908 R2）。在这棵树上「它在 CI 里跑」的意思是
+  「有人点一下才跑」。
+- **一个 job，三类真值**（261126，issue #908 R2）。工作流只留「干净检出或第二个 node 大版本才证得动」的东西：
+  - 全量套件跑在 **node 22 与 node 24** 上（`fail-fast: false`）。22 既是 `engines` 声明的最低版本，**也是宿主
+    实际在跑的那个**，所以门禁验证的是用户真在用的运行时；24 是 agent 与新宿主实际会落到的 runner。
+    issue #774 把第二格加进来的理由是**只在某一个 runner 上成立的判定根本不算判定**：
+    `scripts/mutation-sample-check.mjs` 的变异用例 spawn 子进程时没点名 reporter，而 Node 24 的默认 reporter 是
+    spec ⇒ 它断言的那行 `not ok …③…` 永远不会出现——只有一格的矩阵也永远看不见另一格的红。`npm test` 在
+    `package.json` 里钉 `--test-reporter=tap` 是同一个理由（issue #301）：一次跑要产出的那份 reporter 必须写在
+    argv 里，不能去继承 runner 的默认。
+  - 四档 `tsc --checkJs` 棘轮是**四个独立的阻塞步骤**，不带 `continue-on-error`；
+    `test/type-check-strict-ratchet.test.js` 钉住四格都在场、都不是建议性质、每个工具档紧跟它自己那一档。
+    `check:types-build` 排在它们之后：它会往树里落 `src/**/*.d.ts`，而声明文件与源码并排时 `tsc --checkJs`
+    量的就不再是实现而是声明。
+  - 干净环境那一族三件，各自带 `if: matrix.node == 22`：`check:release`（真 tarball → 真装包 → 契约套件 →
+    CLI 冒烟）、`check:pack-links`（随包面从真 pack 里读出来）、`check:mutation:run`（会临时改写 tracked 源文件，
+    所以排最后、且必须在全量套件已绿之后，红才可归因）。**这三件是这份文件存在的不可约理由**：
+    「开发树里绿、干净检出里红」（issue #914 那一类）没有别的办法看得见。
+- **撤走了什么、每一块去了哪**（issue #908 R2）。步骤清单在 `ci.yml`，本页不抄它。
+  - 秒级的代码面判据**搬进套件**，因为那是唯一每次都跑的地方：`test/gate-self-tests.test.js` 逐条 spawn
+    `syntax-check`、`test-hygiene-check`（验证态与 `--self-test`）、`mutation-sample-check --self-test`、
+    `pack-link-check --self-test`、`config-leaf-value-probe --verify`，并且有一格钉住「这些命令不许再作为重复
+    步骤爬回 `ci.yml`」。
+  - 纯重复的直接删：`check:inventory`、`guide-removal-gate --self-test`、`release-day --self-test` 早就分别被
+    `test/flat-count-inventory.test.js`、`test/guide-removal-gate.test.js`、`test/release-day.test.js` spawn 了。
+  - 文档族（`check:docs`、`check:docs:strict`、`check:docs-spelling`、`check:docs-examples`、
+    `check:agents-directives`、`check:changelog`）住在**已经接线的那道版本边界**上——`check:changelog` 作为
+    `PREFLIGHT_STEPS[0]` 阻塞、`check:docs` 在 `release:day --stage writeback` 里重跑——其余时候由周期性 agent
+    检查承担（`doc-review-pass_cn.md`，入口 `npm run docs:pass`）。背后的用户裁决是 #802：脚本只能判措辞，
+    而那一类判据造出了 25% 的红率（200 次运行 138 成功 / 49 失败 / 13 取消；抽样 12 次失败里 9 次是登记表漂移，
+    不是行为），却几乎抓不到真缺陷。`docs-drift-check --self-test` 是**分钟级**的，属于那趟周期检查而不是每次
+    提交的闸（两次一次性计时：261109 约 7 分钟、261126 在 219 例上约 8.5 分钟）。
+  - `check:cli:model-e2e` 撤出 CI：`ERIX_E2E_MODEL` 没设时它只 exit 0 并打一个分类原因，作为 CI 步骤它是空转；
+    真端点那一跑是 preflight 的第 3 步。
+- **与步骤无关的不变量**：装依赖用 `npm install --include=dev`，**绝不是** `npm ci`——`package-lock.json` 是故意
+  gitignore 的，而那两个 dev 包（`typescript` + `@types/node`，issue #213）正是 `check:types*` /
+  `check:types-build` / `check:pack-links` / `check:release` 能跑起来的前提。`fetch-depth: 0` 留着，虽然现在已经
+  没有步骤需要全历史（它原先是 `check:changelog` 的硬前置，issue #691）：浅克隆之下，将来某条读 tag 的判据会
+  空跑一圈返绿，而不是红。`npm run soak` 需要真实 relay 配置与 key ⇒ **绝不进** CI。Gitea 只是代码镜像：那边
+  **不建** Actions，GitHub 仍是唯一执行方。`POST …/dispatches` 在 GitHub **第一次见过**这份 workflow 之前一直返
+  **404**，推上分支 + 跑过任意一次就注册好了，之后 dispatch 返 204。
+- **`continue-on-error` 随 `registries` 那个 job 一起没了**：「PR 上看得见但不停车」这个分层，在没有事件触发
+  之后已经无可再分。`npm run release:day -- --stage preflight` 仍然是让行为面、CHANGELOG 与打包面同时阻塞的那一处
+  （`PREFLIGHT_STEPS`）。
 
 ## gate-reproducibility
 - 门禁可复现口径（issue #280）：`npm run check:docs` 与 `npm run check:docs:strict` 在开发工作树里和在全新 clone 里（`git archive HEAD | tar -x -C <空目录>` 解出来的那棵树）必须同样 exit 0。「本机档案」这一类——`docs/tasks/` 下的文件，该目录被 `.gitignore` 整目录忽略、故意不入库，因此任何 clone 里都不存在——按**声明**裁决（`LOCAL_ARCHIVE_REFS` 逐条登记，或引用就地写明「本机 / 不入库 / 归档」），实物只在那个目录恰好在场时顺便核实，核不到不得把门禁判红。真正有本机前置的，是那一批需要 `node_modules`（两个 dev 包 `typescript` + `@types/node`，issue #213）的门禁：`npm run check:inventory`（它拿 TypeScript AST 去解每一个被扫的测试文件）、`npm run check:types`、`npm run check:types:strict` 与 `npm run check:types-build`（三张都直接驱动 `tsc`），以及 `npm run check:pack-links` / `npm run check:release`（它们 shell out 去跑 `npm pack`，而 `npm pack` 的 `prepack` 钩子会重生声明文件，再加 `tsc`）。没有 `node_modules` 的检出里这些闸会非 0 退出并报 `Cannot find module 'typescript'`——那是「**这道闸没跑起来**」，从来不是回归；先 `npm install --include=dev`。**除此之外没有任何闸读工具链**。

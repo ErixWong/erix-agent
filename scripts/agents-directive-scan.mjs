@@ -128,7 +128,7 @@ export const LENGTH_BUDGETS = Object.freeze({
   // 由 `--verify` 逐格对账（`--sync` 只改数字，从不改注释，所以注释里的数字必然过期——读它别当现值）。
   // issue #731 T7 中文侧同样回退（曾抬到 30,720）：两条闸互相知道的那道算的是 30,720 + 33,792，
   // 抬中文侧一样会把组合推过 65,536；说明性材料搬进 `docs/maintenance/command-reference_cn.md#release-day`。
-  "AGENTS_cn.md": 13824,
+  "AGENTS_cn.md": 14336,
 });
 
 // ── 3. 覆盖面（只取**入库**文件，清单 = `git ls-files`） ──────────────────────

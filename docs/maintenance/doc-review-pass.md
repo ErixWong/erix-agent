@@ -29,6 +29,13 @@ That runs, in order: `check:docs` (drift + EN/CN skeleton + version claims + ref
 **Its exit code is evidence about the scripts, not about the documents** — the scripts cannot see a sentence that
 is true-looking and wrong.
 
+As of issue #908 R2 (261126) **CI carries no documentation gate at all** — `check:changelog` and the doc-oriented
+self-tests are not pipeline steps any more. The mechanical half therefore has only two owners: this pass, and
+the version boundary (`PREFLIGHT_STEPS[0]`, `release:day --stage writeback`). That makes this the only recurring
+owner of `docs-drift-check --self-test`, which is minutes-slow (one-off timings: ≈7 min 261109, ≈8.5 min 261126).
+Second-scale **code** gates are no longer this pass's business: they run inside `npm test`
+(`test/gate-self-tests.test.js`).
+
 ## What the agent must judge by hand (this is the actual pass)
 
 1. **Defaults** — every `default X` / `默认 X` sentence in both READMEs, both `AGENTS*.md` and both contract
