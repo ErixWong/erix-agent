@@ -57,6 +57,22 @@ async function writeEmptyMcpConfig(dir) {
   return configPath;
 }
 
+// 任务 261126-51（#937）：`--compaction` 与 `config.compaction` 已随 #926 退役（折叠只走 LLM），
+// `chat` 早就删了，repl 这一侧漏掉 ⇒ 成了「未公开但仍被接受」的入口。
+// 这一格钉的是**两个入口同款**：未知旗标必须报 usage 错，且错误文案点名它。
+test("#937 repl 不再接受 --compaction（与 chat 同款：未知旗标报 usage 错）", () => {
+  assert.throws(
+    () => parseReplArgs(["--compaction", "fold-llm"]),
+    (error) => {
+      assert.equal(error.name, "ReplUsageError");
+      assert.match(error.message, /未知参数：--compaction/u, "错误文案必须点名这个旗标");
+      return true;
+    },
+  );
+  // 反向证：`--compact-budget` 是**仍然合法**的那个（预算，不是策略），别把两者混为一谈。
+  assert.equal(parseReplArgs(["--compact-budget", "1024"]).compactBudget, 1024);
+});
+
 test("parseReplArgs uses the default session and directory", () => {
   assert.deepEqual(parseReplArgs([]), {
     session: defaultSessionId(process.cwd()),
