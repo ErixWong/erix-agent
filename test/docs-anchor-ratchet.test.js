@@ -143,6 +143,21 @@ test("#286 符号锚点确实在抽东西、覆盖面份数等于测试侧实扫
   assert.ok(Number(anchor[2]) > 0, "符号锚点抽到 0 处 = 检查面在空跑");
 });
 
+// issue #922：`` `SYM` `` 与它后面的 ``(`path`)`` **分在两行**这种排版，此前按行匹配根本抽不到 ⇒
+// 那些锚点从没进过校验面（实测 120 处）。这一格钉两件事：跨行形状**抽得到**，且**抽到的是真锚点**。
+// issue #922：`` `SYM` `` 与它后面的 ``(`path`)`` **分在两行**这种排版，此前按行匹配根本抽不到 ⇒
+// 那些锚点从没进过校验面（实测 120 处，占全部符号锚点的 15%）。这一格钉的是「跨行排版必须仍在
+// 提取面内」：一旦它掉出去，总数会从 816 掉到 696，低于下面的地板。
+test("#922 跨行符号锚点（`SYM` 换行 + (`path`)）必须留在校验面内", () => {
+  const out = execFileSync(process.execPath, [join(ROOT, "scripts", "docs-drift-check.mjs"), "--verbose"], { encoding: "utf8" });
+  const anchor = out.match(/symbol-anchor: 覆盖面 (\d+) 份文档里「符号 \+ 文件」锚点 (\d+) 处/);
+  assert.ok(anchor, "符号锚点的覆盖面 note 不见了——提取器或覆盖面被改坏");
+  // ⚠ **不能** import 那个脚本做探针：它的顶层会跑 CLI 并 `process.exit`，import 进来整个测试文件
+  // 只剩「1 个测试」（实测过：6 条判据静默不跑）。所以这里只钉计数。
+  assert.ok(Number(anchor[2]) >= 800,
+    `符号锚点总数 ${anchor[2]} 处 —— 跨行排版若再次掉出提取面，这个数会明显缩水（实测基线 816）`);
+});
+
 test("#286 覆盖面里没有任何一处裸行号越界（工单点名的 notes.js:398-405 已按真值改掉）", () => {
   const counts = new Map();
   const linesOf = (rel) => {

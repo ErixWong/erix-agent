@@ -4,6 +4,20 @@
 ## [Unreleased]
 
 ### Changed
+- **Symbol anchors split across two lines are back on the check face, and the first one was wrong (issue #922, task 261126-55).**
+  `SYMBOL_ANCHOR_FORMS` matched line by line, so the markdown layout `` `SYMBOL` `` followed by `` (`path`) `` on the
+  *next* line was never extracted — **120 anchors (15% of the 816-anchor face) had never been looked at**. A whole-text
+  pass now extracts that shape and reports its line from the prefix newline count. Enabling it immediately caught a real
+  defect: `docs/host-consumer-contract*.md` cited `maxNoToolRounds` against `src/reflection/governor.js`, where it only
+  exists as the property `signals.maxNoToolRounds` — the declaration lives in `src/loop/orchestrator.js`, and both
+  contract pages now say so. A test pins the face at ≥800 anchors so the cross-line form cannot silently drop out again.
+- **分两行写的符号锚点回到校验面上，而且第一处就是错的（issue #922，任务 261126-55）。**
+  `SYMBOL_ANCHOR_FORMS` 按**行**匹配，于是 `` `SYMBOL` `` 与 `` (`path`) `` 分在**两行**的那种 markdown 排版
+  从来没被抽出来过——**120 处锚点（占 816 处校验面的 15%）从没被看过一眼**。现在多一遍整段扫描抽出这个形状，
+  行号按前缀换行数算。一开就抓到真缺陷：`docs/host-consumer-contract*.md` 把 `maxNoToolRounds` 的坐标写成
+  `src/reflection/governor.js`，而那里只有属性访问 `signals.maxNoToolRounds`，声明在
+  `src/loop/orchestrator.js`——两份契约页现在都改成后者。另加一条判据把校验面钉在 ≥800 处，跨行形状
+  再次掉出去就会红。
 - **Stale comment pointers to the #908-removed ratchets are corrected (task 261126-53, issue #923 ④).** Eight comments in
   `scripts/docs-drift-check.mjs` still described `SYMBOL_ANCHOR_MIN_UNIQUE` / `BARE_LINE_REF_BASELINE` /
   `REF_SCAN_DOCS_MINIMUM` as live constants ("keep `const X = <n>;` on one line", "this raises the ratchet"), so the next
