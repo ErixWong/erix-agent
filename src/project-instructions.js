@@ -23,8 +23,8 @@ export const PROJECT_INSTRUCTIONS_FILENAME = "AGENTS.md";
 /**
  * 注入总字节上限（64 KiB = 65,536 字节）。超限**截断**并在返回值里报 `truncated: true`——不静默丢。
  *
- * 为什么要有上限：这段内容拼进 system，被 `markStablePrefix` 打上 `cacheBoundary` 后**常驻**
- * 每一轮请求（折叠只动 `messages`、不动 `mainSystem`）。一份超大约定文件会把上下文预算吃掉一大块：
+ * 为什么要有上限：这段内容拼进 system，**常驻**每一轮请求（折叠只动 `messages`、不动 `mainSystem`）。
+ * 一份超大约定文件会把上下文预算吃掉一大块：
  * 本仓自己的 `AGENTS.md` 瘦身前是 112,464 字节，issue #726 之后实测 **32,698 字节**。
  *
  * 为什么是 64 KiB（issue #721 的裁决，两个加数都可现查，不是感觉）：
@@ -39,7 +39,8 @@ export const PROJECT_INSTRUCTIONS_FILENAME = "AGENTS.md";
  * 而预算闸一路绿：两道闸互相不知道。今天它俩的关系由 `test/project-instructions-716.test.js` 里
  * 那条「预算闸 ⇄ 注入上限」的用例钉住，不再靠人记得。
  *
- * 代价要如实说：`cacheBoundary` 之后这些字节每轮重发，模型侧没有前缀缓存时**全额重付**——按 issue #721
+ * 代价要如实说：这些字节每轮重发，OpenAI 一侧的前缀缓存是服务端自动的（命中与否引擎不可控），
+ * 不命中时**全额重付**——按 issue #721
  * 实测的 3.4 字节/token 折算，满额 65,536 字节 ≈ 19,275 tokens/轮。所以上限抬高必须与「截断对模型
  * 可见」同片到账（`bin/system-prompt.js` 的 `buildProjectInstructionsSection`），见 issue #721。
  */

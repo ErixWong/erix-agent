@@ -1,4 +1,3 @@
-import { markStablePrefix } from "./provider-runner.js";
 import { answerPendingTailToolUses } from "./pending-tool-result.js";
 import { runDeliverables } from "./deliverables.js";
 import { EXEC_TOOL_NAME } from "./exec-writes.js";
@@ -684,14 +683,10 @@ export function createTerminationManager(ctx) {
     ctx.messages.push(instruction);
     ctx.messageRounds.set(instruction, ctx.rounds);
     validateMessages(ctx.messages, { allowPendingToolUse: true });
-    // issue #192：这里**有意不加**尾部滚动断点——强制收尾是一次性请求，加了只会把整段历史按
-    // 写入溢价写一遍，而后面没有任何请求会来读；两个静态断点已经把写入面收在首条 user 边界上。
-    const stablePrefix = ctx.cacheStablePrefix !== false
-      ? markStablePrefix(ctx.mainSystem, ctx.messages)
-      : { system: ctx.mainSystem, messages: ctx.messages };
+    // issue #926：旧 Anthropic 缓存打标（`markStablePrefix`）已退役——OpenAI 前缀缓存自动。
     const request = {
-      system: stablePrefix.system,
-      messages: stablePrefix.messages,
+      system: ctx.mainSystem,
+      messages: ctx.messages,
       tools: [],
       signal: ctx.signal,
       // issue #419 ② 的**终态裁定：有意不发 `reasoning_effort`**（见 CHANGELOG #419 ① 的覆盖面清单里

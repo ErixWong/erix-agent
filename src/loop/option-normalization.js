@@ -109,10 +109,11 @@ import {
  * 任何「顶层总数」都由符号派生（`RUN_TOOL_LOOP_OPTION_NAMES.length` 与三个面的并集对账）。
  * #498 S3（`timing` 组垂直切片）：`timeoutMs` / `deadlineMs` / `retry` 已从这里删掉，它们的家是
  * `config.timing.*`（展开相写回 `effectiveOptions`，引擎读侧不变）。
- * #498 S3 (`input` group, segment A): `cacheStablePrefix` and `initialMessages` leave together. Their
- * home is `config.input.cacheStablePrefix` / `config.input.messages` — the latter is the **only**
- * registered leaf alias (`CONFIG_LEAF_ALIASES`), and the expansion phase writes it back onto
- * `effectiveOptions.initialMessages`.
+ * #498 S3 (`input` group, segment A): `initialMessages` left the allowlist. Its home is
+ * `config.input.messages` — the **only** registered leaf alias (`CONFIG_LEAF_ALIASES`), and the
+ * expansion phase writes it back onto `effectiveOptions.initialMessages`.
+ * (`cacheStablePrefix` left with it in that same segment, but #926 retired the whole leaf: the
+ * Anthropic cache-breakpoint machinery it switched is gone.)
  * #498 S3 (segment A2b): `initialUserMessage` left as well. Its home is
  * `config.input.initialUserMessage`; the leaf stays in `CONFIG_NAMESPACE_SCHEMA.input` (a leaf may
  * exist without a top-level option — that is the S3 shape), and the expansion phase writes it back
@@ -131,8 +132,8 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // system-prompt assembly that folds in the wrap-up instruction, `src/loop/orchestrator.js`) is
   // unchanged. Only the *write* spelling moved, and the name gate now rejects the flat one while
   // naming the new home. The other `system` words are deliberately untouched: the provider request
-  // field `system` (`src/messages/anthropic.js`), the message-conversion argument
-  // (`canonicalToAnthropicRequest({ system })`) and the CLI/README wording are not runToolLoop options.
+  // field `system` (the wire body the OpenAI adapter builds, `src/providers/openai.js`) and the
+  // CLI/README wording are not runToolLoop options.
   // issue #527: `tools` stays here **permanently**. The #498 S3 A6 reachability check proved that a
   // tool declaration may carry function members (`handler` / `validate` / `execute` / a function inside
   // `inputSchema`); the config subtree holds data only, so `config.input.tools` was **flat-reachable,
@@ -195,7 +196,7 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // while naming the new home. The planes that carry the **same word** are deliberately untouched:
   // the model-slot / config-file field `slots.default.maxTokens` (`src/config/slot-provider.js`), the
   // config-file sampling defaults (`src/config/env.js`), the provider request field `maxTokens`
-  // (`src/messages/anthropic.js`), and the assembly `policy.maxTokens` (`src/assembly.js`) — none of
+  // (`src/providers/openai.js`), and the assembly `policy.maxTokens` (`src/assembly.js`) — none of
   // them goes through this allowlist.
   // #498 S3 A13: three data shells left this list.
   // `stallDetection` / `outputHygiene` / `persistence` now

@@ -30,11 +30,11 @@
 
 ## 2. Leaf account (measured, no number copied)
 
-**Measured: 43 leaves = 30 init / 13 call**, in 8 groups; **6 of 43** leaves carry a value rule today: `config.run.stream`, `config.continuity.handoff`, `config.folding.toolResultTtl`, `config.folding.toolResultFoldMinTokens`, `config.folding.context`, `config.metadata.modelMetadata`.
+**Measured: 42 leaves = 29 init / 13 call**, in 8 groups; **6 of 42** leaves carry a value rule today: `config.run.stream`, `config.continuity.handoff`, `config.folding.toolResultTtl`, `config.folding.toolResultFoldMinTokens`, `config.folding.context`, `config.metadata.modelMetadata`.
 
 | group | leaves | names |
 | --- | --- | --- |
-| `input` | 5 | `input.system` `input.cacheStablePrefix` `input.initialUserMessage` `input.messages` `input.wrapup` |
+| `input` | 4 | `input.system` `input.initialUserMessage` `input.messages` `input.wrapup` |
 | `run` | 17 | `run.maxRounds` `run.maxTokenContinuations` `run.stallDetection` `run.completion` `run.replayPolicy` `run.invalidArguments` `run.partialPersistence` `run.persistence` `run.outputHygiene` `run.writeToolNames` `run.writeToolPathKeys` `run.resume` `run.stream` `run.reflection` `run.runId` `run.cwd` `run.parentRunId` |
 | `tuning` | 4 | `tuning.maxTokens` `tuning.temperature` `tuning.topP` `tuning.cacheCapable` |
 | `timing` | 3 | `timing.timeoutMs` `timing.deadlineMs` `timing.retry` |
@@ -42,7 +42,7 @@
 | `guard` | 3 | `guard.finalGuardMaxRetries` `guard.finalGuardTimeoutMs` `guard.finalGuardExtend` |
 | `metadata` | 7 | `metadata.expert` `metadata.user` `metadata.task` `metadata.requestId` `metadata.toolContext` `metadata.model` `metadata.modelMetadata` |
 | `continuity` | 1 | `continuity.handoff` |
-| **total** | **43** | **30 init / 13 call** |
+| **total** | **42** | **29 init / 13 call** |
 
 ⚠ Two things must not be mixed in here: ① the `init` / `call` column is **#571 slice 1**'s product (`CONFIG_LEAF_BINDING`); this slice only reads it as a column and adds or changes no binding; ② the **"this key does not exist" gate** (shipped in #571 slice 1) **is not this slice's product** — `G` also includes refusals from `CONFIG_LEAF_VALUE_RULES`; the name gate answers "does this key exist", this table answers "is this value legal", and the account above derives the registered value-rule leaves from that table.
 
@@ -55,7 +55,6 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 | leaf | binding | `"8"` | `"bogus"` | `-1` | `0.5` | `true` | `null` | `[]` | `{}` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `config.input.system` | init | A | A | A | A | A | A | A | A |
-| `config.input.cacheStablePrefix` | init | · | · | · | · | · | · | · | · |
 | `config.input.initialUserMessage` | call | A | A | A | A | A | A | A | A |
 | `config.input.messages` | call | C | C | C | C | C | C | A | C |
 | `config.input.wrapup` | init | A | A | A | A | A | A | A | A |
@@ -108,24 +107,24 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 | `C` | 7 | crash: the run started, it blew up before the first request, but **the verdict does not name this leaf** (an engine-internal error the host cannot act on) |
 | `U` | 0 | use: threw only after the first request (genuinely carried to a use point) |
 | `A` | 117 | accepted+live: nothing threw, and this run's fingerprint differs from the baseline (the wrong value really took effect) |
-| `·` | 124 | accepted+inert: nothing threw, and the fingerprint is byte-identical to the baseline (configured but inert in this scenario) |
+| `·` | 116 | accepted+inert: nothing threw, and the fingerprint is byte-identical to the baseline (configured but inert in this scenario) |
 | `H` | 0 | hung: did not finish within the per-cell limit |
-| **total** | **344** | 43 × 8 |
+| **total** | **336** | 42 × 8 |
 
 ## 5. Per-cell detail (every non-inert cell: layer / verbatim verdict / where it took effect)
 
-220 cells (the other 124 are `·`: no observable difference in this scenario, not listed). Verdicts are the engine's own words, verbatim.
+220 cells (the other 116 are `·`: no observable difference in this scenario, not listed). Verdicts are the engine's own words, verbatim.
 
 | leaf | value | code | layer / effect path | verbatim verdict / observable diff |
 | --- | --- | --- | --- | --- |
-| `config.input.system` | `"8"` | A | requests[0].system | requests[0].system: (absent) → {"content":"8","cacheBoundary":true} |
-| `config.input.system` | `"bogus"` | A | requests[0].system | requests[0].system: (absent) → {"content":"bogus","cacheBoundary":true} |
-| `config.input.system` | `-1` | A | requests[0].system | requests[0].system: (absent) → {"content":-1,"cacheBoundary":true} |
-| `config.input.system` | `0.5` | A | requests[0].system | requests[0].system: (absent) → {"content":0.5,"cacheBoundary":true} |
-| `config.input.system` | `true` | A | requests[0].system | requests[0].system: (absent) → {"content":true,"cacheBoundary":true} |
+| `config.input.system` | `"8"` | A | requests[0].system | requests[0].system: (absent) → "8" |
+| `config.input.system` | `"bogus"` | A | requests[0].system | requests[0].system: (absent) → "bogus" |
+| `config.input.system` | `-1` | A | requests[0].system | requests[0].system: (absent) → -1 |
+| `config.input.system` | `0.5` | A | requests[0].system | requests[0].system: (absent) → 0.5 |
+| `config.input.system` | `true` | A | requests[0].system | requests[0].system: (absent) → true |
 | `config.input.system` | `null` | A | requests[0].system | requests[0].system: (absent) → null |
-| `config.input.system` | `[]` | A | requests[0].system | requests[0].system: (absent) → {"content":[],"cacheBoundary":true} |
-| `config.input.system` | `{}` | A | requests[0].system | requests[0].system: (absent) → {"content":{},"cacheBoundary":true} |
+| `config.input.system` | `[]` | A | requests[0].system | requests[0].system: (absent) → [] |
+| `config.input.system` | `{}` | A | requests[0].system | requests[0].system: (absent) → {} |
 | `config.input.initialUserMessage` | `"8"` | A | requests[0].messages[0].content[0].text | requests[0].messages[0].content[0].text: "go" → "8" |
 | `config.input.initialUserMessage` | `"bogus"` | A | requests[0].messages[0].content[0].text | requests[0].messages[0].content[0].text: "go" → "bogus" |
 | `config.input.initialUserMessage` | `-1` | A | requests[0].messages[0].content[0].text | requests[0].messages[0].content[0].text: "go" → -1 |
@@ -140,16 +139,16 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 | `config.input.messages` | `0.5` | C | orchestrator.js runToolLoop | TypeError: initialMessages is not iterable |
 | `config.input.messages` | `true` | C | orchestrator.js runToolLoop | TypeError: initialMessages is not iterable |
 | `config.input.messages` | `null` | C | orchestrator.js runToolLoop | TypeError: initialMessages is not iterable |
-| `config.input.messages` | `[]` | A | requests[0].messages[0] | requests[0].messages[0]: {"role":"user","content":[{"type":"text","text":"go"}],"cacheBoundary":true} → (absent) |
+| `config.input.messages` | `[]` | A | requests[0].messages[0] | requests[0].messages[0]: {"role":"user","content":[{"type":"text","text":"go"}]} → (absent) |
 | `config.input.messages` | `{}` | C | orchestrator.js runToolLoop | TypeError: initialMessages is not iterable |
-| `config.input.wrapup` | `"8"` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `"bogus"` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `-1` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `0.5` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `true` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `null` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `[]` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `{}` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
+| `config.input.wrapup` | `"8"` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `"bogus"` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `-1` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `0.5` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `true` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `null` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `[]` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `{}` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
 | `config.run.maxRounds` | `"8"` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
 | `config.run.maxRounds` | `"bogus"` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
 | `config.run.maxRounds` | `-1` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
@@ -158,14 +157,14 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 | `config.run.maxRounds` | `null` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
 | `config.run.maxRounds` | `[]` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
 | `config.run.maxRounds` | `{}` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
-| `config.run.completion` | `"8"` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `"bogus"` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `-1` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `0.5` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `true` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `null` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `[]` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `{}` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
+| `config.run.completion` | `"8"` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `"bogus"` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `-1` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `0.5` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `true` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `null` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `[]` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `{}` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
 | `config.run.replayPolicy` | `"8"` | S | orchestrator.js runToolLoop | TypeError: replayPolicy must be "always-replay" or "per-tool-declaration" |
 | `config.run.replayPolicy` | `"bogus"` | S | orchestrator.js runToolLoop | TypeError: replayPolicy must be "always-replay" or "per-tool-declaration" |
 | `config.run.replayPolicy` | `-1` | S | orchestrator.js runToolLoop | TypeError: replayPolicy must be "always-replay" or "per-tool-declaration" |
@@ -261,8 +260,8 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 | `config.tuning.topP` | `null` | A | requests[0].topP | requests[0].topP: (absent) → null |
 | `config.tuning.topP` | `[]` | A | requests[0].topP | requests[0].topP: (absent) → [] |
 | `config.tuning.topP` | `{}` | A | requests[0].topP | requests[0].topP: (absent) → {} |
-| `config.timing.timeoutMs` | `0.5` | A | requests[1].messages[2].cacheBoundary | requests[1].messages[2].cacheBoundary: true → (absent) |
-| `config.timing.deadlineMs` | `0.5` | A | requests[1].messages[2].cacheBoundary | requests[1].messages[2].cacheBoundary: true → (absent) |
+| `config.timing.timeoutMs` | `0.5` | A | requests[1].messages[3] | requests[1].messages[3]: (absent) → {"role":"user","meta":{"source":"judge-control"},"content":[{"type":"text","t... |
+| `config.timing.deadlineMs` | `0.5` | A | requests[1].messages[3] | requests[1].messages[3]: (absent) → {"role":"user","meta":{"source":"judge-control"},"content":[{"type":"text","t... |
 | `config.timing.retry` | `[]` | A | events[2].maxAttempts | events[2].maxAttempts: 1 → 3 |
 | `config.timing.retry` | `{}` | A | events[2].maxAttempts | events[2].maxAttempts: 1 → 3 |
 | `config.folding.context` | `"8"` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
@@ -345,7 +344,7 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 
 - ① Leaves where a wrong value **really takes effect** (`A`): 21 — `config.input.system`, `config.input.initialUserMessage`, `config.input.messages`, `config.input.wrapup`, `config.run.completion`, `config.run.stream`, `config.run.reflection`, `config.run.runId`, `config.run.parentRunId`, `config.tuning.maxTokens`, `config.tuning.temperature`, `config.tuning.topP`, `config.timing.timeoutMs`, `config.timing.deadlineMs`, `config.timing.retry`, `config.metadata.expert`, `config.metadata.user`, `config.metadata.task`, `config.metadata.requestId`, `config.metadata.model`, `config.metadata.modelMetadata`. Narrowing them changes "the host wrote nonsense and it ran anyway", the widest blast radius and the most likely to break a host that used to work;
 - ② Leaves where a wrong value blows up as an **engine error that does not name the leaf** (`C` / `U`): 1 — `config.input.messages`. These already fail hard today, but the verdict does not tell the host what to fix; adding a type check only **moves the failure earlier and names it**, it does not change the fact that it fails;
-- ③ Leaves where all 8 wrong values are **silently accepted** (all `·`): 10 — `config.input.cacheStablePrefix`, `config.run.maxTokenContinuations`, `config.run.stallDetection`, `config.run.writeToolNames`, `config.run.writeToolPathKeys`, `config.run.resume`, `config.tuning.cacheCapable`, `config.guard.finalGuardMaxRetries`, `config.guard.finalGuardTimeoutMs`, `config.metadata.toolContext`. They look most like "configured but inert", but `·` only says this scenario never reached them (see §7); each needs its own deep-branch scenario before a ruling.
+- ③ Leaves where all 8 wrong values are **silently accepted** (all `·`): 9 — `config.run.maxTokenContinuations`, `config.run.stallDetection`, `config.run.writeToolNames`, `config.run.writeToolPathKeys`, `config.run.resume`, `config.tuning.cacheCapable`, `config.guard.finalGuardMaxRetries`, `config.guard.finalGuardTimeoutMs`, `config.metadata.toolContext`. They look most like "configured but inert", but `·` only says this scenario never reached them (see §7); each needs its own deep-branch scenario before a ruling.
 
 ## 7. Residual risks / what this table does not cover
 

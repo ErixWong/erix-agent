@@ -1,5 +1,4 @@
 import { cloneState } from "./budget.js";
-import { isContinuityMessage } from "./continuity-block.js";
 import { normalizeMessages } from "./messages.js";
 import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
@@ -7,24 +6,6 @@ import { foldToolResultsForRequest } from "./tool-result-ttl.js";
 import { ensureUserTurnView } from "./request-user-view.js";
 import { pendingTailToolUses, stubUnsettledToolUsesForRequestView } from "./pending-tool-result.js";
 import { appendRunStateToRequestView } from "../run-state.js";
-
-/**
- * `unknown` → "is a plain record" narrowing.
- *
- * The return type is a **type predicate**, not a plain `boolean` (issue #192): a boolean return
- * narrows nothing, so a caller that had just proved "this is an object" still saw the original
- * `object` type and reading a field off it stayed a `TS2339` — which is exactly how the tail cache
- * breakpoint's `tail.cacheBoundary` came out. Declaring the predicate makes the proof usable, and
- * `Record<string, unknown>` (never `any`) keeps the values unknown so each caller narrows further.
- *
- * The parameter type is deliberately left as-is: the implicit `any` there is pre-existing debt
- * booked by the `--checkJs` ratchet, and paying it here would move that ratchet's baseline.
- *
- * @returns {value is Record<string, unknown>}
- */
-function isRecord(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 /**
  * The **one** derived "is this run streaming" value (issue #538).
@@ -52,65 +33,6 @@ function streamsThisRun(ctx) {
   const hasChatStream = typeof ctx.provider.chatStream === "function";
   if (!hasChat) return hasChatStream;
   return ctx.stream === true && hasChatStream;
-}
-
-function markSystemCacheBoundary(system) {
-  if (system === undefined || system === null) return system;
-  if (isRecord(system) && Object.hasOwn(system, "content")) {
-    return { ...system, cacheBoundary: true };
-  }
-  return { content: system, cacheBoundary: true };
-}
-
-export function markStablePrefix(system, messages) {
-  let firstUserMarked = false;
-  const markedMessages = messages.map((message) => {
-    if (firstUserMarked || message?.role !== "user") return message;
-    firstUserMarked = true;
-    return { ...message, cacheBoundary: true };
-  });
-  return {
-    system: markSystemCacheBoundary(system),
-    messages: markedMessages,
-  };
-}
-
-/**
- * The **rolling tail** cache breakpoint (issue #192).
- *
- * Why a separate function and not one more line inside `markStablePrefix`: the two marks have
- * different legal inputs. `markStablePrefix` is called on the **final** request view (system +
- * first user + everything the request will carry), and it is also called by the forced wrap-up
- * path. The tail mark must land on the **persistent history tail** — the last message that will
- * still be there in the *next* round's request — and that is a different position: `callProvider`
- * appends per-request blocks (`appendRunStateToRequestView`, the #598 handoff instruction) *after*
- * this point. Marking those instead would be worse than marking nothing: an Anthropic breakpoint
- * caches the prefix up to its block, and a per-request block never recurs at the same position, so
- * every round would pay the 1.25x cache-**write** premium for a prefix no later request can ever
- * read.
- *
- * The forced wrap-up request gets no tail mark at all (same reason, other direction): it is
- * one-shot, so a tail breakpoint there would write the whole history at 1.25x with no future read.
- * Its two static marks already cap the write at the first-user boundary.
- *
- * The continuity block (issue #568) is skipped as a tail candidate even though it is a real message:
- * it is **re-positioned** to the tail every round, so a prefix ending with it never reappears at the
- * same offset. Excluding it is also what makes #568's discipline 2 ("only the messages grown after
- * the last request are invalidated") true at the cache layer rather than only in prose.
- *
- * @param {Array<object>} messages request view whose **last** message is the persistent tail
- * @returns {Array<object>} a new array; the input array and its messages are not mutated
- */
-export function markTailCacheBoundary(messages) {
-  if (!Array.isArray(messages) || messages.length === 0) return messages;
-  let tailIndex = messages.length - 1;
-  while (tailIndex >= 0 && isContinuityMessage(messages[tailIndex])) tailIndex -= 1;
-  if (tailIndex < 0) return messages;
-  const tail = messages[tailIndex];
-  if (!isRecord(tail) || tail.cacheBoundary === true) return messages;
-  const marked = messages.slice();
-  marked[tailIndex] = { ...tail, cacheBoundary: true };
-  return marked;
 }
 
 export async function callProvider(ctx, {
@@ -168,15 +90,7 @@ export async function callProvider(ctx, {
         noteTools: foldConfig.noteTools,
         stats: ttlStats,
       });
-    // issue #192（裁决：只做尾部滚动断点）：尾部断点标在**持久历史**的尾巴上，即 run-state /
-    // 收尾指令这些「只属于本次请求」的块**追加之前**。位置是判据的一部分：断点缓存的是它之前
-    // 的整个前缀，而每轮新建的 run-state 块下一轮不会出现在同一位置 ⇒ 标在它上面等于每轮按
-    // 1.25x 写一段永远没人读的前缀（比不打标更贵）。上一轮的尾部断点因此总能命中本轮的前缀，
-    // 只有「折叠改写了中段」的那一轮会退回 system / 首条 user 两个静态断点（见 architecture
-    // 的缓存小节：这是与 TTL 折叠共存的代价，不是漏做）。
-    if (ctx.cacheStablePrefix !== false) {
-      requestMessages = markTailCacheBoundary(requestMessages);
-    }
+    // issue #926：旧 Anthropic 缓存断点机制（`markTailCacheBoundary`）已退役——OpenAI 前缀缓存自动。
     // run-state 只追加到本次请求视图，保留前缀以实现零缓存失效。
     requestMessages = appendRunStateToRequestView(requestMessages, requestStateBlock);
     const estimateMessageTokens = ctx.estimateMessageTokens;
@@ -311,12 +225,11 @@ export async function callProvider(ctx, {
       attemptEvents.push({ event, callback, observerChannel });
     };
     try {
-      const stablePrefix = ctx.cacheStablePrefix !== false
-        ? markStablePrefix(ctx.mainSystem, requestMessages)
-        : { system: ctx.mainSystem, messages: requestMessages };
+      // issue #926：旧 `markStablePrefix` 缓存打标已随 Anthropic 协议退役（OpenAI 前缀缓存自动），
+      // 请求视图原样发出。
       const request = {
-        system: stablePrefix.system,
-        messages: stablePrefix.messages,
+        system: ctx.mainSystem,
+        messages: requestMessages,
         signal: ctx.signal,
       };
       if (omitTools !== true) request.tools = ctx.tools;

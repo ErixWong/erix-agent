@@ -11,7 +11,6 @@ import { parseArgs } from "node:util";
 
 import {
   buildTimeline,
-  canonicalToAnthropicRequest,
   canonicalToOpenAIMessages,
   createFileTranscriptStore,
   createOpenAIProvider,
@@ -23,10 +22,6 @@ import {
   TOOL_RESULT_CONTRACT,
   validateMessages,
 } from "../src/index.js";
-// issue #688: the Anthropic factory is no longer a public export (it is an internal part now —
-// the protocol layer stays public, the factory does not). soak is a repository script, not a host,
-// so it reaches the module directly instead of going through the package entry.
-import { createAnthropicProvider } from "../src/providers/anthropic.js";
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 
 // 中止/重试路径上，被抛弃的 in-flight 请求可能在 run 已经收口之后才拒绝。Node 22 默认
@@ -210,8 +205,8 @@ function createRealUpstream(slotName) {
   if (!endpoint || !model || !apiKey) {
     throw new Error(`slots.${slotName} 缺少 endpoint/model/apiKey（或 apiKeyEnv）其中之一`);
   }
-  // 协议选择必须与引擎一致：**缺省 = openai**。bin/config.js:110-112 只是转发 `slots.protocol`
-  // （或环境变量），没写就不是 anthropic；本仓自己的 ~/.erix/config.json 也没这个字段。
+  // issue #926：库只剩一种线协议（OpenAI 兼容），协议选择退化为固定值。
+  // 缺省仍是 openai；`slot.protocol` 只进 `describe.kind` 做现场记录，不再选适配器。
   // 前一版默认 anthropic → 本机（relay 只供 OpenAI 兼容路径）打出 POST /v1/messages → 404 Invalid URL，
   // real 路径整段空转（rounds=0、↑0↓0，而断言会当成 9 条红）。
   const kind = String(slot.protocol ?? process.env.ERIX_PROTOCOL ?? process.env.LLM_KIT_PROTOCOL
@@ -225,9 +220,7 @@ function createRealUpstream(slotName) {
     ...(slot.maxOutputTokens ?? slot.maxTokens
       ? { maxOutputTokens: slot.maxOutputTokens ?? slot.maxTokens } : {}),
   };
-  const provider = kind.includes("anthropic")
-    ? createAnthropicProvider(common)
-    : createOpenAIProvider(common);
+  const provider = createOpenAIProvider(common);
   return {
     provider,
     // 预算元数据：real 用 config 里的窗口值（缺一个就推不出 budgetTokens，压缩整体不进）
@@ -446,7 +439,7 @@ function createRequestViewProbe(upstream, resultOrigins) {
     orphanResults: 0,
     danglingUses: 0,
     pairViolationSamples: [],
-    conversion: { openai: { ok: true, requests: 0 }, anthropic: { ok: true, requests: 0 } },
+    conversion: { openai: { ok: true, requests: 0 } },
   };
   // track = main 与本探针共享的可变状态：当前阶段名 + 当时轮号（由 main 的 onEvent 包装推轮号，
   // round_start 总在 callProvider 之前发，src/loop/orchestrator.js:2901）。
@@ -532,6 +525,7 @@ function createRequestViewProbe(upstream, resultOrigins) {
     }
     // 协议转换仍然跑（它是转换不坏的证据），但它**不再是配对断言的通过条件**。
     // 出错后计数与错误分开存（requests 不会因覆盖而变 NaN），ok=false 粘住不回头。
+    // issue #926：转换面只剩 OpenAI 一份（Anthropic 转换器已退役）。
     try {
       canonicalToOpenAIMessages("soak", view);
       probe.conversion.openai.requests += 1;
@@ -539,17 +533,6 @@ function createRequestViewProbe(upstream, resultOrigins) {
       probe.conversion.openai = {
         ok: false,
         requests: probe.conversion.openai.requests,
-        error: String(error?.message ?? error),
-        code: error?.code,
-      };
-    }
-    try {
-      canonicalToAnthropicRequest({ system: "soak", messages: view, tools: [SOAK_TOOL], maxTokens: 1024 });
-      probe.conversion.anthropic.requests += 1;
-    } catch (error) {
-      probe.conversion.anthropic = {
-        ok: false,
-        requests: probe.conversion.anthropic.requests,
         error: String(error?.message ?? error),
         code: error?.code,
       };
@@ -2115,12 +2098,12 @@ async function main() {
     });
   // issue #336：`probe.conversion.*.ok` 是**算出来的布尔**，以前只写进 evidence，而旁边的注释还写着
   // 「转换坏也是红」——那是假的：没有任何条件读它（同一个病：写得像核对事实，真假都不红）。
-  // 现在它有自己的一条断言：两个协议转换器在**每一个真实请求视图**上都不许抛错。
+  // 现在它有自己的一条断言：转换器在**每一个真实请求视图**上都不许抛错
+  // （issue #926 之后只剩 OpenAI 一个转换器，本条的覆盖面随之收窄，判据不放宽）。
   ledger.check("request-view-protocol-conversion-survives",
-    probe.requests > 0 && probe.conversion.openai.ok === true && probe.conversion.anthropic.ok === true, {
+    probe.requests > 0 && probe.conversion.openai.ok === true, {
       observedUpstreamRequests: probe.requests,
       openai: probe.conversion.openai,
-      anthropic: probe.conversion.anthropic,
       note: "转换器本身不校验配对（那是 pairing-* 两条的事）；本条只管「转换不抛错」。"
         + "两者以前混在同一条 evidence 里，结果谁都没判",
     });

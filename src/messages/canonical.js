@@ -24,9 +24,6 @@ import { parseToolArguments } from "./tool-arguments.js";
  * @typedef {Object} CanonicalMessage
  * @property {"system"|"user"|"assistant"} role
  * @property {string|Block[]} content
- * @property {boolean} [cacheBoundary] Mark this message's final content block as
- * a stable prefix boundary. Provider adapters may use this hint differently;
- * OpenAI ignores it because its cache is automatic.
  * @property {{source?:string, [key:string]:any}} [meta] Message metadata.
  *   `meta.source` is reserved by the engine (for example, `judge-control`):
  *   display projection classification and judge visibility depend on it.
@@ -77,16 +74,6 @@ function stableCopy(value) {
   const result = {};
   for (const key of Object.keys(value).sort(compareStrings)) {
     defineStableProperty(result, key, stableCopy(value[key]));
-  }
-  return result;
-}
-
-function withoutCacheMetadata(value) {
-  if (!isRecord(value)) return value;
-  const result = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (key === "cache" || key === "cacheBoundary") continue;
-    result[key] = entry;
   }
   return result;
 }
@@ -213,7 +200,7 @@ function contentPartsToOpenAI(parts, { emptyValue = null, textSeparator = "" } =
 
 function appendRawBlocks(target, rawBlocks) {
   if (rawBlocks.length > 0) {
-    target.raw_blocks = rawBlocks.map((block) => stableCopy(withoutCacheMetadata(block)));
+    target.raw_blocks = rawBlocks.map((block) => stableCopy(block));
   }
 }
 
@@ -249,13 +236,13 @@ function assistantToOpenAI(message) {
         block?.type === "reasoning" ? String(block.text ?? "") : reasoningText(block),
       );
     } else if (block?.type === "raw" && rawToolCall(block) !== undefined) {
-      toolCalls.push(stableCopy(withoutCacheMetadata(rawToolCall(block))));
+      toolCalls.push(stableCopy(rawToolCall(block)));
     } else if (block?.type === "raw") {
       const payload = rawPayloadBlock(block);
       if (payload?.type === "text" || payload?.type === "image_url") {
         parts.push(payload.type === "image_url"
           ? stableCopy(payload)
-          : stableCopy(withoutCacheMetadata(payload)));
+          : stableCopy(payload));
       } else {
         rawBlocks.push(block);
       }
@@ -340,7 +327,7 @@ function userToOpenAI(message, out) {
       if (payload?.type === "text" || payload?.type === "image_url") {
         parts.push(payload.type === "image_url"
           ? stableCopy(payload)
-          : stableCopy(withoutCacheMetadata(payload)));
+          : stableCopy(payload));
       } else {
         rawBlocks.push(block);
       }
