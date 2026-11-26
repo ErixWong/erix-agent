@@ -1516,12 +1516,16 @@ const ANCHOR_RULES = [
     allowExtra: () => knownToolNames(),
   },
   {
-    id: "内置压缩策略名",
+    // issue #898（第二刀）：内置名字收口到**唯一**一项（`fold-llm`），`runListRule` 需要 ≥2 项才
+    // 有「成员对称」可比，这条规则因此退役。名字真值并没有失去看管——`compaction-default` 逐处
+    // 对账 `DEFAULT_COMPACTION_STRATEGY` 常量与四份文档的声明，写错名字仍然红。
+    id: "内置压缩策略名（#898 起单成员，退役）",
     kind: "策略名",
     src: "src/compact/strategy-resolution.js",
     truth: truthStrategyNames,
     docs: [README_EN, README_CN, CONTRACT_EN, CONTRACT_CN],
-    pipeOnly: true,   // 只认 `a | b | c` 取值串：这样 3 值枚举删 1 个必红，而「两种折叠策略（A 与 B）」不误判
+    pipeOnly: true,
+    run: () => {},
   },
   {
     // 工单 261014 T1（#284 / #285）：契约文档的 erix 字段清单 ↔ `TOOL_RESULT_CONTRACT` 常量。
@@ -3872,20 +3876,14 @@ function compactionDefaultTruth() {
     }
   }
 
-  const help = textOf(COMPACTION_CLI_SRC);
+  // issue #898（第二刀）：`--compaction` 旗标与 `config.compaction` 退路**已删**，所以 CLI 层的
+  // 真值来源从三处收口到一处——只剩常量 `DEFAULT_COMPACTION_STRATEGY`。这里不再去 help 文本里
+  // 抓两行已经不存在的字样（抓不到就报错会把「旗标删了」误报成「文档漂了」）。
   const cliConst = textOf(COMPACTION_CLI_CONST_SRC);
-  const flagDefault = typeof help === "string"
-    ? help.match(/--compaction <名>[\s\S]{0,160}?（默认：([a-z][a-z-]*)）/u)?.[1] ?? null
-    : null;
-  const slotDefault = typeof help === "string"
-    ? help.match(/slots\.default\.compaction[\s\S]{0,160}?默认 ([a-z][a-z-]*)/u)?.[1] ?? null
-    : null;
   const constantDefault = typeof cliConst === "string"
     ? cliConst.match(/^export const DEFAULT_COMPACTION_STRATEGY = "([a-z][a-z-]*)";/mu)?.[1] ?? null
     : null;
   const cliSides = [
-    ["`--compaction` 帮助行", flagDefault],
-    ["`slots.default.compaction` 帮助行", slotDefault],
     [`${COMPACTION_CLI_CONST_SRC} 的 \`DEFAULT_COMPACTION_STRATEGY\``, constantDefault],
   ];
   for (const [what, value] of cliSides) {
@@ -3897,7 +3895,7 @@ function compactionDefaultTruth() {
   if (new Set(known).size > 1) {
     errors.push(`compaction-default: CLI 层的三处字样彼此不一致（${cliSides.map(([what, value]) => `${what} = ${value ?? "抽不到"}`).join("；")}）`
       + "——源码自己就不自洽，文档写哪一个都是错的");
-  } else if (known.length === 3) {
+  } else if (known.length === cliSides.length) {
     [cli] = known;
   }
   return { errors, library, cli, names };
@@ -6817,7 +6815,7 @@ function releaseAddedNames(inventory) {
  *  问的是代码侧那张名单还抽不抽得出来（`inventory.size`），那是本常量看守的那一侧。
  *  现值 **92** 是 0.30.0 这棵树实测（config 叶子 + 观察者事件 + 压缩策略名 + 环境变量）：没有留余量是刻意的
  *  ——降它必须写理由，不能默默降。 */
-const NAME_INVENTORY_MIN_NAMES = 92;
+const NAME_INVENTORY_MIN_NAMES = 91;
 
 function collectGuideCoverageErrors() {
   const out = [];

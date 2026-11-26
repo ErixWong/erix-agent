@@ -742,7 +742,9 @@ decide whether to consume the result.
 - `context` is optional and defaults to `undefined`; when supplied, it
   accepts `strategy`, `budgetTokens`, `keepRounds`, `toolContext`, and
   `task`. `strategy` takes either a strategy object or one of the built-in
-  names `"sliding-window" | "fold-statistical" | "fold-llm"` (issue #167); an
+  name `"fold-llm"` (issue #167, narrowed by #898: the mechanical strategies are
+  internal — the budget fallback still uses one — but they are no longer
+  selectable names); an
   unknown name or other type raises a `TypeError` at run startup, and the
   `fold-llm` name makes the engine summarize with this run's own provider (one
   extra tool-free completion per compaction, billed into `result.usage` and
