@@ -22,10 +22,12 @@ import { fileURLToPath } from "node:url";
 import {
   appendUserTurn,
   createFileTranscriptStore,
-  createJsonFileModelConfigProvider,
   createMemoryTranscriptStore,
   runToolLoop,
 } from "../../src/index.js";
+// issue #929：createJsonFileModelConfigProvider 已从包入口摘掉；本测试只把它当配置夹具，
+// 按模块路径直引（与 bin/config.js 同一口径）。
+import { createJsonFileModelConfigProvider } from "../../src/config/json-file.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
 import {
   createAsyncJobRegistry,

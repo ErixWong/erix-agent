@@ -1680,7 +1680,9 @@ place, not a new merge rule: no deep merge, no diagnostics field, no second engi
 
 **The binding fact is machine-readable.** Every config leaf is marked `"init"` or `"call"` in
 `CONFIG_LEAF_BINDING` (`src/loop/config-namespace.js`) — the one hand-written table next to
-`CONFIG_NAMESPACE_SCHEMA` (`src/loop/config-namespace.js`). It is exported from the package root, and
+`CONFIG_NAMESPACE_SCHEMA` (`src/loop/config-namespace.js`). As of #929 it is **no longer
+exported from the package root** — the table stays in `src/loop/config-namespace.js` as the
+engine's internal reconciliation target, not a host-facing value — and
 `configSchemaSelfCheck` (`src/loop/config-namespace.js`) reconciles it against the schema: a leaf
 added to the schema without a binding is red, a binding that names no leaf is red, and there is no
 second hand-copied list to drift. The two values mean exactly:
@@ -2529,9 +2531,10 @@ for the authority rules and the alternatives that were rejected or deferred.
 
 `modelConfig` is always the resolver-shaped `ModelConfigProvider`, including an
 explicit override supplied alongside `assemblyPort`. A plain config object is
-rejected with a migration hint; wrap it with
-`createModelConfigResolver(config)` (or use
-`createStaticModelConfigProvider(config)`).
+rejected with a migration hint. Since #929 the config factories
+(`createModelConfigResolver` / `createStaticModelConfigProvider`) are no longer exported from
+the entry, so the host supplies its own object exposing `async resolve(slot)`: read the config
+(or keep it in memory) and return the selected slot.
 
 The existing fine-grained `runToolLoop` options remain supported. When both
 forms are present, the AssemblyPort is resolved first and explicitly supplied
@@ -2735,6 +2738,9 @@ one stderr line, see "Budget derivation").
   from a JSON file; `createStaticModelConfigProvider` takes the same shape in
   memory. Both return the slot **verbatim** plus a materialized `apiKey`
   (`apiKey` → `apiKeyEnv` → `apiKeyFile`, `resolveApiKey` (`src/config/api-key.js`)).
+  **As of #929 these three are no longer exported from the package root** (`.`): the modules
+  stay in place for `bin/` and the engine, but a host now reads this same shape itself (or
+  uses `loadModelSlot` for the `default` slot).
 
 ### Field contract
 
@@ -2765,7 +2771,7 @@ retired in 0.28.0 (see the `tuning` version policy above); the slot fields they 
 different plane and are untouched.
 
 **Unknown slot fields are inert and safe — except the budget keys, which are known now.** The
-built-in providers copy the slot verbatim (`createJsonFileModelConfigProvider` (`src/config/json-file.js`), `createStaticModelConfigProvider` (`src/config/static.js`)), and the
+built-in providers copy the slot verbatim (the config providers `createJsonFileModelConfigProvider` (`src/config/json-file.js`) and `createStaticModelConfigProvider` (`src/config/static.js`) — kept in place but, as of #929, no longer exported from the entry), and the
 provider factory reads a fixed parameter list (`createOpenAIProvider` (`src/providers/openai.js`)),
 so an unrecognized key cannot reach the wire
 and cannot throw. That safety statement is about **slot
@@ -2931,9 +2937,20 @@ being pinned process-wide:
 ```
 
 ```js
-import { createJsonFileModelConfigProvider, createOpenAIProvider, runToolLoop } from "erix-agent";
+import { createOpenAIProvider, runToolLoop } from "erix-agent";
+import { readFile } from "node:fs/promises";
 
-const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
+// #929 dropped the JSON-file config provider from the package entry: the host reads the
+// file itself and hands the loop the same `modelConfig.resolve(slot)` contract.
+const modelConfig = {
+  async resolve(name) {
+    const { slots } = JSON.parse(await readFile(configPath, "utf8"));
+    const entry = slots[name ?? "default"];
+    return entry?.apiKey === undefined && entry?.apiKeyEnv !== undefined
+      ? { ...entry, apiKey: process.env[entry.apiKeyEnv] }
+      : entry;
+  },
+};
 
 // Per-run slot choice travels with the run, not with the process.
 // Omitting the slot resolves the "default" slot; an explicit unknown name throws at

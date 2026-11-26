@@ -69,14 +69,11 @@ export {
   withSemanticRunState,
   RUN_STATE_MAX_CHARS,
 } from "./run-state.js";
-export {
-  createStaticModelConfigProvider,
-  createModelConfigResolver,
-} from "./config/static.js";
-export { createJsonFileModelConfigProvider } from "./config/json-file.js";
-export { resolveApiKey } from "./config/api-key.js";
-// 槽位 → provider 的构造件（issue #406 B2-a 的 C-a）：宿主拿 L2 兜底得先有 provider，
-// 而「读 slots.default → 校验必填 → 摊平给 createOpenAIProvider」在此之前每个宿主各写一份。
+// issue #929：配置间接层的 5 个导出已从包入口摘掉（模块留在原处，bin/ 仍按模块路径直引）。
+// 宿主改用下面这条链：`loadModelSlot` 从配置对象/路径取 slot 定义 → `createProviderForSlot`
+// 摊平成 provider → 或直接把 endpoint/key/model 喂给 `createOpenAIProvider`。
+// 被摘掉、不再从 `.` 可达的名字：createStaticModelConfigProvider / createModelConfigResolver /
+// createJsonFileModelConfigProvider / resolveApiKey / CONFIG_LEAF_BINDING。
 export { loadModelSlot, createProviderForSlot } from "./config/slot-provider.js";
 export { createFoldLlmStrategy, SUMMARIZER_PROMPT_GUIDE } from "./compact/fold-llm.js";
 export {
@@ -87,10 +84,8 @@ export {
 } from "./compact/strategy-resolution.js";
 export { createProviderSummarizer } from "./compact/provider-summarizer.js";
 export { createAgent, runToolLoop } from "./loop/orchestrator.js";
-// issue #571：逐叶「初始化 / 每次调用」的绑定事实（`"init"` / `"call"`）。它是**机器可读**的
-// 公开事实，唯一来源在 `src/loop/config-namespace.js`（与 `CONFIG_NAMESPACE_SCHEMA` 同处、由自检
-// 对账）；导出来是因为宿主得能算「这个键该写在哪」，而不是去读散文。
-export { CONFIG_LEAF_BINDING } from "./loop/config-namespace.js";
+// issue #571 的逐叶绑定事实 `CONFIG_LEAF_BINDING`（原住在 `src/loop/config-namespace.js`）已随
+// issue #929 从包入口摘掉：它是内部口径，宿主不再从 `.` 取；模块仍在原处供引擎与自检对账。
 export { parseReflectionDecision } from "./loop/reflection.js";
 // issue #743：事件分级表（宿主清理 `run_events` 那一类表时的唯一分流依据）。`fact` / `stream` /
 // `derived` 三档的定义、逐类理由与「删完回放退化成什么形状」在 `docs/host-consumer-contract.md`
