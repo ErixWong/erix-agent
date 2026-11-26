@@ -2,7 +2,7 @@
 # Host upgrade guide: 0.35.0
 
 > Scope: the 0.35.0 version cut. **This is a breaking release of the public surface, not of the
-> engine.** Five names are no longer exported from the package root (`.`); the modules they lived
+> engine.** Eight names are no longer exported from the package root (`.`); the modules they lived
 > in stay exactly where they were, and `bin/` keeps importing them by module path, so the CLI is
 > unaffected. The three names that carry the "get a slot definition → build a connection" chain are
 > kept and are the supported replacement. An already-running process is not migrated in place.
@@ -96,6 +96,37 @@ It was re-exported so a host could compute "which key belongs to initialization 
 binding is now internal to `src/loop/config-namespace.js` (the engine reconciles it there against
 `CONFIG_NAMESPACE_SCHEMA`). A host that needs the split should read the contract's config-plane
 section rather than import the table.
+
+## 2.4 The three Anthropic protocol helpers are gone (issue #926)
+
+0.35.0 also lands the retirement of the **built-in Anthropic wire adapter**, and with it three names
+that used to be exported from the package root. They were dropped in the same cut as the config layer,
+for the same reason: they were a *conversion* layer, and this package now speaks exactly **one** wire
+protocol (OpenAI-compatible).
+
+| Dropped from the entry | What it did | Where the code was |
+|---|---|---|
+| `canonicalToAnthropicRequest` | canonical messages/tools → Anthropic request body | `src/messages/anthropic.js` |
+| `anthropicResponseToCanonical` | Anthropic response JSON → canonical response | `src/messages/anthropic.js` |
+| `createAnthropicStreamAssembler` | Anthropic SSE → streamed canonical deltas | `src/messages/anthropic.js` |
+
+**Replacement.** There is no one-to-one substitute inside the package, and there will not be one:
+the engine no longer carries a second wire dialect. Concretely:
+
+- **OpenAI-compatible endpoints** — nothing to do. `createOpenAIProvider` is unchanged and is the only
+  door from outside the package to the wire.
+- **Anthropic endpoints** — the *host* supplies the provider. `runToolLoop` takes any object of the shape
+  `{ protocol, model, chat, chatStream }`; build that object yourself, implementing request encoding,
+  response mapping and stream assembly against the Anthropic API you target. The canonical shapes you
+  must produce/consume are the ones documented in `docs/host-consumer-contract.md` (messages, tool calls,
+  usage, `stopReason`).
+- **Compaction summaries** — unaffected. `summaryRole: "system"` still means "front the summary as a
+  system message"; when the host owns the wire, merging that into the provider's own `system` field is
+  the host's job (that merge used to live in the retired adapter).
+
+If you were calling the three helpers directly to talk to Anthropic, the migration is: keep your HTTP
+code, drop the imports, and read the canonical shapes from the contract document instead of from the
+retired converters.
 
 ## 3. What does not change
 

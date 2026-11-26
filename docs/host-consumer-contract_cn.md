@@ -5060,8 +5060,8 @@ store——必须按 `round` 归并、按 `dedupKey` 去重，不得假设记录
 也就再盖不动了。
 
 构造器从不把 `metadata` 摊平到顶层，而这一刀之后它**一个别的顶层键也不写**：引擎产出的
-`tool_result` 恰好就是协议字段 + `metadata.*` + `erix.*`。`erix` 与 `metadata` 都不会发给 provider：两个协议
-转换器都按显式字段清单序列化 `tool_result`，所这两个命名空间都是 `onWire: false`。输出
+`tool_result` 恰好就是协议字段 + `metadata.*` + `erix.*`。`erix` 与 `metadata` 都不会发给 provider：线协议
+转换器按显式字段清单序列化 `tool_result`，所这两个命名空间都是 `onWire: false`。输出
 卫生、单轮聚合、折叠三层只替换 `content`，事实字段原样存活。
 
 ### 字段清单（与 `TOOL_RESULT_CONTRACT` 锚定）

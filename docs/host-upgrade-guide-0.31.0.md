@@ -1,6 +1,10 @@
 <!-- doc-version: 0.31.0 -->
 # Host upgrade guide: 0.31.0
 
+> ⚠ **Superseded (0.35.0, issue #926):** the paragraph below titled "The protocol layer stays public and
+> supported" no longer holds. The three Anthropic protocol helpers are retired — see the 0.35.0 guide §2.4.
+> The rest of this page is the historical 0.31.0 record and is kept as written.
+
 **Release: 0.31.0.** This is the breaking bundle that **actually lands the sixteen deletions** the
 0.30.0 guide announced. In 0.30.0 the names below were still exported — the guide said "removed"
 and the package kept handing every one of them to `import` — so the real boundary moved here. Ten

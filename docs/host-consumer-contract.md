@@ -6475,7 +6475,7 @@ top level at all, so they can no longer reach those fields.
 The constructor never spreads `metadata` onto the top level, and since this change it writes
 **no other top-level key at all**: an engine-built `tool_result` contains exactly the
 protocol fields plus `metadata.*` plus `erix.*`. Nothing in `erix` or
-`metadata` is sent to the provider: both protocol converters serialise `tool_result` from
+`metadata` is sent to the provider: the wire converter serialises `tool_result` from
 an explicit field list, so the two namespaces are `onWire: false`. The output-hygiene,
 aggregation and fold layers only ever replace `content`; the fact fields survive them.
 

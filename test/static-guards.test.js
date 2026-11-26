@@ -2109,7 +2109,7 @@ describe("静态守卫：随包契约套件的 modelConfigProviderContract 调�
 // ---------------------------------------------------------------------------
 //
 // 病根：#530 之前的那一轮迁移只迁了三个脚本（`message-journal-golden` / `final-guard-probe` /
-// `release-check`），另外几个**观察脚本**（`probe-462-resume-refold` / `probe-326-compaction-facts` /
+// `release-check`），另外几个**观察脚本**（`probe-326-compaction-facts` /
 // `notes-experiment` / `notes-why-experiment`）仍写着已退役的扁平拼写（`runId` / `resume` /
 // `reflection` / `completion` / `maxRounds` …）⇒ **启动期就抛**，于是「跑 scripts/probe-xxx 可复现」
 // 这类写在 CHANGELOG / issue 回帖里的主张**不可复现**。它们不被任何门禁引用，所以全仓绿着。
@@ -2159,12 +2159,6 @@ const RUN_LOOP_OPTION_EXEMPTIONS = Object.freeze([
     name: "<computed>",
     why: "`probeRunToolLoopOption(name)` 是**故意**拿任意名字去撞名称闸口的只读探针（`runToolLoop({ [name]: false })`）："
       + "它测的正是「未知键会不会被拒」，静态名字在这里没有意义。",
-  },
-  {
-    file: "scripts/probe-462-resume-refold.mjs",
-    name: "...",
-    why: "`loopOptions(...)` 把 `capabilities` 之类按需透传（`...rest`），其余旋钮走 `run` / `folding` 两个具名组。"
-      + "helper 返回的字面量本身在扫描面内（`provider` / `executeTool` / `store` / `config` 都被核过）。",
   },
 ]);
 
@@ -2404,7 +2398,7 @@ describe("静态守卫：scripts 里 runToolLoop 的顶层选项名必须来自�
     t.diagnostic(`规则 7：扫描面 ${Object.keys(surface).length} 份脚本，命中 ${hits.length} 个顶层选项名，`
       + `覆盖 ${filesWithHits.length} 份文件：${filesWithHits.join(" / ")}`);
     assert.deepEqual(unparsable, [], `有调用点静态解析不了（守卫会对其恒绿）：\n${unparsable.join("\n")}`);
-    // 逐份点名：这 6 份是今天真有**代码里**的 `runToolLoop(` 调用点的脚本（少一份 = 面被拆了）。
+    // 逐份点名：这 5 份是今天真有**代码里**的 `runToolLoop(` 调用点的脚本（少一份 = 面被拆了）。
     // `scripts/release-check.mjs` 刻意不在名单里：它的两处 `runToolLoop(` 都住在**模板串**里
     // （`TS_HOST_GOOD_SOURCE` / `TS_HOST_BAD_SOURCE` = 给 tsc 编译的宿主样本，其中一份**故意坏**），
     // 抹掉模板串之后它一处调用点都没有。那份好样本由 `check:release` 用 `tsc --strict` 对着
@@ -2414,7 +2408,6 @@ describe("静态守卫：scripts 里 runToolLoop 的顶层选项名必须来自�
       "scripts/message-journal-golden.mjs",
       "scripts/notes-why-experiment.mjs",
       "scripts/probe-326-compaction-facts.mjs",
-      "scripts/probe-462-resume-refold.mjs",
       "scripts/soak.mjs",
     ]) {
       assert.ok(filesWithHits.includes(rel), `扫描面里找不到 ${rel} 的调用点：本规则会对那一份恒绿`);

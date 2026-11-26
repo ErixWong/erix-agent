@@ -4,6 +4,43 @@
 ## [Unreleased]
 
 ### Changed
+- **The dead `#462` forensic probe is deleted, and the docs stop pointing at retired files (task 261126-52, issue #938 ②③④).**
+  `scripts/probe-462-resume-refold.mjs` could not run any more: it passed the retired `config.input.cacheStablePrefix`
+  (rejected as an unknown config leaf) **and** the retired `context.strategy: "fold-statistical"` (only `fold-llm`
+  remains), so both halves of its A/B design were gone. It is deleted with its static-guard exemption and its entry in
+  the observation-script name list; the source comment in `src/compact/resume-fold-trim.js` now says how to get it back
+  from git if someone needs the historical curve. Docs: the host contract no longer says "both protocol converters",
+  `docs/testing.md` no longer lists the two deleted Anthropic test files or claims Anthropic system summaries are still
+  covered, and the harness comparison no longer points at the deleted `src/providers/anthropic.js`.
+- **删掉已死的 `#462` 取证探针，并把文档里指向已删文件的指针清掉（任务 261126-52，issue #938 ②③④）。**
+  `scripts/probe-462-resume-refold.mjs` 已经跑不起来：它同时传了已退役的 `config.input.cacheStablePrefix`
+  （被当成未知配置叶子拒绝）**和**已退役的 `context.strategy: "fold-statistical"`（只剩 `fold-llm`），
+  于是它 A/B 设计的两半都没了。脚本连同它在静态守卫里的豁免条目与观察脚本点名名单一起删除；
+  `src/compact/resume-fold-trim.js` 的注释改成「需要历史曲线时用 `git show <sha>:<path>` 取回」。
+  文档：宿主契约不再说 "both protocol converters"，`docs/testing.md` 不再列那两个已删的 Anthropic 测试文件、
+  也不再声称 Anthropic system summary 仍在覆盖里，harness 对比页不再指向已删的 `src/providers/anthropic.js`。
+- **The built-in Anthropic wire adapter is retired; the package speaks one protocol (issue #926).** `src/messages/anthropic.js`
+  and `src/providers/anthropic.js` are deleted together with the cache-breakpoint machinery that only they used, and
+  three names leave the package root: `canonicalToAnthropicRequest`, `anthropicResponseToCanonical`,
+  `createAnthropicStreamAssembler`. **Behaviour change: a host pointing the engine at an Anthropic endpoint must now
+  supply its own provider** — `runToolLoop` takes any `{ protocol, model, chat, chatStream }` object, so request
+  encoding, response mapping and stream assembly become the host's job; there is no one-to-one replacement inside
+  the package and there will not be one. OpenAI-compatible endpoints are unaffected (`createOpenAIProvider` is
+  unchanged). `summaryRole: "system"` still means "front the summary as a system message"; merging it into the
+  provider's own `system` field is the host's job when the host owns the wire. Migration is written per name in
+  `docs/host-upgrade-guide-0.35.0.md` §2.4 (and the `_cn` counterpart), and the 0.31.0 guide now carries a
+  superseded banner where it used to say the protocol layer stayed public. The `truncateBody` cap that lost its only
+  assertion with the deleted provider test got a replacement case in the same batch (task 261126-50).
+- **内置 Anthropic 线协议适配器退役；本包只说一种协议（issue #926）。** `src/messages/anthropic.js` 与
+  `src/providers/anthropic.js` 连同只有它们在用的缓存断点机制一起删除，三个名字离开包根：
+  `canonicalToAnthropicRequest`、`anthropicResponseToCanonical`、`createAnthropicStreamAssembler`。
+  **行为变化：把引擎指向 Anthropic 端点的宿主现在必须自备 provider** —— `runToolLoop` 接受任何
+  `{ protocol, model, chat, chatStream }` 对象，于是请求编码、响应映射、流装配都成了宿主的事；包内没有
+  一对一替代，以后也不会有。OpenAI 兼容端点不受影响（`createOpenAIProvider` 未变）。`summaryRole: "system"`
+  仍然是「把摘要前置成 system 消息」；线协议归宿主时，把它并进 provider 自己的 `system` 字段是宿主的事。
+  逐名迁移写在 `docs/host-upgrade-guide-0.35.0.md` §2.4（及 `_cn` 对应页）；0.31.0 指南原来那句「协议层仍然公开」
+  处已加「已被取代」横幅。随被删 provider 测试一起失去唯一判据的 `truncateBody` 上限，也在同一批里补了替代用例
+  （任务 261126-50）。
 - **`repl` stops accepting `--compaction` (task 261126-51, issue #937).** The #926 ruling was "folding is LLM-only:
   `--compaction` and `config.compaction` are retired", and `chat` landed it — `bin/cli.js` help says so explicitly.
   `bin/repl.js` did not: it still listed the flag as value-taking, still parsed it, and still wrote it into
