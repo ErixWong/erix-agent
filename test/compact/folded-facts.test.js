@@ -15,7 +15,7 @@ import test from "node:test";
 import { runToolLoop } from "../../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createSlidingWindowStrategy } from "../../src/compact/sliding-window.js";
-import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../../src/compact/fold-statistical.js";
+import { createFoldStatisticalStrategy, FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../../src/compact/fold-statistical.js";
 import {
   injectFoldSummaryIntoHead,
   pickCoveringFoldAlternative,
@@ -75,20 +75,31 @@ function createProvider({ mainScript, failSummary = false }) {
   };
 }
 
-const runOptions = (runId, store, provider, context, extra = {}) => ({
-  provider,
-  executeTool: async ({ id }) => bigToolOutput(id),
-  maxRounds: 2,
-  completion: false,
-  reflection: false,
-  // #498 S3: the flat `context` option is retired; data-only bags (budgetTokens / keepRounds /
-  // strategy-name) live at `config.folding.context`, the expansion phase writes them back.
-  config: { folding: { context } },
-  store,
-  runId,
-  initialUserMessage: `start ${"y".repeat(600)}`,
-  ...extra,
-});
+const runOptions = (runId, store, provider, context, extra = {}) => {
+  // issue #898：零 LLM 的 `fold-statistical` 不再是可显式选择的内置**名字**；模块保留（预算
+  // 兜底仍在用），行为型用例改为**对象注入**（`capabilities.ports.strategy`——对象里含函数，
+  // 不能走 config 数据侧）。策略实例 `.name` 仍是 `fold-statistical` ⇒ 既有断言逐字不变。
+  const strategyObject = context?.strategy
+    && typeof context.strategy === "object" ? context.strategy : undefined;
+  const foldingContext = strategyObject === undefined
+    ? context
+    : { ...context, strategy: undefined };
+  return {
+    provider,
+    executeTool: async ({ id }) => bigToolOutput(id),
+    maxRounds: 2,
+    completion: false,
+    reflection: false,
+    // #498 S3: the flat `context` option is retired; data-only bags (budgetTokens / keepRounds /
+    // strategy-name) live at `config.folding.context`, the expansion phase writes them back.
+    config: { folding: { context: foldingContext } },
+    store,
+    runId,
+    initialUserMessage: `start ${"y".repeat(600)}`,
+    ...(strategyObject === undefined ? {} : { capabilities: { ports: { strategy: strategyObject } } }),
+    ...extra,
+  };
+};
 
 const foldRoundRecords = (records) => records.filter((record) => (
   (record.round ?? 0) > 0
@@ -106,7 +117,7 @@ test("#470-1 fold-statistical（零 LLM）：替代物落进轮记录，含范�
   await runToolLoop(withSeed(runOptions("470-statistical", store, provider, {
     budgetTokens: 1050,
     keepRounds: 0,
-    strategy: "fold-statistical",
+    strategy: createFoldStatisticalStrategy(),
   }, { maxRounds: 10 })));
 
   // 前置：这条路真的没调过任何 LLM 摘要器（否则「零 LLM 也有替代物」是空断言）。
@@ -165,7 +176,7 @@ test("#470-4 尺寸上界：投影 ≤ 声明上限，且只挂在折叠轮（�
   await runToolLoop(withSeed(runOptions("470-bound", store, provider, {
     budgetTokens: 300,
     keepRounds: 0,
-    strategy: "fold-statistical",
+    strategy: createFoldStatisticalStrategy(),
   })));
   const records = await store.load("470-bound");
   const factsRows = records.filter((record) => record[FOLDED_FACTS_RECORD_FIELD] !== undefined);

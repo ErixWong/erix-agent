@@ -18,7 +18,7 @@ import test from "node:test";
 
 import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
 import { KitError } from "../../src/providers/errors.js";
-import { FOLD_SUMMARY_MARKER } from "../../src/compact/fold-statistical.js";
+import { createFoldStatisticalStrategy, FOLD_SUMMARY_MARKER } from "../../src/compact/fold-statistical.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { runDirect } from "../helpers/run-direct.js";
 
@@ -136,9 +136,20 @@ async function runFoldLlm({
         ...(resume ? { resume: true } : {}),
       },
       input: { wrapup: false },
-      folding: { context: { budgetTokens, keepRounds: 0, strategy } },
+      folding: {
+        context: {
+          budgetTokens,
+          keepRounds: 0,
+          ...(typeof strategy === "string" ? { strategy } : {}),
+        },
+      },
     },
-    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+    capabilities: {
+      hooks: { onEvent: (event) => events.push(event) },
+      ...(typeof strategy === "object" && strategy !== null
+        ? { ports: { strategy } }
+        : {}),
+    },
   });
   return { run, store };
 }
@@ -295,7 +306,7 @@ test("#661-5 fold-statistical 零 LLM：喂「必抛 summarizer」也照样跑�
   const { run, store } = await runFoldLlm({
     runId: "661-statistical",
     provider,
-    strategy: "fold-statistical",
+    strategy: createFoldStatisticalStrategy(),
     events,
   });
   const result = await run;

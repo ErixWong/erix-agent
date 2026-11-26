@@ -9,18 +9,12 @@ import {
 } from "../../src/compact/strategy-resolution.js";
 import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistical.js";
 import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
-import { createSlidingWindowStrategy } from "../../src/compact/sliding-window.js";
 
-test("all three built-in strategy names resolve to usable instances", () => {
-  assert.deepEqual(BUILTIN_COMPACTION_STRATEGY_NAMES, [
-    "sliding-window",
-    "fold-statistical",
-    "fold-llm",
-  ]);
+test("the only built-in selectable strategy name is fold-llm (issue #898: zero-LLM options retired)", () => {
+  // 折叠必须由 LLM 完成 ⇒ `sliding-window` / `fold-statistical` 不再是可显式选择的内置名。
+  assert.deepEqual(BUILTIN_COMPACTION_STRATEGY_NAMES, ["fold-llm"]);
 
   const expectedFactories = {
-    "sliding-window": createSlidingWindowStrategy,
-    "fold-statistical": createFoldStatisticalStrategy,
     "fold-llm": createFoldLlmStrategy,
   };
   assert.deepEqual(
@@ -29,9 +23,7 @@ test("all three built-in strategy names resolve to usable instances", () => {
   );
   for (const [name, factory] of Object.entries(expectedFactories)) {
     assert.equal(BUILTIN_COMPACTION_STRATEGIES[name], factory);
-    const strategy = name === "fold-llm"
-      ? resolveCompactionStrategy(name, { foldLlmOptions: { summarizer: () => "s" } })
-      : resolveCompactionStrategy(name);
+    const strategy = resolveCompactionStrategy(name, { foldLlmOptions: { summarizer: () => "s" } });
     assert.equal(strategy.name, name);
     assert.equal(typeof strategy.shouldCompact, "function");
     assert.equal(typeof strategy.compact, "function");
@@ -39,18 +31,22 @@ test("all three built-in strategy names resolve to usable instances", () => {
 });
 
 test("name lookup tolerates surrounding whitespace and is case-sensitive", () => {
-  assert.equal(resolveCompactionStrategy("  fold-statistical  ").name, "fold-statistical");
-  assert.equal(isBuiltinCompactionStrategyName(" sliding-window "), true);
-  assert.equal(isBuiltinCompactionStrategyName("Fold-Statistical"), false);
+  assert.equal(
+    resolveCompactionStrategy("  fold-llm  ", { foldLlmOptions: { summarizer: () => "s" } }).name,
+    "fold-llm",
+  );
+  assert.equal(isBuiltinCompactionStrategyName(" fold-llm "), true);
+  assert.equal(isBuiltinCompactionStrategyName("Fold-Llm"), false);
 });
 
 test("unknown names throw a startup TypeError listing the legal values", () => {
-  for (const value of ["folding", "", "   ", "psyche"]) {
+  // issue #898：`sliding-window` / `fold-statistical` 从可选项里退掉 ⇒ 现在它们是「未知名字」。
+  for (const value of ["folding", "", "   ", "psyche", "sliding-window", "fold-statistical"]) {
     assert.throws(
       () => resolveCompactionStrategy(value),
       (error) => {
         assert.ok(error instanceof TypeError, `${value} must reject with TypeError`);
-        assert.match(error.message, /sliding-window \| fold-statistical \| fold-llm/u);
+        assert.match(error.message, /fold-llm/u);
         return true;
       },
       value,
@@ -93,10 +89,11 @@ test("an object-built fold-llm without a summarizer keeps its constructor error"
 });
 
 test("name resolution forwards context-level factory options", async () => {
-  const strategy = resolveCompactionStrategy("fold-statistical", {
+  const strategy = resolveCompactionStrategy("fold-llm", {
     options: { recoveryHint: "归档在 judge.log", keepRounds: 0 },
+    foldLlmOptions: { summarizer: () => "injected summary" },
   });
-  assert.equal(strategy.name, "fold-statistical");
+  assert.equal(strategy.name, "fold-llm");
 
   const rounds = [];
   for (let round = 1; round <= 4; round += 1) {

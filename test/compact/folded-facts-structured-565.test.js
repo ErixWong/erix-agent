@@ -131,8 +131,11 @@ test("#565-1 fold-statistical（零 LLM）：origin === mechanical，summary 缺
     maxRounds: 8,
     completion: false,
     reflection: false,
+    // issue #898：策略名不再是配置项——策略对象是**端口**（`config` 子树要过 JSON 往返），
+    // 故 fold-statistical 走 `capabilities.ports.strategy`，预算/keepRounds 留在 config。
+    capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
     config: {
-      folding: { context: { budgetTokens: 1300, keepRounds: 0, strategy: "fold-statistical" } },
+      folding: { context: { budgetTokens: 1300, keepRounds: 0 } },
     },
     store,
     runId: "565-mechanical",
