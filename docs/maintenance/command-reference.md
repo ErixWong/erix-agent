@@ -47,9 +47,10 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   README invents; aliases like `-c|--continue` and `--no-final-guard` are counted, and its exemption register must stay
   empty-or-justified, since an idle entry is itself red).
   Those anchors also reconcile the **number of declaration sites between the EN and the CN doc**, which is what catches
-  "someone deleted the whole sentence on one side". Every per-occurrence rule carries its reverse proof in
-  `node scripts/docs-drift-check.mjs --self-test`; run it after touching `scripts/docs-drift-check.mjs`. The level of
-  every anchor, and why the remaining ones were *not* upgraded, is listed in the header comment of that script.
+  "someone deleted the whole sentence on one side". Every per-occurrence rule *used to* carry its reverse proof in
+  `node scripts/docs-drift-check.mjs --self-test`; that entry is **deleted** (task 261126-59) — it had no consumer
+  outside the manual `docs:pass`, took ≈8.5 minutes, and had gone red 23 cases unnoticed. The level of every anchor,
+  and why the remaining ones were *not* upgraded, is listed in the header comment of that script.
 - Doc line anchors (issue #286, first batch T-a): docs must not lean on **bare line numbers**. `paths` used to strip
   `:1234` before resolving a reference, so only the file was ever checked — a line number that drifted into another
   function, or past the end of the file, stayed green (the contract pointed at line 398 of `src/store/notes.js`, a file that is 383 lines long). Three anchors now hold that line, all wired into `--self-test`:
@@ -80,8 +81,8 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   scope — there is nothing to check it against. Existing violations are pinned by `SYMBOL_EXISTENCE_BASELINE`, an
   **only-down** ratchet with the same semantics as `check:types`: above it is red (the message names each
   document:line, symbol and file), below it is green plus a "you may lower this" note, and `--verbose` lists every
-  remaining group so the baseline can actually be worked down. Three `--self-test` cases hold it: a fake S2 symbol is
-  red, the same position with two real exports is green, and an external-repo prefix is not looked up.
+  remaining group so the baseline can actually be worked down. (Three cases used to hold it in `--self-test`, which is
+  gone as of task 261126-59; the rule itself is unchanged.)
   *`symbol-anchor-span`* (#286 batch T-b1a) is the *per-occurrence* companion of the rule above: when a symbol anchor
   **carries a line range** — `` `symbol` (`path:1517-1531`) `` — that range must **intersect that symbol's own ground
   truth in the referenced file** (`lo <= p <= hi`). Ground truth = every declaration site of the name (not only the
@@ -127,9 +128,10 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   the exemption is issued by the gate, and the gate could not recompute. What the gate still asserts about the
   test is only what it can verify: the file is present and non-empty, and it imports the anchor module (one
   table, two readers). What it no longer claims: anything about the test's internals — a regex cannot tell a
-  judgement from a weakened one. `--self-test` carries 19 cases in this family (14 red + 5 green controls): a
-  reference copied outside the markers → red; the guard test emptied → red; the module import renamed inside the
-  test → red; an anchor weakened to the bare key name → red, naming the ambiguity and its hit lines; the registry
+  judgement from a weakened one. (`--self-test` used to carry 19 cases in this family; it is deleted as of task
+  261126-59, so these reverse proofs now live only in `test/contract-snapshot-cell-axes-767.test.js`. The shapes it
+  covered were: a reference copied outside the markers → red; the guard test emptied → red; the module import renamed
+  inside the test → red; an anchor weakened to the bare key name → red, naming the ambiguity and its hit lines; the registry
   turned into a function call → red; **one anchor entry deleted** → that cell's reference is counted again, so the
   ratchet goes over its floor, and the missing registration is named by cell and axis; a table cell pointed at
   that comment line → red with "the table says :N / the anchor says :M" plus both lines; a caliber line added to
@@ -165,8 +167,8 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   answered: the file exists, the anchor hits exactly once, `kind: "code"` matches a code line, both tables equal the
   recomputed numbers, and the coverage list is still satisfied. What no anchor can express is "*this* line is the
   event *this* cell is about" — that is a reading judgement and stays with review. The leniency is pinned as a
-  contract rather than quietly hoped away: `--self-test` carries a green-control case for exactly that shape
-  (labelled 「#772 R4 已知限度（特征用例…）」), and `test/contract-snapshot-cell-axes-767.test.js` pins it as
+  contract rather than quietly hoped away: `--self-test` used to carry a green-control case for exactly that shape
+  (it is deleted as of task 261126-59), and `test/contract-snapshot-cell-axes-767.test.js` pins it as
   `G4-R6 …（已知限度，见 command-reference）`. Do not add heuristics to close it — a heuristic that guesses which
   event a line is about would itself be the thing nobody can review.
   *The region holds only the table* (issue #772 R2): every line strictly between the two markers must be a
@@ -467,8 +469,9 @@ Run the CLI locally (no installation required)
     and otherwise on the scheduled agent pass (`doc-review-pass.md`, entry `npm run docs:pass`). The operator
     ruling behind this is #802: a script can only judge wording, and that class produced the 25% red rate
     (138 pass / 49 fail / 13 cancelled over 200 runs; 9 of 12 sampled failures were registry drift, not
-    behaviour) while catching almost no defect. `docs-drift-check --self-test` is minutes-slow and belongs to that
-    pass, not to a per-commit gate (one-off timings: ≈7 min on 261109, ≈8.5 min on 261126 over 219 cases).
+    behaviour) while catching almost no defect. `docs-drift-check --self-test` used to be minutes-slow and belong to
+    that pass (≈7 min on 261109, ≈8.5 min on 261126 over 219 cases) — **it is deleted as of task 261126-59**: it had
+    no consumer outside the manual pass and had gone red 23 cases unnoticed.
   - `check:cli:model-e2e` left CI: with `ERIX_E2E_MODEL` unset it exits 0 with a categorized reason, so as a CI
     step it only spun; the real endpoint run is preflight step 3.
 - **Invariants that are not about steps**: install is `npm install --include=dev`, **never** `npm ci` —

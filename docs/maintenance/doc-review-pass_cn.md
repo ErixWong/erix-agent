@@ -22,14 +22,15 @@ npm run docs:pass
 ```
 
 它依次跑：`check:docs`（漂移 + 中英骨架 + 版本声称 + 引用路径）、`check:docs:strict`、`check:docs:spelling`、
-`check:docs:examples`、`check:agents-directives`，以及 drift 检查器自己的 `--self-test`。
+`check:docs:examples`、`check:agents-directives`。
 **它的退出码是关于脚本的证据，不是关于文档的证据**——脚本看不见「看起来对但其实错了」的句子。
 
 自 issue #908 R2（261126）起 **CI 里一条文档闸都没有**——`check:changelog` 与文档向自测都不再是流水线步骤。
 所以机械那一半只剩两个主人：这趟检查，与版本边界（`PREFLIGHT_STEPS[0]`、`release:day --stage writeback`）。
-也就是说 `docs-drift-check --self-test` 现在只由这一趟周期性覆盖（它是分钟级的：两次一次性计时 261109 约
-7 分钟、261126 约 8.5 分钟）。秒级的**代码面**判据不再归这趟管：它们在 `npm test` 里跑
-（`test/gate-self-tests.test.js`）。
+**`docs-drift-check --self-test` 已经不存在了**（任务 261126-59）：它唯一的主顾就是这一趟，一次约 8.5 分钟，
+而它**已经红了 23 例却没人发现**——一个没有事件触发的步骤是仪表盘，不是闸。它原先覆盖的东西，现在由判据
+本体（`check:docs` / `check:docs:strict`）与代码套件各自负责。秒级的**代码面**判据也不归这趟管：它们在
+`npm test` 里跑（`test/gate-self-tests.test.js`）。
 
 ## agent 必须手工判的（这才是检查本体）
 

@@ -77,7 +77,8 @@
 //                 覆盖面曾有只降不升地板 `REF_SCAN_DOCS_MINIMUM`（#908 拆）；「把指南改名到不匹配模式就静默缩面」
 //                 那条报警改由**测试侧硬编码清单**守（`test/docs-anchor-ratchet.test.js` 钉 `SYMBOL_DOCS_STATIC`），
 //                 脚本侧只留「清单里有、工作区里真读不到 = 红」这一真值。文档里写着的「点名几份 + 实扫几份 = 下限」
-//                 也由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）：抄错一格就红并点名是哪份的哪个数。
+//                 （原「文档写的份数逐格对账」那一条已随 #923 删除：它只 push `notes`、**从不报错**，
+//                 属于「红不了」的死判据——删掉它不损失任何判据力。）
 //                 豁免是**三信号 AND**（① 表里点名这一条 ② 引用行含那个占位路径 ③ 同一行有就地声明词）：
 //                 评审 R4 把从前的整行 OR 收紧——同一行只剩一句 `for example` 之类的附带措辞不算声明。
 //                 条目自己还要过配置校 `bareLineExemptionEntryErrors()`：声明词若能匹配空串（这一侧恒真）
@@ -241,10 +242,8 @@ const VERBOSE = process.argv.includes("--verbose");
 
 const PKG = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
 const PKG_VERSION = PKG.version;
-/** `--self-test` 要连 package.json 一侧的改动一起测，所以清单真值走这个口子（有内存副本就用副本）。 */
 function pkgNow() {
-  const overlay = OVERLAY.get("package.json");
-  return overlay ? JSON.parse(overlay) : PKG;
+  return PKG;
 }
 
 const README_EN = "README.md";
@@ -255,8 +254,6 @@ const CONTRACT_EN = "docs/host-consumer-contract.md";
 const CONTRACT_CN = "docs/host-consumer-contract_cn.md";
 const AGENTS_EN = "AGENTS.md";
 const AGENTS_CN = "AGENTS_cn.md";
-const CMDREF_EN = "docs/maintenance/command-reference.md";
-const CMDREF_CN = "docs/maintenance/command-reference_cn.md";
 const PI_EXT_README = "examples/pi-extension/README.md";
 const ARCH_EN = "docs/architecture.md";
 const ARCH_CN = "docs/architecture_cn.md";
@@ -264,7 +261,6 @@ const CHARTS_EN = "docs/charts.md";
 const CHARTS_CN = "docs/charts_cn.md";
 /** issue #644 ③：符号锚点声称链的新家（历史类文档，`retired-spelling-scan.mjs` 按路径把它归成 history）。
  *  它同时在锚点面内（见 `SYMBOL_DOCS_STATIC`）：搬动不能让 (符号, 文件) 组数掉下去。 */
-const RATCHET_SRC = "scripts/type-check-ratchet.mjs";
 /** 工具事实契约常量的真值出处（工单 261014 T1）。 */
 const TOOL_FACT_SRC = "src/tool-fact.js";
 
@@ -382,7 +378,6 @@ const RELEASE_STATE_TARGETS = [
   { file: AGENTS_CN, id: "AGENTS_cn.md「发布行」句", fact: "published", re: VERSION_CLAIM_RULES[1].pubRe },
 ];
 /** CHANGELOG 段首的「未发布」标记（判据 3 / `changelog-published` 读的就是它）。 */
-const UNPUBLISHED_HEADING_RE = /\s*（未发布[^）]*）|\s*\(unpublished\)/;
 
 /** 一个 CLI 旗标的值（`--flag v` 与 `--flag=v` 两种写法都认）。 */
 function flagValue(argv, flag) {
@@ -967,8 +962,7 @@ for (const rule of DEFAULT_RULES) {
 //   所以本单的修前红证据靠后者（它在修前就是 #280 那条「改了但没红」的假 fail-open）。
 
 /** `--self-test` 用：把某个文件的文本换成内存副本（不落盘、不动工作树）。 */
-const OVERLAY = new Map();
-const textOf = (rel) => OVERLAY.get(rel) ?? read(rel);
+const textOf = (rel) => read(rel);
 
 /** 双向对称的集合差：缺什么、多什么、写了重复成员。 */
 function diffSets(truth, doc) {
@@ -1153,7 +1147,7 @@ function arrowByteClaims(src) {
 // 病根（#284 / #285）：同一个事实的「谁拥有哪个字段」在构造器、文档、契约测试三处各写一份。
 // 修法是把它写成导出常量，本规则接上其中「文档 ↔ 常量」那条边：**双向**比成员。
 // 真值从 `src/tool-fact.js` 的**源码文本**抽（不 import）：门禁要在没有生成物、没有
-// node_modules 的树里能跑，且必须能吃 `--self-test` 的内存副本（OVERLAY）。
+// node_modules 的树里能跑。
 // 声明面有五个（都在中英两份契约里各自存一份，所以下面逐面做中英处数对账）：
 //   ① 散文清单「以 `erix.<field>` 寻址：`a` / `b` / …」
 //   ② 字段归属表（第一格是字段、第二格是 Owner）——含命名空间名本身
@@ -1755,7 +1749,8 @@ function collectMarkerLiteralErrors() {
 // 覆盖面与正则（工单 #286 T-a 的口径，脚本自己会数——别只信注释，跑 `--verbose` 看 note）：
 //   覆盖面 = `SYMBOL_DOCS_STATIC` 点名的那批 + `docs/host-upgrade-guide*.md` 全部（按目录**实扫**：新增一份
 //     指南就自动纳面，不存在「新文档漏在覆盖面外」的形状）。份数不在这里抄——跑 `--verbose` 看 ref-scan 那条 note，
-//     文档里写着的份数由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）。
+//     文档里写着的份数**不再**对账（原 `collectRefScanCountClaimErrors()` 只 push notes、恒不报错，
+//     已随 #923 删除；份数的真值仍由本函数的实测值给出）。
 //   正则 = BARE_LINE_RE：**实现面只算 `src/**.js:N[-M]`**（就是工单那条口径）。这段注释以前写「前缀面
 //     放宽到 src|bin|scripts|test|docs|examples|fixtures」——**那一步对裸行号棘轮从未落地**：现正则只匹配 `src/`，
 //     于是 `bin/cli.js:841-848` 这类行号根本不进棘轮（`bin/final-guard.js:86`、`test/contract/…:124-142`
@@ -1792,12 +1787,12 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
  *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前清单做对照，这里再钉一道份数下限。
  *  现值 = `SYMBOL_DOCS_STATIC.length`（点名那批）+ 目录实扫到的指南份数，**由本文件算出来**：
  *  下限只是「不许比它小」的地板，它本身不解释自己为什么是这个数——所以文档里写的那组份数（点名几份 +
- *  实扫几份 = 下限）由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）。
+ *  实扫几份 = 下限）**不再**与文档声称对账（那条死判据已随 #923 删除）。
  *  历史（每一次抬高的理由：哪份指南落地、哪七份活文档纳面）在 `docs/maintenance/symbol-anchor-ledger.md`。
  *  写法必须保持这一行不变形（自测要改这个数）。 */
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟指南改名到不匹配模式。 */
-let SIM_RENAMED_GUIDES = new Set();
+
 let LAST_SCAN_DOC_COUNT = -1;   // 自测据此判断树形口子有没有真的落上（#279 的「变异没落上」同一条纪律）
 
 /** 覆盖面：13 份点名文档 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
@@ -1805,7 +1800,7 @@ function refScanDocs() {
   const guides = readdirSync(path.join(ROOT, "docs"))
     .filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
     .map((f) => `docs/${f}`)
-    .filter((f) => !SIM_RENAMED_GUIDES.has(f))
+
     .sort();
   const docs = [...SYMBOL_DOCS_STATIC, ...guides];
   LAST_SCAN_DOC_COUNT = docs.length;
@@ -1829,35 +1824,6 @@ function collectRefScanCoverageErrors() {
 }
 
 /* ── #635 ①：文档里「点名几份 + 实扫几份 = 下限」这类**份数声称**必须等于实测 ─────────────
- * 病根：那句话是散文。脚本按目录实扫、测试侧另抄一份清单，两边自己算得没错，可**文档里写着的数**
- * 没人核对——现场：`README.md` 同一句里写着「That is 43 documents」又说「13 pinned + 32 …（= 45）」，
- * 两个数互相矛盾，而所有门禁一路绿（唯一被机器校过的是 `REF_SCAN_DOCS_MINIMUM = N` 那个常量声称）。
- * 判据（**静态对账**：一次目录扫描 + 几次正则，不跑 tsc、不跑 npm）：
- *   · 每份登记文档必须命中它登记的正则——句子被删也要红（否则「删掉这句话」就是合法逃逸）；
- *   · 每个捕获到的份数必须等于本文件自己算出来的真值（点名 = `SYMBOL_DOCS_STATIC.length`、
- *     实扫指南 = 目录里匹配的份数、合计、下限常量），红时点名「哪份文档的哪个数、声称多少、实测多少」。
- * 为什么真值取 `refScanDocs()`：它与覆盖面判据同源（自测的「改名一份指南」树形口子也照同一条路走），
- * 拿另算一份的目录数会让那条例外反向证多出一条与主题无关的红。
- */
-const REF_SCAN_COUNT_CLAIMS = [
-  {
-    doc: README_EN,
-    rules: [
-      { re: /\((\d+) today, discovered from the directory\)/g, groups: ["guides"],
-        label: "upgrade guides discovered from the directory" },
-      { re: /That is (\d+) documents \(`REF_SCAN_DOCS_MINIMUM = (\d+)`: (\d+) pinned \+ the (\d+) upgrade-guide files/g,
-        groups: ["total", "floor", "pinned", "guides"], label: "live-document count" },
-    ],
-  },
-  {
-    doc: README_CN,
-    rules: [
-      { re: /（当前 (\d+) 份，按目录实扫）/g, groups: ["guides"], label: "按目录实扫到的升级指南份数" },
-      { re: /共 (\d+) 份（`REF_SCAN_DOCS_MINIMUM = (\d+)`：(\d+) 份点名 \+ 按目录实扫到的 (\d+) 份升级指南）/g,
-        groups: ["total", "floor", "pinned", "guides"], label: "活文档份数" },
-    ],
-  },
-];
 
 /** 份数声称的真值（与覆盖面判据同源：`refScanDocs()`）。 */
 function refScanCountTruth() {
@@ -1868,62 +1834,10 @@ function refScanCountTruth() {
 }
 
 /** 把「点名 / 实扫 / 合计 / 下限」翻成人话（报错文案与 note 共用一份，别在别处再抄）。 */
-const REF_SCAN_COUNT_LABEL = Object.freeze({
-  pinned: "点名文档", guides: "实扫指南", total: "文档合计", floor: "下限常量",
-});
 
-/**
- * issue #726 后续（切 0.34.0 时裁决）：**这一族从「判红」降级为「只报」**。
- *
- * 它量的是**闸自己的覆盖面**（点名几份 + 实扫几份 = 合计），再要求文档把这个测量**复述**一遍。
- * 复述没有读者：没有人拿「57 份」做任何决定，而每次新增一份指南（例如切版时新增的升级指南对）
- * 都要连带改 README 中英 + 账本中英四处数字——那是自指类判据在收税，不是漂移。
- *
- * 真值仍然**算**（`refScanDocs()` 是覆盖面判据的同源真值），只是不再拿它判文档红：
- * 数字对不上只打印一行提示，谁想改就改，不改也不拦。
- */
-function collectRefScanCountClaimErrors() {
-  const out = [];          // 恒空：这一族不再产生红（保留返回形状，调用点不动）
-  const notes = [];
-  const truth = refScanCountTruth();
-  let claims = 0;
-  let mismatched = 0;
-  for (const { doc, rules } of REF_SCAN_COUNT_CLAIMS) {
-    const text = textOf(doc);
-    if (typeof text !== "string") {
-      notes.push(`ref-scan-claims（提示）：${doc} 读不到文本，跳过`);
-      continue;
-    }
-    for (const { re, groups, label } of rules) {
-      const hits = [...text.matchAll(re)];
-      if (!hits.length) {
-        notes.push(`ref-scan-claims（提示）：${doc} 里没有「${label}」那条份数声称（不拦）`);
-        continue;
-      }
-      for (const m of hits) {
-        const line = text.slice(0, m.index).split("\n").length;
-        groups.forEach((key, i) => {
-          const claimed = Number(m[i + 1]);
-          const want = truth[key];
-          claims += 1;
-          if (claimed !== want) {
-            mismatched += 1;
-            notes.push(`ref-scan-claims（提示，不拦）：${doc}:${line} 写「${REF_SCAN_COUNT_LABEL[key]}」${claimed}，`
-              + `脚本实测 ${want}——这行只是把测量摆出来，要不要改文档由人决定`);
-          }
-        });
-      }
-    }
-  }
-  notes.push(`ref-scan-claims（只报不判）：实测 点名 ${truth.pinned} / 实扫 ${truth.guides} / 合计 ${truth.total}`
-    + ` / 下限 ${truth.floor}；文档里 ${claims} 处复述，其中 ${mismatched} 处与实测不同（不拦）`);
-  collectRefScanCountClaimErrors.notes = notes;
-  return out;
-}
 
 
 /** 行内代码形态的标识符（不是路径：干掉带 `/` 与 `.` 的东西）。 */
-const INLINE_SYMBOL_RE = /`([A-Za-z_$][\w$]*)`/g;
 
 /** **不是符号**的 JavaScript 字面量：它们出现在「值」的位置上，文档写 ``retry` 默认 `false`（`src/…`）``
  *  说的是「默认值长在哪个文件」，拿声明判据去问必然假红（`false` 在 orchestrator.js 里出现 102 次，
@@ -1961,7 +1875,6 @@ const SYMBOL_VALUE_MEMBERSHIP = new Map([
  * 不做完整 AST（本仓零依赖，不引解析器）；正则字面量用「前一个有意义记号」判定，判不准时
  * 退回「当除号」——宁可少涂一格，也不要把后面整份文件吞进字符串里（那会让真声明集体消失，
  * 是比假绿更响的假红）。 */
-const MASK_CODE = 0;
 const MASK_STRING = 1;
 const MASK_COMMENT = 2;
 /** 正则字面量只可能出现在这些记号之后（`= /re/`、`( /re/`、`return /re/`…）；其余位置的 `/` 是除号。 */
@@ -2062,12 +1975,11 @@ const JS_CONTROL_KEYWORDS = new Set(["if", "else", "case", "default", "return", 
 const FILE_LINE_CACHE = new Map();   // rel → { text, lines, decls, literals }
 
 function fileRecord(rel) {
-  const overlaid = OVERLAY.has(rel);
   const hit = FILE_LINE_CACHE.get(rel);
-  if (hit && hit.overlaid === overlaid && (!overlaid || hit.text === textOf(rel))) return hit;
+  if (hit) return hit;
   let text;
   try { text = textOf(rel); } catch { return null; }
-  const rec = { text, overlaid, lines: text.split("\n"), decls: null, literals: null };
+  const rec = { text, lines: text.split("\n"), decls: null, literals: null };
   FILE_LINE_CACHE.set(rel, rec);
   return rec;
 }
@@ -2354,21 +2266,6 @@ function symbolAnchorSpanVerdict(o) {
 
 /** #286 T-b1a R1 的逐处反向证靶子：把「符号 = `sym`」那一处锚点的**区间后缀**换成 `to`（`:N` / `:N-M` 整段）。
  *  与 `mutateSymbolAnchor` 同款纪律：打不上就原样返回，`runSelfTest` 的「变异没落上」会报红。 */
-function mutateSymbolAnchorSpan(sym, filePath, to) {
-  return (text) => {
-    let hits = 0;
-    // 捕获组的边界要数清楚：`sep` 这一组**已经含**路径前的那个反引号，闭合反引号是模式里的字面量（没进组）。
-    // 早先重写时多补了一个反引号，变异结果成了 `path:94-100` 前面两个反引号 ⇒ 锚点整条解体（符号下限掉一组），
-    // 于是这一例报的是「别的红」而不是本判据的红——#279 说的「变异器自己坏掉」就是这个形状。
-    const out = text.replace(/`([A-Za-z_$][\w$]*)`(\s*[（(]\s*`)([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(:\d+(?:-\d+)?)?`(\s*[)）])/g,
-      (whole, s, sep, p, span, tail) => {
-        if (s !== sym || p !== filePath || !span) return whole;
-        hits += 1;
-        return "`" + s + "`" + sep + p + to + "`" + tail;
-      });
-    return hits ? out : text;      // 一处都没打上 → 原样返回 → 「变异没落上」报红
-  };
-}
 
 function collectSymbolAnchorSpanErrors(occurrences) {
   const out = [];
@@ -2548,7 +2445,6 @@ const SYMBOL_SHAPE_S3_RE = new RegExp(
  *  否则列举就结束（`src/x.js`: `a` 在 `src/y.js` 里 ⇒ 只认 `a`，不把「在」后面的 span 拽进来）。 */
 const SYMBOL_SHAPE_TAIL_SEP_RE = /^\s*(?:(?:,|，|、|;|；|\/|\+|和|与|及|或|以及|\band\b|\bor\b)\s*)?/;
 const SYMBOL_SHAPE_SPAN_RE = /^`([^`\s]+)`/;
-const SYMBOL_SHAPE_IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 /** #755 阻断②：S2 符号列举里接受**点号链**（`noteWriteEvidence.call`）——按首段（被引用的宿主符号）查声明，报错照原样点名整条。 */
 const SYMBOL_SHAPE_REF_RE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/;
 /** 取拿去查声明的那一段：点号链取**首段**（被引用的宿主符号，`A.call` ⇒ 查 `A`），无点号就是原名。
@@ -2648,16 +2544,6 @@ function symbolShapeOccurrences(docs) {
 /** 自测的打靶器：把「符号 = `sym`、被指文件 = `filePath`」的**全部** S2/S3 坐标处的符号名换成 `to`。
  *  与主检查共用同一套提取逻辑（#279 口径：打靶由提取逻辑定）。一处没命中或换完还剩 ⇒ 原样返回，
  *  `runSelfTest` 的「变异没落上」判据就会报红。 */
-function mutateSymbolShape(sym, filePath, to) {
-  return (text) => {
-    const hit = (t) => symbolShapeOccurrencesInText(t, "probe").filter((a) => a.sym === sym && a.file === filePath);
-    const hits = hit(text).sort((a, b) => b.start - a.start);
-    if (!hits.length) return text;
-    let t = text;
-    for (const h of hits) t = t.slice(0, h.start) + to + t.slice(h.end);
-    return hit(t).length ? text : t;
-  };
-}
 
 /** 存量基线：只降不升。取数命令 = `node scripts/docs-drift-check.mjs --verbose`，读 `symbol-shape:`
  *  那条 note 里的「miss 实测 **N**」。现测数与它的来历写在这行下面（跑一遍就能复现，别信抄件）。
@@ -3351,9 +3237,8 @@ const CLI_FLAG_EXEMPTIONS = [
   // { doc: README_CN, command: "repl", flag: "--example", why: "……" }
 ];
 
-/** `--self-test` 用：临时替换放行表（与 `SIM_TREE_SHAPE` 同一课：overlay 只改文本，改不动运行时数组）。 */
-let SIM_CLI_FLAG_EXEMPTIONS = null;
-const cliFlagExemptions = () => SIM_CLI_FLAG_EXEMPTIONS ?? CLI_FLAG_EXEMPTIONS;
+/** 放行表的读取口（曾经有 `--self-test` 的临时替换开关，随 261126-59 一并删除）。 */
+const cliFlagExemptions = () => CLI_FLAG_EXEMPTIONS;
 
 /** `erix chat …` / `erix repl …` 两条 usage 行（帮助与 README 同一句式，所以同一个提取器）。 */
 function cliUsageLines(text) {
@@ -3610,11 +3495,11 @@ const COMPACTION_DEFAULT_WORDS = Object.freeze([
 /** `--self-test` 用：临时**抽掉**一条判据词（与 `SIM_CLI_FLAG_EXEMPTIONS` 同一课：overlay 只改文本，
  *  改不动运行时那个数组）。**不是豁免开关**：生产路径永远读 `COMPACTION_DEFAULT_WORDS` 全集，
  *  而「全集被清空」本身会报红（`collectCompactionDefaultErrors` 里的空转判据）。 */
-let SIM_COMPACTION_DROP_WORD_IDS = null;
+
 
 /** ③ 实际使用的判据词（自测可临时抽掉一条，见上）。 */
 function compactionDefaultWords() {
-  const drop = new Set(SIM_COMPACTION_DROP_WORD_IDS ?? []);
+  const drop = new Set();
   return COMPACTION_DEFAULT_WORDS.filter((word) => !drop.has(word.id));
 }
 
@@ -4085,7 +3970,6 @@ const RS_CONTRAST_LEAD = 24;
 const RS_HISTORICAL = /改前|此前|以前|原来|旧语义|旧账本|旧版|已删|被删|删掉|删除|移除|removed|deleted|dropped|used to|previously|退役|retired/iu;
 
 /** 中英成对的那两对活文档（复用 `assertPairCensus`，不另造处数对账）。 */
-const RETIRED_SEMANTICS_PAIRS = Object.freeze([[REQ_EN, REQ_CN], [CHARTS_EN, CHARTS_CN]]);
 /** 必须命中至少一次的文档（整句被删掉、或措辞改到判据够不着 ⇒ 检查面在这份文档失效）。 */
 const RETIRED_SEMANTICS_REQUIRED = Object.freeze([REQ_EN, REQ_CN, CHARTS_EN, CHARTS_CN]);
 
@@ -5177,7 +5061,7 @@ const LOCAL_ARCHIVE_DECLARATION = /本机|本地|不入库|未入库|不提交|�
  *  `_cn.md`（文件名后缀片段）、`gen.sh`（3 字干，太短，拿它当实物近邻只会假红）、
  *  `details`（无扩展名）、`scratch/`（带斜杠，走目录规则）。宁可少拦，不可把真引用挡在门外。 */
 const BARE_FILE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*\.(?:js|mjs|cjs|ts|mts|tsx|json|md|sh|log|txt|ya?ml|py|zip|lock|diff)$/;
-const BARE_STEM_MIN = 4;   // 「像个文件」闸的名字干最短长度
+
 /** 近邻判据另开一个更高的门槛：**名字干 ≥ 8 字符才启用**。`index.js` / `skill.mjs` / `judge.log`
  *  这类 5 字干的词是「约定入口名 / 常见词」，它们跟本仓任何同字干的实物都能配一对，
  *  拿它们当「被改坏的实物名」必然假红；而真实的改名事故（`repro-circular-details` 20 字、
@@ -5212,7 +5096,7 @@ function bareNameNearest(p, ign) {
 
 /** 无斜杠裸名走通用四类裁决的文档（= 已跟踪 .md 减去 CROSS_REPO_DOCS）。新增文档默认纳面，
  *  要豁免只能进 CROSS_REPO_DOCS 点名写理由——不允许默默放行。 */
-const BARE_NAME_ADJUDICATED = true;   // 开关只为了 self-test 里能跑「扩面前后」对比，不是豁免开关
+const BARE_NAME_ADJUDICATED = true;   // 裸名裁决开关（原为 `--self-test` 的「扩面前后」对比留的，自测已删）
 
 /** 跳仓/宿主对照文档：**逐份**点名（禁止目录通配）+ 一句理由。这里的裸名不裁决（它们指的不是本仓实物），
  *  但条目本身被反向校：这份文档里已经没有任何裸名需要被豁免 → 红（防条目烂在那里）。 */
@@ -5263,39 +5147,8 @@ function gitignoreMatcher(text) {
  *  但安装位置、工作副本与丢弃型临时目录剪掉（node_modules/ / .worktrees/ / .scratch/ 里不是仓库内容：
  *  前两个是一整份别的仓库，后一个是复现脚本与对照树）。哪些类别被剪由 `SKIPPED_DIR_KINDS` 显式点名。
  *
- * `SIM_TREE_SHAPE`（#280 引入、#302 改造成**合成树夹具**；只给 `--self-test` 用，**不是豁免开关**）：
- * 「本机档案目录」这一格渗进裁决的地方只有两处——`resolveRef` 的裸名同名索引与 `bareNameNearest`
- * 的实物清单（都读这份清单的 `ignored` 那一半），外加一个 `taskArchiveDirPresent()` 谓词。
- * 所以「树形」在这份脚本里的**全部**含义就是这三样，夹具就声明在这三样上，与检查机上恰好有没有
- * `docs/tasks/` 无关：
- *   · `no-archive-dir`     —— 全新 clone / CI / 一次性沙箱：那个目录整片不在；
- *   · `empty-archive-dir`  —— 目录在、里面一条档案都没有（`npm test` 的端到端探针造过这个形状）；
- *   · `filled-archive-dir` —— 目录在、里面有本仓文档真的引用的那几条登记物（= 开发机）。
- * 声明一侧（.gitignore 规则、就地声明、登记表）一个字都不动：要证的正是「裁决只依赖声明时，
- * 三种树形必须给同一个结论」。
- *
- * #302 的病：旧口子 `SIM_ABSENT_TASK_ARCHIVE` 只有「摘掉实物」这一个动作，于是自测自己的落地检查
- * 拿**真实实物数量**当判据（「本机有档案目录却一条都没摘掉 ⇒ 口子没接线」）——在「目录在、里面是空的」
- * 机器上恒真地误报 2 例（CI 的干净检出上却是 0 例）。夹具化之后落地检查比对的是**夹具声明的那份清单**
- * （`treeFixtureLanding`），同一提交在三种树形上给同一个结论。
- * 缓存键必须带上它，否则同一个进程里三种树形会互相吃到对方的缓存。 */
-const TREE_SHAPE_NO_DIR = "no-archive-dir";
-const TREE_SHAPE_EMPTY = "empty-archive-dir";
-const TREE_SHAPE_FILLED = "filled-archive-dir";
-const TREE_SHAPES = [TREE_SHAPE_NO_DIR, TREE_SHAPE_EMPTY, TREE_SHAPE_FILLED];
 /** `filled-archive-dir` 里那几条档案：本仓文档真的引用到的登记物（路径与开发机上同名同位置，内容不重要）。
  *  它把「实物在场」那一支也覆盖到：登记物解得到 ⇒ `localArchiveVerdict` 走「已核实」而不是「按声明放行」。 */
-const TREE_FIXTURE_ARCHIVE_FILES = [
-  "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs",
-  "docs/tasks/active/261010-13-erix-run-async/e2e-wake.mjs",
-  "docs/tasks/active/task-20260830-touwaka-full-integration/BRANCH.md",
-  "docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md",
-];
-let SIM_TREE_SHAPE = null;   // null = 真实树（默认）；否则是上面三种形状之一
-// issue #914：裸名解析面（「能否解析」）必须取 **git manifest**，未跟踪实物一律不参与解析。
-// 本口子只给 `--self-test` 用（与 SIM_TREE_SHAPE 同一课）：模拟「磁盘上有、git 里没有」的未跟踪产物
-// （例如 agent 把 sessionDir 指在 git 树内多出的 session/outputs/<runId>/status.json）。生产默认 []。
-let SIM_UNTRACKED_FILES = [];
 let repoFilesCache = null;
 // #914：解析面的唯一来源。缓存一份 `git ls-files --cached --full-name`（已跟踪清单，含已跟踪符号链接；
 // 未跟踪实物天然不在内）。拿不到清单 ⇒ 记一条 MANIFEST_REFUSAL 口径的红、面置空，**没有**文件系统回退分支
@@ -5332,7 +5185,7 @@ function ignoredDirIsSkipped(rule) {
   return SKIPPED_DIR_KINDS.has(cls.kind);
 }
 function repoFiles(ign) {
-  const key = `${SIM_TREE_SHAPE ?? "real"}|${SIM_UNTRACKED_FILES.join("\n")}|${ign.rules.map((r) => r.pattern).join("\n")}`;
+  const key = `${ign.rules.map((r) => r.pattern).join("\n")}`;
   if (repoFilesCache && repoFilesCache.key === key) return repoFilesCache;
   // #914：「能否解析」= 解析面，一律取 git manifest；磁盘遍历这一轮只负责两件事——
   //   ① 认得被忽略目录（task-archive 等，供「忽略类」裁决与 #302 树形夹具）；
@@ -5366,14 +5219,11 @@ function repoFiles(ign) {
     let d = path.posix.dirname(f);
     while (d && d !== "." && d !== "/") { resolvableDirs.add(d); d = path.posix.dirname(d); }
   }
-  // 未跟踪产物：磁盘上未被忽略、却不在 git manifest 里的实物（含 SIM 注入的探针）。
-  const untracked = [...new Set([...onDisk, ...SIM_UNTRACKED_FILES])].filter((f) => !manifestSet.has(f)).sort();
-  // 树形夹具：把 task-archive 类目录这一格**整片**换成夹具声明的那份清单（真实实物一律不参与），
+  // 未跟踪产物：磁盘上未被忽略、却不在 git manifest 里的实物。
+  const untracked = [...new Set(onDisk)].filter((f) => !manifestSet.has(f)).sort();
+  // 历史说明（#302 的树形夹具已随 --self-test 一并删除，261126-59）：真实实物一律参与，下面三行只剩恒等变换。），
   // 所以三形状之间只差「那批文件在不在索引里」这一件事——声明一侧（.gitignore / 登记表 / 就地声明）不动。
-  const outside = SIM_TREE_SHAPE ? ignored.filter((f) => !isUnderTaskArchive(ign, f)) : ignored;
-  const ignoredHere = SIM_TREE_SHAPE === TREE_SHAPE_FILLED
-    ? outside.concat(TREE_FIXTURE_ARCHIVE_FILES)
-    : outside;
+  const ignoredHere = ignored;
   repoFilesCache = {
     key, tracked, untracked, resolvableFiles, resolvableDirs, ignored: ignoredHere,
     // #302：夹具落地检查要问「索引里那批档案到底是哪几条」，所以把它单独留一份（真实树里就是真清单）。
@@ -5390,7 +5240,6 @@ function isUnderTaskArchive(ign, rel) {
 /** 本机是否真的有 task-archive 类目录。夹具挂着时由**夹具**回答（#302：否则这个谓词读的是检查机上的
  *  文件系统，同一提交在「目录在」与「目录不在」两台机器上就不同判）。 */
 function taskArchiveDirPresent(ign) {
-  if (SIM_TREE_SHAPE) return SIM_TREE_SHAPE !== TREE_SHAPE_NO_DIR;
   return [...IGNORED_DIR_CLASSES.entries()]
     .filter(([, c]) => c.kind === "task-archive")
     .some(([dir]) => existsSync(path.join(ROOT, dir)));
@@ -5405,20 +5254,6 @@ function taskArchiveDirPresent(ign) {
  *  `taskArchiveDirPresent()` 那一句看着像同义反复，其实是唯一能证明「这个谓词由夹具回答」的断言：
  *  三种形状要求它依次返回 false / true / true，而真实文件系统只可能给其中一个值 ⇒ 三格同时绿
  *  只可能是夹具真的接管了它。返回 null = 落上了。 */
-function treeFixtureLanding(ign) {
-  const want = SIM_TREE_SHAPE === TREE_SHAPE_FILLED ? TREE_FIXTURE_ARCHIVE_FILES : [];
-  const got = repoFiles(ign).archiveInIndex;
-  const problems = [];
-  const missing = want.filter((f) => !got.includes(f));
-  const extra = got.filter((f) => !want.includes(f));
-  if (missing.length) problems.push(`夹具声明的档案没进索引（${missing.join(", ")}）——SIM_TREE_SHAPE 没接进 repoFiles`);
-  if (extra.length) problems.push(`索引里还有夹具没声明的档案（${extra.join(", ")}）——真实树的实物漏进了裁决面，树形没解耦`);
-  const wantDir = SIM_TREE_SHAPE !== TREE_SHAPE_NO_DIR;
-  if (taskArchiveDirPresent(ign) !== wantDir) {
-    problems.push(`taskArchiveDirPresent() 与夹具形状 ${SIM_TREE_SHAPE} 不一致（应为 ${wantDir}）——口子没接进这条谓词`);
-  }
-  return problems.length ? problems.join("；") : null;
-}
 
 /** 三级解析：仓库根 → 文档同目录 → 全仓唯一同名。同名只认**唯一**命中（歧义不算解析成功，
  *  要写清路径）；能否解析一律取 **git manifest**（已跟踪∩未被 .gitignore，#914：未跟踪实物一律不参与解析），
@@ -5615,7 +5450,7 @@ function collectPathErrors() {
   const out = [];
   const notes = [];
   const ign = gitignoreMatcher(textOf(".gitignore"));
-  LAST_IGN = ign;   // #280：`--self-test` 的树形例子要靠它拿到同一份 .gitignore 规则（见 runSelfTest）
+  LAST_IGN = ign;   // 记住最近一份 .gitignore 规则（曾经供 #280 的树形自测用，自测已随 261126-59 删除）
   for (const u of ign.unsupported) {
     out.push(`paths: .gitignore:${u.line} 用了取反规则 \`${u.pattern}\`，本脚本的极简匹配器不认——`
       + `要么改 .gitignore，要么在这里支持取反（不能默默把它当没忽略）`);
@@ -5904,8 +5739,7 @@ const DOC_VERSION_EXEMPT = new Map([
 
 /** `--self-test` 用：临时替换放行表（与 `SIM_CLI_FLAG_EXEMPTIONS` 同一课：overlay 只改文本，改不动运行时
  *  那个 Map）。「登记了却没人用 ⇒ 红」这条反向证要靠它把一条假条目塞进表里才证得到。 */
-let SIM_DOC_VERSION_EXEMPT = null;
-const docVersionExemptions = () => SIM_DOC_VERSION_EXEMPT ?? DOC_VERSION_EXEMPT;
+const docVersionExemptions = () => DOC_VERSION_EXEMPT;
 
 function allGuideDocs() {
   return readdirSync(path.join(ROOT, "docs"))
@@ -5989,13 +5823,6 @@ function replaceUnique(needle, replacement) {
  * 「门禁怎么判这句陈述」，红了也可能是别的什么把它弄红的。所以两半都断言：追加前**恰好 0 次**、追加后
  * **恰好 1 次**；任一不成立就原样返回，由既有的「变异没落到 X 上」判据报红。
  */
-function appendUnique(sentence) {
-  return (text) => {
-    if (text.split(sentence).length !== 1) return text;            // 已经出现 ⇒ 靶子不成立
-    const after = `${text}${text.endsWith("\n") ? "" : "\n"}\n${sentence}\n`;
-    return after.split(sentence).length === 2 ? after : text;      // 追加后必须恰好一次
-  };
-}
 
 /**
  * `#668` 点名的**合法保留形态**就写在 `fold-summary-journal.js` 的注释里：一句「`fold-llm` 的降级兜底」
@@ -6003,13 +5830,8 @@ function appendUnique(sentence) {
  * 被删掉，都原样返回 ⇒ 自测按「变异没落上」报红。于是这格钉的永远是源码里那句真话，而不是本脚本里的
  * 一份抄件（#621 的教训：靶子跟着用例走，不跟着某句活文档走）。
  */
-const JOURNAL_RETENTION_LINE = (() => {
-  const line = read("src/compact/fold-summary-journal.js").split("\n").find((l) => l.includes("降级兜底"));
-  return line === undefined ? null : line.trim();
-})();
 
 /** 本族自测用的一句「退役语义」谎。①-A 与 ② 用的是**同一句**：两格唯一的差别是它落在哪一类文件里。 */
-const RETIRED_SEMANTICS_LIE = "摘要器失败或超时的时候，引擎会自动降级为统计摘要，run 照常完成。";
 
 // ── 15. 版本归属句（issue #511 判据 1 后半）────────────────────────────────────
 // 判据 1 后半：文中「<verB> adds / removes / 删掉 / 新增」类句式里的 `verB` 若 **≠ 自述版本**，
@@ -6363,9 +6185,9 @@ const CHANGELOG_DATE_TAG_EXEMPTIONS = [
 ];
 
 /** 自测口子：临时替掉登记表（overlay 只改文本，改不动运行时数组）。 */
-let SIM_DATE_TAG_EXEMPTIONS = null;
+
 function dateTagExemptions() {
-  return SIM_DATE_TAG_EXEMPTIONS ?? CHANGELOG_DATE_TAG_EXEMPTIONS;
+  return CHANGELOG_DATE_TAG_EXEMPTIONS;
 }
 
 /** epoch 秒 → UTC+8 本地日历日（本仓发版时区；tag 的 tagger/author 时间戳换成这一天）。 */
@@ -6410,30 +6232,16 @@ function probeTagDates() {
     source: "`git for-each-ref refs/tags`（附注 tag 取 tagger date，轻量 tag 取所指提交的 author date）" };
 }
 
-let SIM_TAG_FACTS = null;   // 自测口子：{ ok, dates: Map<version, {date, kind}>, source }
+
 let TAG_FACTS = null;
 
 /** tag 面事实（一次进程只读一次）。`--self-test` 走内存夹具。 */
 function tagDateFacts() {
-  if (SIM_TAG_FACTS) return SIM_TAG_FACTS;
+
   if (!TAG_FACTS) TAG_FACTS = probeTagDates();
   return TAG_FACTS;
 }
 
-/** `--self-test` 的 tag 面夹具（**只给自测用**：生产路径永远走 `probeTagDates()`）。
- *  从 CHANGELOG 派生：带日期且没标未发布的版本段 = 已发布，tag 日期**取段首那天**（= 一致）；
- *  登记在 `CHANGELOG_DATE_TAG_EXEMPTIONS` 里的版本故意错开一天（复现「历史段与 tag 不一致」这个真实形状，
- *  否则那两条登记会在自测里变成空转条目）。要证「门禁真读到了 tag 面」时用 `simulateTagFacts` 显式拨开。 */
-function selfTestTagFacts() {
-  const dates = new Map();
-  const exempt = new Set(dateTagExemptions().map((e) => e.version));
-  for (const s of changelogSections() ?? []) {
-    if (!s.dated || hasUnpublishedMark(s)) continue;
-    dates.set(s.version, { date: exempt.has(s.version) ? shiftDay(s.date, 1) : s.date, kind: "annotated" });
-  }
-  return { ok: true, dates,
-    source: "self-test 夹具（CHANGELOG 派生；登记在 CHANGELOG_DATE_TAG_EXEMPTIONS 里的版本故意错开一天）" };
-}
 
 /** §17b 的判据本体。`out` = 红（exit 1）；`notJudged` = 未判定（`TAG_MISSING`，主路径 exit 2）。 */
 function collectChangelogDateErrors() {
@@ -6517,7 +6325,7 @@ function collectChangelogDateErrors() {
 //   · 所以本判据干脆**禁止**这两句里出现日期/「实测」字样：句子只留可当场对账的字面量。
 const OFFLINE = process.argv.includes("--offline");
 const REGISTRY_PKG = "erix-agent";
-let SIM_REGISTRY = null;        // 自测口子：{ ok, authoritative, latest, versions, source }
+
 let REGISTRY_FACTS = null;
 
 /**
@@ -6585,7 +6393,7 @@ function probeRegistry() {
 
 /** registry 事实（一次进程只读一次）。`--self-test` 走内存夹具，`--registry-json` 走探针桩，`--offline` 直接跳过。 */
 function registryFacts() {
-  if (SIM_REGISTRY) return SIM_REGISTRY;
+
   if (REGISTRY_FACTS) return REGISTRY_FACTS;
   REGISTRY_FACTS = REGISTRY_FIXTURE ?? (OFFLINE
     ? { ok: false, why: "`--offline`：本脚本在离线口径下不读 registry（缓存可能落后于 registry，把过期数据当真理会把「刚发布」判成红）" }
@@ -6593,25 +6401,6 @@ function registryFacts() {
   return REGISTRY_FACTS;
 }
 
-/** `--self-test` 的 registry 夹具（**只给自测用**：生产路径永远走 `probeRegistry()`）。
- *  把「已发布」定义成 CHANGELOG 里**带日期且没标未发布**的版本段（`hasUnpublishedMark`，与判据 3 同源），
- *  `latest` 默认取那份名单里的**最高版本**（= 这一版从 CHANGELOG 能推出来的发布行）。
- *  为什么不是 `package.json` 的版本：切版（发版准备）那一刻两者**有意不同**——树内已经是 0.30.0，
- *  registry 还是 0.29.0（`## [0.30.0] - …（未发布 / unpublished）`）。拿 `PKG_VERSION` 当 latest 会让
- *  「AGENTS 的发布行句」在所有放行证里假红，而那句恰好是对的。派生自 `versions` 则两个事实同源。
- *  为什么从 CHANGELOG 派生、而不写死一份 registry 快照：写死的快照会在下一次真实发布那天过期，
- *  而过期那天**所有** registry 类用例会一起变红，没人分得清是真回归还是夹具陈了（#292 的教训：
- *  硬编码 121/164 一降基线就变成空操作）。派生版的唯一风险是「夹具与被测文档同源」——所以每条用例
- *  都用 `exclude` / `latest` 把**要证的那一个事实**拨到与文档不同的值上，证的是「门禁读到了它」。 */
-function selfTestRegistry({ exclude = [], latest } = {}) {
-  const versions = (changelogSections() ?? [])
-    .filter((s) => s.dated && !hasUnpublishedMark(s))
-    .map((s) => s.version)
-    .filter((v) => !exclude.includes(v));
-  const derivedLatest = [...versions].sort(cmpSemver).at(-1) ?? PKG_VERSION;
-  return { ok: true, authoritative: true, latest: latest ?? derivedLatest, versions,
-    source: "self-test 夹具（CHANGELOG 派生）" };
-}
 
 // ── `--self-test` 的**版本面**夹具（issue #724：版本面由自测自己合成）─────────────────────────
 // 病根（#724 现场）：`#697` 那 8 例与 `#511 评论` 那 1 例把「要判的那一版」抄成了 **0.30.x 发版窗口**的
@@ -6634,87 +6423,21 @@ function selfTestRegistry({ exclude = [], latest } = {}) {
 //   因为发版而复发：锚点不是抄来的字符串，而是本夹具这一轮刚写进 overlay 的那一行。
 // registry 桩 / tag 面仍从 CHANGELOG 派生（`selfTestRegistry` / `selfTestTagFacts`），派生口径与判据同源：
 // `inflight` 段没有日期 ⇒ 它自然不在 `versions` 里、`latest` 自然停在 `released` 上。
-let SELF_TEST_VERSION_FACE = null;
 
-/** 次版本号 +1（`0.31.0` → `0.32.0`）。合成「在飞的那一版」用，**不落在任何一棵真树上**。 */
-function bumpMinor(version) {
-  const [major, minor] = version.split(".").map(Number);
-  return `${major}.${minor + 1}.0`;
-}
 
-/** `--self-test` 的版本面（见上面的节头）。派生一次，全自测共用同一份。
- *  @returns {{released: object, previous: object|null, inflight: object, historicalMarked: object|null}} */
-function selfTestVersionFace() {
-  if (SELF_TEST_VERSION_FACE) return SELF_TEST_VERSION_FACE;
-  const sections = changelogSections() ?? [];
-  const published = sections
-    .filter((s) => s.dated && !hasUnpublishedMark(s))
-    .sort((a, b) => cmpSemver(a.version, b.version));
-  const released = published.at(-1);
-  if (!released) {
-    // 真值缺位就报错（#164 口径）：没有已发布段 ⇒ 没有「发布行」这个事实，夹具无从合成。
-    throw new Error("docs-drift-check --self-test: CHANGELOG 里没有任何「带日期且没标未发布」的版本段 ⇒ "
-      + "版本面夹具没有 released 这个基准（#724）");
-  }
-  const exempt = new Set(CHANGELOG_DATE_TAG_EXEMPTIONS.map((e) => e.version));
-  const previous = published
-    .filter((s) => cmpSemver(s.version, released.version) < 0 && !exempt.has(s.version))
-    .at(-1) ?? null;
-  const inflightExisting = sections
-    .filter((s) => hasUnpublishedMark(s) && cmpSemver(s.version, released.version) > 0)
-    .sort((a, b) => cmpSemver(b.version, a.version))[0] ?? null;
-  const inflight = inflightExisting ?? { version: bumpMinor(released.version), date: null, heading: null };
-  const historicalMarked = sections
-    .filter((s) => s.dated && hasUnpublishedMark(s) && cmpSemver(s.version, released.version) < 0)
-    .sort((a, b) => cmpSemver(b.version, a.version))[0] ?? null;
-  SELF_TEST_VERSION_FACE = { released, previous, inflight, historicalMarked };
-  return SELF_TEST_VERSION_FACE;
-}
 
-/** 在飞那一段的**规范未发布段首**（夹具自己写下的那一行 = 所有 #697 变异的锚点）。 */
-const faceInflightHeading = () => `## [${selfTestVersionFace().inflight.version}]（未发布 / unpublished）`;
 /** 本仓另一种**合法**无日期形状（⑤ 放行证用它：换一种合法写法仍绿）。 */
-const faceInflightAltHeading = () => `## [${selfTestVersionFace().inflight.version}] — 截至本提交尚未发布`;
 
 /** 自测变异器：把**某一段的段首整行**换成 `build(那一行)`（#724）。
  *  为什么按「段首行」定位而不是按整串 `replaceUnique`：版本号 + 日期这种字面量会出现在**散文**里
  *  （本单的 CHANGELOG 条目就引了那两个段首形状，实测当场把 `#697 ②` 的靶子变成两处 ⇒ 「变异没落上」）。
  *  行锚定（`^## [x.y.z]…$`）把靶子限定在「那一段的标题行」，散文里提到同一个版本号抢不走枪。
  *  找不到 / 不止一处都原样返回 ⇒ 由 harness 的「变异没落上」报红（#210 R2）。 */
-const rewriteSectionHeading = (version, build) => (text) => {
-  const hits = [...text.matchAll(new RegExp(`^## \\[${esc(version)}\\].*$`, "gmu"))];
-  if (hits.length !== 1) return text;
-  return text.replace(new RegExp(`^## \\[${esc(version)}\\].*$`, "mu"), (line) => build(line));
-};
 
-/** 把版本面落到 CHANGELOG 文本上（`simulateVersionFace` 的落点，见节头）：
- *  · 树里已有在飞那一段 ⇒ 只把**段首整行**改写成规范未发布形（其余字节一字不动）；
- *  · 没有那一段 ⇒ 在最高已发布段前**开一段**（合法无日期形 + 一句夹具自述，不描述任何代码事实）。
- *  已经是这个形状 ⇒ 原样返回（幂等：同一副版本面上重复落不会叠加）。 */
-function renderVersionFace(text) {
-  const face = selfTestVersionFace();
-  const canonical = faceInflightHeading();
-  if (face.inflight.heading) {
-    return text.split(face.inflight.heading).length === 2
-      ? text.replace(face.inflight.heading, canonical) : text;
-  }
-  const anchor = `## [${face.released.version}]`;
-  if (text.split(`\n${anchor}`).length !== 2) return text;   // 锚行找不到 ⇒ 原样返回（由用例的「变异没落上」报红）
-  const block = `${canonical}\n\n### Changed\n\n- 自测夹具合成的一节：在飞的那一版（issue #724 的版本面夹具，不描述任何代码事实）。\n\n`;
-  return text.replace(`\n${anchor}`, `\n${block}${anchor}`);
-}
 
 /** 版本面的 tag 面（最小面：只给 `released` / `previous` 两段的 tag，日期取各自段首）。
  *  为什么不给全：多给就会把 `CHANGELOG_DATE_TAG_EXEMPTIONS` 那两条历史不一致卷进来，而本族用例都
  *  用 `simulateDateTagExemptions: []` 关掉登记表 ⇒ 那两条会变成「空转条目」红（#210 R2），与用例要证的事无关。 */
-function faceTagFacts() {
-  const face = selfTestVersionFace();
-  const dates = new Map();
-  for (const s of [face.released, face.previous]) {
-    if (s) dates.set(s.version, { date: s.date, kind: "annotated" });
-  }
-  return { ok: true, dates, source: "self-test 夹具（版本面：released / previous 两段，日期取 CHANGELOG 段首）" };
-}
 
 /** 两份「当前版本」声称句的规范写法：见 §1 的 `VERSION_CLAIM_RULES`（`--sync` 读同一张表，别再抄一份）。 */
 
@@ -7029,44 +6752,25 @@ const SURFACE_DISPLAY_ONLY = /\bdisplay layer only\b|\bno engine fact changes?\b
 
 /** 本版那一对指南（判据的扫描面与自测的靶子同源，不写第二份文件名）。 */
 const SURFACE_GUIDE_EN = `docs/host-upgrade-guide-${PKG_VERSION}.md`;
-const SURFACE_GUIDE_CN = `docs/host-upgrade-guide-${PKG_VERSION}_cn.md`;
 
 // ── 自测期望里「当前版」的真值面（issue #699 ③）───────────────────────────────
 /** 把一份路径变成可嵌进 `new RegExp` 的字面量（`docs/host-upgrade-guide-0.30.0.md` 里的点必须转义）。 */
-const rePath = (rel) => String(rel).replace(/[.*+?^${}()|()[\]\\]/g, "\\$&");
 /** **当前版指南的路径在自测期望里必须现读**（#699 ③）。把 `0.30.0` 抄进期望正则，切版当天就是
  *  「判据点对 0.31 那份指南，期望还在要 0.30 那份」⇒ 整族反向证在切版树上集体红（合成 0.31 树实测 6 例：
  *  #690 读不出 ①② 与 #511 判据 2c 中英两条）。生产判据一侧本来就是动态的（上面 `SURFACE_GUIDE_EN/CN`），
  *  这里只是把**期望**拉回同一个真值：`judge` 是红话前缀的判据 id，`tail` 是路径之后那段**正则字面量**
  *  （传字面量而不是字符串：省掉「字符串里再转义一层」这个坑，`.source` 原样接上）。
  *  **历史夹具不在此列**（0.27 / 0.29 的指南、0.31 破坏包那份逐名表：钉的是历史文档，切版不改那条事实）。 */
-const guideExpectRe = (judge, rel, tail) => Object.assign(
-  new RegExp(`${esc(judge)}: ${rePath(rel)}${tail.source}`, "u"),
-  // 打上「路径来自真值」的标记，供 runSelfTest 的静态校查认（见那里的 #699 ③ 那一刀）。
-  { pinnedToTruthPath: true });
 /** 自测变异器：把**本版**那条 CHANGELOG 段首整行交给 `build(那一行)` 重写（#699 ③：不再抄死 `## [0.30.0] - 2026-11-03`
  *  这一行——它随版本走，切版后抄的那一行不在盘上，变异等于没落上）。 */
 const rewriteCurrentChangelogHeading = (build) => (text) =>
   text.replace(new RegExp(`^## \\[${esc(PKG_VERSION)}\\].*$`, "mu"), (line) => build(line));
 /** 自测变异器：改 AGENTS 两句里的**本仓版本**（`VERSION_CLAIM_RULES` 的 repoRe 就是判据读的同一形状），
  *  与上一条同理：`says \`0.30.0\`` 这种字面量在切版后的树上不存在。 */
-const mutateRepoVersionClaim = (to) => (text) =>
-  text.replace(VERSION_CLAIM_RULES[0].repoRe, `Current version: \`package.json\` says \`${to}\``);
 /** 自测变异器：改 AGENTS 的**发布行**句（`VERSION_CLAIM_RULES` 的 `pubRe` 就是判据读的同一形状）。
  *  #724：不再抄 `` `dist-tags.latest` — is `0.30.0` `` 这个字面量——它随发版回写而变，抄它等于把反向证
  *  钉在某一个发版窗口上（0.31.0 回写后那个字串在真面上就不存在了）。改成「判据自己的正则 + 唯一性」：
  *  0 处（形状变了）与 2+ 处（靶子不唯一）都原样返回，由 harness 的「变异没落上」报红。 */
-const mutatePublishedClaim = (to, lang = 0) => (text) => {
-  const rule = VERSION_CLAIM_RULES[lang];
-  const hits = [...text.matchAll(new RegExp(rule.pubRe.source, "g"))];
-  if (hits.length !== 1) return text;
-  return text.replace(rule.pubRe, (whole, current) => {
-    const at = whole.indexOf(current);
-    return `${whole.slice(0, at)}${to}${whole.slice(at + current.length)}`;
-  });
-};
-const addMeasurementDateToRepoClaim = (date) => (text) =>
-  text.replace(VERSION_CLAIM_RULES[0].repoRe, (whole) => `${whole}, measured ${date}`);
 
 // ── #690 那一族的「两半前提自己带上」（issue #699 ③ (a)）───────────────────────
 /**
@@ -7187,23 +6891,6 @@ function putSurfaceBullet(lang, cellId, body) {
 /** #636 那一例的**目标名字**（#699 ③(a)）：`preferred` 在本版仍是「代码侧名单里的名字」、而本版段又把它
  *  算成这一版加的 ⇒ 直接用它（0.30 是这种，红话与改前逐字相同）；本版段没有这笔加法 ⇒ 从代码侧名单里
  *  取一个真实成员当目标，并回报「加法句要注入」。名字一律现取，不抄 `compaction` 这一笔历史事实。 */
-const GUIDE_COVERAGE_TARGETS = new Map();
-function guideCoverageCaseTarget(preferred = "compaction") {
-  if (GUIDE_COVERAGE_TARGETS.has(preferred)) return GUIDE_COVERAGE_TARGETS.get(preferred);
-  const inventory = nameInventory();
-  const added = releaseAddedNames(inventory) ?? new Map();
-  let out;
-  if (added.has(preferred)) {
-    out = { name: preferred, kind: added.get(preferred), inject: false };
-  } else {
-    const hit = [...(inventory ?? new Map())].find(([n, v]) => v?.kind === "观察者事件" && !n.includes("."))
-      ?? [...(inventory ?? new Map()).entries()][0];
-    out = hit ? { name: hit[0], kind: hit[1]?.kind ?? "名字", inject: true }
-      : { name: preferred, kind: "观察者事件", inject: false };
-  }
-  GUIDE_COVERAGE_TARGETS.set(preferred, out);
-  return out;
-}
 
 /** 往本版段里补一条**加法句**（`guide-coverage` 的证人：`ADDITION_VERBS` + 反引号里的名字）。 */
 const addGuideCoverageClaim = (name) => (text) => {
@@ -7214,11 +6901,6 @@ const addGuideCoverageClaim = (name) => (text) => {
 
 /** 把某一版指南里对 `name` 的**提及**去掉：没提过就先补一条提及再改掉
  *  （两棵树上「删掉那条提及」都真的落得上；`after === before` 会被框架判成变异没落上）。 */
-const dropGuideMention = (name) => (text) => {
-  const seeded = text.includes(name) ? text
-    : `${text.trimEnd()}\n\n<!-- self-test premise (#699 ③): mentions \`${name}\` in this line. -->\n`;
-  return seeded.split(name).join("该名字");
-};
 
 /** 把 §4 正文整节写成规范六格 bullet；`omitCellId` 那一格**不写**（= 整格缺席）。见节头。 */
 function writeSurfaceCells(lang, omitCellId = null) {
@@ -7438,23 +7120,6 @@ function declaredSurfaceChanges(version, truths) {
  * `config.metadata.model` / `config.metadata.modelMetadata` 两个叶子名，只写一侧等于凭空造一处
  * 中英背离，`guide-coverage` 会红在成对那一半上，而不是本例要考的事情（issue #703 的 S1 探针树暴露）。
  */
-function surfaceAdditiveProbe(lang, text) {
-  const ADDITIVE = "config.metadata.modelMetadata.budgetTokens";
-  const truths = new Map();
-  for (const cell of SURFACE_CELLS) {
-    const truth = cell.truth();
-    if (truth) truths.set(cell.id, truth);
-  }
-  const declared = declaredSurfaceChanges(PKG_VERSION, truths);
-  const free = SURFACE_CELLS.find((c) => truths.has(c.id) && (declared?.byCell.get(c.id)?.size ?? 1) === 0);
-  const cell = free ?? SURFACE_CELLS.find((c) => c.id === "options");
-  const body = lang === "en"
-    ? `* **${cell.en} — unchanged.** Nothing in this surface moved in this release; the added\n`
-      + `  \`${ADDITIVE}\` leaf changes no existing member (§4.1).`
-    : `* **${cell.cn}——不变。** 这一版没有改动这一格的任何成员；本版**新增**的\n`
-      + `  \`${ADDITIVE}\` 叶子不改动任何既有成员（§4.1）。`;
-  return putSurfaceBullet(lang, cell.id, body)(text);
-}
 
 /** 那一节（到第一个 `###` 子节或下一个 `##` 为止）。找不到返 null。 */
 function unchangedSurfaceSection(rel, lang) {
@@ -7588,60 +7253,9 @@ function collectUnchangedSurfaceErrors() {
 }
 
 /** `--self-test` 的变异器：把某条 bullet 整条删掉（锚不上 ⇒ 原样返回 ⇒ 框架报「变异没落上」）。 */
-function dropSurfaceBullet(prefix) {
-  return (text) => {
-    const lines = text.split("\n");
-    const at = lines.findIndex((line) => line.startsWith(prefix));
-    if (at < 0) return text;
-    let end = at + 1;
-    while (end < lines.length && lines[end].trim() !== "" && !/^\s*(?:[*+-]|\d+\.)\s/u.test(lines[end])) end += 1;
-    return [...lines.slice(0, at), ...lines.slice(end)].join("\n");
-  };
-}
 
 /** `--self-test` 的变异器：把某条 bullet 的正文换掉（`build()` 从零构造，不抄文档原话）。 */
-function replaceSurfaceBullet(prefix, build) {
-  return (text) => {
-    const lines = text.split("\n");
-    const at = lines.findIndex((line) => line.startsWith(prefix));
-    if (at < 0) return text;
-    let end = at + 1;
-    while (end < lines.length && lines[end].trim() !== "" && !/^\s*(?:[*+-]|\d+\.)\s/u.test(lines[end])) end += 1;
-    const body = build();
-    if (body === null) return text;
-    return [...lines.slice(0, at), ...body.split("\n"), ...lines.slice(end)].join("\n");
-  };
-}
 
-function collectAllDrift() {
-  const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
-    ...collectMarkerLiteralErrors(),
-    ...collectSymbolAnchorErrors(), ...collectSymbolShapeErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors(),
-    // #772 R2 M2：标记区内容的正向不变量（只许包住那张表）
-    ...cellAxesRegionContentErrors(),
-    // #635 ① / #644 ③：份数声称的机器对账 + 指令面指着账本的那句指针
-    ...collectRefScanCountClaimErrors(),
-    ...collectCliFlagErrors(),
-    // #668 ①：压缩策略「默认值」的分层对账（库层 / CLI 层各自绑源码真值）
-    ...collectCompactionDefaultErrors(),
-    // #668 ②：退役语义「摘要器失败 ⇒ 降级/兜底为统计摘要」——活面 × 源码真值（见 §2.11）
-    ...collectRetiredSemanticsErrors(),
-    // issue #677：契约「套件清单」的 unknownSlot 形态（真值 = test/contract/model-config-provider.js，见 §2.12）
-    ...collectSuiteInventoryErrors(),
-    // issue #677 补充范围：强制收尾资格「按状态，不按 reason 枚举」（真值 = src/loop/termination.js，见 §2.13）
-    ...collectForcedFinalEligibilityErrors(),
-    // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
-    ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
-    ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors(),
-    // issue #697：段首日期是事实——未发布段不许带日期、已发布段的日期必须与 tag 同一天（§17b）
-    ...collectChangelogDateErrors(),
-    // issue #636：「该不该有一条」——代码侧名单 × CHANGELOG 加法句 ⇒ 指南必须覆盖
-    ...collectGuideCoverageErrors(),
-    // issue #690：「不变」那一节 × 本版 CHANGELOG 的字段真值（六格逐格对账，中英各判一次，见本节第 20 段的节头）
-    ...collectUnchangedSurfaceErrors()];
-  for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
-  return out;
-}
 
 for (const [label, en, cn] of SKELETON_PAIRS) {
   const errs = collectSkeletonErrors(label, en, cn);
@@ -7654,8 +7268,6 @@ for (const [label, en, cn] of SKELETON_PAIRS) {
 for (const e of collectRefScanCoverageErrors()) err(e);
 for (const n of collectRefScanCoverageErrors.notes ?? []) note(n);
 // #635 ① / #644 ③
-for (const e of collectRefScanCountClaimErrors()) err(e);
-for (const n of collectRefScanCountClaimErrors.notes ?? []) note(n);
 for (const e of collectSymbolAnchorErrors()) err(e);
 for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
 // #755：「路径先行」与「path:symbol」两种符号坐标必须能在被指文件里抽到声明（存量走只降不升的基线）
@@ -7707,7 +7319,6 @@ for (const n of collectAnchorErrors.notes ?? []) note(n);
 // 每条规则至少两例：改文档一处 → 必须红；改源码/清单一侧 → 必须红；都不改（对照）→ 必须绿。
 // 变异没落上去也算失败——否则规则改了而变异体过期，自测会默默变成空跑。
 
-const SELF_TEST = process.argv.includes("--self-test");
 
 /** #279：在文档**第一处 `## ` 标题之前**插一句散文（= 「在文档靠前位置提一句某个名字」）。 */
 function mentionInProse(sentence) {
@@ -7751,13 +7362,6 @@ function mutateRef(from, to, opts = {}) {
  *
  *  注意：`bin/` 前缀不在 `BARE_LINE_RE` 的 `src/` 覆盖面里，注入不计入裸行号棘轮（那条棘轮已随 #908 拆除，这里只保留「不计入」这个历史口径）。
  */
-function injectRangeAnchor(mutate) {
-  const injected = "`bin/cli.js:1032-1042`";
-  const mutated = mutate(injected);
-  return (text) => (mutated === injected
-    ? text
-    : `${text}\n\n自测夹具（#621，只在 --self-test 的内存副本里）：下面这条区间引用是这一例的变异靶子，不依赖契约现存哪句原文。\n\n${mutated}\n`);
-}
 
 
 /**
@@ -7770,55 +7374,16 @@ function injectRangeAnchor(mutate) {
  * @param {string} doc 目标契约（决定表头格与后两列的语言）
  * @param {string[]} cells 第 2 列（「断言什么」）起的格子，顺序拼进表格行
  */
-function suiteInventoryRowLine(doc, cells) {
-  const head = doc === CONTRACT_CN ? "`model-config-provider.js`（4 条）" : "`model-config-provider.js` (4 tests)";
-  const tail = doc === CONTRACT_CN
-    ? ["你的 provider 的槽位解析与 key 物化", "没有任何引擎侧内容：它从不加载引擎"]
-    : ["your provider's slot resolution and key materialisation", "nothing engine-side: it never loads the engine"];
-  return `| ${[head, ...cells, ...tail].join(" | ")} |`;
-}
 
 /** #677：把「套件清单」里那一行整行换成 `build()` 的结果（定点打靶，不依赖原话）。 */
-function mutateSuiteInventoryRow(doc, build) {
-  return (text) => {
-    const row = suiteInventoryRowOf(doc, text);
-    if (row === null) return text;
-    return `${text.slice(0, row.start)}${build()}${text.slice(row.end)}`;
-  };
-}
 
 /** #677：**正确**答案的另一种写法（与文档现文同义、不同词）——「恢复/改写正确语义 ⇒ 绿」那一格用它。 */
-const SUITE_INVENTORY_CANON = Object.freeze({
-  [CONTRACT_EN]: [
-    "`resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer stated **per provider shape** (issue #518): a slot-map provider (static / json-file) has to **throw**, naming the unknown slot and listing the available ones, and never falls back to default; a single-config provider returns the same config under any slot name — a shape difference, not an unknown-slot fallback to default",
-  ],
-  [CONTRACT_CN]: [
-    "`resolve()` → default 槽，`resolve(slot)` → 具名槽，`apiKey` 间接引用物化（ADR-001），以及按 provider 形态分别陈述的「未知槽名」答案（issue #518）：槽位图形态（static / json-file）必须**抛错**，错误点名该未知槽名并列出可用槽位，**不许回落 default**；单配置形态则任何槽名都返回同一份配置——这是形态差异，不是「未知槽名回落 default」",
-  ],
-});
 
 /** #677：**压平**答案（#518 的病：一条断言盖住两种形态——「都要抛」）。 */
-const SUITE_INVENTORY_FLAT = Object.freeze({
-  [CONTRACT_EN]: [
-    "`resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer (issue #518): a slot-map provider (static / json-file) and a single-config provider both must **throw**, naming the unknown slot and listing the available ones, never falling back to default",
-  ],
-  [CONTRACT_CN]: [
-    "`resolve()` → default 槽，`resolve(slot)` → 具名槽，`apiKey` 间接引用物化（ADR-001），以及按 provider 形态分别陈述的「未知槽名」答案（issue #518）：槽位图形态（static / json-file）与单配置形态都必须**抛错**，错误点名该未知槽名并列出可用槽位，**不许回落 default**",
-  ],
-});
 
 /** #677：**只少一条腿**（单配置那段不再说「这是形态差异、不是未知回落 default」）——中英背离那一格用它。 */
-const SUITE_INVENTORY_ONE_LEG_MISSING = Object.freeze({
-  [CONTRACT_EN]: [
-    "`resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer stated **per provider shape** (issue #518): a slot-map provider (static / json-file) must **throw**, naming the unknown slot and listing the available ones, never falling back to default, while a single-config provider returns the same config under any slot name",
-  ],
-});
 
 /** #677（#475）：§7 资格句的**句尾标记**——打靶时只换到这一行为止，§7 后面的事实一字不动。 */
-const FORCED_FINAL_ELIGIBILITY_END = Object.freeze({
-  [CONTRACT_EN]: /wrote not a single character\./u,
-  [CONTRACT_CN]: /一个字都没写过。/u,
-});
 
 /**
  * #677（#475）自测用的「§7 资格句」打靶器：把 §7 里**那一段资格陈述**整段换成 `build()`。
@@ -7828,19 +7393,6 @@ const FORCED_FINAL_ELIGIBILITY_END = Object.freeze({
  * `forcedFinalWindowOf`（小节）+ 句尾标记共同定，替换文本由用例**从零构造**（不抄文档原话）；
  * 小节或句尾标记找不到 ⇒ 原样返回 ⇒ 框架报「变异没落上」（#210 R2）。
  */
-function mutateForcedFinalEligibility(doc, build) {
-  return (text) => {
-    const win = forcedFinalWindowOf(doc, text);
-    if (win === null) return text;
-    const lines = win.text.split("\n");
-    const stop = lines.findIndex((line) => FORCED_FINAL_ELIGIBILITY_END[doc].test(line));
-    if (stop === -1) return text;
-    const kept = lines.slice(stop + 1).join("\n");
-    const body = [build(), kept].filter((part) => part !== "").join("\n");
-    const tail = win.end >= text.length ? "" : `\n${text.slice(win.end)}`;
-    return `${text.slice(0, win.start)}${body}${tail}`;
-  };
-}
 
 /**
  * #677（#475）：往 `src/loop/termination.js` 的某个 `NAME = new Set([...])` 里加/删成员。
@@ -7848,118 +7400,23 @@ function mutateForcedFinalEligibility(doc, build) {
  * 自包含：按**常量名**定位集合字面量，成员由用例给（不抄源码原话）。找不到集合、或要删的成员
  * 不在集合里 ⇒ 原样返回（框架报「变异没落上」，不给空跑留门）。
  */
-function mutateReasonSet(name, { add = [], remove = [] } = {}) {
-  return (text) => {
-    const m = text.match(new RegExp(`(${name}\\s*=\\s*new Set\\(\\[)([\\s\\S]*?)(\\]\\))`, "u"));
-    if (!m) return text;
-    let body = m[2];
-    for (const member of remove) {
-      const next = body.split("\n").filter((line) => !line.includes(`"${member}"`)).join("\n");
-      if (next === body) return text;                  // 要删的成员不在集合里 ⇒ 变异没落上
-      body = next;
-    }
-    for (const member of add) {
-      if (body.includes(`"${member}"`)) return text;    // 已经在了 ⇒ 变异没落上
-      body = `${body.replace(/\s*$/u, "")}\n    "${member}",\n  `;
-    }
-    return `${text.slice(0, m.index)}${m[1]}${body}${m[3]}${text.slice(m.index + m[0].length)}`;
-  };
-}
 
 /** #677（#475）：资格句的**正确**语义（同义改写、五条腿一条不少）——「恢复 ⇒ 绿」那一格用它。 */
-const FORCED_FINAL_CANON = Object.freeze({
-  [CONTRACT_EN]: [
-    "7. **post-stop verification** — once a stop reason exists, forced wrap-up can",
-    "   make one more provider call. Eligibility is a **state, not a whitelist of",
-    "   reasons** (issue #475): the three non-continuable reasons",
-    "   (`max_rounds_cap` / `stall` / `continuation_exhausted`) keep the stricter",
-    "   truncation test below, while any other reason — `judge_done` (issue #467),",
-    "   `end_turn` and `no_tool` (issue #475), and any reason a later release adds —",
-    "   is eligible on one test only: the whole run wrote not a single character.",
-    "   A new reason is therefore covered by construction — nobody has to \"append a",
-    "   row to the whitelist\" again.",
-  ].join("\n"),
-  [CONTRACT_CN]: [
-    "7. **停止后验证**——stop reason 定下来之后，可能多一次强制收尾的 provider 调用。",
-    "   资格是**一个状态、不是 reason 白名单**（issue #475）：三条不可续跑的 reason",
-    "   （`max_rounds_cap` / `stall` / `continuation_exhausted`）沿用下面更严的截断判据，",
-    "   其余 reason —— `judge_done`（issue #467）、`end_turn` / `no_tool`（issue #475）、",
-    "   以及后续版本新增的任何 reason —— 只过一个判据：整个 run 一个字都没写过。",
-    "   ⇒ 新增 reason 天然被覆盖，不必再「记着回来贴一条」。",
-  ].join("\n"),
-});
 
 /** #677（#475）：**退回假话**（#475 之前那套：资格是一份 reason 白名单 / 固定六个）。 */
-const FORCED_FINAL_FLAT = Object.freeze({
-  [CONTRACT_EN]: [
-    "7. **post-stop verification** — after a stop reason exists, forced wrap-up may",
-    "   add one more provider call. Eligibility is a whitelist of reasons (issue",
-    "   #475): only the six guard-eligible reasons listed in",
-    "   `FINAL_GUARD_TERMINATION_REASONS` (`src/loop/termination.js`) get that call.",
-  ].join("\n"),
-  [CONTRACT_CN]: [
-    "7. **停止后验证**——stop reason 定下来后，可能多一次强制收尾的 provider 调用。",
-    "   资格是一份 reason 白名单（issue #475）：只对 6 个 guard 适用 reason 补发一次。",
-  ].join("\n"),
-});
 
 /** #677（#475）：**只少一条腿**（其余 reason 不再说「只过一个判据：整个 run 一个字都没写过」）
  *  ——中英背离那一格用它。注意腿要挑**落在被替换那一段里**的：§7 后面被保留下来的原文会照旧供腿。 */
-const FORCED_FINAL_ONE_LEG_MISSING = Object.freeze({
-  [CONTRACT_EN]: [
-    "7. **post-stop verification** — after a stop reason exists, forced wrap-up may",
-    "   add one more provider call. Eligibility is a **state, not a whitelist of",
-    "   reasons** (issue #475): the three non-continuable reasons",
-    "   (`max_rounds_cap` / `stall` / `continuation_exhausted`) keep the stricter",
-    "   truncation test below, while every other reason — `judge_done` (issue #467),",
-    "   `end_turn` and `no_tool` (issue #475), and any reason a later release adds —",
-    "   is eligible without any further test.",
-  ].join("\n"),
-});
 
 /** #772：标记区定点豁免的反向证共用的探针——现读 CN 契约标记区里的**第一条**裸行号引用，
  *  用例把它原样拄到标记区**外**。表里的行号会随实现漂移，所以靶子跟着用例走而不是跟着某句活
  *  文档走（#621 口径）：抽不到 → 变异打不上 → 「变异没落上」判据报红，不会假绿。 */
-const CELL_AXES_PROBE_REF = (() => {
-  const lines = textOf(CONTRACT_CN).split("\n");
-  const b = lines.findIndex((l) => l.includes(CELL_AXES_MARK_BEGIN));
-  const e = lines.findIndex((l) => l.includes(CELL_AXES_MARK_END));
-  if (b < 0 || e <= b) return null;
-  for (let i = b + 1; i < e; i += 1) {
-    const m = lines[i].match(/src\/[A-Za-z0-9_./-]+\.js:\d+(?:-\d+)?/);
-    if (m) return m[0];
-  }
-  return null;
-})();
 
 /** #772 R2：锚点一族反向证共用的两个探针——都从**现树现读**，不抄活文档里的行号（#621 口径）：
  *  CN 表里 `compactionStats` 写点的第一条引用，与 orchestrator 里说明其 state / round-record 来源的注释行。
  *  抽不到 → 变异打不上 → 「变异没落上」判据报红，不会假绿。 */
-const CELL_AXES_DRIFT_PROBE = (() => {
-  const lines = textOf(CONTRACT_CN).split("\n");
-  const b = lines.findIndex((l) => l.includes(CELL_AXES_MARK_BEGIN));
-  const e = lines.findIndex((l, i) => i > b && l.includes(CELL_AXES_MARK_END));
-  if (b < 0 || e <= b) return null;
-  for (const line of lines.slice(b + 1, e)) {
-    if (!line.includes("`compactionStats`")) continue;
-    const m = line.match(/src\/loop\/orchestrator\.js:\d+/u);
-    if (m) return m[0];
-  }
-  return null;
-})();
 /** #772 R2 M2 突变：把两轴表的 begin 标记整行往上搬 n 行 —— 原本在表格上方的 n 行正文落进标记区。 */
-const liftCellAxesBegin = (linesUp) => (text) => {
-  const lines = text.split("\n");
-  const at = lines.findIndex((l) => l.includes(CELL_AXES_MARK_BEGIN));
-  if (at < linesUp) return text;
-  return [...lines.slice(0, at - linesUp), lines[at], ...lines.slice(at - linesUp, at), ...lines.slice(at + 1)].join("\n");
-};
 
-const CELL_AXES_DISTRACTOR_LINE = (() => {
-  const lines = textOf("src/loop/orchestrator.js").split("\n");
-  const hits = lines.map((l, i) => (/^ +\/\/ `compactionStats` is restored from run-state and retained in round records\.$/u.test(l) ? i + 1 : 0)).filter((n) => n > 0);
-  return hits.length === 1 ? hits[0] : null;
-})();
 
 /**
  * #770 R2：从锚点模块的**文本**里定位 `CELL_AXES_ANCHORS` 登记表里某一条登记所在的行下标（现读，不写死
@@ -7969,77 +7426,29 @@ const CELL_AXES_DISTRACTOR_LINE = (() => {
  * 的靶子从 #770 起一律打不上 ⇒ 由 harness 的「变异没落上」判据报红（#210 R2 口径）。
  * @returns {number} 行下标；命中 0 处或不止一处 ⇒ -1（⇒ 变异原样返回 ⇒ 照旧报红）
  */
-const cellAxesAnchorTableRow = (text, includes) => {
-  const lines = text.split("\n");
-  const from = lines.findIndex((l) => l.startsWith("export const CELL_AXES_ANCHORS = ["));
-  if (from < 0) return -1;
-  const hits = lines.map((l, i) => (i > from && includes(l) ? i : -1)).filter((i) => i >= 0);
-  return hits.length === 1 ? hits[0] : -1;
-};
 
 /** `status` 写点那一条登记（#770 之后是一条 `kind: "comment"` 锚点）在登记表里的行下标。 */
-const cellAxesStatusWriteAnchorRow = (text) => cellAxesAnchorTableRow(
-  text, (l) => l.includes('key: "status", axis: "write"') && l.includes("anchor:"));
 
 /**
  * 把登记表里那一行的 `anchor:` 换成别的内容（转义交给 `JSON.stringify`）。那一行不在场或没改成 ⇒
  * 原样返回文本 ⇒ 由「变异没落上」判据报红，而不是悄悄绿过去。
  */
-const cellAxesWeakenAnchor = (text, anchor) => {
-  const at = cellAxesStatusWriteAnchorRow(text);
-  if (at < 0) return text;
-  const lines = text.split("\n");
-  const weakened = lines[at].replace(/anchor: "(?:[^"\\]|\\.)*"/u, () => `anchor: ${JSON.stringify(anchor)}`);
-  return weakened === lines[at] ? text : [...lines.slice(0, at), weakened, ...lines.slice(at + 1)].join("\n");
-};
 
 /** 删掉登记表里 `status` 写点那一条登记（整行删 = 「这一格这一轴的登记被摸掉」那个形状）。 */
-const cellAxesDropStatusWriteAnchor = (text) => {
-  const at = cellAxesStatusWriteAnchorRow(text);
-  if (at < 0) return text;
-  const lines = text.split("\n");
-  return [...lines.slice(0, at), ...lines.slice(at + 1)].join("\n");
-};
 
 /**
  * 把登记表里 `${key}` 的 `${axis}` 那一行的 `kind:` 改成给定值：锚点与两份表的引用**都不动**，
  * 只有种类登记被改口（「种类登记造假」那族反向证的靶子）。那一格不在场或没改成 ⇒ 原样返回
  * ⇒ 由「变异没落上」判据报红。
  */
-const rewriteCellAxesRowKind = (text, key, axis, kind) => {
-  const at = cellAxesAnchorTableRow(text,
-    (l) => l.includes(`key: "${key}", axis: "${axis}"`) && l.includes("kind:"));
-  if (at < 0) return text;
-  const lines = text.split("\n");
-  const rewritten = lines[at].replace(/kind: "(?:code|comment)"/u, () => `kind: ${JSON.stringify(kind)}`);
-  return rewritten === lines[at] ? text : [...lines.slice(0, at), rewritten, ...lines.slice(at + 1)].join("\n");
-};
 
 /**
  * #772 R4 M-A 的靶子（现读，不写死行号）：`compactionStats` 写点那一条 `kind: "code"` 锚点的
  * **字面量原文**（拿它当替换靶）、它命中的真写点行号，与同一键名的那句**注释**行号。
  * 拿不到靶子就返回 null ⇒ 下面那两条变异打不上 ⇒ 「变异没落上」判据报红，不会假绿。
  */
-const CELL_AXES_R4_KIND_PROBE = (() => {
-  const entry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "compactionStats" && e.axis === "write" && e.kind === "code");
-  const commentEntry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "compactionStats"
-    && e.axis === "write" && e.kind === "comment");
-  if (entry === undefined || commentEntry === undefined) return null;
-  const lines = textOf(entry.codePath).split("\n");
-  const real = cellAxesAnchorHitLines(lines, entry).hits ?? [];
-  const comment = cellAxesAnchorHitLines(lines, commentEntry).hits ?? [];
-  if (real.length !== 1 || comment.length !== 1) return null;
-  return {
-    entry,
-    literal: JSON.stringify(entry.anchor),
-    realLine: real[0],
-    commentLine: comment[0],
-    commentAnchor: commentEntry.anchor,
-  };
-})();
 
 /** 把两份契约里某条 `path:line` 同步改口到另一行（#772 R4：“两份引文同步改口”那个形状）。 */
-const syncCellAxesCitation = (from, to) => (text) => text.split(from).join(to);
 
 /**
  * #770 R2：M-A **反方向**那一例要「换进去的必须是一句真代码」。旧夹具拿 `status` 写点那条当“真代码”，
@@ -8050,20 +7459,6 @@ const syncCellAxesCitation = (from, to) => (text) => text.split(from).join(to);
  * 歧义」就停了，种类判据根本轮不到出场）。所以这里把候选装进 `toolUse` 那条里重算：要求唯一命中、
  * 且那一行不是注释。抽不到 ⇒ null ⇒ 变异打不上 ⇒ 「变异没落上」报红。
  */
-const CELL_AXES_R4_REVERSE_CODE_TARGET = (() => {
-  const victim = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "toolUse" && e.axis === "write" && e.kind === "comment");
-  if (victim === undefined) return null;
-  for (const entry of CELL_AXES_ANCHORS_SHIPPED) {
-    if (entry.axis !== "write" || entry.kind !== "code") continue;
-    if (entry.codePath !== victim.codePath) continue;   // 换过去后是用 victim 的 codePath 扫的
-    const lines = textOf(entry.codePath).split("\n");
-    const hits = cellAxesAnchorHitLines(lines, { ...victim, anchor: entry.anchor }).hits ?? [];
-    if (hits.length !== 1) continue;
-    if (cellAxesAnchorLineIsComment(lines[hits[0] - 1])) continue;   // 必须是真代码行
-    return { entry, literal: JSON.stringify(entry.anchor), line: hits[0] };
-  }
-  return null;
-})();
 
 /**
  * #770 R2：M-A「已知限度」特征用例的靶子（现算，不抄行号）：同一键名在 `src/loop/orchestrator.js` 里的
@@ -8072,13 +7467,6 @@ const CELL_AXES_R4_REVERSE_CODE_TARGET = (() => {
  * 锚点换到同键名的另一处真代码行 + 两份表同步改口 ⇒ 机械上全绿，而「快照这格的写点」这句话机器证不了。
  * 命中 0 或 >1、或那一行是注释 ⇒ null ⇒ 变异打不上 ⇒ 「变异没落上」报红。
  */
-const CELL_AXES_R4_SAME_NAME_CODE_LINE = (() => {
-  const anchor = "^ {6}compactionStats,$";
-  const lines = textOf("src/loop/orchestrator.js").split("\n");
-  const hits = lines.map((l, i) => (new RegExp(anchor, "u").test(l) ? i + 1 : 0)).filter((n) => n > 0);
-  if (hits.length !== 1 || cellAxesAnchorLineIsComment(lines[hits[0] - 1])) return null;
-  return { anchor, line: hits[0], citation: `src/loop/orchestrator.js:${hits[0]}` };
-})();
 
 /**
  * #770 R2：两轴表「今天的写点」那一列的列号（从标记区的**表头行**现算，不写死列号）。
@@ -8086,2228 +7474,24 @@ const CELL_AXES_R4_SAME_NAME_CODE_LINE = (() => {
  * ⇒ 字样变了 ⇒ 定位不到 ⇒ 变异空跑。现在跟闸自己读表用同一列（`cellAxesTableRefs` 读 `cells[5]`）；
  * 表头不在场或那一列改名 ⇒ -1 ⇒ 变异打不上 ⇒ 「变异没落上」报红。
  */
-const cellAxesWriteColumnIndex = (lines) => {
-  const begin = lines.findIndex((l) => l.includes(CELL_AXES_MARK_BEGIN));
-  if (begin < 0) return -1;
-  const header = lines.slice(begin + 1).find((l) => l.trim().startsWith("|"));
-  if (header === undefined) return -1;
-  return header.split("|").findIndex((c) => c.includes("今天的写点") || c.includes("Today's write site"));
-};
 
 /**
  * #772 R4 M-B 的靶子（现算）：每个**双锚点组**（同 key+axis+同名第几行+同文件上有两条登记）
  * 里挑一条，连同它在两份表里的那条引用一起删 ⇒ 剩下的仍然自洽（旧行为：两道闸全绿）。
  */
-const CELL_AXES_R4_PAIR_VICTIMS = (() => {
-  const bySlot = new Map();
-  for (const entry of CELL_AXES_ANCHORS_SHIPPED) {
-    const gk = cellAxesAnchorGroupKey(entry.key, entry.axis, entry.row ?? 0, entry.codePath);
-    bySlot.set(gk, [...(bySlot.get(gk) ?? []), entry]);
-  }
-  const out = [];
-  for (const [, list] of bySlot) {
-    if (list.length < 2) continue;
-    const entry = list[list.length - 1];
-    const hits = cellAxesAnchorHitLines(textOf(entry.codePath).split("\n"), entry).hits ?? [];
-    if (hits.length !== 1) continue;
-    out.push({ entry, literal: JSON.stringify(entry.anchor), citation: `${entry.codePath}:${hits[0]}` });
-  }
-  return out.length > 0 ? out : null;
-})();
 
-/** #772 R4 M-B：把双锚点组里那 N 条登记从表里摸掉（每条靠自己的锚点字面量定位）。 */
-const dropCellAxesAnchorEntries = (text) => {
-  if (CELL_AXES_R4_PAIR_VICTIMS === null) return text;
-  let out = text;
-  for (const { literal, entry } of CELL_AXES_R4_PAIR_VICTIMS) {
-    const needle = `{ key: "${entry.key}", axis: "${entry.axis}"`;
-    const lines = out.split("\n");
-    const at = lines.findIndex((l) => l.includes(needle) && l.includes(literal));
-    if (at < 0) return text;
-    out = [...lines.slice(0, at), ...lines.slice(at + 1)].join("\n");
-  }
-  return out;
-};
 
-/** #772 R4 M-B：把双锚点组里那 N 条引用从一份表里摸掉（只动写/读两格，不碰别的散文）。 */
-const dropCellAxesCitations = (text) => {
-  if (CELL_AXES_R4_PAIR_VICTIMS === null) return text;
-  let out = text;
-  for (const { citation } of CELL_AXES_R4_PAIR_VICTIMS) {
-    if (!out.includes(citation)) return text;
-    out = out.split(`\`${citation}\``).join("").replace(/\s*[，,、]\s*(?=[（(])/gu, "");
-  }
-  return out;
-};
 
 // issue #811：下面 #635 ① 那三例的锚点份数**由 `refScanCountTruth()` 现算**，不再写死。
 // 写死那一份要求「每次覆盖面落地都有人记得回来改脚本」——0.32.0 中英指南落地把
 // README 的 51/36 改成 53/38 那一刻没人想起来 ⇒ 变异落空、`--self-test` 2/224 未达预期，
 // 而 `ci.yml` 不跑这条 ⇒ 在 main 上静默红着（PR #810 后发现）。锚点改取事实面之后
 // 覆盖面再涨也不漂；变异改的仍是**当前真值**，判据一点没松（反向证：手写错一个份数仍红）。
-const REF_SCAN_TRUTH = refScanCountTruth();
 
-const SELF_TEST_CASES = [
-  // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
-  {
-    label: "README 把 exports 的 \"./tools\" 改名（修前 exit 0）",
-    overlay: { [README_EN]: (t) => t.replace('  "./tools": {', '  "./zzz": {') },
-    expect: [/README\.md 的 `exports` 围栏键集合 缺 子路径键 "\.\/tools"/, /README\.md 的 `exports` 围栏键集合 多出真值里没有的 子路径键 "\.\/zzz"/],
-  },
-  {
-    label: "README 删掉 exports 的 \"./tools\" 整个键（修前 exit 0）",
-    overlay: { [README_EN]: (t) => t.replace('  "./tools": {\n    "types": "./src/tools/index.d.ts",\n    "default": "./src/tools/index.js"\n  },\n', "") },
-    expect: [/README\.md 的 `exports` 围栏键集合 缺 子路径键 "\.\/tools"/],
-  },
-  {
-    label: "README 的 exports 多一个 \"./zzz\" 键",
-    overlay: { [README_EN]: (t) => t.replace('  "./contract-tests": "', '  "./zzz": "./test/contract/index.js",\n  "./contract-tests": "') },
-    expect: [/README\.md 的 `exports` 围栏键集合 多出真值里没有的 子路径键 "\.\/zzz"/],
-  },
-  {
-    label: "README 的 exports 把 \".\" 的值写错",
-    overlay: { [README_EN]: (t) => t.replace('    "types": "./src/index.d.ts",', '    "types": "./src/nope.d.ts",') },
-    expect: [/README\.md 的 `exports` 里键 "\." 的值与 package.json 不一致/],
-  },
-  {
-    label: "README 的 exports 重复写同一个子路径键（JSON.parse 会静默吞掉）",
-    overlay: { [README_EN]: (t) => t.replace('  "./tools": {', '  ".": {\n    "types": "./src/index.d.ts",\n    "default": "./src/index.js"\n  },\n  "./tools": {') },
-    expect: [/子路径键 "\." 写了不止一次/],
-  },
-  // —— pkg-block / files：同一族 fail-open ——
-  {
-    label: "README 的 files 围栏删一项（连带块定位也会失效）",
-    overlay: { [README_EN]: (t) => t.replace('```json\n[\n  "src",\n', '```json\n[\n') },
-    expect: [/README\.md 的 `files` 围栏 缺 条目 "src"/],
-  },
-  {
-    label: "README 的 files 围栏写重一项（集合相等但多了一份）",
-    overlay: { [README_EN]: (t) => t.replace('  "LICENSE",\n', '  "LICENSE",\n  "LICENSE",\n') },
-    expect: [/README\.md 的 `files` 围栏 的 条目清单里 "LICENSE" 写了不止一次/],
-  },
-  {
-    label: "README 的 files 围栏被改坏（JSON 解不开 → 块找不到就是检查面失效）",
-    overlay: { [README_EN]: (t) => t.replace('  "LICENSE",\n', '  "LICENSE",,\n') },
-    expect: [/README\.md 找不到 `files` 清单围栏/],
-  },
-  // —— package.json 侧：中英两侧都必须红 ——
-  {
-    label: "package.json 加一个假子路径 → 中英都红",
-    overlay: { "package.json": (t) => t.replace('    "./contract-tests": "', '    "./fake": "./src/fake.js",\n    "./contract-tests": "') },
-    expect: [/README\.md 的 `exports` 围栏键集合 缺 子路径键 "\.\/fake"/, /README_cn\.md 的 `exports` 围栏键集合 缺 子路径键 "\.\/fake"/],
-    expectFiles: [README_EN, README_CN],
-  },
-  {
-    label: "package.json 的 files 加一个假条目 → 中英都红",
-    overlay: { "package.json": (t) => t.replace('    "LICENSE",', '    "LICENSE",\n    "docs/host-upgrade-guide-9.9.9.md",') },
-    expect: [/README\.md 的 `files` 围栏 缺 条目 "docs\/host-upgrade-guide-9\.9\.9\.md"/, /README_cn\.md 的 `files` 围栏 缺 条目 "docs\/host-upgrade-guide-9\.9\.9\.md"/],
-    expectFiles: [README_EN, README_CN],
-  },
-  // —— anchors：vendor 跳过目录 ——
-  {
-    label: "契约 CN 的 vendor 跳过清单删一处 `target`",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("`node_modules`、`dist`、`build`、`target`、", "`node_modules`、`dist`、`build`、") },
-    expect: [/host-consumer-contract_cn\.md.*缺 目录 "target"/],
-  },
-  {
-    label: "源码 VENDOR_DIRECTORIES 加一档 → 中英四处都红",
-    overlay: { "src/tools/file-tools.js": (t) => t.replace('new Set(["node_modules", "dist", "build", "target", "vendor"])', 'new Set(["node_modules", "dist", "build", "target", "vendor", "third_party"])') },
-    expect: [/缺 目录 "third_party"/],
-    expectFiles: [README_EN, README_CN, CONTRACT_EN, CONTRACT_CN],
-  },
-  // —— anchors：文件工具清单 / CLI 工具清单 ——
-  {
-    label: "契约 EN 的文件工具清单删一个 `edit`",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("  `edit` / `writeFile` schemas", "  `writeFile` schemas") },
-    expect: [/host-consumer-contract\.md.*缺 工具名 "edit"/],
-  },
-  {
-    label: "README EN 的 CLI 工具清单写一个源码里不存在的工具名（凭空多写）",
-    overlay: { [README_EN]: (t) => t.replace("`writeFile`, and `exec`.", "`writeFile`, and `execx`.") },
-    expect: [/README\.md.*多出真值与允许清单里都没有的 工具名 "execx"/],
-  },
-  {
-    label: "README_cn 的 CLI 工具清单删一个 `edit`",
-    overlay: { [README_CN]: (t) => t.replace("`tree`、`edit`、`writeFile` 和 `exec`", "`tree`、`writeFile` 和 `exec`") },
-    expect: [/README_cn\.md.*缺 工具名 "edit"/],
-  },
-  {
-    label: "源码改一个文件工具名 → 中英四处都红",
-    overlay: { "src/tools/file-tools.js": (t) => t.replace('    name: "writeFile",', '    name: "writeFileNow",') },
-    expect: [/缺 工具名 "writeFileNow"/, /多出真值里没有的 工具名 "writeFile"/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  // —— anchors：内置压缩策略名 ——
-  // issue #926 退役：内置策略名收口到唯一一项（`fold-llm`），「清单成员对称」那条 anchor 规则随之退役
-  // （`runListRule` 需要 ≥2 项才有成员可比）。原来那两条自测的变异靶子——README 里的三值清单、
-  // `strategy-resolution.js` 里的第二条策略名——都已经不存在了。名字真值仍由 `compaction-default`
-  // 逐处对账常量与四份文档，它的自测在下面（#668 ① 那一族）。
-  // —— anchors：formatSize 单位档位与示例映射 ——
-  {
-    label: "契约 EN 的单位清单删一处 `TB`（issue 正文的盲区复现）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("renders `B` / `KB` / `MB` / `GB` / `TB` on", "renders `B` / `KB` / `MB` / `GB` on") },
-    expect: [/host-consumer-contract\.md.*缺 单位 "TB"/],
-  },
-  {
-    label: "契约 CN 的单位清单把 `TB` 改名成 `TP`",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("`B`/`KB`/`MB`/`GB`/`TB`\n", "`B`/`KB`/`MB`/`GB`/`TP`\n") },
-    expect: [/host-consumer-contract_cn\.md.*缺 单位 "TB"/, /多出真值里没有的 单位 "TP"/],
-  },
-  {
-    label: "契约 EN 的单位清单整句删掉（逐处一致接不住，靠中英处数对账）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("(`B`/`KB`/`MB`/`GB`/`TB`, 1024 base,", "(human-readable, 1024 base,") },
-    expect: [/单位清单.*声明点处数中英不齐/],
-  },
-  {
-    label: "契约 EN 的示例映射把 1649267441664 写成 2.5TB",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("`1649267441664` → `1.5TB`", "`1649267441664` → `2.5TB`") },
-    expect: [/把 1649267441664 写成 `2\.5TB`.*复算是 `1\.5TB`/],
-  },
-  {
-    label: "契约 CN 的示例映射删掉一条（档位少一档 → 处数不齐）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("`1536` → `2KB`、", "") },
-    expect: [/示例映射.*声明点处数中英不齐/],
-  },
-  {
-    label: "源码 formatSize 的 TB 档改名 → 档位清单与示例映射两层都红",
-    overlay: { "src/tools/file-tools.js": (t) => t.replace("return `${(gb / 1024).toFixed(1)}TB`;", "return `${(gb / 1024).toFixed(1)}PB`;") },
-    expect: [/缺 单位 "PB"/, /多出真值里没有的 单位 "TB"/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "源码 formatSize 的 MB 档改成两位小数 → 文档示例映射全红",
-    overlay: { "src/tools/file-tools.js": (t) => t.replace("return `${mb.toFixed(1)}MB`;", "return `${mb.toFixed(2)}MB`;") },
-    expect: [/写成 `1\.5MB`.*复算是 `1\.50MB`/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-
-  // —— markers：marker 字面量与源码模板同源（issue #272；下面 4 例修前**全是 exit 0**）——
-  {
-    label: "契约 EN 把 marker 的 `（文件 <size>）` 段删掉（修前 exit 0）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("[共 N 行（文件 <size>），剩余 M 行", "[共 N 行，剩余 M 行") },
-    expect: [/markers\/readMoreLines.*host-consumer-contract\.md:\d+ 引用的是 "\[共 N 行，剩余 M 行/, /渲染出来是 "\[共 N 行（文件 <size>）/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "契约 CN 把续读占位符 `offset=K` 写成 `offset=N`（修前 exit 0）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("readFile 传 offset=K 继续", "readFile 传 offset=N 继续") },
-    expect: [/markers\/readMoreLines.*host-consumer-contract_cn\.md:\d+ 引用的是 .*offset=N 继续.*，但按 src\/tools\/file-tools\.js/],
-  },
-  {
-    label: "源码模板把「剩余」改成「还剩」→ 中英两处引用同时红",
-    overlay: { "src/tools/file-tools.js": (t) => t.replace("剩余 ${values.total - values.offset}", "还剩 ${values.total - values.offset}") },
-    // 逐处比对，每一处（EN 与 CN）单独成一条 error；期望两份都要被点名（[\s\S] 是因为 error 文本里带换行）
-    expect: [/渲染出来是 "\[共 N 行（文件 <size>），还剩 M 行/, /markers\/readMoreLines marker 字面（契约中英引用）: docs\/host-consumer-contract(_cn)?\.md:\d+ 引用的是 .*但按 src\/tools\/file-tools\.js/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "源码 NEXT_STEP_CLAUSE 改文案 → 中英两处引用同时红（#267 只钉住了源码侧形状，没管文档）",
-    overlay: { "src/tools/file-tools.js": (t) => t.replace('const NEXT_STEP_CLAUSE = "下一步：";', 'const NEXT_STEP_CLAUSE = "接着：";') },
-    expect: [/渲染出来是 .*接着：readFile 传 offset=K/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "源码给 marker 模板加一个未登记的插值 → 红并点名未登记（不许拿旧字面比新真值）",
-    overlay: { "src/tools/file-tools.js": (t) => t.replace("剩余 ${values.total - values.offset} 行", "剩余 ${values.total - values.offset} 行（从 ${values.offset + 1} 行起）") },
-    expect: [/模板里有未登记的插值 .*values\.offset \+ 1/],
-  },
-  {
-    label: "把 CN 契约那一处引用整段删掉 → 检查面失效 + 中英处数不齐",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("`[共 N 行（文件 <size>），剩余 M 行；下一步：readFile 传 offset=K 继续]`", "上面那张截断标记表里的续读提示") },
-    expect: [/找不到以 `\[共 ` 开头的 marker 字面引用/, /声明点处数中英不齐：.* 1 处 vs .* 0 处/],
-  },
-
-  // —— paths：覆盖面与四类裁决（issue #273）——
-  {
-    label: "把 examples/pi-extension/README.md 里的同目录文件 `erix-run-core.js` 改个名（修前 exit 0）",
-    overlay: { [PI_EXT_README]: mutateRef("erix-run-core.js", "erix-run-coreX.js") },   // #279：该值在本份文档里被提取到 4 处，全部定点换名
-    expect: [/paths: examples\/pi-extension\/README\.md[\s\S]*`erix-run-coreX\.js`（第 \d+ 行）：本仓不存在/],
-    expectFiles: [PI_EXT_README],
-  },
-  {
-    label: "把根 README 引用的 docs/architecture.md 改名（既有行为不退化）",
-    overlay: { [README_EN]: mutateRef("docs/architecture.md", "docs/architectureX.md") },   // #279：提取值是 URL 尾段，靶子由提取器定，不再靠人手工挑靶串
-    // 变异要落在**真正被核对的那个引用**上：这行是 `[docs/architecture.md](https://…/blob/main/docs/architecture.md)`，
-    // 只改链接文字动不了提取出的 href（URL 会被改写成仓内路径），所以上一版是“变异没接上检查面”而非锚点绿。
-    // 上一版靠把靶串写成 `blob/main/…` 来手工避开链接文字（换一句措辞就失效）；#279 后 `mutateRef` 直接按
-    // 提取值定位，链接文字天然不会被误伤——「打在哪」不再取决于靶串怎么写。
-    expect: [/paths: README\.md[\s\S]*docs\/architectureX\.md/],
-    expectFiles: [README_EN],
-  },
-  {
-    label: "白名单不是整目录豁免：把已登记的 CHANGELOG 任务档案名改一个字 → 红",
-    overlay: { "CHANGELOG.md": mutateRef("repro-circular-details.mjs", "repro-circular-detailsX.mjs") },   // #278 首次现场：旧写法只换第一次出现，散文提一句就抢枪
-    // #279：报错的**措辞分支**取决于「被报告的那一行自己有没有写 `docs/tasks/`」（#273 定的口径），而报告
-    // 的行 = 该值的**第一处出现**——散文里先提一句就会换掉那一行，于是旧期望「指向任务档案」会被无关措辞
-    // 打断（#278 首次现场就是这条「红了但没点该点的名」）。期望钉的是**裁决**：点名改名后的引用、必须带行号、
-    // 必须归到 LOCAL_ARCHIVE_REFS 那条口径上（两支措辞都满足）；不再钉某一支的措辞。不是放宽：仍然要点名到名字与行号。
-    expect: [
-      /archive-refs: CHANGELOG\.md[\s\S]*`repro-circular-detailsX\.mjs`（第 \d+ 行）/,
-      /repro-circular-detailsX\.mjs[\s\S]*LOCAL_ARCHIVE_REFS/,
-    ],
-    expectFiles: ["CHANGELOG.md"],
-  },
-  {
-    label: "就地声明就能放行（对照）：把已登记的 REPORT.md 换成没登记的 PLAN.md，同行仍写「本地，不入库」",
-    overlay: { "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": mutateRef(
-      "docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md",
-      "docs/tasks/done/260926-strategy-variance-benchmark/PLAN.md") },   // #279：按提取值（整条路径）打靶，不拿子串去碰
-    expectGreen: true,
-  },
-  {
-    label: "把那句「（本地，不入库）」删掉 → 同一处立刻红（证明上一例的绿来自声明，不是恒绿）",
-    overlay: {
-      "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": (t) =>
-        mutateRef("docs/tasks/done/260926-strategy-variance-benchmark/REPORT.md",
-          "docs/tasks/done/260926-strategy-variance-benchmark/PLAN.md")(
-          t.replace("任务文档（本地，不入库）：", "任务文档：")),   // #279：文件名那一刀改成定点打靶，散文那一刀原样
-    },
-    expect: [/archive-refs: docs\/research\/2026-09-26[\s\S]*PLAN\.md[\s\S]*没在引用处写明|archive-refs: docs\/research\/2026-09-26[\s\S]*PLAN\.md[\s\S]*没写「本机/],
-  },
-  {
-    label: "分类真的读 .gitignore：把 docs/tasks/ 从 .gitignore 里去掉 → 本机档案登记与放行全部失效",
-    overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "") },
-    expect: [
-      // 树形两侧同判（#280：这一类裁决**不得依赖实物存在**）：有 `docs/tasks/` 实物的树形里红在「登记失效」那一句，
-      // 干净 clone / CI / 一次性沙箱里实物根本不存在、登记按声明放行，红就落在**引用侧**（同一个原因，不同那一句）。
-      // 两个分支都要求点名 `docs/tasks`，所以不是拿「恒真」糊这一例。
-      /登记为本机档案.*但 \.gitignore 并不忽略[\s\S]*docs\/tasks|archive-refs: [^\n]*引用了克隆后不存在的本机档案[\s\S]*docs\/tasks|paths: [^\n]*引用了无法裁决的仓库内路径[\s\S]*`docs\/tasks\/`/,
-      /archive-refs: CHANGELOG\.md|paths: examples\/pi-extension\/README\.md|paths: AGENTS\.md/,   // 引用侧必须点名到文档（两种树形里至少中一个）
-    ],
-  },
-  {
-    label: ".gitignore 新增一条没分类的目录规则 → 红（不许默默放行新目录）",
-    overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "docs/tasks/\nscratch/\n") },
-    expect: [/没在 IGNORED_DIR_CLASSES 里分类|没有一处引用真正用到它/],
-  },
-  {
-    label: "#337 未登记的 ignore 目录规则必须点名那条规则本身，而不是报成「文档漂移」",
-    // 病历（#337）：`.scratch/` 只在 `.git/info/exclude` 里时，本脚本**按文件系统**扫，对照树里的文件被当成
-    // 仓内实物参与「唯一同名」解析，`check:docs` 当场变红——而红的是 `paths:` 的「无法裁决」，人以为是真文档漂移，
-    // 白排查一轮。这一例把「新增目录规则未登记」那一句钉死：必须点名规则名与行号，且**不许**出现漂移 /
-    // 无法裁决 / 白名单空转那类措辞（上一例的 expect 带 `|没有一处引用真正用到它` 的 OR，单独看不能证这件事）。
-    overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "docs/tasks/\nzz-337-probe-dir/\n") },
-    expect: [/paths: \.gitignore:\d+ 的目录规则 `zz-337-probe-dir\/` 没在 IGNORED_DIR_CLASSES 里分类/],
-    reject: [/漂移/, /引用了无法裁决的仓库内路径/, /白名单条目/],
-  },
-  {
-    label: "#337 同一目录登记类别之后不再产生任何红，且真的整目录不进扫描面（反向证的另一半）",
-    // 登记只能来自运行时那张 Map（overlay 只改**文本**，与 simulateLooseDecl 同一课），所以走配置口子；
-    // 跑完在 finally 里还原。绿只能证明「静态分类不再报」，所以再加一句 assertAfter：这条类别必须在
-    // `SKIPPED_DIR_KINDS` 里——否则 `.scratch/` 里的文件会重新进入实物解析（本单要防的静默污染）。
-    overlay: { ".gitignore": (t) => t.replace("docs/tasks/\n", "docs/tasks/\nzz-337-probe-dir/\n") },
-    simulateIgnoreDirClass: { pattern: "zz-337-probe-dir/", kind: "scratch", why: "#337 自测探针：丢弃型临时目录" },
-    expectGreen: true,
-    assertAfter: () => (ignoredDirIsSkipped({ pattern: "zz-337-probe-dir/" })
-      ? null
-      : "登记了但这条类别没进 SKIPPED_DIR_KINDS（整目录仍会被扫）——绿只是「静态分类不再报」，"
-        + "真实 `.scratch/` 里的文件照样会参与「唯一同名」解析与近邻判据；把 scratch 加进那张显式清单"),
-  },
-  {
-    label: "白名单条目变空转：两处引用（examples README 与 CHANGELOG 的同名提及）全改掉 → 该登记被判失效",
-    overlay: {
-      // #273 把 archive 类的三级解析接上后，CHANGELOG:89 的裸名提及也算一处真实引用；只下掉一处只会
-      // 让那一处红，要证「登记空转」得把两处都下掉。
-      [PI_EXT_README]: mutateRef("e2e-wake.mjs", "e2e-wake-v2.mjs"),
-      "CHANGELOG.md": mutateRef("e2e-wake.mjs", "e2e-wake-v2.mjs"),
-      "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("e2e-wake.mjs", "e2e-wake-v2.mjs"),   // #279：三份文档各自按提取值定点，不再拿反引号靶串去猜第一次出现在哪
-    },
-    expect: [/白名单条目 `e2e-wake\.mjs` 没有一处引用真正用到它/],
-  },
-
-  // —— #280：门禁不得隐含依赖「检查机上恰好有被 .gitignore 忽略的 docs/tasks/」（修前全新 clone 必红）——
-  // #302：这两例改成在**合成树夹具**上跑，三种树形（无目录 / 空目录 / 有档案）各跑一遍、各自断言。
-  // 旧写法只在「无目录」那一格能跑通：「目录在、里面是空的」的机器上，自测自己的落地检查（拿真实
-  // 实物数量当判据）恒真地误报 2 例——于是 CI 上 0 红、开发机上 2 红，同一提交两个结论。
-  {
-    label: "#280 树形对照：本机没有/空着/有 docs/tasks/ 三种树形下，本机档案类必须整片绿（合成树夹具）",
-    // 修前：同一提交在 `git archive HEAD` 解出来的树里 check:docs exit 1（10 条）、工作树里 exit 0——
-    // 「本机档案」的裁决把「实物在 docs/tasks/ 下解得到」当成了放行前提。这一例把那棵树的形状钉进自测：
-    // 声明一侧（登记表 / 就地声明 / .gitignore 规则）一个字没动，只把实物换成夹具声明的那一份，必须仍 0 错。
-    simulateTreeShapes: TREE_SHAPES,
-    expectGreen: true,
-  },
-  {
-    label: "#280 上一例的绿不是「整类不裁决」：同一批树形里把已登记裸名改成未登记的假名 → 三种树形都仍红",
-    // 「本机档案默认按声明放行」很容易被糊成「干脆整类不裁决」——这条就是抓它的：树形一样是夹具那三份，
-    // 但引用改成了既未登记、也解不到的假名，必须照样红并点名那处引用（与上一例共用同一批树形夹具）。
-    simulateTreeShapes: TREE_SHAPES,
-    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("e2e-wake.mjs", "e2e-wake-cloneQ.mjs") },
-    expect: [/archive-refs: docs\/research\/2026-10-13[\s\S]*`e2e-wake-cloneQ\.mjs`（第 \d+ 行）[\s\S]*本仓不存在/],
-    expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
-  },
-
-  // —— bare-names：无斜杠裸名的通用裁决 + 近邻判据（issue #278；下面四条修前**全是 exit 0**）——
-  {
-    label: "#278-P2 改坏**已登记**的裸名（`repro-circular-details.mjs` 多个 Q）→ 红（修前 exit 0：脱离登记就静默放行）",
-    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("repro-circular-details.mjs", "repro-circular-detailsQ.mjs") },
-    expect: [
-      /archive-refs: docs\/research\/2026-10-13[\s\S]*`repro-circular-detailsQ\.mjs`（第 \d+ 行）/,
-      // 近邻提示（↳ 它跟本仓实物只差一点）拿的是**被 .gitignore 忽略但本机真在**的实物：干净 clone 里没有
-      // `docs/tasks/`，实物无从比对，红的就是「解不到 + 未登记」那一句。两个分支都点名了被改坏的名字，
-      // 所以不是放宽：本例的主命题（改坏已登记的裸名必须红并点名）在两种树形里都被铉住。
-      /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/repro-circular-details\.mjs|`repro-circular-detailsQ\.mjs`（第 \d+ 行）：本仓不存在[\s\S]*不属于四类里的任何一类/,
-    ],
-    expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
-  },
-  {
-    label: "#278-P3 改坏**未登记**的裸名（`e2e-wake.mjs` 多个 Q）→ 红（修前 exit 0：它本来连被检资格都没有）",
-    overlay: { "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("e2e-wake.mjs", "e2e-wakeQ.mjs") },
-    expect: [
-      /archive-refs: docs\/research\/2026-10-13[\s\S]*`e2e-wakeQ\.mjs`（第 \d+ 行）[\s\S]*本仓不存在/,
-      // 同上：近邻提示只在「本机有 task-archive 实物」的树形里存到，另一棵树上红在「解不到 + 未登记」那一句。
-      /↳ 它跟本仓实物只差一点：docs\/tasks\/active\/261010-13-erix-run-async\/e2e-wake\.mjs（比实物名字干多写了 “Q”）|`e2e-wakeQ\.mjs`（第 \d+ 行）：本仓不存在[\s\S]*不属于四类里的任何一类/,
-    ],
-    expectFiles: ["docs/research/2026-10-13-pi-subagents-async-attribution.md"],
-  },
-  {
-    label: "跳仓对照文档里的裸名不被裁决（对照）：把 codex 篇的 `MEMORY.md` 改个名必须仍然绿",
-    // #278 裁定的另一面：跳仓/宿主对照文档（CROSS_REPO_DOCS 逐份点名那批）的裸名指的不是本仓实物，
-    // 不该被拖进裁决面——这一例就是防「把 79 处跳仓引用用另一种方式再吃回来」。近邻判据不在此列，
-    // 所以变异选 `MEMORY.md`（5 字干，低于 NEAR_STEM_MIN=8，不会误判成本仓实物改名）。
-    overlay: { "docs/harness-comparison/03-codex.md": mutateRef("MEMORY.md", "MEMORYX.md") },   // #279：该值在这篇里有 5 处，全部定点换名（仍全绿才叫「跳仓裸名不被裁决」）
-    expectGreen: true,
-  },
-  {
-    label: "#269 原型：裁决清单内新写一个**凭空、无近邻**的裸名（`analysis.md` 形状）→ 红（这是近邻判据拓不到的那一半）",
-    overlay: { "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": mutateRef("debug.routes.js", "zz-nonexistent-evidence.md") },
-    // #279：期望不再钉「第 118 行」这个**地址**——它钉的是「报错必须给出行号」；写死行号时，只要有人
-    // 在那行以上加一句散文（哪怕提的是不相干的名字）这一例就会红，而那恰好就是本单要修的病。
-    expect: [/archive-refs: docs\/research\/2026-09-26[\s\S]*`zz-nonexistent-evidence\.md`（第 \d+ 行）[\s\S]*本仓不存在/],
-    expectFiles: ["docs/research/2026-09-26-strategy-variance-and-cache-economics.md"],
-  },
-  {
-    label: "跳仓点名清单也不许烂着：那份文档已没一处裸名引用要用豁免 → 销账红（反向校）",
-    // docs/harness-comparison/README.md 里需要豁免的裸名就是 `MEMORY.md` 两处；全改成能解析的实物名后，
-    // 这条逐份点名的豁免就成了空条目 → 必须红（否则清单会默默堆着没人用的条目）。
-    overlay: { "docs/harness-comparison/README.md": mutateRef("MEMORY.md", "AGENTS.md") },   // #279：原本就是 replaceAll，但它是「按子串」而不是「按提取值」，一并改成定点
-    expect: [/bare-names: 跳仓点名清单里的 `docs\/harness-comparison\/README\.md` 现在没有一处裸名引用用上它/],
-  },
-  {
-    label: "登记表反向校扩到裸名（#278 第 4 件）：本仓文档里已没人引用已登记的裸名 `repro-circular-details.mjs` → 销账红",
-    // 两条引用（CHANGELOG 与 research 篇）全改成能解析的路径后，这条**无斜杠**登记就没人用了；
-    // 反向校必须抓得住（#273 只对带斜杠条目做到了这件事）。
-    overlay: {
-      "CHANGELOG.md": mutateRef("repro-circular-details.mjs", "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs"),
-      "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("repro-circular-details.mjs", "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs"),   // #279：#280 现场——旧写法只换第一处，散文提一句就抢枪 → 该红的不红
-    },
-    expect: [/白名单条目 `repro-circular-details\.mjs` 没有一处引用真正用到它/],
-  },
-  {
-    label: "近邻判据**不**跟跳仓豁免一起免：跳仓文档里把本仓实物名改坏一个尾缀 → 仍红",
-    // 防的是反向滑坡：「这份文档在讲别的仓库」不等于本仓实物在它就是绿的。拿 `README.md`（能解析）
-    // 换成 `erix-run-coreX.js`（本仓有 erix-run-core.js，只差一个 X），必须靠近邻判据抓红。
-    overlay: { "docs/harness-comparison/02-touwaka.md": mutateRef("README.md", "erix-run-coreX.js") },   // #279：按提取值打靶（该值这篇里 2 处），不再拿「`README.md` 全文」这整串措辞当靶
-    expect: [/archive-refs: docs\/harness-comparison\/02-touwaka\.md[\s\S]*`erix-run-coreX\.js`（第 \d+ 行）[\s\S]*examples\/pi-extension\/erix-run-core\.js/],
-  },
-  {
-    label: "简称登记也要反向校（#278 新增第五类）：CHANGELOG 里的 `format.js` 简称改成实物路径后，简称条目就该销账",
-    overlay: { "CHANGELOG.md": mutateRef("format.js", "examples/pi-extension/erix-run-format.js") },   // #279：同上，从「反引号 + 子串 replaceAll」改成按提取值定点
-    expect: [/白名单条目 `format\.js` 没有一处引用真正用到它/],
-  },
-
-  // —— #279：在文档里「提一句同一个文件名」不许抢走变异的那一枪（打靶位置无关）——
-  // 三次现场（#278 收尾 3 红、#280 收尾 2 红）全部指向同一个名字：别人只是**在散文里提了一句**
-  // `repro-circular-details.mjs`，旧变异体（`t.replace("X.mjs", …)` 只换第一次出现）的那一枪就打在
-  // 那句散文上——真正的引用一个字没动 → 「该红的不红」，还被自测报成 `改了但没红（锚点仍是 fail-open）`
-  // 这个**假警报**（同一份树上 `check:docs` 明明 exit 0）。下面两条把这个形状钉住：第 1 条**修前就是红的**
-  // （#280 那条「改了但没红」），第 2 条修前也绿——它钉的是「提一句」这个动作本身绝不该让门禁红；
-  // 修前真正红的是**同树的其它用例**（拿 `git show HEAD:` 取出的修前脚本跑同一棵树：2/57 红，见 CHANGELOG #279）。
-  {
-    label: "#279 提一句不许抢枪：CHANGELOG 靠前散文先提一句已登记的裸名，再把两份文档里的裸名引用改成真实路径 → 销账红必须照样在（修前：散文那一处才是第一次出现 → 该红的不红）",
-    overlay: {
-      // mention 就是把「提一句」那个动作放进自测：插在第一处 `## ` 标题之前，比任何真引用都早。
-      "CHANGELOG.md": mutateRef("repro-circular-details.mjs",
-        "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs",
-        { mention: "自测探针（#279）：这里只是在散文里提一句那个已登记的任务档案裸名 `repro-circular-details.mjs`。" }),
-      "docs/research/2026-10-13-pi-subagents-async-attribution.md": mutateRef("repro-circular-details.mjs",
-        "docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs"),
-    },
-    expect: [/白名单条目 `repro-circular-details\.mjs` 没有一处引用真正用到它/],
-  },
-  {
-    label: "#279 提一句本身不该让门禁红（对照）：只在 CHANGELOG 靠前插那句散文、什么也不改 → 必须 0 错（名字已登记，门禁不该因为一个名字被提到就改口）",
-    overlay: { "CHANGELOG.md": mentionInProse("自测探针（#279）：这里只是在散文里提一句那个已登记的任务档案裸名 `repro-circular-details.mjs`。") },
-    expectGreen: true,
-  },
-
-  // —— 工具事实契约面：契约文档的字段清单 ↔ TOOL_RESULT_CONTRACT（工单 261014 T1）——
-  // 四种形状都钉住：只改文档→红、只改常量→红（中英两侧都红）、删掉整句→红、
-  // 「变异没打上」→红（runSelfTest 的 `after === before` 判据，#210 R2 口径）。
-  {
-    label: "契约 EN 的引擎字段清单删一处 `durationMs`（只改文档）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("`toolCallKey` / `round` / `durationMs` / `executionStatus` /", "`toolCallKey` / `round` / `executionStatus` /") },
-    expect: [/字段清单: docs\/host-consumer-contract\.md:\d+.*缺 引擎字段 "durationMs"/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "契约 CN 的引擎字段清单把 `success` 改名成 `ok`（只改文档、改名不是「删」）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("`executionStatus` / `success`。", "`executionStatus` / `ok`。") },
-    expect: [/host-consumer-contract_cn\.md.*缺 引擎字段 "success"/, /多出真值里没有的 引擎字段 "ok"/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "契约 EN 把「exactly five fields」那句整句改成不含清单的话（删掉整句 → 检查面失效 + 中英处数不齐）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace(
-      "The engine namespace has exactly five fields, every one of them\naddressed as `erix.<field>`: `toolCallKey` / `round` / `durationMs` / `executionStatus` /\n`success`.",
-      "The engine namespace is a namespace addressed per field.") },
-    expect: [/找不到引擎字段清单声明/, /声明点处数中英不齐：docs\/host-consumer-contract\.md 0 处 vs docs\/host-consumer-contract_cn\.md 1 处/],
-  },
-  {
-    label: "契约 EN 把「exactly five fields」改成 six（数量声明也是事实，不靠清单接）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("exactly five fields", "exactly six fields") },
-    expect: [/声称引擎命名空间有「six」个字段.*engine\.fields 是 5 个/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "契约 EN 的存在性矩阵表头把 `erix.durationMs` 改名 → 矩阵列单独红",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("| Case | erix.toolCallKey | erix.round | erix.durationMs |", "| Case | erix.toolCallKey | erix.round | erix.elapsedMs |") },
-    expect: [/存在性矩阵列: docs\/host-consumer-contract\.md:\d+.*缺 矩阵列.*"durationMs"/, /多出真值里没有的 矩阵列.*"elapsedMs"/],
-  },
-  {
-    label: "契约 CN 的字段归属表把引擎命名空间写成 `engine.toolCallKey` → 命名空间名不一致就红",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("| `erix.toolCallKey` | 引擎 |", "| `engine.toolCallKey` | 引擎 |") },
-    expect: [/把引擎字段写成 `engine\.toolCallKey`.*engine\.ns 是 "erix"/, /缺 引擎字段行 "toolCallKey"/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "契约 CN 的 legacy 别名表把 `duration` 的新归属写成 `erix.elapsedMs` → 别名值与常量不齐",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("| `duration` | `erix.durationMs` |", "| `duration` | `erix.elapsedMs` |") },
-    expect: [/把 `duration` 的新归属写成 `erix\.elapsedMs`.*常量里的别名是 `erix\.durationMs`/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "常量里新增一个引擎字段 → 中英两侧同时红（清单缺、表缺、数量也不对）",
-    overlay: { "src/tool-fact.js": (t) => t.replace(
-      "    fields: {\n      toolCallKey: {",
-      "    fields: {\n      zzzExtra: {\n        owner: \"engine\",\n        stages: [\"result\"],\n        resumeStable: true,\n        onWire: false,\n      },\n      toolCallKey: {") },
-    expect: [/缺 引擎字段 "zzzExtra"/, /缺 引擎字段行 "zzzExtra"/, /声称引擎命名空间有「five」个字段.*是 6 个/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "常量里删掉一个引擎字段（success）→ 中英两侧「文档多写了」必须红",
-    overlay: { "src/tool-fact.js": (t) => t.replace(/      success: \{\n[\s\S]*?\n      \},\n/, "") },
-    expect: [/多出真值里没有的 引擎字段 "success"/, /多出真值里没有的 引擎字段行 "success"/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "常量把 engine.ns 改名（erix → engine）→ 中英两侧的 `erix.*` 声明全红",
-    overlay: { "src/tool-fact.js": (t) => t.replace('    ns: "erix",', '    ns: "engine",') },
-    expect: [/engine\.ns 是 "engine"/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "常量给协议必需字段加一项 → 中英两侧的协议字段行同时红",
-    overlay: { "src/tool-fact.js": (t) => t.replace('required: ["type", "tool_use_id", "content"],', 'required: ["type", "tool_use_id", "content", "cursor"],') },
-    expect: [/协议字段行.*缺 协议字段 "cursor"/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "契约 EN 把「保留顶层键名」那段整段删掉（只改文档：该文件的检查面失效必须当场红，不靠中英处数）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace(/^`metadata` and `erix` are \*\*reserved[\s\S]*?no longer reach those fields\.\n/m, "") },
-    expect: [/docs\/host-consumer-contract\.md 找不到保留键名的声明/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "契约 CN 的保留键名那段少写一个 `erix`（只改文档、少一个键名也是漂移）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("`metadata` 与 `erix` 是**保留的顶层键名**", "`metadata` 是**保留的顶层键名**") },
-    expect: [/保留键名: docs\/host-consumer-contract_cn\.md.*缺 保留键名 "erix"/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "常量只改保留键名的登记、不改命名空间名（erix → engine）→ 源码自洽 + 中英文档同时红",
-    overlay: { [TOOL_FACT_SRC]: (t) => t.replace('topLevelKeys: ["metadata", "erix"]', 'topLevelKeys: ["metadata", "engine"]') },
-    expect: [/自相矛盾——保留键名登记的是 metadata \/ engine/, /缺 保留键名 "engine"/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-
-  {
-    // T2 把这张表从「双写对照表」改成**退役名单**（多了一条 `success`），所以「少一行」必须红：
-    // 只删不改的退役条目最容易在文档里被漏掉，而漏掉就等于宿主不知道要迁移什么。
-    label: "契约 EN 的退役名单少写 `success` 那一行（只改文档：T2 新增的那条退役名被漏掉）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("| `success` | `erix.success` |\n", "") },
-    expect: [/legacy 别名表: docs\/host-consumer-contract\.md.*缺 旧顶层键 "success"/,
-      /alias: 声明点处数中英不齐：docs\/host-consumer-contract\.md 3 处 vs docs\/host-consumer-contract_cn\.md 4 处/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "常量把 legacy 别名的新归属改名 → 中英两侧的别名表同时红",
-    overlay: { "src/tool-fact.js": (t) => t.replace('duration: "erix.durationMs",', 'duration: "erix.elapsedMs",') },
-    expect: [/常量里的别名是 `erix\.elapsedMs`/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-
-  // —— 符号锚点与裸行号棘轮（issue #286 T-a：R1/R2/R3 的反向证，#210 R2 口径四条齐全）——
-  // ① 只改文档（符号名改错）→ 红；② 只改真值（源码里给符号改名）→ 红；③ 新增裸行号 → 红；
-  // ④ 行号越界 → 红；⑤ 变异没打上 → 红（`expectMutateMiss`，见 `runSelfTest`）；
-  // 外加「合法锚点必须绿」「基线调回必须绿」两条放行证，证明这些锚点不是恒红。
-  {
-    label: "#286 符号锚点：契约 CN 把 `emitEvent` 改成 `emitEventProbe`（只改文档，修前门禁全绿）",
-    overlay: { [CONTRACT_CN]: mutateSymbolAnchor("emitEvent", "src/loop/orchestrator.js", "emitEventProbe") },
-    // 行号写成 `\d+`：这条断言查的是「点不点得出那个错符号」，而文档行号会随任何一次契约改动漂移
-    // （issue #409 加一节契约就把 84 顶到 119）——把行号钉死等于给每次文档改动埋一颗哑雷（#286 的同一个病）。
-    expect: [/symbol-anchor: docs\/host-consumer-contract_cn\.md:\d+ 引用 `emitEventProbe`（`src\/loop\/orchestrator\.js`/,
-      /实际存在的相近符号：.*emitEvent/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#286 符号锚点：把真值一侧的 `defaultSleep` 改名（只改源码，中英引用同时红）",
-    overlay: { "src/loop/abort.js": (t) => t.replace("export function defaultSleep(", "export function defaultSleepRenamed(") },
-    expect: [/symbol-anchor: .*引用 `defaultSleep`（`src\/loop\/abort\.js`/, /实际存在的相近符号：.*defaultSleepRenamed/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#286 符号锚点不是恒红（对照）：在 AGENTS EN 加一处**合法**符号锚点 → 必须 0 错",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#286）：`defaultSleep`（`src/loop/abort.js`）是一处合法的「符号 + 文件」锚点。") },
-    expectGreen: true,
-  },
-  // —— #772 两轴载荷表的「标记区定点豁免」：豁免只认标记区，且**闸自己按锚点重算**（R3）——
-  {
-    label: `#772 豁免绑机器复核：把 ${CELL_AXES_GUARD_TEST} 整份清空（等价于被改名/移除）→ 豁免失效、闸回红并点名`,
-    overlay: { [CELL_AXES_GUARD_TEST]: () => "" },
-    expect: [/bare-lines: 标记区定点豁免的机器复核不在场/, /不在场或空了/
-],
-  },
-  {
-    label: `#772 R3 单一真值不许断：把 ${CELL_AXES_GUARD_TEST} 里对 ${CELL_AXES_ANCHOR_MODULE} 的 import 改名 → 红（测试读的和闸读的不再是同一张表）`,
-    overlay: { [CELL_AXES_GUARD_TEST]: replaceUnique('from "../scripts/cell-axes-anchors.mjs"', 'from "../scripts/cell-axes-anchors-moved.mjs"') },
-    expect: [/bare-lines: 标记区定点豁免的机器复核不在场/, /没有 import/, /cell-axes-anchors\.mjs/
-],
-  },
-  {
-    label: `#772 对照：给 ${CELL_AXES_GUARD_TEST} 只加一行尾注释（import 没动）→ 必须 0 错（证明绑定的不是恒红）`,
-    overlay: { [CELL_AXES_GUARD_TEST]: (t) => `${t}\n// self-test 复原探针（#772）：只加一行注释，锚点模块的 import 没动。\n` },
-    expectGreen: true,
-  },
-  {
-    // #770 R2：靶子坐标换了，问的事没换。旧靶子是锤在快照载荷里那行 `status,`（`"^ {8}status,$"`），
-    // 那一行已随 #770 停写消失；现在这一格的写轴登记本身就是一条 `kind: "comment"` 锚点（钉「这里为什么
-    // 没有写点」那句注释）。把它削弱成**键名词面**仍然应当 ⇒ 词面命中多处 ⇒ 锚点歧义 ⇒ 不再被豁免。
-    label: "#772 豁免不是「行号在范围内就行」的免检通道：把 `status` 写点的锚点削弱成**键名本身**（词面判据就是这个形状）→ 闸自己重算当场发现锚点歧义、那条引用掉出豁免、棘轮回红",
-    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => cellAxesWeakenAnchor(t, "status") },
-    expect: [/cell-axes-anchors:/, /锚点歧义/, /`status`/, /bare-lines: 标记区定点豁免的机器复核不在场/
-],
-  },
-  {
-    // #770 R2 反向证（例 1 的靶子诚实性）：把新靶子**还原成 #770 之前的旧形状**（钉回载荷里那行 `status,`）
-    // ⇒ 这一格今天已没有写点 ⇒ 锚点 0 命中 ⇒ 那条引用掉出豁免、棘轮回红，并点名 `status`。
-    // 它证的是：例 1 只换了靶子坐标，词面锁不配当基准这条判据一步没松。
-    label: "#770 R2 反向证（例 1）：把 `status` 写点锚点还原成 #770 之前的旧形状（`^ {8}status,$`）⇒ 这一格已无写点可钉 ⇒ 锚点 0 命中、那条引用不再被豁免、棘轮回红，并点名 `status`",
-    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => cellAxesWeakenAnchor(t, "^ {8}status,$") },
-    expect: [/cell-axes-anchors:/, /锚点 0 命中/, /没有登记锚点/, /不再被豁免/, /`status`/,
-      /bare-lines: 标记区定点豁免的机器复核不在场/
-],
-  },
-  {
-    label: `#772 R3 锚点表必须是闸能自己重算的字面量：把 ${CELL_AXES_ANCHOR_MODULE} 里的数组改成函数调用 → 豁免失效、闸回红`,
-    overlay: { [CELL_AXES_ANCHOR_MODULE]: replaceUnique("\nexport const CELL_AXES_ANCHORS = [\n", "\nexport const CELL_AXES_ANCHORS = anchorTableAtRuntime();\n//") },
-    expect: [/bare-lines: 标记区定点豁免的机器复核不在场/, /数组字面量/, /cell-axes-anchors\.mjs/
-],
-  },
-  {
-    label: `#772 R3 「删锚点躲过去」不成立：删掉 ${CELL_AXES_ANCHOR_MODULE} 里 \`status\` 写点那一条登记 ⇒ 那条引用不再被豁免 ⇒ 回到棘轮计数 ⇒ 红`,
-    // #770 R2：定位改成「只在 `CELL_AXES_ANCHORS` 数组段里找 `status`+write 那一行」。#770 之后人审清单
-    // `CELL_AXES_REQUIRED_CELLS` 也带 anchor 字段，旧 needle（整份文件里挑同时含 key/axis/anchor 的唯一行）
-    // 会命中两处 ⇒ 变异一律打不上。问的事没换：删掉这一格这一轴的登记 ⇒ 引用失去基准 ⇒ 不再被豁免 ⇒ 回棘轮。
-    overlay: { [CELL_AXES_ANCHOR_MODULE]: cellAxesDropStatusWriteAnchor },
-    expect: [/cell-axes-anchors:/, /没有登记锚点/, /不再被豁免/, /`status`/
-],
-  },
-  {
-    // #770 R2 反向证（例 2）：登记那一行**留着**、只把它的锚点削弱成跑不通的正则 ⇒ 同样点名 `status`、
-    // 同样不再被豁免。它证的是：豁免要的是「能重算的锚点」，不是「表里有一行」——两者都能躲。
-    label: "#770 R2 反向证（例 2）：登记表里 `status` 写点那一条留着、只把锚点削弱成跑不通的正则 ⇒ 闸无法重算 ⇒ 同样点名 `status`、同样不再被豁免、棘轮回红",
-    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => cellAxesWeakenAnchor(t, "^ {8}status(,$") },
-    expect: [/cell-axes-anchors:/, /锚点正则跑不通/, /没有登记锚点/, /不再被豁免/, /`status`/
-],
-  },
-  {
-    label: `#772 R2 评审第 3 节那个现场：把 CN 表 \`${CELL_AXES_DRIFT_PROBE}\` 换成同一键名的注释行 :${CELL_AXES_DISTRACTOR_LINE} ⇒ 闸自己重算锚点就发现行号漂了（词面判据当年看不见）`,
-    overlay: { [CONTRACT_CN]: (t) => {
-      if (CELL_AXES_DRIFT_PROBE === null || CELL_AXES_DISTRACTOR_LINE === null) return t;
-      // 同一行里 `${CELL_AXES_DRIFT_PROBE}` 出现两次（权威源列 + 写点列），裸 String.replace 会打到
-      // 第一处 ⇒ R2 这一例正是这样空转的（改了但没红）。这里只打**写点那一格**。
-      // #770 R2：写点格的位置改成从表头现算（旧写法靠格子里那句「（快照）」认列，#770 之后那一格写的是
-      // 「解释缺席的注释 + 快照轮记录」，字样换了 ⇒ 定位不到 ⇒ 变异空跑）。列号与闸读表的列位同源。
-      const lines = t.split("\n");
-      const at = lines.findIndex((l) => l.includes("`compactionStats`") && l.includes(CELL_AXES_DRIFT_PROBE));
-      if (at < 0) return t;
-      const cells = lines[at].split("|");
-      const col = cellAxesWriteColumnIndex(lines);
-      if (col < 0 || col >= cells.length || !cells[col].includes(CELL_AXES_DRIFT_PROBE)) return t;
-      cells[col] = cells[col].replace(CELL_AXES_DRIFT_PROBE, `src/loop/orchestrator.js:${CELL_AXES_DISTRACTOR_LINE}`);
-      lines[at] = cells.join("|");
-      return lines.join("\n");
-    } },
-    // #770 R2：这一例现在还会多出一句**诚实的红**：这一格的 write 轴已不引 6185，钉「快照轮记录」的那条
-    // 引用不再被逐组豁免⇒ 裸行号棘轮回红（不抬基线，按现测写）。
-    expect: [/登记锚点不等值/, /表写 src\/loop\/orchestrator\.js:\d+/, /锚点实际 src\/loop\/orchestrator\.js:\d+/,
-      /那一行原文/, /bare-lines: 标记区定点豁免的机器复核不在场/
-],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    // #770 R2 反向证（例 3）：把 CN 那一格**还原成 #770 之前的旧形状**（只引一条写点）⇒ 必须红：
-    // 锚点重算是两条（解释注释 + 快照轮记录），表里只剩一条 ⇒ 不等值，并被覆盖面点名「cn 表只引了 1 处」。
-    // 它证的是：#770 新增的那第二条引用不是装饰，它真的在被对账。
-    label: "#770 R2 反向证（例 3）：把 CN 表 `compactionStats` 写点那一格还原成 #770 之前的单条引用形状（删掉锚点重算出的第二条）⇒ 不等值、覆盖面都红，并点名 `compactionStats`",
-    overlay: { [CONTRACT_CN]: (t) => {
-      if (CELL_AXES_R4_KIND_PROBE === null) return t;
-      const cited = `src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`;
-      const lines = t.split("\n");
-      const at = lines.findIndex((l) => l.includes("`compactionStats`") && l.includes(cited));
-      const col = cellAxesWriteColumnIndex(lines);
-      if (at < 0 || col < 0) return t;
-      const cells = lines[at].split("|");
-      if (col >= cells.length || !cells[col].includes(`、\`${cited}\``)) return t;
-      cells[col] = cells[col].replace(`、\`${cited}\``, "");
-      lines[at] = cells.join("|");
-      return lines.join("\n");
-    } },
-    expect: [/登记锚点不等值/, /`compactionStats`/,
-      /覆盖面真值：.*cn 表（docs\/host-consumer-contract_cn\.md）里只引了 1 处/, /人审清单要求 2 处/,
-      /bare-lines: 标记区定点豁免的机器复核不在场/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#772 R3 对照：原样的锚点表与两份表必须在闸自己手里重算得动（必须 0 错，证明上面几例不是恒红）",
-    overlay: { [CELL_AXES_GUARD_TEST]: (t) => `${t}\n// self-test 复原探针（#772 R3）：只加一行尾注释，锚点表与两份契约都没动。\n` },
-    expectGreen: true,
-  },
-  // —— #772 R4：锚点「种类」（M-A）与覆盖面人审清单（M-B）——
-  {
-    label: `#772 R4 M-A：把 \`compactionStats\` 写点的 kind=code 锚点指到同一键名的那句注释（:${CELL_AXES_R4_KIND_PROBE?.commentLine ?? "?"}），并把 EN/CN 两份引文同步改口 ⇒ 行号自洽但**种类**红`,
-    overlay: {
-      [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
-        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify(CELL_AXES_R4_KIND_PROBE.commentAnchor))),
-      [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
-        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, `src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.commentLine}`)(t)),
-      [CONTRACT_CN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
-        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, `src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.commentLine}`)(t)),
-    },
-    expect: [/锚点种类不符/, /kind=code/, /是注释行/, /compactionStats/, /write 轴/,
-      /bare-lines: 标记区定点豁免的机器复核不在场/
-],
-  },
-  {
-    label: "#772 R4 M-A 反方向：kind=comment 的锚点（`toolUse` 停写证据）被换成一句真代码 ⇒ 同样红（种类不许逆）",
-    overlay: {
-      // #770 R2：旧变异拿 `status` 写点锚点当“一句真代码”，而 #770 之后它自己也是注释锚点
-      // ⇒ 换进去的种类没逆 ⇒ 这一例当时只能报「行号不等值」，问不到它问的那件事。现在从出厂表里
-      // 现读一条 `kind: "code"` 且唯一命中非注释行的写点锚点当靶子（现读：表改了靶子跟着改）。
-      [CELL_AXES_ANCHOR_MODULE]: (t) => {
-        const entry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "toolUse" && e.axis === "write" && e.kind === "comment");
-        if (entry === undefined || CELL_AXES_R4_REVERSE_CODE_TARGET === null) return t;
-        return t.split(JSON.stringify(entry.anchor)).join(CELL_AXES_R4_REVERSE_CODE_TARGET.literal);
-      },
-    },
-    // #770 R2：种类红的同时还多一句诚实的红：`toolUse` 的 write 轴引用从此对不上任何登记锚点
-    // ⇒ 那条引用掉出逐组豁免 ⇒ 裸行号棘轮回红（不抬基线，按现测写）。
-    expect: [/锚点种类不符/, /kind=comment/, /不是注释行/, /`toolUse`/,
-      /bare-lines: 标记区定点豁免的机器复核不在场/
-],
-  },
-  {
-    // #770 R2 反向证（例 4）：不动锚点、只把种类登记造假——`toolUse` 写点明明钉的是注释行，却登记成
-    // `kind: "code"` ⇒ 必须红，并点名 `toolUse` 与「那一行是注释行」。它证的是：种类对账真的在比对
-    // 锚点命中行的**文字**，不是只看了几个字段。
-    label: "#770 R2 反向证（例 4）：`toolUse` 写点锚点不动、只把登记的 kind 从 comment 改成 code（种类登记造假）⇒ 同样红，并点名 `toolUse` 与「那一行是注释行」",
-    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => rewriteCellAxesRowKind(t, "toolUse", "write", "code") },
-    expect: [/锚点种类不符/, /kind=code/, /是注释行/, /`toolUse`/,
-      /bare-lines: 标记区定点豁免的机器复核不在场/],
-  },
-  {
-    label: "#772 R4 M-A 对照：把 kind 字段整列删掉（闸抽不出合法种类）⇒ 红；原样必须 0 错（见下一条）",
-    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => t.replace(/ kind: "(?:code|comment)",/gu, "") },
-    expect: [/kind/,
-      /锚点表里有 `kind` 不合法的条目|bare-lines: 标记区定点豁免的机器复核不在场/],
-  },
-  {
-    label: "#772 R4 M-B：从每个双锚点组各删一条登记，并把两份表里的对应引用**成对**删掉 ⇒ 剩下的全自洽（旧行为：两道闸全绿），但地板由人审清单算出 ⇒ 红，并点名缺的那一格缺在哪一份",
-    overlay: {
-      [CELL_AXES_ANCHOR_MODULE]: dropCellAxesAnchorEntries,
-      [CONTRACT_EN]: dropCellAxesCitations,
-      [CONTRACT_CN]: dropCellAxesCitations,
-    },
-    // 本例的要点就是「剩下的那些仍然自洽」⇒ 引用与登记成对消失，裸行号棘轮**看不见**它（没多出没缺），
-    // 所以这里不要求棘轮那条红；要求的是地板（现由 `CELL_AXES_REQUIRED_CELLS.length` 算出）与
-    // 覆盖面真值逐槽点名「缺哪一格、缺在哪一份」。地板那句已带「由人审清单算出」的后缀，所以括号不闭合。
-    expect: [/锚点登记表只剩 \d+ 条（下限 \d+/,
-      /覆盖面真值：.*在 `scripts\/cell-axes-anchors\.mjs` 里只有 1 条登记锚点/,
-      /人审清单要求 2 处/, /en 表（docs\/host-consumer-contract\.md）/, /cn 表（docs\/host-consumer-contract_cn\.md）/,
-      /bare-lines: 标记区定点豁免的机器复核不在场/],
-  },
-  {
-    label: "#772 R4 M-B：只删两份表里的引用（登记留着）⇒ 覆盖面真值必红，并点名缺的那一格缺在哪一份（EN / CN）",
-    overlay: { [CONTRACT_EN]: dropCellAxesCitations, [CONTRACT_CN]: dropCellAxesCitations },
-    expect: [/覆盖面真值/, /en 表/, /cn 表/, /人审清单要求/,
-      /bare-lines: 标记区定点豁免的机器复核不在场/],
-  },
-  {
-    label: "#772 R4 已知限度（特征用例，见 docs/maintenance/command-reference.md）：把写点锚点换到**同一键名的另一处真代码行** + 两份引文同步改口 ⇒ 机械上全绿（语义真值机器证不了，故本例断言它**不红**）",
-    overlay: {
-      // #770 R2：靶子行不再写死 :3505（那行已随快照写点被删）。现在现算「同一键名的另一处真代码行」：
-      // 只剩 run-state 落盘载荷里那一份 `compactionStats,`——它是**另一件产物**，恰好就是本例要钉的
-      // 「机器证不了语义」那个形状（锚点能唯一命中、kind=code 也对、两份表同步改口 ⇒ 机械上全绿）。
-      [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
-        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify(CELL_AXES_R4_SAME_NAME_CODE_LINE.anchor))),
-      [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
-        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, CELL_AXES_R4_SAME_NAME_CODE_LINE.citation)(t)),
-      [CONTRACT_CN]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
-        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, CELL_AXES_R4_SAME_NAME_CODE_LINE.citation)(t)),
-    },
-    expectGreen: true,
-  },
-  {
-    // #770 R2 反向证（例 5）：上面那条特征用例的“同步改口”只做一半（只改 EN，CN 留着旧行号）⇒ 必须红，
-    // 并点名 cn 侧那行不等值。它证的是：例 5 的绿不是恒绿——它靠的是两份表真的同步，不是判据不在场。
-    label: "#770 R2 反向证（例 5）：已知限度那条锚点换同键名另一处真代码行后，只把 EN 一份表改口（CN 留着旧行号）⇒ 必须红，并点名 cn 表 `compactionStats` 的 write 列与锚点不等值",
-    overlay: {
-      [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
-        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify(CELL_AXES_R4_SAME_NAME_CODE_LINE.anchor))),
-      [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
-        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, CELL_AXES_R4_SAME_NAME_CODE_LINE.citation)(t)),
-    },
-    expect: [/cn：docs\/host-consumer-contract_cn\.md 表里 `compactionStats` 的 write 列与登记锚点不等值/,
-      /表写 .*锚点实际/, /bare-lines: 标记区定点豁免的机器复核不在场/],
-    expectFiles: [CONTRACT_CN],
-  },
-  // --- #772 R2 M2：标记区内容的正向不变量（评审 follow-up 第 1 条）---
-  {
-    label: "#772 R2 M2 正向不变量：把 begin 标记上移 3 行（让标记区包住表格上方的正文）→ 红，并点名第一处正文行",
-    overlay: { [CONTRACT_CN]: liftCellAxesBegin(3) },
-    expect: [/cell-axes-region/, /普通正文行/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#772 R2 M2 对照：标记区内加一个空行（允许形状，不是正文）→ 必须 0 错",
-    overlay: { [CONTRACT_CN]: (text) => text.replace(`${CELL_AXES_MARK_BEGIN}\n`, `${CELL_AXES_MARK_BEGIN}\n\n`) },
-    expectGreen: true,
-  },
-  {
-    label: "#772 R2 M2 登记表自己的后门：往 CELL_AXES_CALIBER_LINES 塞一条区域内没有的口径行 → 红（登记了没人用）",
-    overlay: {
-      // needle 故意拆成两段字面量：`--self-test` 拿本脚本自己的文本当靶面，这一段若整串写下来就会
-      // 同时出现在「定义处」与「本用例源码里」⇒ 恰好两处 ⇒ replaceUnique 判「靶子不唯一」而空跑。
-      "scripts/docs-drift-check.mjs": replaceUnique("  [CONTRACT_EN]: []" + ",",
-        "  [CONTRACT_EN]: [\"自测探针（#772 R2 M2）：标记区里根本没有这行\"],"),
-    },
-    expect: [/cell-axes-region/, /后门/],
-  },
-  {
-    label: "#772 R3 登记表的对照组：区域内真放一行口径行 + 同批登记它 → 必须 0 错（证明上一条不是恒红）",
-    overlay: {
-      [CONTRACT_CN]: (text) => text.replace(`${CELL_AXES_MARK_BEGIN}\n`,
-        `${CELL_AXES_MARK_BEGIN}\n自测探针（#772 R3）：登记过的口径行应当被放行。\n`),
-      "scripts/docs-drift-check.mjs": replaceUnique("  [CONTRACT_CN]: []" + ",",
-        "  [CONTRACT_CN]: [\"自测探针（#772 R3）：登记过的口径行应当被放行。\"],"),
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#286 越界必红：CN 契约的 terminationReasonForAction 区间 :114 改成 99999-114（唯一区间数不变、区间仍与声明处相交 → 只有越界这条红）",
-    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/termination.js:114").join("src/loop/termination.js:99999-114") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:99999-114，但该文件只有 \d+ 行/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#286 豁免双条件（就地声明那一侧）：去掉 v030 EN 的外仓根 apps/worker/ → 既不再放行（245）又留下空转条目",
-    overlay: { "docs/host-upgrade-guide-v030.md": (t) => t.replace("apps/worker/src/pi/runner.js:50", "src/pi/runner.js:50") },
-    expect: [
-      /豁免条目 `src\/pi\/runner\.js`（docs\/host-upgrade-guide-v030\.md）没有一处引用真正用到它/],
-  },
-  {
-    label: "#286 豁免双条件（条目那一侧）：CN 契约的示例路径改成没登记的 src/a/c.js:12 → 没有条目就不放行",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("paths: src/a/b.js:12", "paths: src/a/c.js:12") },
-    expect: [
-      /豁免条目 `src\/a\/b\.js`（docs\/host-consumer-contract_cn\.md）没有一处引用真正用到它/],
-  },
-  {
-    label: "#286 变异器空转证：靶子（不存在的符号名）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
-    overlay: { [CONTRACT_EN]: mutateSymbolAnchor("zzProbeNoSuchSymbol", "src/loop/orchestrator.js", "anything") },
-    expectMutateMiss: true,
-  },
-
-  // —— #286 T-b1a R1：符号锚点**自带区间**必须与声明处相交（2.8.1b）。逐处反向证四条：
-  //    改窄区间 → 红、区间整段挪走 → 红、删掉区间 → 绿（本判据对不带区间的锚点不适用）、
-  //    弱档（具名字面量）也真的按「该字面量的出现行」判 → 改窄到不含出现行就红。
-  //  四条都用 `mutateSymbolAnchorSpan`（与主检查同一套提取逻辑，#279 口径：打靶由提取逻辑定）。
-  {
-    label: "#286 T-b1a 区间相交：把 `terminationReasonForAction`（termination.js:114）改窄成 100-105 ⇒ 声明在 114，红",
-    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("terminationReasonForAction", "src/loop/termination.js", ":100-105") },
-    expect: [/symbol-anchor-span: .*引用 `terminationReasonForAction`（`src\/loop\/termination\.js:100-105`）/,
-      /声明处不相交/, /真值位在 114/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#286 T-b1a 区间相交：把 `defaultSleep`（abort.js:16）整段挪到 :30（不越界、符号也在）⇒ 只有相交这条红",
-    overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("defaultSleep", "src/loop/abort.js", ":30") },
-    expect: [/symbol-anchor-span: docs\/host-consumer-contract_cn\.md:\d+ 引用 `defaultSleep`（`src\/loop\/abort\.js:30`）/,
-      /真值位在 16/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#286 T-b1a 区间相交的放行证：删掉 `max_rounds_cap`（termination.js:119）的区间（只留符号 + 文件）⇒ 本判据不适用，必须 0 错",
-    overlay: { [CONTRACT_CN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", "") },
-    expectGreen: true,
-  },
-  {
-    label: "#286 T-b1a 弱档真值位：把 `max_rounds_cap`（termination.js:119）改窄到 300-301 ⇒ 字面量都在区间外，红（弱档也真按出现行判）",
-    overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", ":300-301") },
-    expect: [/symbol-anchor-span: .*引用 `max_rounds_cap`（`src\/loop\/termination\.js:300-301`）/,
-      /真值形态 具名字面量成员/],
-    expectFiles: [CONTRACT_EN],
-  },
-
-  // —— #755：符号坐标的另外两种写法（S2「文件在前 + 冒号 + 符号列举」、S3「同一个 code span 里的 path:symbol」）——
-  // 工单点名三格反向证缺一不可：S2 假符号 ⇒ 红、换成真符号 ⇒ 绿、外仓前缀 ⇒ 不判；另加 S3 同判两格与
-  // 「基线只降不升」两格。靶子一律用**注入的合成坐标**（#621 的教训：靶子必须自包含，不能借文档里某一处
-  // 真实措辞——那处被人改一改，用例就哑成假绿）。
-  {
-    label: "#755 S2 假符号（工单现场那句的形状）：`src/loop/tool-result-ttl.js`: `stubFor` and `placeholderFor` ⇒ 必须红并逐条点名",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `stubFor` and `placeholderFor`。") },
-    // 三个名字都得出现：哪份文档哪一行、哪个符号、被指哪个文件（只报个「超基线」等于没法人去修）。
-    expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`，S2 路径先行/, /没有 `stubFor` 的声明/,
-      /placeholderFor/, new RegExp(`超过基线 \\*\\*${SYMBOL_EXISTENCE_BASELINE}\\\*\* 组`)],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 S2 的放行证：同一个位置换成两个**真**导出（`noteWriteEvidence` 与 `hasNoteWriteEvidence`）⇒ 必须 0 错",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `noteWriteEvidence` 与 `hasNoteWriteEvidence`。") },
-    expectGreen: true,
-  },
-  {
-    label: "#755 S3 同判：`src/loop/tool-result-ttl.js:stubFor`（一个 code span 里 path:假符号）⇒ 必须红",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js:stubFor` 是一处编出来的坐标。") },
-    expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`，S3 同一个 code span/, /没有 `stubFor` 的声明/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 S3 的放行证：换成真导出 `src/loop/tool-result-ttl.js:noteWriteEvidence` ⇒ 必须 0 错（数字尾巴 `path:12` 归 2.8.2，不被本判据抢）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js:noteWriteEvidence` 是一处合法坐标。") },
-    expectGreen: true,
-  },
-  {
-    label: "#755 外仓前缀不查：`pi-subagents:src/loop/tool-result-ttl.js`: `zzShapeProbeNotChecked` ⇒ 必须 0 错（别的仓的真值不在这棵树里）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`pi-subagents:src/loop/tool-result-ttl.js`: `zzShapeProbeNotChecked` 属于别的仓。") },
-    expectGreen: true,
-    // #755 建议④：绿只能证「没报红」，证不到「它真的走到了跳过分支」。若提取器以后漏了 `<仓>:<路径>`
-    // 这个形状，坐标会被当成无仓库前缀的本仓路径去查⇒ 假绿。所以再问一句 note：extSkipped 必须非空。
-    assertAfter: () => ((collectSymbolShapeErrors.notes ?? []).some((n) => /外仓前缀跳过 [1-9]\d* 处/.test(n))
-      ? null
-      : "外仓例假绿：没有真的命中跳过分支（外仓前缀跳过计数为 0），说明提取器漏掉了 `<仓>:<路径>` 这个形状"),
-  },
-  {
-    label: "#755 散文式列举不判 + 对象键不算：只写 `stubFor` 不给文件 ⇒ 绿；对象键 `budgetTokens:` 不算声明（见下一例）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：散文里只写 `stubFor`，不给文件。") },
-    expectGreen: true,
-  },
-  {
-    label: "#755 声明表不认对象键：`src/loop/budget.js`: `budgetTokens`（该文件里只以 `budgetTokens:` 这个对象键出现）⇒ 必须红",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/budget.js`: `budgetTokens` 只是个对象键，不是声明。") },
-    expect: [/AGENTS\.md:\d+ 引用 `budgetTokens`（`src\/loop\/budget\.js`/, /对象键/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 棘轮在地板 0 上仍是锁：注入一处指不到声明的新坐标（`zzRatchetProbeAtFloor`）⇒ 实测 1 > 基线 0 ⇒ 必须红（证明这个数不是装饰）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `zzRatchetProbeAtFloor` 是编的。") },
-    expect: [/symbol-shape: .*指不到声明的实测 \*\*1\*\* 组，超过基线 \*\*0\*\* 组/,
-      /引用 `zzRatchetProbeAtFloor`/, /并把基线改成 1/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: `#755 棘轮下限的反向证：把基线调到 ${SYMBOL_EXISTENCE_BASELINE + 1} ⇒ 必须 0 错，并打一行「可下调至 ${SYMBOL_EXISTENCE_BASELINE}」`,
-    overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(
-      `const SYMBOL_EXISTENCE_BASELINE = ${SYMBOL_EXISTENCE_BASELINE};`,
-      `const SYMBOL_EXISTENCE_BASELINE = ${SYMBOL_EXISTENCE_BASELINE + 1};`) },
-    expectGreen: true,
-    // 绿只说明「没超」，证不到「它真的在催你降」——所以这一半的反向证要再问一句 note（#337 口径）。
-    assertAfter: () => ((collectSymbolShapeErrors.notes ?? []).some((n) => n.includes(`请把 SYMBOL_EXISTENCE_BASELINE 降到 ${SYMBOL_EXISTENCE_BASELINE}`))
-      ? null
-      : `基线调高到 ${SYMBOL_EXISTENCE_BASELINE + 1} 之后没打「可下调至 ${SYMBOL_EXISTENCE_BASELINE}」的提示（只降不升的棘轮不许空转）`),
-  },
-  {
-    label: "#755 判据① 剥 `./` 前缀后仍要查：`./src/loop/tool-result-ttl.js`: `stubFor` ⇒ 必须红（不能因为多了个 ./ 就漏判）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`./src/loop/tool-result-ttl.js`: `stubFor` 是红。") },
-    expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`，S2/, /没有 `stubFor` 的声明/],
-    expectFiles: [AGENTS_EN],
-  },
-  // 标签修正（#755 第三轮）：此例旧标签写「取末段」与实现/判据相反。正确是**取首段**（宿主符号）：
-  // 末段 `call` 在 `src/loop/tool-result-ttl.js` 里真有 `const call`（第 589 行）⇒ 按末段查会让
-  // `stubFor.call` 也命中 `call` ⇒ 假绿；只有取首段（`noteWriteEvidence` 第 148 行真有）才能既绿真声明、又红假声明。
-  {
-    label: "#755 判据②a 点号符号取首段去查：`src/loop/tool-result-ttl.js`: `noteWriteEvidence.call` ⇒ 必须 0 错（首段宿主 `noteWriteEvidence` 真存在）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `noteWriteEvidence.call` 点号取首段就能查到。") },
-    expectGreen: true,
-  },
-  {
-    label: "#755 判据②b 点号符号查不到时报错照原样点名：`src/loop/tool-result-ttl.js`: `stubFor.call` ⇒ 必须红且报错里写的是 `stubFor.call`",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js`: `stubFor.call` 查不到。") },
-    expect: [/引用 `stubFor\.call`（`src\/loop\/tool-result-ttl\.js`，S2 路径先行/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 判据③ S3 全角冒号：`src/loop/tool-result-ttl.js：stubFor` ⇒ 必须红（全角与半角同口径）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）：`src/loop/tool-result-ttl.js：stubFor` 是全角冒号的 S3。") },
-    expect: [/引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`，S3 同一个 code span/, /没有 `stubFor` 的声明/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 判据④ 跨行坐标是已知边界（只扫单行）：路径与冒号分两行写 ⇒ 必须不红（当前行为有意如此）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755）跨行边界：`src/loop/tool-result-ttl.js`\n: `stubFor` —— 跨行写的坐标必须不判红。") },
-    expectGreen: true,
-  },
-  {
-    label: "#755 变异器空转证：靶子（S2/S3 里不存在的坐标）打不上时，runSelfTest 必须判这一例「变异没落上」而不是假绿",
-    overlay: { [CONTRACT_EN]: mutateSymbolShape("zzProbeNoSuchShapeSymbol", "src/loop/tool-result-ttl.js", "anything") },
-    expectMutateMiss: true,
-  },
-
-  // —— #755 第三轮：阻断A（相对前缀剥到底 / 未登记目录报红 / 逃仓不算）与阻断B（参数解构只认真函数位）——
-  {
-    label: "#755 阻断A 判据1 深 `../`（10 层）剥到底后仍落登记面⇒必须红（旧 guard<8 只能剥 8 层、会漏判 10 层）：`../../../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor`",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`../../../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor` 是 10 层 ../ 前缀的坐标。") },
-    // 样例里的 `../` 个数与 label 的「10 层」逐字一致：10 个 ../，旧 guard<8 剥 8 层后还剩 `../../src/...`⇒不落在登记面⇒带 bug 版本不红（能钉住 bug）。
-    expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`/, /没有 `stubFor` 的声明/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 对照 正好 8 层 `../` 剥到底后仍落登记面⇒同样必须红（与判据1 构成对照，证明不是靠「层数刚好」过的：8 层旧 guard<8 恰好剥得完、带 bug 也红，10 层才钉 bug，两格一起证剥到底在任何层数都成立）：`../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor`",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 对照）：`../../../../../../../../src/loop/tool-result-ttl.js`: `stubFor` 是 8 层 ../ 前缀的坐标。") },
-    // 样例与 label 的「8 层」逐字一致：8 个 ../；修后 while 剥到底→src/loop/...⇒登记面内→查 `stubFor` 查不到⇒红。
-    expect: [/AGENTS\.md:\d+ 引用 `stubFor`（`src\/loop\/tool-result-ttl\.js`/, /没有 `stubFor` 的声明/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 阻断A 判据2 未登记目录不许静默忽略：`foo/bar.js`: `zzUnregDirProbe`⇒必须红并点名未登记的目录 `foo/`",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`foo/bar.js`: `zzUnregDirProbe` 指向一个没登记的目录。") },
-    expect: [/未登记的目录/, /`foo\/`/, /zzUnregDirProbe/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 最后一轮 ① 未登记目录的 `.d.ts` 不许静默跳过（.d.ts 早退必须在登记检查之后）：`foo/bar.d.ts`: `zzUnregDirDtsProbe`⇒必须红并点名未登记的目录 `foo/`（旧写法在登记检查前就早退⇒既不报未登记也不查符号，静默忽略，与判据2 自相矛盾）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 ①）：`foo/bar.d.ts`: `zzUnregDirDtsProbe` 指向一个没登记目录里的声明文件。") },
-    expect: [/未登记的目录/, /`foo\/`/, /zzUnregDirDtsProbe/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 阻断A 判据3 `../` 逃仓不算坐标：`../outside/x.js`: `zzEscapeProbe`⇒symbol-shape 必须不判它（无「未登记的目录」、无引用该符号的红；paths 锚点那条「无法裁决」与本判据无关）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断A）：`../outside/x.js`: `zzEscapeProbe` 逃到仓外，不算坐标。") },
-    expect: [/无法裁决/],
-    reject: [/未登记的目录/, /`zzEscapeProbe`/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 阻断B 反向证：把 `if ({ zzProbeControlKeyword }) {}` 注进 tool-result-ttl.js ⇒ 控制语句头的 `({…})` 不是参数解构⇒引 `zzProbeControlKeyword` 必须红（修前被登记成声明⇒假绿）",
-    overlay: {
-      "src/loop/tool-result-ttl.js": (t) => `${t}\nif ({ zzProbeControlKeyword }) {}\n`,
-      [AGENTS_EN]: mentionInProse("自测探针（#755 阻断B）：`src/loop/tool-result-ttl.js`: `zzProbeControlKeyword` 只出现在 `if ({…}) {}` 里。"),
-    },
-    expect: [/引用 `zzProbeControlKeyword`（`src\/loop\/tool-result-ttl\.js`/, /没有 `zzProbeControlKeyword` 的声明/],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: "#755 阻断B 放行证：真函数参数解构仍被认：`src/loop/budget.js`: `toolContext` 与 `expert`（`toolContextFor({…})` 的多行参数解构）⇒必须 0 错（收紧正则没误伤真声明）",
-    overlay: { [AGENTS_EN]: mentionInProse("自测探针（#755 阻断B）：`src/loop/budget.js`: `toolContext` 与 `expert` 是函数参数解构。") },
-    expectGreen: true,
-  },
-
-  // —— #299：注释与字符串里的同名**不算**声明（符号抽取只看代码面）——
-  // 两例反向证（注释里的「声明」/注释里的「具名字面量」）加一例放行证（同一个名字挪成真声明 ⇒ 绿）。
-  // 修前三条全是**绿**：抽取拿原始文本逐行正则，注释里写一行 `const X = 1;` 就能「证明」X 已声明。
-  {
-    label: "#299 注释里的「声明」不算声明：termination.js 末尾追加一段块注释、里面写 `const zzzPhantomBinding = 1;`，"
-      + "EN 契约引 `zzzPhantomBinding`（`src/loop/termination.js`）⇒ 必须红（修前绿）",
-    overlay: {
-      "src/loop/termination.js": (t) => `${t}\n/*\nconst zzzPhantomBinding = 1;\n*/\n`,
-      [CONTRACT_EN]: mentionInProse("Self-test probe (#299): `zzzPhantomBinding` (`src/loop/termination.js`) lives in a comment only."),
-    },
-    expect: [/symbol-anchor: .*引用 `zzzPhantomBinding`（`src\/loop\/termination\.js`/,
-      /该文件里没有 `zzzPhantomBinding` 的声明/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#299 同一个名字挪成**真实**声明 ⇒ 必须 0 错（放行证：证明上一例不是恒红）",
-    overlay: {
-      "src/loop/termination.js": (t) => `${t}\nexport const zzzPhantomBinding = 1;\n`,
-      [CONTRACT_EN]: mentionInProse("Self-test probe (#299): `zzzPhantomBinding` (`src/loop/termination.js`) is a real binding here."),
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#299 注释里的字符串不算「具名字面量成员」：termination.js 注释里写 `\"zzz_phantom_code\"`，EN 契约引它 ⇒ 必须红（修前绿）",
-    overlay: {
-      "src/loop/termination.js": (t) => `${t}\n// 自测探针（#299）：这个值只活在注释里，不是任何字面量：\"zzz_phantom_code\"\n`,
-      [CONTRACT_EN]: mentionInProse("Self-test probe (#299): `zzz_phantom_code` (`src/loop/termination.js`) is quoted inside a comment."),
-    },
-    expect: [/symbol-anchor: .*引用 `zzz_phantom_code`（`src\/loop\/termination\.js`/,
-      /该文件里没有 `zzz_phantom_code` 的声明/],
-    expectFiles: [CONTRACT_EN],
-  },
-
-  // —— 返工 R1（评审阻断项）：符号锚点的**只增不减下限**。病根：裸行号棘轮的唯一键不含文档行号，
-  // 所以「把符号锚点换成裸行号」这种**退化**在棘轮那一侧一字不变，没有下限就没人报警。
-  //
-  // 下面两例的**前提数字**（`CONST - 1` / `CONST` / `CONST + 1`）当年从 `SYMBOL_ANCHOR_MIN_UNIQUE`（已随 #908 拆除）现算，
-  // 不在这里拄字面量——这不是偷懒，是这两例成立的前提：**常量必须等于现测**。
-  //   · 现测 = `node scripts/docs-drift-check.mjs --verbose` 那条 note 报的数（#769 R8 在 `727af80` 上量：**243**）。
-  //   · 本例退化完的唯一组数 = 现测 - 1（同是量出来的：#769 R8 把下面两条 `replace` 原样落到两份契约上跑
-  //     `--verbose`，现报「唯一 (符号, 文件) 242 组」；同轮 `bare-lines` 现报「棘轮口径实测 **6** vs 基线 6」一字不变）。
-  // 于是常量陈旧的两种伤法都能被抱住：常量**高于**现测 ⇒ 下面那例「升到 CONST+1」不再红（由例 2 抱住）；常量**低于**
-  // 现测 ⇒ 退化到 CONST 组恰好等于下限、本例等的那条红根本不出现（由例 1 抱住，#769 R8 在 CI 上撞到的就是这个）。
-  // ⇒ 抬常量前先量一次；这两例红在**数字**上是在叫你去量，**不是**叫你把断言改松（`expect` 换成 `expectGreen`、
-  // 删例、加 skip、改成「任意红都算」都算把这条锁拆了）。
-
-  // —— 返工 R2（评审阻断项）：覆盖面会因为改名而**静默缩面**。脚本按
-  // `^host-upgrade-guide.*\.md$` 实扫、测试侧用同一个 glob ⇒ 改一份名字就两边一起少一份，照样绿。
-  // 树形口子 `SIM_RENAMED_GUIDES` 只影响清单、不动任何文本（与 #280 的 SIM_ABSENT_TASK_ARCHIVE 同款纪律，
-  // 并且同样要证「口子真的落上了」，见 runSelfTest 里的覆盖面份数比对）。
-
-  // —— 返工 R3（评审低危但便宜）：行号**下界**与「目标文件不存在」的口径。
-  // 前者从前是漏洞：`:0-1` 的结尾 1 永远不超过文件行数 ⇒ 零条红（主 agent 注入实测过）。
-  // 后者从前是 `continue`：目标文件不存在就跳过，于是「文件改名/被删 + 还留着行号」静默放行。
-  {
-    label: "#286 返工 R3 下界：把 CN 契约的 terminationReasonForAction 区间写成 :0-114 ⇒ 必须红（从前零条红，`:0` 在越界判据里永远不越界；结尾仍与声明处相交，所以只有下界这条红）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:114", "src/loop/termination.js:0-114") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:0-114 的行号不合法——行号必须 \*\*≥ 1\*\*/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#286 返工 R3 不存在：把 CN 契约的一处目标改成 src/loop/__no_such_probe__.js ⇒ 必须红（从前是 continue 静默跳过；同一坐标的符号锚点也会点名「文件不存在」，属同一处坏坐标）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:114", "src/loop/__no_such_probe__.js:114") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:114，但 .*在本仓不存在——裸行号没有可核对的真值/],
-    expectFiles: [CONTRACT_CN],
-  },
-
-  // —— 返工 R4（评审低危）：豁免的「就地声明」从前是整行 OR 匹配——同一行只要还剩着 `for example`
-  // 之类的附带措辞就算声明成立。收紧成 **同一行同时含占位路径与声明词**（AND），并给条目自己加配置校。
-  {
-    label: "#286 返工 R4：把某条豁免的 decl 临时换成 /.*/（恒真）⇒ 双条件退化成单条件，必须被配置校抓住",
-    // 为什么走「配置口子」而不是 overlay：overlay 只改**文本**，改不动运行时那份 BARE_LINE_EXEMPTIONS 对象；
-    // 数值常量能靠 fileRecord 读自身文本来证，正则判据不行，所以要一个和 SIM_ABSENT_TASK_ARCHIVE 同款的
-    // 运行时口子，并且同样要证「口子真的落上」（找不到条目就判自测自身失效）。
-    simulateLooseDecl: { doc: "docs/host-upgrade-guide-v030.md", target: "src/pi/runner.js" },
-    expect: [/豁免条目 src\/pi\/runner\.js（docs\/host-upgrade-guide-v030\.md）的 decl 能匹配空串（\/\.\*\/）——/,
-      /「就地声明」这一侧恒真，双条件退化成了单条件/],
-  },
-  {
-    label: "#286 返工 R4 的放行证：在 CN 契约里插一行无关散文 ⇒ 现有 4 条豁免在 AND 判据下全部仍然成立（零条红）",
-    overlay: { [CONTRACT_CN]: mentionInProse("自测探针（#286 返工 R4）：这里只是在文档靠前插一句散文，什么引用都没动。") },
-    expectGreen: true,
-  },
-
-  // —— 工单 261021-03 B1：外部仓引用的**前缀标记法**（`<仓名>:<该仓路径>`）。放宽了什么就必须有反向证：
-  //    「带前缀 ⇒ 不查本仓存在性、不计裸行号棘轮」是把裁决交给**引用自己写的归属**，所以必须同时钉住
-  //    ① 漏写前缀 ⇒ 红（否则谁都能拿一个冒号把死链藏起来）；
-  //    ② 写了清单外的仓名 ⇒ 红（前缀不是「不是本仓文件」的免检通道）；
-  //    ③ 前缀写法本身不动 ⇒ 绿（放行分支真的在放行，不是碰巧没扫到）；
-  //    ④ 裸行号一侧同一条判据（前缀在/不在，两例各自点名）；
-  //    ⑤ 前缀清单里的仓名没人用 ⇒ 红（与四张白名单登记表同口径，条目不许烂在那儿）。
-  {
-    label: "工单 261021-03 B1：requirements EN 把 `touwaka:lib/agent/` 的**前缀删掉** ⇒ 必须红（漏写前缀就是本仓死链）",
-    overlay: { [REQ_EN]: (t) => t.replace("`touwaka:lib/agent/`", "`lib/agent/`") },
-    expect: [/paths: docs\/requirements\.md 引用了无法裁决的仓库内路径/, /`lib\/agent\/`（第 \d+ 行）：本仓不存在/],
-    expectFiles: [REQ_EN],
-  },
-  {
-    label: "工单 261021-03 B1：requirements EN 换成清单外的仓名 `pi:` ⇒ 必须红（编一个前缀不能把死链藏起来）",
-    overlay: { [REQ_EN]: (t) => t.replace("`touwaka:lib/agent/`", "`pi:lib/agent/`") },
-    expect: [/paths: docs\/requirements\.md 引用了无法裁决的仓库内路径/,
-      /外部仓前缀 `pi:`，但 "pi" 不在 EXTERNAL_REPO_PREFIXES 已知清单里/],
-    expectFiles: [REQ_EN],
-  },
-  {
-    label: "工单 261021-03 B1 的放行证：把带前缀的外仓路径改成本仓解不到的名字 ⇒ 必须 0 错（带前缀真的不查本仓存在性，不是碰巧没扫到）",
-    overlay: { [REQ_EN]: (t) => t.split("`touwaka:lib/agent/`").join("`touwaka:lib/agent-selftest-probe/`") },
-    expectGreen: true,
-  },
-  {
-    label: "工单 261021-03 B1（裸行号一侧）：删掉 pi 扩展 README 的 `pi-subagents:` 前缀 ⇒ 报「目标不存在」（裸行号本身自 #908 起只是提示，不再顶棘轮）",
-    overlay: { [PI_EXT_README]: (t) => t.replace("`pi-subagents:src/runs/background/async-execution.js:4`", "`src/runs/background/async-execution.js:4`") },
-    expect: [/bare-lines: examples\/pi-extension\/README\.md:\d+ 引用 src\/runs\/background\/async-execution\.js:4，但 .*在本仓不存在/
-],
-    expectFiles: [PI_EXT_README],
-  },
-  {
-    label: "工单 261021-03 B1（裸行号一侧的未知前缀）：把 `pi-subagents:` 改成 `pi-workflow:` ⇒ 两侧都必须点名这个清单外的仓名",
-    overlay: { [PI_EXT_README]: (t) => t.replace("`pi-subagents:src/runs/background/async-execution.js:4`", "`pi-workflow:src/runs/background/async-execution.js:4`") },
-    expect: [/bare-lines: examples\/pi-extension\/README\.md:\d+ 写了带外部仓前缀的 `pi-workflow:src\/runs\/background\/async-execution\.js:4`，.*不在 EXTERNAL_REPO_PREFIXES 已知清单/,
-      /paths: examples\/pi-extension\/README\.md[\s\S]*外部仓前缀 `pi-workflow:`/],
-    expectFiles: [PI_EXT_README],
-  },
-  {
-    label: "工单 261021-03 B1：把中英需求对照里的 `app_container:` 改成已登记的另一个仓名 ⇒ 前缀条目空转必须红（与前四张白名单登记表同口径）",
-    // 为什不拿「改脚本自己的表」当变异：overlay 只改**文本**，改不动运行时那份 `EXTERNAL_REPO_PREFIXES`（与
-    // `simulateLooseDecl` 同一课）。改引用侧反而仍的是真命题：登记了却没人用 = 给下一个死链预备了借口。
-    overlay: {
-      [REQ_EN]: (t) => t.replace("`app_container:apps/worker/src/pi/`", "`touwaka:apps/worker/src/pi/`"),
-      [REQ_CN]: (t) => t.replace("`app_container:apps/worker/src/pi/`", "`touwaka:apps/worker/src/pi/`"),
-    },
-    expect: [/外部仓前缀 `app_container:` 没有一处引用真正用到它/],
-  },
-  // —— issue #621：`file.js:a-b` 与 `file.js:a` 必须走**同一条剥号路径**。修前 `:\d+(?::\d+)?$` 只认单行，
-  //    区间尾巴剥不掉 ⇒ 紧接的扩展名过滤看到一个以 `-227` 结尾的串 ⇒ 整个 token 被丢弃，区间形式的引用
-  //    **一处也不进裁决**（路径改成什么都绿）。下面四例同时钉住两条裁决边界：区间已进裁决（①）、
-  //    外仓前缀引用**仍然**不做本仓存在性核对（③ 放行证），而前缀不是免检通道（④）。
-  //    ⚠ 前两例的靶子是 `injectRangeAnchor` **注入**的合成锚点：它们只依赖「契约文本里有一条区间引用」
-  //    这件事由夹具自己保证，不再依赖契约里现存哪句原话（#661 删掉那句之后，旧靶子变成了空操作）。
-  {
-    label: "#621：overlay 注入的区间锚点路径改坏 ⇒ 必须红（修前区间 token 被整条丢弃，零校验）",
-    overlay: {
-      [CONTRACT_EN]: injectRangeAnchor((anchor) => anchor.replace("bin/cli.js:1032-1042", "bin/cli621Probe.js:1032-1042")),
-    },
-    expect: [/paths: docs\/host-consumer-contract\.md[\s\S]*`bin\/cli621Probe\.js`（第 \d+ 行）：本仓不存在/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#621 放行证：注入的同一处收窄成单行 `bin/cli.js:1032` ⇒ 仍然绿（区间与单行走同一条剥号路径，不是把单行也弄红）",
-    overlay: {
-      [CONTRACT_EN]: injectRangeAnchor((anchor) => anchor.replace("bin/cli.js:1032-1042", "bin/cli.js:1032")),
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#621 边界：外仓前缀 + 区间（`pi-subagents:extension/index.js:137-141`）路径改坏 ⇒ 仍然绿（EXTERNAL_REPO_PREFIXES 语义：外仓路径不做本仓存在性核对，这是预期）",
-    overlay: { [PI_EXT_README]: (t) => t.replace("`pi-subagents:extension/index.js:137-141`", "`pi-subagents:extension/index621Probe.js:137-141`") },
-    expectGreen: true,
-  },
-  {
-    label: "#621 边界：外仓前缀 + 区间但仓名写错（`pi-workflow:`）⇒ 必须红（前缀不是免检通道，区间形式也不例外）",
-    overlay: { [PI_EXT_README]: (t) => t.replace("`pi-subagents:extension/index.js:137-141`", "`pi-workflow:extension/index.js:137-141`") },
-    expect: [/paths: examples\/pi-extension\/README\.md[\s\S]*外部仓前缀 `pi-workflow:`/],
-    expectFiles: [PI_EXT_README],
-  },
-  // —— issue #391 R4：`cli-flags`（bin/cli.js 帮助文本 ⇄ 两份 README 的 usage 行，双向逐处）——
-  {
-    label: "#391 R4：README EN 的 chat usage 行删掉 `[--require-deliverable [<path>]]` ⇒ 红并点名那个旗标",
-    overlay: { [README_EN]: (t) => t.replace(" [--require-deliverable [<path>]]", "", 1) },
-    expect: [/cli-flags: README\.md 的 `erix chat` usage 行缺 旗标 --require-deliverable/],
-    expectFiles: [README_EN],
-  },
-  {
-    label: "#391 R4：README_cn 的 repl usage 行凭空多写一个旗标 ⇒ 红（双向：多也红）",
-    // 靶点取 repl 行**末尾**（`[--require-deliverable [<path>]]` 在 chat 行里也出现一次，裸 replace 会打到 chat 上；
-    // issue #617 P2 给 repl 行末尾补了 delegate 三件套，靶点随之移到新的行尾）。
-    // issue #716 / #719：repl 行末尾又多了 `[--no-agents]`，旧靶串（`… [--delegate-timeout-ms <n>]\nerix skills`）
-    // 不再连续 ⇒ 变异落不上 ⇒ 按 #210 R2「落不上算失败」报红。这是**文字合法变更后的正当跟随**（改的是锚点，
-    // 不是判据）。本轮把锚点从「一串旗标的逐字片段」换成**行边界**：插在 `\nerix skills` 之前 = 插在 repl usage
-    // 行的末尾，从此 repl 行再增删旗标也不会让这一枪脱靶；万一 repl 行不再紧邻 `erix skills`，它会打到别的行上
-    // 并因「多出 --zzz-flag」的期望不匹配而**报红**（失靶失响，不是静默变绿）。
-    overlay: { [README_CN]: (t) => t.replace("\nerix skills", " [--zzz-flag]\nerix skills", 1) },
-    expect: [/cli-flags: README_cn\.md 的 `erix repl` usage 行多出 旗标 --zzz-flag/],
-    expectFiles: [README_CN],
-  },
-  {
-    label: "#391 R4：帮助文本侧（真值）加一个新旗标 ⇒ 中英两份 README 同时红（这才是「加旗标忘了文档」的形状）",
-    // ⚠ 靶点是**帮助文本里那一段的逐字片段**：issue #435 给 chat 行补了 `[--require-deliverable-content]`，
-    // 旧片段（`… [<path>]] [--no-notes]`）不再连续 ⇒ 变异落不上、本格变成「恒绿」。#210 R2 的惯例是
-    // 变异没落地就算失败，所以这里跟着帮助文本一起改；改的是**锚点**，不是判据。
-    overlay: { "bin/cli.js": (t) => t.replace("[--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes]", "[--require-deliverable [<path>]] [--zzz-flag] [--require-deliverable-content] [--no-notes]", 1) },
-    expect: [/cli-flags: README\.md 的 `erix chat` usage 行缺 旗标 --zzz-flag/,
-      /cli-flags: README_cn\.md 的 `erix chat` usage 行缺 旗标 --zzz-flag/],
-    expectFiles: [README_EN, README_CN],
-  },
-  {
-    label: "#391 R4（放行证）：把 README chat 行里两个旗标**对调顺序** ⇒ 仍然绿（逐处比对的是集合，不是排版）",
-    overlay: {
-      [README_EN]: (t) => t.replace("[--final-guard|--no-final-guard] [--require-deliverable [<path>]]", "[--require-deliverable [<path>]] [--final-guard|--no-final-guard]", 1),
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#391 R4（放行表空转）：登记一条「README 已经写了」的放行 ⇒ 红（#210 R2 惯例：用不上的放行就是后门）",
-    simulateCliFlagExemptions: [
-      { doc: README_EN, command: "chat", flag: "--require-deliverable", why: "测试用：这一条其实不需要放行" },
-    ],
-    expect: [/cli-flags: 放行条目 \(README\.md \/ chat \/ --require-deliverable\) 已经空转/],
-  },
-  {
-    label: "#391 R4（放行分支有效）：README 删掉一个旗标 + 为它登记一条放行 ⇒ 绿（证明放行真的被读到，不是恒绿）",
-    overlay: { [README_EN]: (t) => t.replace(" [--require-deliverable [<path>]]", "", 1) },
-    simulateCliFlagExemptions: [
-      { doc: README_EN, command: "chat", flag: "--require-deliverable", why: "测试用：这一条确实是刻意的例外" },
-    ],
-    expectGreen: true,
-  },
-  // —— issue #668 ①：压缩策略「默认值」的分层对账（库层 / CLI 层各自绑源码真值）——
-  // 每例钉一侧：把谎放回去 ⇒ 红并点名行；改源码真值 ⇒ 红（证锚点绑的是源码不是文案）；
-  // 只改中英一边 ⇒ 红；删掉整句声明 ⇒ 红（覆盖面）；只动措辞、不动名字 ⇒ 绿（放行证）。
-  {
-    label: "#668 ①：把「两层混成一句」的谎放回契约 EN（`fold-statistical` remains the default everywhere）⇒ 红并点名行号",
-    overlay: {
-      [CONTRACT_EN]: (t) => t.replace("No layer defaults to `fold-statistical`:",
-        "`fold-statistical` remains the default everywhere (library default stays `sliding-window` when no strategy is set).\n  No layer defaults to `fold-statistical`:"),
-    },
-    expect: [/compaction-default\/en-remains-default-everywhere: docs\/host-consumer-contract\.md:\d+ /],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#668 ①：把同一个谎放回契约 CN（默认 everywhere 仍是 `fold-statistical`）⇒ 红并点名行号",
-    overlay: {
-      [CONTRACT_CN]: (t) => t.replace("  没有任何一层默认 `fold-statistical`：",
-        "  默认 everywhere 仍是 `fold-statistical`。\n  没有任何一层默认 `fold-statistical`："),
-    },
-    expect: [/compaction-default\/cn-default-everywhere: docs\/host-consumer-contract_cn\.md:\d+ /],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#668 ①：把库层真值 `sliding-window` 在源码里临时改名 ⇒ 红（证锚点绑的是源码，不是文案）",
-    overlay: { [COMPACTION_PIPELINE_SRC]: (t) => t.replace('strategyNames: ["sliding-window"],', 'strategyNames: ["sliding-window-renamed"],') },
-    expect: [/compaction-default\/library: docs\/host-consumer-contract\.md:\d+ 说库层默认是 `sliding-window`/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    // issue #925/#926：`--compaction` 旗标与 `config.compaction` 退路删除之后，CLI 层的真值来源
-    // 从三处收口到**一处**（常量 `DEFAULT_COMPACTION_STRATEGY`），所以「三处字样必须同源」那两条自测
-    // 的靶子没了。换成钉**单源**：改这个常量 ⇒ 文档侧 CLI 声明与真值不符 ⇒ 红。
-    label: "#668 ①：CLI 层单源常量改成 `fold-statistical`（源码自洽、文档没跟）⇒ 红（文档侧 CLI 声明与真值不符）",
-    overlay: {
-      [COMPACTION_CLI_CONST_SRC]: (t) => t.replace('export const DEFAULT_COMPACTION_STRATEGY = "fold-llm";', 'export const DEFAULT_COMPACTION_STRATEGY = "fold-statistical";'),
-    },
-    // 实测（改常量后跑一遍）：红的**恰好四处** —— 契约 EN/CN + `docs/requirements.md` / `_cn.md`。
-    // README 里没有「CLI 层默认是 X」这类**带标记的默认声称**（那条随 `--compaction` 帮助行一起没了），
-    // 所以不在这里要求它；README 那句「折叠恒由 LLM 完成」是**另一类**声称（见下面 `fold-llm` 的措辞修正），
-    // 不在 `compaction-default` 的判定面里 —— 别把两件事混成一句。
-    expect: [
-      /compaction-default\/cli: docs\/host-consumer-contract\.md:\d+ 说CLI 层默认是 `fold-llm`/,
-      /compaction-default\/cli: docs\/host-consumer-contract_cn\.md:\d+ 说CLI 层默认是 `fold-llm`/,
-      /compaction-default\/cli: docs\/requirements\.md:\d+ 说CLI 层默认是 `fold-llm`/,
-      /compaction-default\/cli: docs\/requirements_cn\.md:\d+ 说CLI 层默认是 `fold-llm`/,
-    ],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN, "docs/requirements.md", "docs/requirements_cn.md"],
-  },
-  {
-    label: "#668 ①：只改中文契约的库层声明（`sliding-window` → `fold-statistical`）⇒ 红（中英成对，只改一边就红）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("**库层默认**（未配策略时）是 `sliding-window`", "**库层默认**（未配策略时）是 `fold-statistical`") },
-    expect: [/compaction-default\/library: docs\/host-consumer-contract_cn\.md:\d+ 说库层默认是 `fold-statistical`/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    // issue #802：删掉整句**不再判红**（覆盖面与中英处数都只进 note）。这一格改成它真正承重的那半：
-    // 删掉之后必须**没有**红（否则放宽没落地），而「句子在而值错」那一格由上面 #668 ① 的第一例守着。
-    label: "#668 ①：删掉中文契约那半句 CLI 槽位默认 ⇒ **不红**（#802：句子不在不是回归）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("**CLI 槽位默认**是 `fold-llm`", "**CLI 槽位**不是库默认") },
-    expectGreen: true,
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#668 ①（放行证）：只改契约 EN 的措辞、不动那两个名字 ⇒ 仍然绿（闸咬的是名字与层，不是排版）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("No layer defaults to `fold-statistical`:", "The degrade target is `fold-statistical`; no layer defaults to `fold-statistical`:") },
-    expectGreen: true,
-  },
-  // —— issue #668 ① 的**残留盲区**（本单）：① ② 靠标记词定位句子，于是「新写一句不带标记的默认声称」
-  // 整句落在面外。③ 反过来：默认声称 + 内置策略名同句搭配就必须带层标记词。下面四例各钉一侧：
-  // 英文谎 → 红并点名行；中文谎 → 红 + 中英处数不齐；default summarizer 那一族 → 绿（放行证）；
-  // 同一句谎 + 抽掉一条判据词 → 又变绿（证规则真在判那个词，不是措辞巧合）。
-  {
-    label: "#668 ① ③：契约 EN 插一句**不带任何分层标记词**的默认声称（By default, compaction uses `fold-statistical`）⇒ 红并点名行",
-    overlay: {
-      [CONTRACT_EN]: replaceUnique("No layer defaults to `fold-statistical`:",
-        "By default, compaction uses `fold-statistical` whenever a host does not configure a strategy.\n  No layer defaults to `fold-statistical`:"),
-    },
-    expect: [/compaction-default\/unmarked: docs\/host-consumer-contract\.md:\d+ 说默认是 `fold-statistical`/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#668 ① ③：中文契约插同形的无标记谎（未配策略时默认用 `fold-statistical`）⇒ 红 + 中英未标记处数不齐",
-    overlay: {
-      [CONTRACT_CN]: replaceUnique("  没有任何一层默认 `fold-statistical`：",
-        "  未配策略时默认用 `fold-statistical`。\n  没有任何一层默认 `fold-statistical`："),
-    },
-    // issue #802：处数普查不再判红，所以这里只留**真值判据**那一条（那句话本身是谎 ⇒ 红）。
-    expect: [/compaction-default\/unmarked: docs\/host-consumer-contract_cn\.md:\d+ 说默认是 `fold-statistical`/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#668 ① ③（放行证）：「默认 + `fold-llm` + summarizer」那一族再插一句 ⇒ 仍然绿（它说的是摘要器，不是默认策略）",
-    overlay: {
-      [CONTRACT_EN]: replaceUnique("The `fold-llm` name injects a default summarizer that reuses **this run's provider**",
-        "The `fold-llm` name injects a default summarizer that reuses **this run's provider**.\nThat default summarizer is engine-provided, and `fold-llm` itself stays opt-in."),
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#668 ① ③（退化证）：同一句谎 + 抽掉 `default` 这条判据词 ⇒ 又变绿（证规则真在判那个词）",
-    overlay: {
-      [CONTRACT_EN]: replaceUnique("No layer defaults to `fold-statistical`:",
-        "By default, compaction uses `fold-statistical` whenever a host does not configure a strategy.\n  No layer defaults to `fold-statistical`:"),
-    },
-    simulateCompactionDropWordIds: ["en-default"],
-    expectGreen: true,
-  },
-  // —— #668 ① ③ 的**围栏决定**（这笔改动买的是未来覆盖，这两例就是它的价钱）。
-  // 背景：原实现把 ``` 围栏里的行整段跳过（理由「围栏里的是样例，不是声称」），可本仓的围栏里
-  // 放的不只是样例：README 的模块树就是围栏，而 `README_cn.md:185` 那句「用本 run provider 的
-  // fold-llm 默认 summarizer」是一句**真的**描述性声称。所以跳过围栏 = 整类真声称从判据里消失。
-  // 下面两例钉住这个决定的**两面**：围栏里的谎必须红（否则那 3 行白删），围栏里的
-  // summarizer 句子必须绿（否则排除逻辑在围栏里不成立，同样白删）。
-  {
-    label: "#668 ① ③（围栏）：把一句无标记的默认策略谎放进**代码围栏里** ⇒ 红并点名行（跳过围栏就等于放过这一类）",
-    overlay: {
-      "docs/soak.md": replaceUnique("# 便宜自测（不联网",
-        "# By default, compaction uses `fold-statistical` unless a host configures a strategy.\n# 便宜自测（不联网"),
-    },
-    expect: [/compaction-default\/unmarked: docs\/soak\.md:\d+ 说默认是 `fold-statistical`/],
-    expectFiles: ["docs/soak.md"],
-  },
-  {
-    label: "#668 ① ③（围栏・放行证）：围栏里的「默认 + `fold-llm` + summarizer」句（README_cn.md:185 那一类）⇒ 绿",
-    overlay: {
-      [README_CN]: replaceUnique("provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer",
-        "provider-summarizer.js          用本 run provider 的 fold-llm 引擎默认的 summarizer"),
-    },
-    expectGreen: true,
-  },
-  // —— issue #668 ②：退役语义「摘要器失败 ⇒ 降级/兜底为统计摘要」（§2.11）——
-  // 这一族此前**零自测**（上一笔只手工变异验过，没钉进清单）。下面四格各钉一侧：
-  //   ①-A 谎进**活文档** → 红并点名 file:line；
-  //   ②   **同一句**谎进**历史类文件** → 不红（判据只咬活面，历史正文一字不改）；
-  //   ③   `fold-summary-journal` 那句带历史限定语的「`fold-llm` 的降级兜底」（#668 点名的合法保留形态）
-  //        进**活文档** → 不红（靶子现读源码，不抄原文）；
-  //   ④   同一句谎 + 历史限定语、落在**同一份活文档**里 → 不红（证「历史框定」这条放行读法真的在放行：
-  //        它和 ①-A 只差一个限定语，一个绿一个红）。
-  {
-    label: "#668 ②：把「摘要器失败 ⇒ 自动降级为统计摘要」这句谎放进活文档 ⇒ 红，并点名文件+行",
-    overlay: { "docs/testing.md": appendUnique(RETIRED_SEMANTICS_LIE) },
-    expect: [/retired-semantics: docs\/testing\.md:\d+ 说「摘要器失败\/超时 ⇒ 自动降级或兜底为统计摘要」/],
-    expectFiles: ["docs/testing.md"],
-  },
-  {
-    label: "#668 ②（对照）：**同一句**谎放进历史类文件（`docs/decisions/`）⇒ 不红（判据只咬活面）",
-    overlay: { "docs/decisions/003-compaction-strategies.md": appendUnique(RETIRED_SEMANTICS_LIE) },
-    expectGreen: true,
-  },
-  {
-    label: "#668 ②（放行证）：`fold-summary-journal` 那句带历史限定语的「`fold-llm` 的降级兜底」进活文档 ⇒ 不红",
-    overlay: {
-      "docs/testing.md": (t) => {
-        if (JOURNAL_RETENTION_LINE === null) return t;                 // 源码里那句没了 ⇒ 变异没落上 ⇒ 红
-        if (!RS_HISTORICAL.test(JOURNAL_RETENTION_LINE)) return t;     // 历史限定语被删 ⇒ 这格不再证「合法保留」
-        return appendUnique(JOURNAL_RETENTION_LINE)(t);
-      },
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#668 ②（放行证）：同一句谎 + 历史限定语、落在同一份活文档 ⇒ 不红（「历史框定」那条读法在放行）",
-    overlay: {
-      "docs/testing.md": appendUnique(`${RETIRED_SEMANTICS_LIE.replace("。", "")}——那是 #661 之前的行为，那条路径已被删。`),
-    },
-    expectGreen: true,
-  },
-  // ══ issue #511：「这句话属于哪个版本」+「这个版本发布了没有」 ══════════════════════
-  // 本节每个用例都钉**一条判据的一侧**（红侧）或**放行侧**（绿侧）。registry 一律走 `selfTestRegistry()`
-  // 夹具（派生自 CHANGELOG，见那里的注释）：自测不许依赖网络，也不许依赖「今天 registry 恰好是什么」。
-  {
-    label: "#511 判据 1：删掉 0.29 指南第一行的 doc-version 自述 ⇒ 红（自述是后两条判据的真值来源）",
-    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t.replace("<!-- doc-version: 0.29.0 -->\n", "") },
-    expect: [/doc-version: docs\/host-upgrade-guide-0\.29\.0\.md 的第一行不是机器可读自述/],
-  },
-  {
-    label: "#511 判据 1：自述与文件名不同源（0.27 指南自述 0.28.0）⇒ 红（不许两份真值并存）",
-    overlay: { "docs/host-upgrade-guide-0.27.0.md": (t) => t.replace("<!-- doc-version: 0.27.0 -->", "<!-- doc-version: 0.28.0 -->") },
-    expect: [/doc-version: docs\/host-upgrade-guide-0\.27\.0\.md 自述 0\.28\.0，文件名是 0\.27\.0/],
-  },
-  {
-    label: "#511 判据 1 后半：删掉 0.27 指南里那句前向指针 ⇒ 红并点名行号（正是 #511 的病：0.27 的指南在讲 0.28 的树）",
-    overlay: { "docs/host-upgrade-guide-0.27.0.md": (t) => t.replace("from 0.28.0 — see the 0.28.0 upgrade guide) is", "from 0.28.0) is") },
-    expect: [/version-attribution: docs\/host-upgrade-guide-0\.27\.0\.md:\d+ 这句话把事实归给 0\.28\.0/],
-  },
-  {
-    label: "#511 判据 1（放行证）：把中文指针「见 0.28.0 升级指南」写成「见 0.28.0 指南」⇒ 仍绿（`升级` 可省是同一枚标记）",
-    overlay: { "docs/host-upgrade-guide-0.27.0_cn.md": (t) => t.replace("见 0.28.0 升级指南", "见 0.28.0 指南") },
-    expectGreen: true,
-  },
-  {
-    label: "#511 判据 2a：指南声称「没有 config.run 这一组」，而它就在树里 ⇒ 红（删掉是单调声称，今天的树就是证人）",
-    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t + "\n\nThere is no `config.run` group in 0.29.0.\n" },
-    expect: [/guide-claim: docs\/host-upgrade-guide-0\.29\.0\.md:\d+ 声称 `config\.run` 不存在\/已删/],
-  },
-  {
-    label: "#511 判据 2a（放行证 / #299 的课）：声称「没有 config.observers」⇒ 仍绿（这个名字只活在注释里，注释里的名字不是声明）",
-    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t + "\n\nThere is no `config.observers` group in 0.29.0.\n" },
-    expectGreen: true,
-  },
-  {
-    label: "#511 判据 2c：**当前版本那份**指南里出现「9 groups」的数量声称 ⇒ 红并点名真值（指南本身不写数量，所以把错误声称注入到它上面：判据咬的是「当前版本那份指南说了什么」，靶子与期望都随 PKG_VERSION 现读，#699 ③）",
-    overlay: { [SURFACE_GUIDE_EN]: (t) => t + "\n\nThe configuration namespace still reads **9 groups / 43 leaves** today.\n" },
-    expect: [guideExpectRe("guide-claim", SURFACE_GUIDE_EN, /:\d+ 声称「9 groups」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/)],
-  },
-  {
-    label: "#511 判据 2c：中文侧同理（「9 个分组」⇒ 红；中文数词/阿拉伯数字都要接）",
-    overlay: { [SURFACE_GUIDE_CN]: (t) => t + "\n\n`config` 命名空间今天仍然是 **9 个分组 / 43 个叶子**。\n" },
-    expect: [guideExpectRe("guide-claim", SURFACE_GUIDE_CN, /:\d+ 声称「9 个分组」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/)],
-  },
-  {
-    label: "#511 判据 2b：指南把某个 config 叶子归给 0.29.0，而 CHANGELOG 的 0.29.0 段没有它 ⇒ 红（新增不单调，真值只能从 CHANGELOG 取）",
-    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t + "\n\n0.29.0 adds `config.run.zzzNotThere`.\n" },
-    simulateRegistry: selfTestRegistry(),
-    expect: [/guide-claim: docs\/host-upgrade-guide-0\.29\.0\.md:\d+ 声称 `config\.run\.zzzNotThere` 属于 0\.29\.0/],
-  },
-  {
-    label: "#511 判据 3：新增一个带日期、不在 registry、也没标「未发布」的版本段 ⇒ 红",
-    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.29.0] - 2026-10-31", "## [0.9.9] - 2026-01-01\n\n### Added\n\n- 自测夹具：一个从未发布的版本段（故意不标未发布）。\n\n## [0.29.0] - 2026-10-31") },
-    simulateRegistry: selfTestRegistry(),
-    expect: [/changelog-published: CHANGELOG:\d+ 的 0\.9\.9 段带日期却不在 registry 的 versions 列表里/],
-  },
-  {
-    label: "#511 判据 3（反向）：给一个**已发布**的版本段加「未发布」标注 ⇒ 红（发布态的两个方向都看守）",
-    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.29.0] - 2026-10-31", "## [0.29.0] - 2026-10-31（未发布 / unpublished）") },
-    simulateRegistry: selfTestRegistry(),
-    expect: [/changelog-published: CHANGELOG:\d+ 的 0\.29\.0 段自称「未发布\/unpublished」/],
-  },
-  {
-    label: `#511 评论：AGENTS.md 的「发布行」写成 ${selfTestVersionFace().previous.version}，registry 说 9.9.9 ⇒ 红（发布行的真相来源是 registry，不是 package.json）`,
-    // #724：不再抄「`dist-tags.latest` — is `0.30.0`」这个字面量（发版回写之后它就不在盘上了），
-    // 改用判据自己的 `pubRe` 定位，写进去的假值也从版本面现取（上一版），不引入新字面量。
-    overlay: { [AGENTS_EN]: mutatePublishedClaim(selfTestVersionFace().previous.version) },
-    simulateRegistry: selfTestRegistry({ latest: "9.9.9" }),
-    expect: [new RegExp(`published-claim: AGENTS\\.md:\\d+ 说发布行（\`dist-tags\\.latest\`）是 `
-      + `${esc(selfTestVersionFace().previous.version)}，registry 实测是 9\\.9\\.9`, "u")],
-  },
-  {
-    label: "#511：AGENTS.md 的「本仓版本」写成 0.28.0 ⇒ 红（本仓版本对 package.json，两类句子各对各的真值）",
-    overlay: { [AGENTS_EN]: mutateRepoVersionClaim("0.28.0") },
-    simulateRegistry: selfTestRegistry(),
-    expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」把\*\*本仓版本\*\*写成 0\.28\.0/],
-  },
-  {
-    label: "#511 第二条评论：这两句里塞一个测量日期 ⇒ 红（日期自己不会过期，留着它等于给「过期」留合法位置）",
-    overlay: { [AGENTS_EN]: addMeasurementDateToRepoClaim("2026-11-03") },
-    simulateRegistry: selfTestRegistry(),
-    expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」里带了测量日期/],
-  },
-  {
-    // 靶子换过（261109 指令面瘦身）：「`0.24.0` was **never published**」那句已搬进冷层
-    // `docs/maintenance/command-reference.md`（它不在 `publicationDocs()` 面内），所以靶子换成契约里
-    // 仍在的那句同类声称（`docs/host-consumer-contract.md`，面内）。判据本身不变：未发布声称必须对着 registry。
-    label: "#511：把「0.27.0 was never published」写成「0.29.0」⇒ 红（未发布声称必须对着 registry 的 versions 列表说）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("0.27.0 was never published", "0.29.0 was never published") },
-    simulateRegistry: selfTestRegistry(),
-    expect: [/published-claim: docs\/host-consumer-contract\.md:\d+ 说 0\.29\.0 从未发布，但它\*\*在\*\* registry/],
-  },
-  {
-    label: "#511 判据 1（放行表空转）：在 DOC_VERSION_EXEMPT 里登记一份不存在的指南 ⇒ 红（用不上的放行就是后门，#210 R2）",
-    simulateDocVersionExemptions: new Map([...DOC_VERSION_EXEMPT,
-      ["docs/host-upgrade-guide-0.9.9.md", "自测夹具：这份文件不存在，登记它必须红"]]),
-    expect: [/doc-version: DOC_VERSION_EXEMPT 里登记的 docs\/host-upgrade-guide-0\.9\.9\.md 不存在/],
-  },
-  // ══ issue #636：「该不该有一条」——代码侧名单 × CHANGELOG 加法句 ⇒ 指南必须覆盖 ══════════
-  {
-    label: "#636：把 0.29 指南里的 `config.continuity.handoff` 整段改名（= 删掉那一段）⇒ 红并点名「代码里有、CHANGELOG 说这一版加的」",
-    // 变异体必须**不含**那个名字本身（`…handoffSwitch` 仍以 `config.continuity.handoff` 为前缀，
-    // `includes()` 照样命中 ⇒ 变异等于没落上，实测就是这么假绿了一次）。
-    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t.replaceAll("config.continuity.handoff", "the continuity handoff switch") },
-    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0\.md 没有提到config 叶子 `config\.continuity\.handoff`/],
-  },
-  {
-    label: `#636：只删中文侧对 \`${guideCoverageCaseTarget().name}\` 那条事件的提及 ⇒ 红（本版段说这一版加了它，中文指南没有就是缺一条）`,
-    // 前提自带（#699 ③(a)）：0.31 那种纯删除版里「这一版加了某个观察者事件」这笔加法不存在、中文指南里也
-    // 没提过它 ⇒ 老写法「把 \`compaction\` 改掉」在切版树上锚不到（= 用例静默失效）。名字与加法句都由
-    // `guideCoverageCaseTarget` / `addGuideCoverageClaim` 现取现补，两棵树同一判据。
-    overlay: {
-      ...(guideCoverageCaseTarget().inject ? { "CHANGELOG.md": addGuideCoverageClaim(guideCoverageCaseTarget().name) } : {}),
-      [SURFACE_GUIDE_CN]: dropGuideMention(guideCoverageCaseTarget().name),
-    },
-    expect: [guideExpectRe("guide-coverage", SURFACE_GUIDE_CN,
-      new RegExp(` 没有提到.* \`${esc(guideCoverageCaseTarget().name)}\``, "u"))],
-  },
-  {
-    label: "#636 中英成对：只从中文指南里删掉一个结构化名字（`ERIX_CONTINUITY_DIR`）⇒ 红（成对判据问的是「另一侧有没有一条」）",
-    overlay: { "docs/host-upgrade-guide-0.29.0_cn.md": (t) => t.replaceAll("ERIX_CONTINUITY_DIR", "环境变量") },
-    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0_cn\.md 没有提到环境变量 `ERIX_CONTINUITY_DIR`/],
-  },
-  {
-    label: "#636（fail-closed）：CHANGELOG 里没有当前版本段 ⇒ 红（「这一版加了什么」的真值缺位，不许静默放行）",
-    overlay: { "CHANGELOG.md": rewriteCurrentChangelogHeading(() => "## [0.9.9] - 2026-11-03") },
-    simulateRegistry: selfTestRegistry(),
-    expect: [new RegExp(`guide-coverage: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
-  },
-  // #908 R2：这族「闸自己的覆盖面必须被文档复述」的自指判据整体作废——README 里那句份数
-  // 声称已随 #908 删除，靶子不复存在；覆盖面本身仍由 collectRefScanCoverageErrors 现扫判。
-  // ══ issue #677：契约「套件清单」的 unknownSlot 形态（§2.12）════════════════════════════
-  // 这一族的靶子**自包含**：行按「小节标题 + 行首键」定位，替换文本由 `suiteInventoryRowLine` 从零构造
-  // （不抄文档原话），于是文档将来怎么改写都不会让变异体与文档脱节。七格各钉一侧：
-  //   ① EN 单侧压平 → 红；② CN 单侧压平 → 红；③ 只改 EN 一条腿 → 红（缺语义 + 中英背离）；
-  //   ④ 真值改名 → 红；⑤ 真值少一种形态 → 红；⑥ 注释里写第三种形态 → 绿（注释不是真值）；
-  //   ⑦ 两侧换成同义改写（= 恢复正确语义）→ 绿（闸咬语义，不咬措辞）；
-  //   ⑧ 那一行不在目标文档里时 → 「变异没落上」算失败（#210 R2）。
-  {
-    label: "#677：EN 单侧把套件清单的未知槽名答案压平成一条（两种形态都「必须抛」）⇒ 红并点名 EN",
-    overlay: {
-      [CONTRACT_EN]: mutateSuiteInventoryRow(CONTRACT_EN,
-        () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_FLAT[CONTRACT_EN])),
-    },
-    expect: [/suite-inventory: docs\/host-consumer-contract\.md:\d+ 的 `model-config-provider\.js` 行被压平了/,
-      /suite-inventory: docs\/host-consumer-contract\.md:\d+ 的 `model-config-provider\.js` 行缺一条语义——单配置形态任何槽名都返回同一份配置/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#677：CN 单侧把同一处答案压平 ⇒ 红并点名 CN（中英成对：只留一侧的正确语义不算修好）",
-    overlay: {
-      [CONTRACT_CN]: mutateSuiteInventoryRow(CONTRACT_CN,
-        () => suiteInventoryRowLine(CONTRACT_CN, SUITE_INVENTORY_FLAT[CONTRACT_CN])),
-    },
-    expect: [/suite-inventory: docs\/host-consumer-contract_cn\.md:\d+ 的 `model-config-provider\.js` 行被压平了/,
-      /suite-inventory: docs\/host-consumer-contract_cn\.md:\d+ 的 `model-config-provider\.js` 行缺一条语义——单配置形态任何槽名都返回同一份配置/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#677：只改 EN 一条腿（单配置那段删掉「不是未知回落 default」）⇒ 红：缺语义 + 中英背离",
-    overlay: {
-      [CONTRACT_EN]: mutateSuiteInventoryRow(CONTRACT_EN,
-        () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_ONE_LEG_MISSING[CONTRACT_EN])),
-    },
-    expect: [/suite-inventory: docs\/host-consumer-contract\.md:\d+ 的 `model-config-provider\.js` 行缺一条语义——单配置形态是\*\*形态差异\*\*/,
-      /suite-inventory: 中英背离——「单配置形态是\*\*形态差异\*\*[\s\S]*?只有 docs\/host-consumer-contract_cn\.md 写了，docs\/host-consumer-contract\.md 没有/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#677：套件真值把 `single-config` 改名成 `single`（文档没跟）⇒ 红：多出一种形态 + 少了一种形态",
-    overlay: { "test/contract/model-config-provider.js": (t) => t.split('"single-config"').join('"single"') },
-    expect: [/suite-inventory\/truth: test\/contract\/model-config-provider\.js 的 unknownSlot 形态里多出 `single`/,
-      /suite-inventory\/truth: test\/contract\/model-config-provider\.js 的 unknownSlot 形态里抽不到 `single-config`/],
-  },
-  {
-    label: "#677：套件真值里 `single-config` 这个形态整个没了（只剩 throws）⇒ 红（真值少一种形态、文档还在讲）",
-    overlay: { "test/contract/model-config-provider.js": (t) => t.split('"single-config"').join('"throws"') },
-    expect: [/suite-inventory\/truth: test\/contract\/model-config-provider\.js 的 unknownSlot 形态里抽不到 `single-config`/],
-  },
-  {
-    label: "#677（放行证）：真值文件的**注释**里提到第三种形态 ⇒ 仍绿（注释里讲形态不是真值）",
-    overlay: {
-      "test/contract/model-config-provider.js": appendUnique('// unknownSlot.mode === "third-mode" —— 注释里讲形态不算真值（issue #677）'),
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#677（恢复证）：中英两侧都换成同义改写（形态语义一条不少）⇒ 绿（闸咬语义，不咬措辞）",
-    overlay: {
-      [CONTRACT_EN]: mutateSuiteInventoryRow(CONTRACT_EN,
-        () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_CANON[CONTRACT_EN])),
-      [CONTRACT_CN]: mutateSuiteInventoryRow(CONTRACT_CN,
-        () => suiteInventoryRowLine(CONTRACT_CN, SUITE_INVENTORY_CANON[CONTRACT_CN])),
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#677 变异器空转证：套件清单那一行不在目标文档里时，必须判「变异没落上」而不是假绿（#210 R2）",
-    overlay: {
-      "docs/testing.md": mutateSuiteInventoryRow(CONTRACT_EN,
-        () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_CANON[CONTRACT_EN])),
-    },
-    expectMutateMiss: true,
-  },  // ══ issue #677 补充范围（#475）：强制收尾资格「按状态，不按 reason 枚举」（§2.13）══════════
-  // 三种形状各钉一侧，外加「改源码成员集合而不改契约 ⇒ 必红」与「变异没落上算失败」：
-  //   ① EN 单侧退回假话 → 红；② CN 单侧退回假话 → 红；③ 只改 EN 一条腿 → 红（缺语义 + 中英背离）；
-  //   ④ 源码两个 reason 集合都加一个成员、契约不改 → 红（固定名单 × 成员集合失配）；
-  //   ⑤ 源码 guard 集合删掉 `no_tool` → 红（「覆盖 ≠ 安全」那句失去真值）；
-  //   ⑥ 两侧同义改写（= 恢复正确语义）→ 绿；⑦ §7 那段不在目标文档里 → 「变异没落上」算失败（#210 R2）。
-  {
-    label: "#677（#475）：EN 单侧把强制收尾资格退回「reason 白名单 + 固定六个」的假话 ⇒ 红并点名 EN",
-    overlay: {
-      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_FLAT[CONTRACT_EN]),
-    },
-    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 被压平\/退回假话——把资格写成「白名单/,
-      /forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 被压平\/退回假话——把资格写成固定条数/,
-      /forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 缺一条语义——资格是\*\*一个状态\*\*，不是 reason 白名单/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#677（#475）：CN 单侧把同一句退回假话 ⇒ 红并点名 CN（中英成对：只留一侧的正确口径不算修好）",
-    overlay: {
-      [CONTRACT_CN]: mutateForcedFinalEligibility(CONTRACT_CN, () => FORCED_FINAL_FLAT[CONTRACT_CN]),
-    },
-    expect: [/forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 被压平\/退回假话——把资格写成「白名单/,
-      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 缺一条语义——资格是\*\*一个状态\*\*，不是 reason 白名单/],
-    expectFiles: [CONTRACT_CN],
-  },
-  {
-    label: "#677（#475）：只改 EN 一条腿（不再说「其余 reason 只过一个判据：整个 run 一个字都没写过」）⇒ 红：缺语义 + 中英背离",
-    overlay: {
-      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_ONE_LEG_MISSING[CONTRACT_EN]),
-    },
-    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 缺一条语义——其余 reason 只过一个判据：整个 run 一个字都没写过/,
-      /forced-final: 中英背离——「其余 reason 只过一个判据：整个 run 一个字都没写过」只有 docs\/host-consumer-contract_cn\.md 写了，docs\/host-consumer-contract\.md 没有/],
-    expectFiles: [CONTRACT_EN],
-  },
-  {
-    label: "#677（#475）：源码两个 reason 集合都加一个成员、契约一个字不改 ⇒ 红（固定名单 × 源码成员集合失配）",
-    overlay: {
-      "src/loop/termination.js": (t) => mutateReasonSet(FORCED_FINAL_GUARD_SET, { add: ["zzz_probe_reason"] })(
-        mutateReasonSet(FORCED_FINAL_TRUNCATED_SET, { add: ["zzz_probe_reason"] })(t)),
-    },
-    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 漏掉了 `zzz_probe_reason`/,
-      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 漏掉了 `zzz_probe_reason`/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "#677（#475）：源码 guard 集合删掉 `no_tool` ⇒ 红（「覆盖 ≠ 安全」那句点名的成员不再成立）",
-    overlay: { "src/loop/termination.js": mutateReasonSet(FORCED_FINAL_GUARD_SET, { remove: ["no_tool"] }) },
-    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 说 `no_tool` 早就在 `FINAL_GUARD_TERMINATION_REASONS` 里/,
-      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 说 `no_tool` 早就在 `FINAL_GUARD_TERMINATION_REASONS` 里/],
-    expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-  {
-    label: "#677（#475・恢复证）：中英两侧都换成同义改写（五条腿一条不少）⇒ 绿（闸咬语义，不咬措辞）",
-    overlay: {
-      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_CANON[CONTRACT_EN]),
-      [CONTRACT_CN]: mutateForcedFinalEligibility(CONTRACT_CN, () => FORCED_FINAL_CANON[CONTRACT_CN]),
-    },
-    expectGreen: true,
-  },
-  {
-    label: "#677（#475）变异器空转证：§7 那段不在目标文档里时，必须判「变异没落上」而不是假绿（#210 R2）",
-    overlay: {
-      "docs/testing.md": mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_FLAT[CONTRACT_EN]),
-    },
-    expectMutateMiss: true,
-  },
-  // —— #690：「不变」那一节 × 本版 CHANGELOG 的字段真值（六格逐格对账）——
-  // 前三条就是**改动前的原句**：把某一格退回修前的写法 ⇒ 必须红，且点名「格名 + 字段名」。
-  // 这一族证明的是「闸真咬人」——不是跟着改口一起变绿。
-  {
-    label: `#690（还原）EN 磁盘格式退回改动前的原句 ⇒ 红并点名 ${surfaceCaseEvidence("disk").name}`,
-    overlay: {
-      ...(surfaceCaseEvidence("disk").inject ? { "CHANGELOG.md": addSurfaceEvidence("disk") } : {}),
-      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "disk",
-        "* Transcript and run-state on-disk formats; a ledger written by the previous release still resumes."),
-    },
-    expect: [
-      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「on-disk formats」格写着不变/),
-      new RegExp(esc(surfaceCaseEvidence("disk").name), "u"),
-    ],
-    expectFiles: [SURFACE_GUIDE_EN],
-  },
-  {
-    label: `#690（还原）EN 诊断字段退回「observer events, diagnostic fields…」那句 ⇒ 红并点名 ${surfaceCaseEvidence("diagnostics").name}`,
-    overlay: {
-      ...(surfaceCaseEvidence("diagnostics").inject ? { "CHANGELOG.md": addSurfaceEvidence("diagnostics") } : {}),
-      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "diagnostics",
-        "* Observer events, diagnostic fields, and the run-state block."),
-    },
-    expect: [
-      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「diagnostic fields」格写着不变/),
-      new RegExp(esc(surfaceCaseEvidence("diagnostics").name), "u"),
-    ],
-  },
-  {
-    label: `#690（还原）EN 终局载荷退回「Termination, verification and exit-code…」那句 ⇒ 红并点名 ${surfaceCaseEvidence("finalPayload").name}`,
-    overlay: {
-      ...(surfaceCaseEvidence("finalPayload").inject ? { "CHANGELOG.md": addSurfaceEvidence("finalPayload") } : {}),
-      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "finalPayload",
-        "* Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code."),
-    },
-    expect: [
-      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「final payload」格写着不变/),
-      new RegExp(esc(surfaceCaseEvidence("finalPayload").name), "u"),
-    ],
-  },
-  {
-    label: `#690（中英各自判）CN 诊断字段整格缺席 ⇒ 红在 CN 这一侧，EN 不受影响（证据：${surfaceCaseEvidence("diagnostics").name}）`,
-    // 缺席必须是「这一格被删」，不能是「整节本来就没有按格的形状」——所以两侧都先写成规范六格，
-    // 中文侧再少写那一格（#699 ③(a)；0.31 的 §4 是一段散文，直接删那条 bullet 会什么都删不掉）。
-    overlay: {
-      ...(surfaceCaseEvidence("diagnostics").inject ? { "CHANGELOG.md": addSurfaceEvidence("diagnostics") } : {}),
-      [SURFACE_GUIDE_EN]: writeSurfaceCells("en"),
-      [SURFACE_GUIDE_CN]: writeSurfaceCells("cn", "diagnostics"),
-    },
-    expect: [
-      guideExpectRe("unchanged-surface", SURFACE_GUIDE_CN, /:\d+ 第「诊断字段」格整格缺席/),
-      new RegExp(esc(surfaceCaseEvidence("diagnostics").name), "u"),
-    ],
-    expectFiles: [SURFACE_GUIDE_CN],
-    reject: [guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /(?:)/)],
-  },
-  {
-    label: `#690 声明了变更却不点名该格字段 ⇒ 红（「变了」不点名等于没对账；该格证据：${surfaceCaseEvidence("disk").name}）`,
-    overlay: {
-      ...(surfaceCaseEvidence("disk").inject ? { "CHANGELOG.md": addSurfaceEvidence("disk") } : {}),
-      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "disk",
-        "* **On-disk formats — changed in this release.** The fold ledger moved; the names are in §1."),
-    },
-    expect: [
-      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「on-disk formats」格声明了变更，却没有点名/),
-      new RegExp(esc(surfaceCaseEvidence("disk").name), "u"),
-    ],
-  },
-  {
-    label: "#690 读不出（①）：§4 那一节被改名 ⇒ 红，且是「读不出」那一族（exit 2）",
-    overlay: {
-      // 节号别抄：`§4` 是 0.31 那份指南的编号，0.32 那份是 §9 ⇒ 抄一个号，切版当天变异就打不上，
-      // 自测红的是「变异没落上」（0.32 切版树实测）。按判据自己的标题形状改，编号是几都落得上。
-      [SURFACE_GUIDE_EN]: (t) => t.replace(/^## \d+\. What does not change\b/mu, "## 4. Notes on what moved"),
-    },
-    expect: [guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, / 里找不到「不变」那一节/)],
-  },
-  {
-    label: "#690 读不出（②）：本版 CHANGELOG 段读不到 ⇒ 红（真值缺位不许当绿）",
-    overlay: { "CHANGELOG.md": rewriteCurrentChangelogHeading((line) => line.replace(`## [${PKG_VERSION}]`, `## ${PKG_VERSION}`)) },
-    expect: [new RegExp(`unchanged-surface: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
-  },
-  {
-    label: "#690（反向证）纯加法的名字不是变更证据：本版「无变更证据」那一格写「不变」仍绿",
-    // 靶子那一格由 `surfaceAdditiveProbe` 现选（前提「这一格本版没有变更证据」是本版事实而非恒真；
-    // 0.32 的 `options` 真变了 ⇒ 写死 `options` 会让这条 expectGreen 在整个发布窗口恒红）。
-    overlay: {
-      [SURFACE_GUIDE_EN]: (t) => surfaceAdditiveProbe("en", t),
-      [SURFACE_GUIDE_CN]: (t) => surfaceAdditiveProbe("cn", t),
-    },
-    expectGreen: true,
-  },
-  // ══ issue #697：CHANGELOG 段首日期（§17b）═══════════════════════════════════════════
-  // 判据是两半：未发布段不许带日期（①）；已发布段日期 ↔ tag 日期（②）。③ 是两种 exit 的分工：
-  // 「registry 说已发布但没有 tag」= **exit 2 未判定**，不是红。所有 tag/registry 事实都走夹具
-  // （`simulateTagFacts` / `simulateRegistry`），**不依赖本机 tag 面与网络**。
-  //
-  // **版本面由夹具自己合成**（issue #724，见 `selfTestVersionFace` 的节头）：这一族每一例都带
-  // `simulateVersionFace`，于是「在飞的那一版」的段首是**夹具刚写下**的那一行（`faceInflightHeading()`），
-  // 变异锚点不是从真树抄来的字符串 ⇒ 「变异没落上」不可能因为发版而复发。registry 桩一律 `selfTestRegistry()`
-  // （派生 = 发布行停在 `released` 上），tag 面一律 `faceTagFacts()`（最小面：released / previous 两段）。
-  {
-    label: "#697 ①：正在准备的那一段（版本序最高）标了未发布却带着发布日期 ⇒ 红（registry 不可得也判）",
-    simulateVersionFace: true,
-    overlay: {
-      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version,
-        () => `## [${selfTestVersionFace().inflight.version}] - ${shiftDay(selfTestVersionFace().released.date, 1)}（未发布 / unpublished）`),
-    },
-    simulateRegistry: { ok: false, why: "self-test 夹具：registry 不可得" },
-    expect: [new RegExp(`changelog-date: CHANGELOG:\\d+ 的 ${esc(selfTestVersionFace().inflight.version)} 段`
-      + `标了「未发布 / unpublished」却带着发布日期 ${esc(shiftDay(selfTestVersionFace().released.date, 1))}`, "u")],
-    expectExit: 1,
-  },
-  {
-    label: "#697 ②：已发布段的日期与 tag 日期不一致 ⇒ 红并点名两个日期",
-    simulateVersionFace: true,
-    overlay: {
-      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().previous.version,
-        (line) => line.replace(selfTestVersionFace().previous.date, shiftDay(selfTestVersionFace().previous.date, 1))),
-    },
-    simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: faceTagFacts(),
-    simulateDateTagExemptions: [],
-    expect: [new RegExp(`changelog-date: CHANGELOG:\\d+ 的 ${esc(selfTestVersionFace().previous.version)} 段写 `
-      + `${esc(shiftDay(selfTestVersionFace().previous.date, 1))}，tag v${esc(selfTestVersionFace().previous.version)} 是 `
-      + `${esc(selfTestVersionFace().previous.date)}`, "u")],
-    expectExit: 1,
-  },
-  {
-    label: "#697 ②（登记证）：同一处不一致登记进 CHANGELOG_DATE_TAG_EXEMPTIONS ⇒ 绿（历史事实不改）",
-    simulateVersionFace: true,
-    overlay: {
-      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().previous.version,
-        (line) => line.replace(selfTestVersionFace().previous.date, shiftDay(selfTestVersionFace().previous.date, 1))),
-    },
-    simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: faceTagFacts(),
-    simulateDateTagExemptions: [{ version: selfTestVersionFace().previous.version, why: "self-test 探针：登记之后同一处不一致不红" }],
-    expectGreen: true,
-  },
-  {
-    label: "#697 ②（空转证）：登记表里一条对不上任何不一致的条目 ⇒ 红（#210 R2）",
-    simulateVersionFace: true,
-    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
-    simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: faceTagFacts(),
-    simulateDateTagExemptions: [{ version: "9.9.9", why: "self-test 探针：空转条目" }],
-    expect: [/changelog-date: CHANGELOG_DATE_TAG_EXEMPTIONS 里 9\.9\.9 那一条是空转的/],
-    expectExit: 1,
-  },
-  {
-    label: "#697 ③：registry 说 latest 已发布但没有 tag ⇒ 未判定 TAG_MISSING，exit 2 而不是红",
-    simulateVersionFace: true,
-    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
-    simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: { ok: true, dates: new Map(), source: "self-test 夹具：一个 tag 都没有" },
-    simulateDateTagExemptions: [],
-    expectNotJudged: ["TAG_MISSING"],
-    expectExit: 2,
-  },
-  {
-    label: "#697 ③（历史段无 tag 不判）：registry 说已发布但不是 latest、又没有 tag ⇒ 记一笔跳过，不 exit 2（只有 latest 缺 tag 才算 TAG_MISSING）",
-    simulateVersionFace: true,
-    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
-    simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: {
-      ok: true,
-      dates: new Map([[selfTestVersionFace().released.version,
-        { date: selfTestVersionFace().released.date, kind: "annotated" }]]),
-      source: "self-test 夹具：只有 latest 那个 tag",
-    },
-    simulateDateTagExemptions: [],
-    expectGreen: true,
-  },
-  {
-    label: "#697（历史段不受 (a) 管）：历史段的「带日期 + 正文标未发布」不改口 ⇒ 绿",
-    simulateVersionFace: true,
-    overlay: {
-      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().historicalMarked.version,
-        (line) => line.replace(selfTestVersionFace().historicalMarked.date,
-          shiftDay(selfTestVersionFace().historicalMarked.date, 1))),
-    },
-    simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: faceTagFacts(),
-    simulateDateTagExemptions: [],
-    expectGreen: true,
-  },
-  {
-    label: "#697 ⑤（放行证）：未发布段换成本仓另一种合法无日期形状 ⇒ 绿",
-    simulateVersionFace: true,
-    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
-    simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: faceTagFacts(),
-    simulateDateTagExemptions: [],
-    expectGreen: true,
-  },
-  {
-    label: "#697（干净检出）：tag 面读不出 ⇒ 日期↔tag 这一半跳过，不判红（#280 口径）",
-    simulateVersionFace: true,
-    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
-    simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: { ok: false, why: "self-test 夹具：不是 git 仓（干净检出）" },
-    simulateDateTagExemptions: [],
-    expectGreen: true,
-  },
-  // ══ issue #724：反向证的反向证（判据 3 的机器面）══════════════════════════════════════
-  {
-    // 模拟一次**发布回写**：在飞那一段改成已发布形（段首带日期）、AGENTS 中英两句的发布行跟着走到
-    // 新发布行、registry 与 tag 面同步 ⇒ 整棵树必须仍然**绿**。
-    // 为什么不是「在自测里再跑一遍自测」：那是 199 例 × 199 例（≈ 11 小时），而且它要证的并不是
-    // 「自测自己可重入」，而是**版本面换了、判据与夹具都不红**这一件事。两副真版本面上的整趟
-    // `--self-test` 是这条用例的实测背书（issue #724 交付报告里贴了两次退出码）。
-    label: "#724（回写模拟）：在飞的那一段按发布回写改成已发布形（段首带日期、AGENTS 发布行与 registry 一起走到新发布行）⇒ 绿",
-    simulateVersionFace: true,
-    overlay: {
-      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version,
-        () => `## [${selfTestVersionFace().inflight.version}] - ${shiftDay(selfTestVersionFace().released.date, 1)}`),
-      [AGENTS_EN]: mutatePublishedClaim(selfTestVersionFace().inflight.version, 0),
-      [AGENTS_CN]: mutatePublishedClaim(selfTestVersionFace().inflight.version, 1),
-    },
-    simulateRegistry: {
-      ok: true,
-      authoritative: true,
-      latest: selfTestVersionFace().inflight.version,
-      versions: [...selfTestRegistry().versions, selfTestVersionFace().inflight.version],
-      source: "self-test 夹具：回写之后（新发布行 = 在飞那一版）",
-    },
-    simulateTagFacts: {
-      ok: true,
-      dates: new Map([
-        [selfTestVersionFace().released.version, { date: selfTestVersionFace().released.date, kind: "annotated" }],
-        [selfTestVersionFace().inflight.version,
-          { date: shiftDay(selfTestVersionFace().released.date, 1), kind: "annotated" }],
-      ]),
-      source: "self-test 夹具：回写之后的两段 tag",
-    },
-    simulateDateTagExemptions: [],
-    expectGreen: true,
-  },
-  {
-    label: "#914 正向证：开发树里多出一个未跟踪的 session/outputs/<runId>/status.json（agent 把 sessionDir 指在 git 树内）——裸名解析面只认 git manifest，未跟踪实物不参与解析 ⇒ 裸名 status.json 仍靠白名单放行 ⇒ 仍绿",
-    // 现场复现（issue #914）：以前未跟踪实物会经文件系统遍历混进「唯一同名」解析面，让裸名 status.json
-    // 从「靠白名单放行」变成「直接解析到」⇒ 白名单被判空转 ⇒ 红。现解析面取 git manifest，未跟踪实物一律不算。
-    simulateUntrackedFiles: ["session/outputs/261126-46/status.json"],
-    expectGreen: true,
-    // 只证「绿」不够：还得证这一绿来自「未跟踪实物被排除在解析面之外」，不是恒绿。
-    assertAfter: () => {
-      const idx = repoFiles(LAST_IGN);
-      if (!idx.untracked.includes("session/outputs/261126-46/status.json")) {
-        return "#914 正向证：未跟踪夹具没进 repoFiles().untracked（SIM_UNTRACKED_FILES 没接进解析面）";
-      }
-      if (idx.tracked.includes("session/outputs/261126-46/status.json")) {
-        return "#914 正向证：未跟踪实物仍混在解析面 tracked 里（解析面没改成 git manifest）";
-      }
-      return null;
-    },
-  },
-  {
-    label: "#914 反向证：往一份全仓 .md 里加一个裸名引用 zz-914-probe.json，并让磁盘上真有一个同名未跟踪实物——解析面只认 git manifest，未跟踪不算解析成功 ⇒ 该引用仍判「解不到」红（证明新判据不是「一律放过」）",
-    overlay: {
-      "docs/research/2026-10-13-pi-subagents-async-attribution.md": (t) => t + "\n#914 反向证探针：`zz-914-probe.json`。\n",
-    },
-    simulateUntrackedFiles: ["session/outputs/zz-914-probe.json"],
-    expect: [/`zz-914-probe\.json`（第 \d+ 行）：本仓不存在（仓库根/],
-    assertAfter: () => (repoFiles(LAST_IGN).untracked.includes("session/outputs/zz-914-probe.json")
-      ? null
-      : "#914 反向证：未跟踪探针没进 repoFiles().untracked（SIM_UNTRACKED_FILES 没接进解析面）"),
-  },
-];
 
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 99;   // #677 加了两族反向证/放行证（「套件清单 unknownSlot」+「强制收尾资格 #475」）；工单 261021-03 B1 加了 6 例前缀反向证（实测 **109** 例：#337 又加 2 例目录规则反向证，修前 95 例；#391 R4 又加 6 例 `cli-flags` 反向证/放行证；下限留余量给并行分支，见上：别按当天条数写死）
-
-function runSelfTest() {
-  const run = () => collectAllDrift();
-  const failures = [];
-  const passed = [];
-  // #279：**期望自己也要被看守**。「把期望放宽」就是本单要防的那个溃败方向，所以先静态校一遍：
-  //   · 能匹配**空串**的期望（`.*/^/[\s\S]*/x*`）等于没有断言——拿它「永真」糊过一例就当场报红；
-  //   · 既不是放行证（expectGreen）又没写 expect / expectFiles 的一例 = 整例被跳过；
-  //   · 用例数低于下限 = 有用例被删。
-  // 三刀都在跑变异**之前**报，以免「先全绿了再看」。变异未落上则由循环里的 `after === before` 报。
-  if (SELF_TEST_CASES.length < MIN_SELF_TEST_CASES) {
-    failures.push(`用例数被削：现在 ${SELF_TEST_CASES.length} 例，下限 ${MIN_SELF_TEST_CASES} 例——删用例 / 整例跳过不算修好`);
-  }
-  // #286 T-a：提取器自己也有一处「空转就能全绿」的形状——覆盖面或提取正则被改坏时，符号锚点会抽到
-  // 0 处，于是本节所有反向证同时变成空跑。先问一句，别等用例自己变绿。
-  if (!symbolAnchorOccurrences(refScanDocs()).length) {
-    failures.push("symbol-anchor: 覆盖面里抽到 0 处「符号 + 文件」锚点——提取逻辑或覆盖面被改坏，"
-      + "本节全部符号锚点反向证都在空跑（抽不到真值就报错，#164 口径）");
-  }
-  // #703：**注入型证人必须被判据自己归回它那一格**。`surfaceCellOf` 按 `SURFACE_CELLS` 的顺序
-  // **先命中的那格赢**，而成员真值里一批名字同时属于几格（`degradeReason` 既是折叠账本的记录字段也是
-  // 诊断字段）。名字归错格时，注入下去红的是**另一格** ⇒ 用例报「红了但没点该点的名」，看着像文档漂移、
-  // 其实是夹具在说谎（0.31 探针树上实测到的是 disk 抽到 `degradeReason`）。不等到切版那天才暴。
-  for (const cellId of Object.keys(SURFACE_CASE_PREFERRED)) {
-    const truths703 = surfaceTruthMap();
-    const attributed703 = [...(truths703.get(cellId) ?? [])]
-      .filter((n) => surfaceCellOf(n, { quoted: true, truths: truths703 })?.id === cellId);
-    if (!attributed703.length) {
-      failures.push(`#690 夹具（#703）：「${cellId}」那一格的真值里没有一个名字是判据会归回本格的 ⇒ 注入型证人无法成立。`
-        + "要么提取器把名字全给了排在它前面的格（归属顺序飘了），要么提取面被改坏（抽不到真值就报错，#164 口径）");
-    }
-  }
-  // #699 ③：**当前版**指南的路径在期望里被抄成字面量，就是「切版当天整族反向证变红」的病根
-  // （判据现算 `docs/host-upgrade-guide-<本版>.md`，期望还在要上一版那份）。这一刀把它钉死：
-  // 期望 / reject 里出现「本版指南」那条路径的，必须由 `guideExpectRe` 现读常量构造。
-  for (const [i, c] of SELF_TEST_CASES.entries()) {
-    const who3 = c.label ?? `第 ${i + 1} 例`;
-    for (const [key, list] of [["expect", c.expect ?? []], ["reject", c.reject ?? []]]) {
-      for (const re of list) {
-        const src = String(re?.source ?? "");
-        // 只有「红话路径 = 当前版指南」的那两个判据受这一刀管：`unchanged-surface` 与 `guide-coverage`
-        // 现算 `docs/host-upgrade-guide-${PKG_VERSION}.md`。`bundle-table` 那份是 0.31 破坏包的**历史**逐名表
-        // （路径是钉住的那份指南，不随当前版走），历史指南（0.27 / 0.29）的字面量同理——都不算抄错。
-        const judge = src.match(/^([a-z][a-z0-9-]*(?:\/[a-z0-9-]+)?):/u)?.[1];
-        const named = src.match(/host-upgrade-guide-(\d+\.\d+\.\d+)/u)?.[1];
-        if ((judge === "unchanged-surface" || judge === "guide-coverage")
-          && named === PKG_VERSION && re?.pinnedToTruthPath !== true) {
-          failures.push(`${who3}：${key} 里把当前版指南写成字面量（${named}）——切版当天这一例必然红在路径上；`
-            + "用 `guideExpectRe(判据 id, SURFACE_GUIDE_EN/CN, …)` 现读常量构造（#699 ③）");
-        }
-      }
-    }
-  }
-  for (const [i, c] of SELF_TEST_CASES.entries()) {
-    const who = c.label ?? `第 ${i + 1} 例`;
-    for (const re of c.expect ?? []) {
-      if (re.test("")) failures.push(`${who}：期望被削弱——正则 ${re} 连空串都匹配，等于没有断言（不许拿「永真」糊过这一例）`);
-    }
-    // #337：`reject` 是「必须**不**出现的形状」。连空串都匹配的 reject 会禁掉一切报错，同样是没断言。
-    for (const re of c.reject ?? []) {
-      if (re.test("")) failures.push(`${who}：反向期望被削弱——reject 正则 ${re} 连空串都匹配，等于禁止一切报错`);
-    }
-    if (!c.expectGreen && !c.expectMutateMiss && !c.expectNotJudged
-      && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
-      failures.push(`${who}：期望被削弱——既不是放行证（expectGreen）也没写 expect / expectFiles / expectNotJudged，等于整例被跳过`);
-    }
-  }
-  // issue #697：日期↔tag 那一半的**真值面**在自测里必须是夹具。否则自测会绑在本机 tag 面上（
-  // 干净检出 / 浅克隆里没有 tag），而且「对照组绿」会变成「这台机器碰巧有那几个 tag」。
-  const tagFactsSaved = SIM_TAG_FACTS;
-  SIM_TAG_FACTS = selfTestTagFacts();
-  const control = run();
-  SIM_TAG_FACTS = tagFactsSaved;
-  if (control.length) {
-    failures.push(`对照组（源码与文档都不改）本该 0 错，实测 ${control.length} 处：\n      ${control.join("\n      ")}`);
-  } else {
-    passed.push("对照：源码与文档都不改 → 0 错");
-  }
-  // #302：一例可以声明多份**合成树夹具**（`simulateTreeShapes`），每个形状各跑一遍、各自断言——
-  // 要证的是「同一份声明在三种树形下同判」，而不是「在检查机碰巧有的那个树形下绿」。
-  // 返回 { pass, msg }；所有状态还原（OVERLAY / 树形口子 / 配置口子）都在这里，调用方只管记账。
-  function execCase(c, shape) {
-    const label = shape ? `${c.label}［树形 ${shape}］` : c.label;
-    // issue #697：tag 面夹具必须在**应用 overlay 之前**派生——否则「夹具从被测文档派生」会让
-    // 「改日期 ⇒ 仍绿」变成永真（夹具与被测面同源，就是本单要堵的那种假绿）。
-    const tagFixture = selfTestTagFacts();
-    // issue #724：**版本面**夹具先落上（`simulateVersionFace`）。它只能改文本（overlay），所以「在飞的那一版」
-    // 的段首是夹具自己写下的那一行 ⇒ 本用例的变异锚点（`faceInflightHeading()`）就指在这一行上。
-    // 落不上（锚行找不到）**不在这里单独报**：那时用例自己的变异也打不中，由下面那条既有的
-    // 「变异没落到 X 上」报红——同一味病不拿第二条判据重复计数。
-    if (c.simulateVersionFace) {
-      const faceBefore = read("CHANGELOG.md");
-      const faced = renderVersionFace(faceBefore);
-      if (faced !== faceBefore) OVERLAY.set("CHANGELOG.md", faced);
-    }
-    let missedOn = null;   // #286 T-a：变异没打上的那一处（`expectMutateMiss` 用例等的就是它）
-    for (const [rel, mutate] of Object.entries(c.overlay ?? {})) {   // #280：纯树形例可以不带 overlay
-      // #724：读**当前生效的文本**（`textOf`）而不是盘上那一份——上面刚落上的版本面夹具就在 OVERLAY 里，
-      // 用例的变异锚点（`faceInflightHeading()`）指的正是夹具写下的那一行。没有预置 overlay 时
-      // `textOf === read`（两者同源），所以这一改对其余 197 例是零行为变化。
-      const before = textOf(rel);
-      const after = mutate(before);
-      if (after === before) { missedOn = rel; break; }
-      OVERLAY.set(rel, after);
-    }
-    if (missedOn !== null) {
-      OVERLAY.clear();
-      return c.expectMutateMiss
-        ? { pass: true, msg: `${c.label} → 变异确实没落上（${missedOn}），「变异器空转也算失败」这条判据在生效` }
-        : { pass: false, msg: `${label}：变异没落到 ${missedOn} 上（反向证自身失效：脚本里的变异体已与文档/源码脱节）` };
-    }
-    if (c.expectMutateMiss) {
-      OVERLAY.clear();
-      return { pass: false, msg: `${label}：这一例要的就是「变异打不上」，结果打上了——靶子已存在于文档，换一个不存在的靶子` };
-    }
-    // #302：树形用合成树夹具模拟（只影响实物清单与那一个谓词，声明一侧一律不动），跑完必须还原。
-    const simSaved = SIM_TREE_SHAPE;
-    SIM_TREE_SHAPE = shape ?? null;
-    const guidesSaved = SIM_RENAMED_GUIDES;                     // #286 返工 R2：覆盖面缩面的树形口子
-    SIM_RENAMED_GUIDES = new Set(c.simulateRenamedGuides ?? []);
-    const scanCountBefore = LAST_SCAN_DOC_COUNT;
-    let looseDeclSaved = null;                                  // #286 返工 R4：豁免判据的配置口子
-    if (c.simulateLooseDecl) {
-      const target = BARE_LINE_EXEMPTIONS.find((x) => x.doc === c.simulateLooseDecl.doc && x.target === c.simulateLooseDecl.target);
-      if (!target) {
-        OVERLAY.clear(); SIM_RENAMED_GUIDES = guidesSaved; SIM_TREE_SHAPE = simSaved;
-        return { pass: false, msg: `${label}：配置口子没落上（豁免表里找不到 ${c.simulateLooseDecl.doc} / ${c.simulateLooseDecl.target}）` };
-      }
-      looseDeclSaved = [target, target.decl];
-      target.decl = /.*/;
-    }
-    // #337：目录**类别**的配置口子（与 simulateLooseDecl 同一课：overlay 只改文本，改不动运行时那张 Map）。
-    // 用来证「未登记 → 红、登记之后同一目录 → 不再红」这对反向证的两半；跑完必须在 finally 里还原。
-    let dirClassSaved = null;
-    if (c.simulateIgnoreDirClass) {
-      const { pattern } = c.simulateIgnoreDirClass;
-      dirClassSaved = [pattern, IGNORED_DIR_CLASSES.get(pattern) ?? null];
-      IGNORED_DIR_CLASSES.set(pattern, { kind: c.simulateIgnoreDirClass.kind, why: c.simulateIgnoreDirClass.why });
-    }
-    // #391 R4：CLI 旗标放行表的配置口子（与 simulateLooseDecl / simulateIgnoreDirClass 同一课：
-    // overlay 只改文本，改不动运行时那个数组）。放行分支与「空转即红」两条反向证都靠它。
-    const cliExemptSaved = SIM_CLI_FLAG_EXEMPTIONS;
-    if (c.simulateCliFlagExemptions) SIM_CLI_FLAG_EXEMPTIONS = c.simulateCliFlagExemptions;
-    // #511：registry 事实的配置口子（同一课：overlay 只能改文档，改不动「门禁从 registry 读到了什么」）。
-    // 夹具只在**本用例的 run()** 里挂着，跑完在 finally 里还原——一条也不许留在全局。
-    const registrySaved = SIM_REGISTRY;
-    if (c.simulateRegistry) SIM_REGISTRY = c.simulateRegistry;
-    // issue #697：tag 面 / 历史不一致登记表的配置口子（同一课：overlay 只能改文档，改不动
-    // 「门禁从 git 读到了什么」与运行时那张登记表）。默认用夹具，一条也不许留在全局。
-    const tagFactsSaved = SIM_TAG_FACTS;
-    SIM_TAG_FACTS = c.simulateTagFacts ?? tagFixture;
-    const dateExemptSaved = SIM_DATE_TAG_EXEMPTIONS;
-    if (c.simulateDateTagExemptions) SIM_DATE_TAG_EXEMPTIONS = c.simulateDateTagExemptions;
-    // #511：doc-version 放行表的配置口子（证「登记了却没人用 ⇒ 红」那一半）。
-    const docExemptSaved = SIM_DOC_VERSION_EXEMPT;
-    if (c.simulateDocVersionExemptions) SIM_DOC_VERSION_EXEMPT = c.simulateDocVersionExemptions;
-    // #668 ① ③：判据词表的配置口子（同一课：overlay 只能改文档，改不动运行时那份词表）。
-    // 退化证靠它：抽掉 `en-default` 之后同一句谎又变绿 ⇒ 证规则真在判那个词，不是措辞巧合。
-    // 抽的名字必须**真的在表里**（配置口子没落上就算探针失败，不许把 exit 0 当通过）。
-    const wordIdsSaved = SIM_COMPACTION_DROP_WORD_IDS;
-    if (c.simulateCompactionDropWordIds) {
-      const unknown = c.simulateCompactionDropWordIds
-        .filter((id) => !COMPACTION_DEFAULT_WORDS.some((word) => word.id === id));
-      if (unknown.length) {
-        OVERLAY.clear(); SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDES = guidesSaved;
-        return { pass: false, msg: `${label}：配置口子没落上（判据词表里没有 ${unknown.join(", ")}）` };
-      }
-      SIM_COMPACTION_DROP_WORD_IDS = c.simulateCompactionDropWordIds;
-    }
-    // #914：解析面未跟踪实物的配置口子（与 SIM_TREE_SHAPE 同一课：overlay 只改文本，改不动「磁盘上有没有
-    // 那个文件」与「git 清不含它」）。用来造「磁盘有、git 无」的未跟踪产物——正向证它不参与解析（白名单照旧
-    // 放行）、反向证它也不拿实物放行引用。跑完在 finally 里还原，一条也不许留在全局。
-    const untrackedSaved = SIM_UNTRACKED_FILES;
-    SIM_UNTRACKED_FILES = c.simulateUntrackedFiles ?? [];
-    let errs = [];
-    let landing = null;    // #302：夹具有没有真的落上（null = 本例不挂夹具）
-    let afterWhy = null;   // #337：assertAfter 必须在配置口子**还挂着**的时候问（否则临时登记已被还原）
-    try {
-      errs = run();
-      if (shape && LAST_IGN) landing = treeFixtureLanding(LAST_IGN);
-      if (c.assertAfter) afterWhy = c.assertAfter({ errs });
-    } finally {
-      SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDES = guidesSaved;
-      SIM_CLI_FLAG_EXEMPTIONS = cliExemptSaved;   // 放行表一条也不许留在全局
-      SIM_REGISTRY = registrySaved;                // #511：registry 夹具同上
-      SIM_TAG_FACTS = tagFactsSaved;               // #697：tag 面夹具同上
-      SIM_DATE_TAG_EXEMPTIONS = dateExemptSaved;   // #697：登记表口子同上
-      SIM_DOC_VERSION_EXEMPT = docExemptSaved;     // #511：doc-version 放行表同上
-      SIM_COMPACTION_DROP_WORD_IDS = wordIdsSaved; // #668 ① ③：判据词表一条也不许留在全局
-      SIM_UNTRACKED_FILES = untrackedSaved;        // #914：未跟踪实物夹具同上
-      if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
-      if (dirClassSaved) {                                              // 同上：临时登记的类别一条也不许留在表里
-        const [pattern, prev] = dirClassSaved;
-        if (prev) IGNORED_DIR_CLASSES.set(pattern, prev); else IGNORED_DIR_CLASSES.delete(pattern);
-      }
-      OVERLAY.clear();
-    }
-    // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——但判据是**夹具声明与索引是否
-    // 一致**（`treeFixtureLanding`），不是「本机实物掉了几条」（那条在空目录的机器上恒真地误报，#302）。
-    // #286 返工 R2：树形口子也要证「真的落上了」——说要模拟指南改名，覆盖面份数却没变就是没接进 refScanDocs。
-    if (c.simulateRenamedGuides?.length > 0 && LAST_SCAN_DOC_COUNT > 0 && LAST_SCAN_DOC_COUNT === scanCountBefore) {
-      return { pass: false, msg: `${label}：覆盖面树形口子没落上（说要模拟指南改名，但 refScanDocs() 的份数没变）` };
-    }
-    if (landing) return { pass: false, msg: `${label}：树形夹具没落上——${landing}` };
-    // #337：绿只说明「静态分类不再报」，证不到扫描面——这里让用例自己再问一句生产谓词（如
-    // 「这条类别真在 SKIPPED_DIR_KINDS 里」）。返回非空字符串就是失败。
-    if (afterWhy) return { pass: false, msg: `${label}：${afterWhy}` };
-    // issue #697：「未判定」自己就是结论（`TAG_MISSING` ⇒ exit 2，不是红）。
-    if (c.expectNotJudged) {
-      const items = collectChangelogDateErrors.notJudged ?? [];
-      const codes = items.map((x) => x.code);
-      const missedCodes = c.expectNotJudged.filter((code) => !codes.includes(code));
-      if (missedCodes.length) {
-        return { pass: false, msg: `${label}：未判定里没有 ${missedCodes.join(", ")}（实测 ${codes.join(", ") || "空"}）——TAG_MISSING 没被认出来` };
-      }
-      if (errs.length) {
-        return { pass: false, msg: `${label}：这是「未判定」用例，不该红（实测 ${errs.length} 处：${errs.join(" ; ")}）` };
-      }
-      return { pass: true, msg: `${label} → 未判定 ${codes.join(", ")}、0 处红（未判定 ≠ 红）` };
-    }
-    // 退出码只能有一份来源（#575 的纪律）：这一栏读的是主路径用的那个 `docsDriftExitCode`。
-    if (c.expectExit !== undefined) {
-      const notJudged = collectChangelogDateErrors.notJudged ?? [];
-      const code = docsDriftExitCode({ errors: errs, warnings: [], readFailures: [], notJudged, strict: true });
-      if (code !== c.expectExit) {
-        return { pass: false, msg: `${label}：退出码应为 ${c.expectExit}，实测 ${code}（红 ${errs.length} 处 / 未判定 ${notJudged.length} 处）` };
-      }
-    }
-    if (c.expectGreen) {
-      return errs.length
-        ? { pass: false, msg: `${label}：变异之后本该绿（这条是在证「白名单/就地声明真的在放行」），实测 ${errs.length} 处红：\n      ${errs.join("\n      ")}` }
-        : { pass: true, msg: `${label} → 仍然 0 错（放行分支有效，不是恒绿）` };
-    }
-    const missed = (c.expect ?? []).filter((re) => !errs.some((e) => re.test(e)));
-    const missedFiles = (c.expectFiles ?? []).filter((rel) => !errs.some((e) => e.includes(rel)));
-    // #337：红得「对」还不够，还得「没红错地方」——比如把「新增目录规则未登记」报成 `paths:` 的
-    // 「引用了无法裁决的仓库内路径」（#337 的病：人看到红以为是真文档漂移，白排查一轮）。
-    const rejected = (c.reject ?? []).filter((re) => errs.some((e) => re.test(e)));
-    if (!errs.length) return { pass: false, msg: `${label}：改了但没红（锚点仍是 fail-open）` };
-    if (rejected.length) {
-      return { pass: false, msg: `${label}：红了，但报成了不该报的形状（命中 reject：${rejected.map((r) => String(r)).join(" ; ")}）`
-        + `——这一例要的是「点名未登记的目录规则」，不是「文档漂移/无法裁决」那类误报：\n      实测：${errs.join("\n      ")}` };
-    }
-    if (missed.length || missedFiles.length) {
-      return { pass: false, msg: `${label}：红了，但错误信息没点该点的名／没覆盖该覆盖的文件`
-        + `（未命中 ${missed.map((r) => String(r)).join(" ; ") || "—"}${missedFiles.length ? `；未覆盖 ${missedFiles.join(", ")}` : ""}）`
-        + `\n      实测：${errs.join("\n      ")}` };
-    }
-    return { pass: true, msg: `${label} → ${errs.length} 处红（已点名）` };
-  }
-  for (const c of SELF_TEST_CASES) {
-    for (const shape of c.simulateTreeShapes ?? [null]) {
-      const r = execCase(c, shape);
-      if (r.pass) passed.push(r.msg); else failures.push(r.msg);
-    }
-  }
-  console.log(`docs-drift-check --self-test：全部锚点的反向证（改→红、不改→绿、放行分支变异→绿；变异未落上也算失败）`);
-  for (const p of passed) console.log(`  ✓ ${p}`);
-  for (const f of failures) console.log(`  ✗ ${f}`);
-  if (failures.length) {
-    console.log(`docs-drift-check --self-test: 失败 — ${failures.length}/${SELF_TEST_CASES.length + 1} 例未达预期`);
-    process.exit(1);
-  }
-  console.log(`docs-drift-check --self-test: OK — ${SELF_TEST_CASES.length} 例反向证/放行证全部按预期，对照组绿`);
-}
-
-if (SELF_TEST) {
-  runSelfTest();
-  process.exit(0);   // 自测只跑清单/单位类锚点与 package.json 清单那套比较器，不附带跑全部门禁
-}
-
 if (VERBOSE) {
   console.log("docs-drift-check 检查面：");
   for (const c of checked) console.log(`  ✓ ${c}`);
