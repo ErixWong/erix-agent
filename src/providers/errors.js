@@ -11,6 +11,39 @@ const RETRYABLE_NETWORK_CODES = new Set([
 ]);
 const MAX_ERROR_MESSAGE_LENGTH = 500;
 
+// issue #930：上下文超窗在上游**也是 400**，只是 body 里写着超窗字样。命中它们不再塌成
+// 不可重试的 `invalid_request`，而是 `context_window_exceeded`（可压缩后重试一发）。
+//
+// 子串清单来源（**不是凭记忆编**）：与本仓既有同源正则逐字一致——
+// `src/compact/fold-llm.js` 的 `classifyFoldDegradeKind`（摘要器侧早就在用这一套超窗指纹，
+// 归因成 `context_window_exceeded`）。
+//
+// **真机样本**（三处测试各粘了一份原文，另有源码注释记着现场）：
+//   `400 message = input length '16584' is longer than configured context length '16384'`
+//   —— 现场记录在 `src/compact/provider-summarizer.js` 的注释里（#469 真机塌点：一次折叠把
+//   16 584 token 整坨发给摘要器，网关就这么回的）；同样这行 body 出现在
+//   `test/compact/fold-llm-fail-661.test.js` / `fold-llm-ruling-469.test.js` /
+//   `fold-llm-degrade-469.test.js` 的夹具里。
+//
+// `context_length_exceeded` / `maximum context length` 是同族上游（OpenAI/Anthropic）的字样，
+// 与上面那条一起写在同一个既有正则里；`prompt is too long`（Anthropic 文案）**本仓无实测样本**，
+// 因此**不**纳入——不假装有实测。
+//
+// 两处清单必须逐字同源，改一处要同步另一处（`test/loop-context-window-self-heal-930.test.js`
+// 的最后一格钉这件事）。
+const CONTEXT_WINDOW_EXCEEDED_PATTERN = /maximum context length|context_length_exceeded|context window|ContextWindowExceeded|is longer than configured context length|input length|too many tokens/i;
+
+/**
+ * issue #930：判定一段上游错误 body 是否为「上下文超窗」指纹（导出给折叠侧/测试复用，
+ * 与 `fold-llm.js#classifyFoldDegradeKind` 同一把尺子）。
+ *
+ * @param {any} bodyText
+ * @returns {boolean}
+ */
+export function isContextWindowExceededBody(bodyText) {
+  return CONTEXT_WINDOW_EXCEEDED_PATTERN.test(asBodyText(bodyText));
+}
+
 function defaultRetryable(code) {
   return RETRYABLE_CODES.has(code);
 }
@@ -113,7 +146,9 @@ export function classifyHttpError(status, bodyText, opts = {}) {
   } else if (status >= 500 && status <= 599) {
     code = "server";
   } else if (status === 400 || status === 422) {
-    code = "invalid_request";
+    // issue #930：400/422 先看 body 子串。命中超窗指纹 ⇒ `context_window_exceeded`（可重试）；
+    // 其余一律仍为不可重试的 `invalid_request`（不吞别的 400）。
+    code = isContextWindowExceededBody(bodyText) ? "context_window_exceeded" : "invalid_request";
   } else if (status === 404) {
     code = "not_found";
   } else if (status === 409) {
@@ -121,7 +156,9 @@ export function classifyHttpError(status, bodyText, opts = {}) {
   }
 
   return new KitError(code, upstreamErrorMessage(bodyText), {
-    retryable: defaultRetryable(code),
+    // issue #930：`context_window_exceeded` 的 `retryable: true` 只指「压缩后可重试一发」这一件事，
+    // 不改 `RETRYABLE_CODES`（那里是网络/限流/服务错的一族），所以在此处显式置真。
+    retryable: code === "context_window_exceeded" ? true : defaultRetryable(code),
     status,
     ...(opts.phase === undefined ? {} : { phase: opts.phase }),
     ...(opts.elapsedMs === undefined ? {} : { elapsedMs: opts.elapsedMs }),

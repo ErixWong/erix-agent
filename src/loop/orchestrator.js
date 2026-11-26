@@ -260,6 +260,31 @@ export const JUDGE_DONE_GAP_NUDGE_LIMIT = 1;
 export const BUDGET_BELOW_WORKING_SET_REASON = "budget_below_working_set";
 
 /**
+ * issue #930：上游把上下文超窗回成 400（分类后为 `context_window_exceeded`）时，引擎允许的
+ * **有界自恢复次数**。写死为常量并注释，是因为「只给一次」是本单的硬约束：第二次还超窗
+ * 就直接失败，绝不循环——否则会变成「压 → 还超 → 再压」的空转，每圈白烧一发上游请求。
+ * 改这个数 = 改「安全网允许几次重试」这一契约。
+ */
+export const CONTEXT_WINDOW_EXCEEDED_RECOVERY_ATTEMPTS = 1;
+
+/**
+ * issue #930：自恢复那一发强制压缩的目标预算 = 上游窗口（`contextWindowTokens`）的
+ * 这个比例。意思是「必须降到窗口的 X% 以下再重发」：留足安全边（窗口本身、请求开销与摘要
+ * 本身的输出都可能把刚好卡到 100% 的请求再次顶爆）。窗口元数据缺时退回用现有预算乘这个比
+ * 例（见 `compactBeforeRound` 的 `recovery.targetBudgetTokens`）。
+ */
+export const CONTEXT_WINDOW_RECOVERY_BUDGET_RATIO = 0.7;
+
+/**
+ * issue #930：自恢复那一发在账本（`compactionStats`）上的留痕值。**静默自愈是不允许的**：
+ * 宿主必须能从账本上区分「本轮是被上游打回来才压的」与「本轮是预算到了自己折的」。
+ * 同时写两处（同一值）：顶层 `trigger`（内存态 `result.compactionStats` 直读）与
+ * `foldSummary.degradeReason`（过 `createCompactionStat`/`normalizeCompactionStats` 两道重建
+ * 仍保留、能进 `state.json`），因为 `pipeline.js` 不在本单可改范围、不能新增顶层白名单字段。
+ */
+export const CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER = "context_window_exceeded";
+
+/**
  * issue #393 / #394：那条引擎自写的 `tool_result` 正文，**定义**已搬到共享实现
  * `src/loop/pending-tool-result.js`（与结清动作放在一起：正文、构造器、判据三件事实同源）。
  *
@@ -2100,6 +2125,9 @@ export async function runToolLoop(options) {
   //   已迁入 `runLoopState`（issue #177 刀5-E）。
   // `currentTerminationReason` 已迁入 `runLoopState`（issue #177 刀5-E）。
   const compactionStats = [];
+  // issue #930：上游超窗自恢复的**一次性配额**计数器（run 作用域）。上限是
+  // `CONTEXT_WINDOW_EXCEEDED_RECOVERY_ATTEMPTS`（=1）：用过一次后若还超窗 ⇒ 直接失败，不再循环。
+  let contextWindowExceededRecoveries = 0;
   const trimFilesWritten = () => {
     const seen = new Set();
     const kept = [];
@@ -2618,6 +2646,20 @@ export async function runToolLoop(options) {
 
   const recordCompactionStat = (stat, round) => {
     const normalized = createCompactionStat(stat);
+    // issue #930：静默自愈不允许——把“这一发是被上游打回来才压的”写进账本。
+    // 两处同写（同一值）：
+    //   1) 顶层 `trigger`——`result.compactionStats` 内存态直读（`createCompactionStat` 不认未知
+    //      顶层字段，故在归一化后手动补，而不是改 `pipeline.js`）；
+    //   2) `foldSummary.degradeReason`——`createCompactionStat`/`normalizeCompactionStats` 都保留
+    //      这个自由字符串（`pipeline.js` 的既有白名单），因此 `state.json` 重读后仍可见。
+    //      只在这一格本来没有 degradeReason 时写（不覆盖已有的机械降级原因）。
+    if (typeof stat?.trigger === "string" && stat.trigger !== "") {
+      normalized.trigger = stat.trigger;
+      if (typeof normalized.foldSummary?.degradeReason !== "string"
+        || normalized.foldSummary.degradeReason === "") {
+        normalized.foldSummary = { ...(normalized.foldSummary ?? {}), degradeReason: stat.trigger };
+      }
+    }
     compactionStats.push(normalized);
     emitEvent({
       type: "compaction",
@@ -4134,7 +4176,21 @@ export async function runToolLoop(options) {
   // issue #464 A：库层兜底诊断事件的去重标记（每 run 恰好一条，口径同 #182 的
   // `modelMetadataNoticeSent`）。声明在 run 作用域、折叠入口之前，故跨该 run 内所有折叠调用共享。
   let compactionFallbackNoticeSent = false;
-  const compactBeforeRound = async (round = runLoopState.rounds + 1) => {
+  // issue #930：`compactBeforeRound` 需要一个“强制降到窗口 X%”的临时预算覆盖，而 run 作用域的
+  // `budgetTokens` 是 `const`。这里留一个只读别名，供折叠入口在自恢复那一发里用同名局部量
+  // shadow 它（不传 recovery 时局部量逐字等于它 ⇒ 默认行为不变）。
+  const runScopeBudgetTokens = budgetTokens;
+  /**
+   * @param {number} [round]
+   * @param {{ targetBudgetTokens?: number, trigger?: string }|undefined} [recovery]
+   *   issue #930：上游超窗自恢复那一发的强制参数。给了 `targetBudgetTokens` 就把本次折叠的预算
+   *   换成它（必须降到此值以下）；`trigger` 是写进 `compactionStats` 的留痕值（静默自愈不允许）。
+   * @returns {Promise<void>}
+   */
+  const compactBeforeRound = async (round = runLoopState.rounds + 1, recovery = undefined) => {
+    // issue #930：用同名局部量 shadow run 作用域的 `budgetTokens`——不传 recovery 时逐字等于它
+    // （默认路径行为不变），传了就使本函数体内每一处预算判断都改用那个强制目标。
+    const budgetTokens = recovery?.targetBudgetTokens ?? runScopeBudgetTokens;
     normalizeMessages(messages);
     // 每次折叠前清空「引擎自产摘要现场」：只有本次 compact 真的调了摘要器才会重新赋值（#326 wo-C）。
     lastFoldSummaryOutcome = undefined;
@@ -4151,11 +4207,19 @@ export async function runToolLoop(options) {
     // 乘上的只是阈值本身。默认值 `1.0` 是兼容边界，改它属 breaking。
     // 它**只**作用于本地估算这一侧；API usage 那一侧（`isApiInputOverBudget`）的口径不归本单。
     const foldAtRatio = compactionContext?.foldAtRatio ?? 1;
-    const overBudget = budgetTokens !== undefined
-      && (estimatedTokens > budgetTokens * foldAtRatio || isApiInputOverBudget(apiInputTokens, budgetTokens));
-    const strategyRequestsCompaction = configuredStrategy
-      ? await configuredStrategy.shouldCompact(messages, budgetTokens)
-      : false;
+    // issue #930：超窗自恢复那一发是**强制**的——上游已经明确告诉我们装不下了，本地估算
+    // 可能偏乐观，所以不依赖 `overBudget` 自己成立（`recovery` 存在 ⇒ 直接判超）。
+    const overBudget = recovery !== undefined
+      || (budgetTokens !== undefined
+        && (estimatedTokens > budgetTokens * foldAtRatio || isApiInputOverBudget(apiInputTokens, budgetTokens)));
+    // issue #930（#898）：自恢复那一发必须走**已装配的 LLM 折叠策略**，不许退回机械摘要。
+    // 选策略那行（下方）用 `strategyRequestsCompaction` 决定用 `configuredStrategy` 还是机械
+    // `sliding-window` 兑底，所以 recovery 存在时把它强置为真 ⇒ 选中 `configuredStrategy`。
+    const strategyRequestsCompaction = recovery !== undefined
+      ? Boolean(configuredStrategy)
+      : (configuredStrategy
+        ? await configuredStrategy.shouldCompact(messages, budgetTokens)
+        : false);
     let foldedPayload = [];
     // issue #898（#894 的收尾）：安全层逐条删掉的消息**不再并进 `foldedPayload`**。那份只收
     // 折叠层（策略那一发 + 预算兜底那一发）删掉的轮，而 `foldedRoundRange` / `foldedRounds`
@@ -4979,6 +5043,9 @@ export async function runToolLoop(options) {
       };
       recordCompactionStat({
         ...compactionStat,
+        // issue #930：顶层留痕（内存态 `result.compactionStats` 可直读；`createCompactionStat`
+        // 不认未知顶层字段，所以在下面拿到归一化返回后手动补上）。
+        ...(recovery?.trigger === undefined ? {} : { trigger: recovery.trigger }),
         // issue #464 A：写实例上的名字（含库层兜底的 `"sliding-window"`），不是配置项原文。
         // issue #657：而「实例」必须是**真正干了这一折活的那个**——配置策略折 0 轮、预算兜底
         // 替它折了时写兜底实例名（`undefined` ⇒ 不写键，与「无事实 ⇒ 无键」同口径）。
@@ -5661,11 +5728,41 @@ export async function runToolLoop(options) {
     // 本轮是最后一个预算轮时不带 tools，强制输出文本终稿。此时消息历史里所有
     // tool_use 均已配平 tool_result（结果总在下一轮请求前追加），无 tools 请求安全。
     const isFinalBudgetRound = budgetRounds >= governorState.effectiveMaxRounds;
-    let providerResult = await callProvider({
+    // issue #930：一次有界自恢复。上游把上下文超窗回成 400（`context_window_exceeded`）时，
+    // 强制一发有界压缩（预算“必须降到窗口的 X%”）后重试一次。**只给一次**：第二次还超窗
+    // （`contextWindowExceededRecoveries` 已达配额）就直接抛出，交给外层 catch 以 `failed` 收尾。
+    const providerRequestArgs = {
       round,
       omitTools: isFinalBudgetRound,
       requestStateBlock,
-    });
+    };
+    let providerResult;
+    try {
+      providerResult = await callProvider(providerRequestArgs);
+    } catch (error) {
+      if (error?.code !== "context_window_exceeded"
+        || contextWindowExceededRecoveries >= CONTEXT_WINDOW_EXCEEDED_RECOVERY_ATTEMPTS
+        // 没装配折叠策略（`compactionContext?.strategy` 空）时无折可压，#898 也不允许退回机械摘要
+        // ⇒ 不自恢复，直接抛出。
+        || !compactionContext?.strategy) {
+        throw error;
+      }
+      contextWindowExceededRecoveries += 1;
+      // 强制压缩的目标预算：“必须降到上游窗口的 X%”。窗口元数据缺时退回用现有预算乘同一比例。
+      const recoveryWindow = Number.isFinite(metadata?.contextWindowTokens)
+        && metadata.contextWindowTokens > 0
+        ? metadata.contextWindowTokens
+        : budgetTokens;
+      const targetBudgetTokens = recoveryWindow === undefined
+        ? undefined
+        : Math.max(1, Math.floor(recoveryWindow * CONTEXT_WINDOW_RECOVERY_BUDGET_RATIO));
+      await compactBeforeRound(round, {
+        ...(targetBudgetTokens === undefined ? {} : { targetBudgetTokens }),
+        trigger: CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER,
+      });
+      // 重试恰好一次。若重试又抛超窗，下一圈不会进这里（配额已用），直接冒泡到外层 catch。
+      providerResult = await callProvider(providerRequestArgs);
+    }
     let response = providerResult.response;
     let content = blocksFor(response?.content);
 
