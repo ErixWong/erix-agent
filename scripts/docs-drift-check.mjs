@@ -1719,212 +1719,20 @@ function collectMarkerLiteralErrors() {
   return out;
 }
 
-// ── 2.7 `--checkJs` 棘轮**当前值** ↔ 棘轮常量（issue #274，只做最省的那一档）──────
-// 真值 = scripts/type-check-ratchet.mjs 里的两个常量；文档侧 = AGENTS 中英里**复述这两个数**的句式。
-// 本文件**没做**的那两档（代价不对等，写在这里不为完成率造活）：
-//   · 真跑 tsc 核 `--listFiles` 的文件数（「基线 **N** / M files」那一句里的 M）：要 spawn tsc，而
-//     check:docs 是文档门禁里跑得最勤的一条（每次文档改动），为此把 check:docs 变成十秒级不值得。
-//     **这条对账因此不在本文件里**：它住在 `scripts/type-check-ratchet.mjs`（issue #635 ①，常量
-//     `DOC_FILE_COUNT_CLAIMS`）—— 那个脚本本来就已经量出每档的「错误总数 + 带错文件数」，所以那里的对账是
-//     **零额外 tsc 运行**；它逐处判（中英各判各的）、两档各判各的（句子里那个 N 等于哪一档的基线就按哪一档
-//     的实测 M 判），写错了 exit 1 并点名，读不到声称句 exit 2。本文件只校那个 **N**（下面
-//     `BASELINE_CLAIM_RULES` 里 `\d+ files` 那一处只认句式、不认 M），M 全部交给棘轮那一步。
-//     issue #672 又把「带错文件数」的**另外四种形状**接进棘轮（`N of them (M files)` /
-//     `**M of them carrying errors**` / `N 个错（涉 M 个文件）` / `其中 **M 个带错**`）；本文件对它们只做
-//     **句式对账**（两条 `shapeOnly: true` 的规则）：句子在的时候那个 M 照样要对得上棘轮的实测，
-//     而那个 M 的**真值**仍只在棘轮那一步判——不在这里抄第二份。
-//   · 生成声明文件数（63）：那要跑 types:build，同样的理由。
+// ── 2.7（已随 issue #908 R2 删除）`--checkJs` 棘轮当前值 ↔ 指令面文档的复述句 ──────────────
+// 这一族要求 `AGENTS` / `command-reference` / `README` 逐处复述棘轮脚本自己的常数与实测数
+// （`BASELINE_CLAIM_RULES` 判 N，`type-check-ratchet.mjs` 的 `DOC_FILE_COUNT_CLAIMS` 判 M），
+// 并为「复述句式」本身养了一批自测。#908 R2 把它整族删掉：文档抄一个常数只是抄件，
+// 不是判据——**措辞一改就红，行为坏了反而绿**，而它红的时候没有任何人因此少发一个版本。
+// 指令面现在的口径是一句指针（AGENTS §3：基线值去 `scripts/type-check-ratchet.mjs` 里读）。
+// 想把它请回来之前先读 `docs/maintenance/doc-review-pass.md`：这一族该由人读，不该由脚本改文档。
 // 「历史值不误伤」是这规则的命门：AGENTS 里同时存在 142/185/218/226/261 这些**已退役的**基线值
 // （#251/#255/#265 那几段在讲棘轮降下来的过程），所以句式必须钉到「常量名 / 基线词」上，
 // 而不是「抽一个四位数」；#265 那条就把棘轮写成开发中途的 142→138 / 185→181。
 //
-// ── issue #802：这一族**不再要求句子必须存在** ────────────────────────────────────
-// 病根：`required: true` 让每一条规则变成「这句散文必须在，且必须长成这个句式」。它抓的永远是「有人改了
-// 措辞」，永远抓不到「行为坏了」，代价是任何正当的文档改写都要先把措辞凑回正则（261109 指令面瘦身实测
-// 来回 6 轮全撞在这上面）。判据的方向应当只有一条：**句子存在时，它的数字必须等于真值**。
-// 所以：① 规则表里没有 `required` 字段；② 一条规则在某份文档里一处都不命中 ⇒ 只记一条 note，不红；
-// ③ 中英**处数相等**（`assertPairCensus`）这一族也不再适用于 baseline——那是散文警察，不是真值对账。
-const BASELINE_CLAIM_RULES = [
-  {
-    id: "常量写法 `BASELINE_ROOT = N`",
-    tier: "root",
-    claims: [
-      { rel: AGENTS_EN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
-      { rel: AGENTS_CN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
-      { rel: CMDREF_EN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
-      { rel: CMDREF_CN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
-    ],
-  },
-  {
-    id: "「基线常量 / baseline constant」声明",
-    tier: "root",
-    claims: [
-      { rel: AGENTS_EN, re: /baseline constant\s*\*\*(\d+)\*\*/g },
-      { rel: AGENTS_CN, re: /基线常量\s*\*\*(\d+)\*\*/g },
-      { rel: CMDREF_EN, re: /baseline constant\s*\*\*(\d+)\*\*/g },
-      { rel: CMDREF_CN, re: /基线常量\s*\*\*(\d+)\*\*/g },
-    ],
-  },
-  {
-    id: "「已接受的债 N 个错」声明",
-    tier: "root",
-    claims: [
-      { rel: AGENTS_EN, re: /errors — (\d+) of them/g },
-      { rel: AGENTS_CN, re: /——(\d+) 个错/g },
-      { rel: CMDREF_EN, re: /errors — (\d+) of them/g },
-      { rel: CMDREF_CN, re: /——(\d+) 个错/g },
-    ],
-  },
-  {
-    id: "「公共面 93 里的总数」声明",
-    tier: "root",
-    claims: [
-      { rel: AGENTS_EN, re: /\d+ of the (\d+)/g },
-      { rel: AGENTS_CN, re: /(\d+) 个里有/g },
-      { rel: CMDREF_EN, re: /\d+ of the (\d+)/g },
-      { rel: CMDREF_CN, re: /(\d+) 个里有/g },
-    ],
-  },
-  {
-    id: "「无 `.d.ts` 时的错误数」声明",
-    tier: "root",
-    claims: [
-      { rel: AGENTS_EN, re: /\*\*(\d+) errors?\*\*\s+with\s+none\s+present/g },
-      { rel: AGENTS_CN, re: /无\s*`\.d\.ts`\s*=\s*(\d+)\s*个错/g },
-      { rel: CMDREF_EN, re: /\*\*(\d+) errors?\*\*\s+with\s+none\s+present/g },
-      { rel: CMDREF_CN, re: /无\s*`\.d\.ts`\s*=\s*(\d+)\s*个错/g },
-    ],
-  },
-  {
-    id: "并集基线的分解式 `= A + B + C`",
-    tier: "sum",
-    claims: [
-      { rel: AGENTS_EN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
-      { rel: AGENTS_CN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
-      { rel: CMDREF_EN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
-      { rel: CMDREF_CN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
-    ],
-  },
-  {
-    // issue #630 S2（J）：文件数从写死的 `30 files` 改成 `\d+ files`。写死一个数字就是一枚哑弹：
-    // 文件数一变（这一轮 30 → 29，`src/reflection/wrapup.js` 归零退出带错文件集），句式就整条
-    // 匹配不上 ⇒ 那条规则（当时要求必现）让它变红得莫名其妙，而把它改成新数字又只是把哑弹往后推一格。
-    // 这里只校**基线那个数**；M 由 `scripts/type-check-ratchet.mjs` 逐处对（issue #635 ①，常量
-    // `DOC_FILE_COUNT_CLAIMS`）——那条对账零额外 tsc 运行，理由见本文件 2.7 节。
-    id: "「基线 **N** / M 个文件」声明",
-    tier: "withTools",
-    claims: [
-      { rel: AGENTS_EN, re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*\d+\s*files/g },
-      { rel: AGENTS_CN, re: /基线\s*\*\*(\d+)\*\*\s*\/\s*\d+\s*个文件/g },
-      { rel: CMDREF_EN, re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*\d+\s*files/g },
-      { rel: CMDREF_CN, re: /基线\s*\*\*(\d+)\*\*\s*\/\s*\d+\s*个文件/g },
-    ],
-  },
-  {
-    // 当前文档里没这种写法（两侧都是 0 处）；出现了就必须对。
-    id: "常量写法 `BASELINE_WITH_TOOLS = N`",
-    tier: "withTools",
-    claims: [
-      { rel: AGENTS_EN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
-      { rel: AGENTS_CN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
-      { rel: CMDREF_EN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
-      { rel: CMDREF_CN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
-    ],
-  },
-  // ── issue #672：两族「M 个文件」现状声称的**句式对账**（真值不在这里，在棘轮那一步）────────
-  // 这两条只干一件事：句子在的时候，那个 M 由 `scripts/type-check-ratchet.mjs` 的
-  // `DOC_FILE_COUNT_CLAIMS`（#635 ① / #672）逐处对实测。句子不在 ⇒ 不红（issue #802）。
-  // 所以这里 `shapeOnly: true`：**不**把捕获组拿去和基线常量比（M 不是 N，比了就是拿错东西判）。
-  // `tier: "shape"` 是个不参与 `wantOf()` 的占位，看代码的人一眼能看出它不是档位。
-  // 句式本身（与棘轮那边逐字同形）：`(M files)` 必须紧跟在 `N of them` 后面、`**M of them carrying errors**`
-  // 必须整段加粗；中文侧是 `个错（涉 M 个文件）` 与 `其中 **M 个带错**`。历史值（`the other 27
-  // error-carrying files` / `其余 27 个带错文件` / `142 / 185` 那一族）不落进这两个句式。
-  {
-    id: "「N of them (M files) / N 个错（涉 M 个文件）」声明",
-    tier: "shape",
-    shapeOnly: true,
-    claims: [
-      { rel: AGENTS_EN, re: /\d+\s+of them\s*\((\d+)\s+files\)/g },
-      { rel: AGENTS_CN, re: /\d+\s*个错（涉\s*(\d+)\s*个文件）/g },
-    ],
-  },
-  {
-    id: "「**M of them carrying errors** / 其中 **M 个带错**」声明",
-    tier: "shape",
-    shapeOnly: true,
-    claims: [
-      { rel: AGENTS_EN, re: /\*\*(\d+) of them carrying errors\*\*/g },
-      { rel: AGENTS_CN, re: /其中\s*\*\*(\d+)\s*个带错\*\*/g },
-    ],
-  },
-];
 
 /** 从棘轮脚本里抽两个基线常量（抽不到就是检查面失效，#164 口径）。 */
-function ratchetBaselines(srcText) {
-  const root = srcText.match(/^\s*const BASELINE_ROOT = (\d+);/m)?.[1];
-  const withTools = srcText.match(/^\s*const BASELINE_WITH_TOOLS = (\d+);/m)?.[1];
-  return { root, withTools };
-}
 
-function collectBaselineClaimErrors() {
-  const out = [];
-  const notes = [];
-  const truth = ratchetBaselines(textOf(RATCHET_SRC));
-  if (!truth.root || !truth.withTools) {
-    return [`baseline: 在 ${RATCHET_SRC} 里抽不到 BASELINE_ROOT / BASELINE_WITH_TOOLS 常量——`
-      + `棘轮改名或改写法了，本规则会静默失效，请同步这里（#164：抽不到真值就报错）`];
-  }
-  if (Number(truth.root) > Number(truth.withTools)) {
-    out.push(`baseline: ${RATCHET_SRC} 自己的两个常量就不自洽：BASELINE_ROOT ${truth.root} > BASELINE_WITH_TOOLS ${truth.withTools}`);
-  }
-  const wantOf = (tier) => (tier === "root" ? truth.root : tier === "withTools" ? truth.withTools : null);
-  const nameOf = (tier) => (tier === "sum" ? null : tier === "root" ? "BASELINE_ROOT" : "BASELINE_WITH_TOOLS");
-  let total = 0;
-  const missing = [];
-  for (const rule of BASELINE_CLAIM_RULES) {
-    const counts = {};
-    for (const { rel, re } of rule.claims) {
-      const src = textOf(rel);
-      const m = [...src.matchAll(new RegExp(re.source, re.flags))];
-      counts[rel] = m.length;
-      if (!m.length) {
-        // issue #802：句子不在 ⇒ **不红**（只留一条 note）。判据只管「句子在的时候数字对不对」。
-        missing.push(`${rel}/${rule.id}`);
-        continue;
-      }
-      for (const c of m) {
-        total += 1;
-        const at = `${rel}:${lineOf(src, c.index)}`;
-        // `shapeOnly`（issue #672）：只数处数、不判那个数。M（带错文件数）的真值不在这里——
-        // 它要跑 tsc 才拿得到，所以由 `scripts/type-check-ratchet.mjs` 的 `DOC_FILE_COUNT_CLAIMS` 逐处对；
-        // 拿 `c[1]` 去和基线常量比就是拿错东西判（M ≠ N），比了只会得到一条永远红的假判据。
-        const why = rule.shapeOnly
-          ? null
-          : rule.tier === "sum"
-            ? (() => {
-              const [a, b, cc] = c.slice(1).map(Number);
-              if (a !== Number(truth.root)) return `首项 \`${a}\` 应等于 ${RATCHET_SRC} 的 BASELINE_ROOT（${truth.root}）`;
-              if (a + b + cc !== Number(truth.withTools)) return `分解式 ${a} + ${b} + ${cc} = ${a + b + cc}，不等于 BASELINE_WITH_TOOLS（${truth.withTools}）`;
-              return null;
-            })()
-            : (c[1] === wantOf(rule.tier) ? null : `声称 ${c[1]}，但 ${RATCHET_SRC} 的 ${nameOf(rule.tier)} 是 ${wantOf(rule.tier)}`);
-        if (why) {
-          out.push(`baseline/${rule.id}: ${at} ${why}。\n      棘轮基线的唯一真值在 ${RATCHET_SRC}：改常量就要同时改文档，`
-            + `改文档就只能改成常量那个值（历史值 142/185/218/226/261 属于「已降下来」的叙述，不该出现在这些当前值句式里）；`
-            + `\n      「${snippetOf(src, c.index)}」`);
-        }
-      }
-    }
-    // issue #802：这里**不再**做中英处数普查（`assertPairCensus`）。那条判据只能抓「有人单边删了一句散文」，
-    // 抓不到任何行为问题，代价却是每一次正当改写都要把两侧句数凑平。
-  }
-  notes.push(`baseline: 指令面与冷层共 ${total} 处现值声明（含分解式算术闭合与 #672 的句式对账）——`
-    + `凡是出现的数全部等于 ${RATCHET_SRC} 的 BASELINE_ROOT=${truth.root} / BASELINE_WITH_TOOLS=${truth.withTools}；`
-    + "#672 那两族的 M 由 `scripts/type-check-ratchet.mjs` 对实测"
-    + (missing.length ? `；未出现的声称（不判红，issue #802）：${missing.join(", ")}` : "；每条规则都至少命中一处"));
-  collectBaselineClaimErrors.notes = notes;
-  return out;
-}
 
 // ── 2.8 锚点粒度升级（issue #286 T-a：B 方案第一批 = 符号锚点 + 裸行号棘轮）─────────
 // 病根（#286，已确证，不重新论证）：`paths` 那条锚点在解析 `path:line` 引用时**主动剥掉行号**
@@ -2582,7 +2390,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  「✓ symbol-anchor: 实测 243 组 > 下限 242 组——符号锚点在变多（好方向），请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 243，否则下限就在空转」
  *  ⇒ 抬到它现报的那个数，**不在旧值上做加法**：242 是主干 `4f9b908` 的值（`git show 4f9b908:scripts/docs-drift-check.mjs` 可复核），
  *  243 是扇描器在这棵树上现报的。同批把**现值声称**一起抬：`AGENTS.md` / `AGENTS_cn.md` 各一处（`test/static-guards.test.js`
- *  规则 4 拿脚本真值校这两处，中英必须同值）、`docs/maintenance/command-reference.md` / `_cn.md` 各一处（同是现值句）。
+ *  中英必须同值；而现在**没人机器校这两处**——`static-guards` 的规则 4 已随 #908 R2 删除）、`docs/maintenance/command-reference.md` / `_cn.md` 各一处（同是现值句）。
  *  为什么不能只做这一半：下限停在 242 时，下面那例「把中英契约的 `defaultSleep` 退化成裸行号」退化完恰好是
  *  242 组 = 下限 ⇒ 不红 ⇒ 那例等的那条红根本不出现（CI 上报的就是这个，不是断言太严）。
  *  抬底记录（工单 261116-05「棘轮收尾」，量在本分支工作树，
@@ -3978,7 +3786,7 @@ function liveDocFace() {
 /**
  * 登记过的 (文档, 层) 组合：**必须命中至少一次**。删掉整句声明 = 检查面在这份文档失效 ⇒ 红
  * （#210 那族「句子被删也要红」的口径）。⚠ 这个口径对**契约/README 的默认值声称**成立，
- * 对 `BASELINE_CLAIM_RULES` 那族已不成立（issue #802：指令面上的数字声称改成「出现才对账」）。
+ * 对指令面上的数字声称那族已不成立（issue #802；那一族本身又随 #908 R2 删除，改成「出现才对账」）。
  */
 const COMPACTION_CLAIM_REQUIRED = Object.freeze([
   { doc: CONTRACT_EN, layer: "library" },
@@ -7738,7 +7546,7 @@ function replaceSurfaceBullet(prefix, build) {
 
 function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
-    ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
+    ...collectMarkerLiteralErrors(),
     ...collectSymbolAnchorErrors(), ...collectSymbolShapeErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors(),
     // #772 R2 M2：标记区内容的正向不变量（只许包住那张表）
     ...cellAxesRegionContentErrors(),
@@ -7819,8 +7627,6 @@ const NOT_JUDGED = collectChangelogDateErrors.notJudged ?? [];
 const READ_FAILURES = collectUnchangedSurfaceErrors.readFailures ?? [];
 for (const e of collectMarkerLiteralErrors()) err(e);
 for (const n of collectMarkerLiteralErrors.notes ?? []) note(n);
-for (const e of collectBaselineClaimErrors()) err(e);
-for (const n of collectBaselineClaimErrors.notes ?? []) note(n);
 const pkgBlock = checkPkgBlocks();
 pkgBlock.errors.forEach((e) => err(e));
 pkgBlock.warnings.forEach((w) => warn(w));
@@ -7884,23 +7690,6 @@ function injectRangeAnchor(mutate) {
     : `${text}\n\n自测夹具（#621，只在 --self-test 的内存副本里）：下面这条区间引用是这一例的变异靶子，不依赖契约现存哪句原文。\n\n${mutated}\n`);
 }
 
-// 棘轮两档的当前真值**现读**棘轮脚本，不写死（issue #292 踩到的坑）：下面 5 条 baseline 反向证的变异串
-// 原先硬编码 121 / 164，基线一降到 119 / 162 就全部变成空操作，而 #210 R2 把「变异没打上」判成红 ——
-// 于是「下调常量 + 同步文档」这笔完全正常的提交会打红 5 条反向证。现读之后，以后再降基线不必回来改这里。
-const RATCHET_TRUTH = ratchetBaselines(textOf(RATCHET_SRC));
-const B_ROOT = Number(RATCHET_TRUTH.root);
-const B_WT = Number(RATCHET_TRUTH.withTools);
-// 并集分解式的两个分项（`= 117 + 23 + 16` 里的 23 与 16）也**现读** AGENTS，不写死：它们不是常量（真值没有
-// 单一脚本可抽），但「写死就会在下一次下调时变成空操作」是同一条病——#292 的 5 条硬编码 121/164 之后，
-// #362 又把 27 写死在这里（160 → 156 那笔），于是两条反向证立刻变成「变异没落上」的假红。抽不到 → 变异打不上
-// → `expectMutateMiss` 那条判据照样红（fail-closed，不给静默放行留门）。
-const B_SPLIT = (() => {
-  for (const rel of [AGENTS_EN, AGENTS_CN]) {
-    const m = textOf(rel).match(/= (\d+) \+ (\d+) \+ (\d+)/);
-    if (m && Number(m[1]) === B_ROOT) return { b: Number(m[2]), c: Number(m[3]) };
-  }
-  return { b: NaN, c: NaN };
-})();
 
 /**
  * #677 自测用的「套件清单」行：**从零构造**，不抄文档原话。
@@ -8784,63 +8573,6 @@ const SELF_TEST_CASES = [
     overlay: { "src/tool-fact.js": (t) => t.replace('duration: "erix.durationMs",', 'duration: "erix.elapsedMs",') },
     expect: [/常量里的别名是 `erix\.elapsedMs`/],
     expectFiles: [CONTRACT_EN, CONTRACT_CN],
-  },
-
-  // —— baseline：AGENTS 的棘轮当前值 ↔ 棘轮常量（issue #274）——
-  {
-    label: `AGENTS EN 把基线写成 142（#265 当年留在 CHANGELOG 的那种开发中途值）（修前 exit 0）`,
-    overlay: { [AGENTS_EN]: (t) => t.replace(`baseline constant **${B_ROOT}**`, "baseline constant **142**") },
-    expect: [new RegExp(`baseline\\/「基线常量 \\/ baseline constant」声明: AGENTS\\.md:\\d+ 声称 142，但 scripts\\/type-check-ratchet\\.mjs 的 BASELINE_ROOT 是 ${B_ROOT}`)],
-    expectFiles: [AGENTS_EN],
-  },
-  {
-    label: `AGENTS CN 把常量写法写成 ${B_ROOT - 1} → 点名 AGENTS_cn.md`,
-    overlay: { [AGENTS_CN]: (t) => t.replace(`BASELINE_ROOT = ${B_ROOT}`, `BASELINE_ROOT = ${B_ROOT - 1}`) },
-    expect: [new RegExp(`baseline\\/常量写法 \`BASELINE_ROOT = N\`: AGENTS_cn\\.md:\\d+ 声称 ${B_ROOT - 1}，但 .* BASELINE_ROOT 是 ${B_ROOT}`)],
-    expectFiles: [AGENTS_CN],
-  },
-  {
-    label: `command-reference EN 把棘轮值写错 → 点名冷层文档行`,
-    overlay: { [CMDREF_EN]: (t) => t.replace(`BASELINE_ROOT = ${B_ROOT}`, `BASELINE_ROOT = ${B_ROOT - 1}`) },
-    expect: [new RegExp(`baseline\\/常量写法 .*docs\\/maintenance\\/command-reference\\.md:\\d+ 声称 ${B_ROOT - 1}，但 .* BASELINE_ROOT 是 ${B_ROOT}`)],
-    expectFiles: [CMDREF_EN],
-  },
-  {
-    label: "棘轮常量自己降 1 → 中英两侧的当前值句式全红",
-    overlay: { [RATCHET_SRC]: (t) => t.replace(`const BASELINE_ROOT = ${B_ROOT};`, `const BASELINE_ROOT = ${B_ROOT - 1};`) },
-    expect: [new RegExp(`BASELINE_ROOT 是 ${B_ROOT - 1}`)],
-    expectFiles: [AGENTS_EN, AGENTS_CN],
-  },
-  {
-    label: `CN 的分解式写成 ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c - 1} → 算术不闭合就红`,
-    overlay: { [AGENTS_CN]: (t) => t.replace(`= ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c}`, `= ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c - 1}`) },
-    expect: [new RegExp(`分解式 ${B_ROOT} \\+ ${B_SPLIT.b} \\+ ${B_SPLIT.c - 1} = ${B_ROOT + B_SPLIT.b + B_SPLIT.c - 1}，不等于 BASELINE_WITH_TOOLS（${B_WT}）`)],
-    expectFiles: [AGENTS_CN],
-  },
-  {
-    // issue #802：原来这一例证的是「中英句式处数必须相等」，而那条判据已经按「散文警察」被删掉了。
-    // 现在它证的是**新的契约**：某份文档里这条句式一处都不剩 ⇒ 绿（不是「没人看见」，而是「不存在就没得对账」），
-    // 与上两例（句子在、数写错 ⇒ 红）配成一对，保证这次放宽没有把「出现就必须对」一起放宽掉。
-    // 靶子用**全局**替换把 AGENTS.md 里这条句式的命中清零（只删一处时，剩下那处仍然对得上 ⇒ 绿，
-    // 那样这一例就证不到「零命中 ⇒ 绿」）。
-    label: "AGENTS.md 里这条句式一处不剩 ⇒ 绿（#802：不存在就没得对账，但存在的必须对）",
-    overlay: { [AGENTS_EN]: (t) => t.replace(/baseline \*\*\d+\*\* \/ \d+ files/g, "baseline spread over some files") },
-    expectGreen: true,
-  },
-  {
-    label: "历史值不被误伤（对照）：CN 叙述里的退役基线 142 / 185 改成 143 / 185 必须仍然绿",
-    // 靶子换过两次（issue #650 / #802）：原来钉的是「**无 `.d.ts` 在场 = 142 个错**」（B 类抄件，
-    // 清账时按「命令自己打印」改写了），#650 换成同一份文档里退役基线叙述；261109 指令面瘦身后
-    // 那串数字仍在（「实测 142 / 185 / 218 / 226 / 261」），所以靶子只跟着措辞换。变异没落上仍然算失败。
-    overlay: { [AGENTS_CN]: (t) => t.replace("实测 142 / 185 / 218 / 226 / 261", "实测 143 / 185 / 218 / 226 / 261") },
-    expectGreen: true,
-  },
-  {
-    label: "AGENTS 中英标题骨架缺一边（#274 附带项：AGENTS 也纳入骨架对账）",
-    overlay: { [AGENTS_CN]: (t) => t.replace("## 3. 开发命令", "#### 3. 开发命令") },
-    // 变异必须只落在 CN 一侧（EN 写的是 "3. Development commands"）：两边都有的标题字串拿去变异会同时
-    // 改掉两份文档，骨架差异被抹平 → 反向证自身失效（#274）。
-    expect: [/skeleton: 中英 AGENTS/],
   },
 
   // —— 符号锚点与裸行号棘轮（issue #286 T-a：R1/R2/R3 的反向证，#210 R2 口径四条齐全）——
@@ -9824,14 +9556,8 @@ const SELF_TEST_CASES = [
     simulateRegistry: selfTestRegistry(),
     expect: [new RegExp(`guide-coverage: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
   },
-  // ══ issue #635 ①（261122 裁决后改写）：份数声称**只报不判** ══════════════════════
-  // 旧的三例断言「数字不符 ⇒ 红」。那三例守的是「闸自己的覆盖面必须被文档复述」——自指类判据。
-  // 现在改成两例：**数字被改错仍然绿**（不再收税），且提示里确实把实测摆出来（信息没丢）。
-  {
-    label: "#635 ①（改写）：把中文 README 那句份数声称整句删掉 ⇒ **仍然绿**（删句子不再是「逃逸」，因为它本就不该是判据）",
-    overlay: { [README_CN]: (t) => t.replace(`（当前 ${REF_SCAN_TRUTH.guides} 份，按目录实扫）`, "") },
-    expectGreen: true,
-  },
+  // #908 R2：这族「闸自己的覆盖面必须被文档复述」的自指判据整体作废——README 里那句份数
+  // 声称已随 #908 删除，靶子不复存在；覆盖面本身仍由 collectRefScanCoverageErrors 现扫判。
   // ══ issue #677：契约「套件清单」的 unknownSlot 形态（§2.12）════════════════════════════
   // 这一族的靶子**自包含**：行按「小节标题 + 行首键」定位，替换文本由 `suiteInventoryRowLine` 从零构造
   // （不抄文档原话），于是文档将来怎么改写都不会让变异体与文档脱节。七格各钉一侧：
