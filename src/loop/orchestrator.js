@@ -5737,7 +5737,13 @@ export async function runToolLoop(options) {
       // 强制一发压缩——**复用既有折叠入口**：不传任何预算覆盖，让它按 run 作用域 `budgetTokens`
       // 自己折。`trigger` 只是账本留痕（静默自愈不允许）。（旧写法这里传一个「窗口 × 0.7」的
       // `targetBudgetTokens`，已删：没有实测依据，还可能比刚被上游拒掉的预算更大 ⇒ 压了等于没压。）
-      await compactBeforeRound(round, { trigger: CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER });
+      // **P4：必须拿压缩返回的那份 `requestStateBlock` 重建请求**。正常路径本来就用 `compactBeforeRound`
+      // 的返回值（见上方 `let requestStateBlock = compaction.requestStateBlock`）；自恢复分支过去把它
+      // 丢了、拿旧 `providerRequestArgs` 重试 ⇒ 压缩后的正文配**压缩前**的 run-state 块（自相矛盾）。
+      // 这里复用**同一份** args 对象（正常路径装配的那一份），只把 `requestStateBlock` 换成压缩返回的。
+      const recovery = await compactBeforeRound(round, { trigger: CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER });
+      requestStateBlock = recovery.requestStateBlock;
+      providerRequestArgs.requestStateBlock = requestStateBlock;
       // 重试恰好一次。若重试又抛超窗，下一圈不会进这里（配额已用），直接冒泡到外层 catch。
       providerResult = await callProvider(providerRequestArgs);
     }

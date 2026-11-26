@@ -218,6 +218,39 @@ test("P3 自恢复那一发压缩复用既有折叠预算（不是「窗口×0.7
   assert.notEqual(strategy.tally.compactBudget, Math.floor(4096 * 0.7), "不得是旧发明的窗口×0.7 目标（2867）");
 });
 
+// —— P4：自恢复重试那一发的 run-state 块必须来自压缩之后 ——
+// 旧写法把 `compactBeforeRound` 的返回值丢了、拿旧 `providerRequestArgs` 重试 ⇒ 重试那一发带的
+// 还是**压缩前**那份 run-state 块（与已压过的 messages 自相矛盾）。这里用 lowBudget 注入（maxRounds=3）
+// 让压前那一发带上一份 channel-B run-state 块，再断重试那一发不得再带那份压前的块。
+// 反向证：改回旧写法（丢返回值、复用旧 args）⇒ 重试那一发会带上与压前逐字相同的块 ⇒ 本格红。
+test("P4 自恢复重试那一发不得带压缩前的 run-state 块（必须来自压缩之后）", async () => {
+  const strategy = createCountingStrategy();
+  const provider = createFakeProvider([
+    { throw: cwError(400) },
+    { content: [{ type: "text", text: "压缩后重试成功" }], stopReason: "end_turn" },
+  ]);
+  const options = baseOptions(strategy);
+  options.provider = provider;
+  // maxRounds=3 让第 1 轮触发 lowBudget 注入 ⇒ 压前那一发请求带一份 channel-B run-state 块（不带则本格空转）。
+  options.config.run = { ...options.config.run, maxRounds: 3 };
+
+  await runDirect(options);
+
+  assert.equal(strategy.tally.compact, 1, "恰好一次自恢复压缩");
+  assert.equal(provider.requests.length, 2, "首发 400 + 压缩后重试一发");
+  // 从一发请求里抽出 run-state 块正文（带 `[run state` 标记的文本块）。
+  const blockOf = (req) => (req.messages ?? [])
+    .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+    .map((b) => b?.text)
+    .filter((t) => typeof t === "string" && t.includes("[run state"))
+    .join("\n");
+  const pre = blockOf(provider.requests[0]);
+  const post = blockOf(provider.requests[1]);
+  assert.ok(pre.includes("[run state"), "前置：压前那一发必须带一份 run-state 块（否则无法证泄漏）");
+  // 压前那份块不得原样出现在重试那一发里——重试必须用压缩返回的 requestStateBlock。
+  assert.ok(!post.includes(pre), "重试那一发不得带压缩前的 run-state 块（必须来自压缩之后）");
+});
+
 // —— ③ 连续两次 400 超窗 ⇒ 不再尝试第三次 ⇒ run failed 并点名超窗 ——
 test("③ 连续两次 400 超窗 ⇒ 只自恢复一次、不再重试第三次 ⇒ failed 点名超窗", async () => {
   const strategy = createCountingStrategy();
