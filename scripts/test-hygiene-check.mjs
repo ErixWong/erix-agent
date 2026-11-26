@@ -129,8 +129,11 @@ function scanTree() {
 // ─────────────────────────────── --self-test（issue #374） ───────────────────────────────
 // 假文件集合：基线是一份**干净**的假测试文件（只有 makeTmp）。每条用例靠**字符串变异**把它变成要考
 // 的形状，或者直接给一份别的假文件。变异打不上（靶串 / 靶文件不在假文件里）按 #210 R2 判**失败**。
-// 下限只许涨不许降：工单 #374 的下限是 6 格（①…⑥），这里是当前实测值。
-const MIN_SELF_TEST_CASES = 13;
+// 反向证的「在场」判据（#923 ②：替换旧的 MIN_SELF_TEST_CASES 魔数地板）。
+// 旧地板按「总例数 < N」判红，代价实测过：正常增删自测被迫去刷那个魔数（删夹具 23→16、删接线例盯着 99）
+// ——每次改自测都改一个数 = 税。改成结构判据：**每条登记过的判据 id（见上面 RULES）必须至少有一例反向证
+// 在场**；某个 id 在 SELF_TEST_CASES 里一例都没有 ⇒ 红并点名它。总例数、每条 id 有几例，都不判。
+const SELF_TEST_RULE_IDS = RULES.map((r) => r.id);   // 判据 id 清单（不是例数）
 
 const FAKE_TEST_FILE = "test/zz-selftest-fake.test.js";
 const FAKE_HELPER_FILE = EXEMPT_FILE;   // test/helpers/tmp.js —— 规则 B 的唯一豁免文件
@@ -165,6 +168,7 @@ function applyMutation(records, mutate) {
 
 const SELF_TEST_CASES = [
   {
+    rule: "bare-mkdtemp",
     label: "① mkdtempSync(join(tmpdir(), …)) ⇒ 红（规则 B 的 Sync 变体）",
     files: [{ rel: FAKE_TEST_FILE, text: fakeTestFile() }],
     mutate: { rel: FAKE_TEST_FILE, from: FAKE_LINE, to: '  const dir = mkdtempSync(join(tmpdir(), "zz-"));' },
@@ -172,6 +176,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "bare-mkdtemp",
     label: "② 非 Sync 的 mkdtemp( ⇒ 红（旧 hint 漏的那一格）",
     files: [{ rel: FAKE_TEST_FILE, text: fakeTestFile() }],
     mutate: { rel: FAKE_TEST_FILE, from: FAKE_LINE, to: '  const dir = mkdtemp(join(tmpdir(), "zz-"));' },
@@ -179,6 +184,7 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "bare-mkdtemp",
     label: "②b fs.mkdtemp( 前缀变体 ⇒ 红（同一个规则，别让它从缝里漏过去）",
     files: [{ rel: FAKE_TEST_FILE, text: fakeTestFile() }],
     mutate: { rel: FAKE_TEST_FILE, from: FAKE_LINE, to: '  const dir = fs.mkdtemp(join(tmpdir(), "zz-"));' },
@@ -186,11 +192,13 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    rule: "bare-mkdtemp",
     label: "③ makeTmp(…) ⇒ 绿（唯一正解；基线假文件本身就是这个形状）",
     files: [{ rel: FAKE_TEST_FILE, text: fakeTestFile() }],
     expectGreen: true,
   },
   {
+    rule: "bare-mkdtemp",
     label: "④a 豁免注释 `// test-hygiene-exempt: <理由>` 紧邻上一行 ⇒ 绿，且守卫把豁免与理由一起记下来",
     files: [{ rel: FAKE_TEST_FILE, text: fakeTestFile() }],
     mutate: {
@@ -202,6 +210,7 @@ const SELF_TEST_CASES = [
     expectExemptions: [/^test\/zz-selftest-fake\.test\.js:6: 文件级生命周期需要目录留在 cwd 下$/u],
   },
   {
+    rule: "bare-mkdtemp",
     label: "④b 豁免注释缺理由（只写标记）⇒ 红且点名行号，调用点也不放行",
     files: [{ rel: FAKE_TEST_FILE, text: fakeTestFile() }],
     mutate: {
@@ -216,35 +225,41 @@ const SELF_TEST_CASES = [
     expectCount: 2,
   },
   {
+    rule: "bare-mkdtemp",
     label: "⑤ helper 自己（test/helpers/tmp.js）⇒ 不计数（豁免文件不是「规则失效」）",
     files: [{ rel: FAKE_HELPER_FILE, text: 'const probe = await mkdtemp(join(base, "erix-probe-"));\n' }],
     expectGreen: true,
   },
   {
+    rule: "bare-mkdtemp",
     label: "⑤ 对照：同一段 mkdtemp 文本换个文件名（test/zz-selftest-other.test.js）⇒ 必须红——证明 ⑤ 的绿来自豁免文件，不是整条规则失效",
     files: [{ rel: "test/zz-selftest-other.test.js", text: 'const probe = await mkdtemp(join(base, "erix-probe-"));\n' }],
     expect: [/^FAIL bare-mkdtemp: test\/zz-selftest-other\.test\.js:1: /u],
     expectCount: 1,
   },
   {
+    rule: "bare-mkdtemp",
     label: "⑥ 变异器空转证：靶串（mkdtempSync 调用）不在假文件里 ⇒ 自测判「变异没落上」，不许假绿（#210 R2）",
     files: [{ rel: FAKE_TEST_FILE, text: fakeTestFile() }],
     mutate: { rel: FAKE_TEST_FILE, from: 'mkdtempSync(join(tmpdir(), "zz-"))', to: "makeTmp()" },
     expectMutateMiss: true,
   },
   {
+    rule: "join-tmp-literal",
     label: "A1 join(\"/tmp\", …) ⇒ 红（规则 A：join 首参是 /tmp 字面量）",
     files: [{ rel: FAKE_TEST_FILE, text: 'const p = join("/tmp", "zz");\n' }],
     expect: [/^FAIL join-tmp-literal: test\/zz-selftest-fake\.test\.js:1: /u],
     expectCount: 1,
   },
   {
+    rule: "fs-arg-tmp-literal",
     label: "A2 readFileSync(\"/tmp/…\") ⇒ 红（规则 A：fs 调用首参是 /tmp 字面量）",
     files: [{ rel: FAKE_TEST_FILE, text: 'readFileSync("/tmp/zz");\n' }],
     expect: [/^FAIL fs-arg-tmp-literal: test\/zz-selftest-fake\.test\.js:1: /u],
     expectCount: 1,
   },
   {
+    rule: "mkdtemp-tmp-literal",
     label: "A3 mkdtempSync(\"/tmp/…\") ⇒ 三条规则各点一次名（fs-arg-tmp-literal + mkdtemp-tmp-literal + bare-mkdtemp：规则重叠时一条也不许被另一条吃掉）",
     files: [{ rel: FAKE_TEST_FILE, text: 'const dir = mkdtempSync("/tmp/zz-");\n' }],
     expect: [
@@ -255,6 +270,7 @@ const SELF_TEST_CASES = [
     expectCount: 3,
   },
   {
+    rule: "fs-arg-tmp-literal",
     label: "A4 惰性字面量不归管（放行证）：对象字面量里的 \"/tmp/project\" 与第二参数里的 \"/tmp\" ⇒ 必须绿（#185 确认保留的口径，不误伤）",
     files: [{ rel: FAKE_TEST_FILE, text: 'const opts = { cwd: "/tmp/project" };\nreadFileSync(file, "/tmp/zz");\n' }],
     expectGreen: true,
@@ -267,9 +283,12 @@ function runSelfTest() {
 
   // 期望自己也要被看守（与 docs-drift-check #279 同一课）：能匹配空串的期望等于没有断言；
   // 既不是放行证、又没写 expect / expectExemptions / expectMutateMiss 的一例 = 整例被跳过；
-  // 用例数低于下限 = 有用例被删。三刀都在跑变异**之前**报，免得「先全绿了再看」。
-  if (SELF_TEST_CASES.length < MIN_SELF_TEST_CASES) {
-    failures.push(`用例数被削：现在 ${SELF_TEST_CASES.length} 例，下限 ${MIN_SELF_TEST_CASES} 例——删用例 / 整例跳过不算修好`);
+  // 用例数低于下限 = 某条登记判据 id 被掏空。三刀都在跑变异**之前**报，免得「先全绿了再看」。
+  const coveredRuleIds = new Set(SELF_TEST_CASES.map((c) => c.rule));
+  for (const id of SELF_TEST_RULE_IDS) {
+    if (!coveredRuleIds.has(id)) {
+      failures.push(`判据家族被掏空：id "${id}" 在 SELF_TEST_CASES 里一例都没有——删用例 / 整例跳过不算修好`);
+    }
   }
   for (const [i, c] of SELF_TEST_CASES.entries()) {
     const who = c.label ?? `第 ${i + 1} 例`;
