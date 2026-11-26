@@ -258,18 +258,19 @@ test("S2 18 个回调逐个点名：名单、别名表、schema 三者互相对�
   assert.deepEqual(
     [...CAPABILITIES_NAMESPACE_GROUPS],
     ["hooks", "checks", "ports"],
-    "三组：hooks（18 回调 + 2 形态多态旋钮）+ checks（1）+ ports（3，#498 S4c）",
+    "三组：hooks（18 回调 + 1 形态多态旋钮，#898 退役了 `protectedMessage`）+ checks（1）+ ports（3，#498 S4c）",
   );
   assert.deepEqual(Object.keys(CAPABILITIES_NAMESPACE_SCHEMA), ["hooks", "checks", "ports"]);
   assert.deepEqual([...CAPABILITY_CHECK_NAMES], ["deliverables"], "checks 组只有交付物判据");
-  // #498 S4c：`CAPABILITY_HOOK_NAMES` 是**回调**那张表（16），两个形态多态旋钮单列
-  // （`CAPABILITY_POLYMORPHIC_HOOK_NAMES`，它们不是回调而是「同一个旋钮的函数形态」）。
-  assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["protectedMessage", "recoveryHint"]);
+  // #498 S4c：`CAPABILITY_HOOK_NAMES` 是**回调**那张表，形态多态旋钮单列
+  // （`CAPABILITY_POLYMORPHIC_HOOK_NAMES`，它们不是回调而是「同一个旋钮的函数形态」；
+  // issue #898 退役了 `protectedMessage` ⇒ 这张表从 2 降到 1，只剩 `recoveryHint`）。
+  assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["recoveryHint"]);
   assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "strategy"]);
-  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 20, "hooks 接受 18 + 2 = 20 个叶子");
+  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 19, "hooks 接受 18 + 1 = 19 个叶子（#898 删了 `protectedMessage`）");
   assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13, "12 个扁平回调 + 1 个 checks 叶子，一条别名路径不多不少");
   assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "能力面 schema 的**扁平**叶子全集 = 13");
-  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 11, "#498 S4c：9 个嵌套槽叶子（3 ports + 6 hooks）+ #568 的 continuityProvider + #753 C1 的 nextUserTurn");
+  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 10, "#498 S4c：8 个嵌套槽叶子（3 ports + 5 hooks，#898 把 hooks 那一侧从 6 降到 5）+ #568 的 continuityProvider + #753 C1 的 nextUserTurn");
   assert.equal(
     CAPABILITIES_SURFACE_OPTION_NAMES.length + CAPABILITIES_SLOT_LEAF_NAMES.length,
     CAPABILITIES_NAMESPACE_GROUPS.reduce((sum, group) => sum + CAPABILITIES_NAMESPACE_SCHEMA[group].length, 0),
@@ -667,12 +668,12 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   retry: false,
   // folding（#498 S3 第二片：这三个叶子已经没有顶层扁平键，但**叶子仍在 schema 里**，
   // 所以它们照旧必须被 round-trip 覆盖名单取到值——「删了顶层键」不许让叶子漏测）
-  // #498 S4c：两个**形态多态**旋钮的**数据形态**住在这里（`string` / `string[]`），所以它们必须进
-  // round-trip 覆盖度名单并过逐字等值；它们的函数形态是 `capabilities.hooks.*`（行为载体，不进）。
+  // #498 S4c：剩下的那一个**形态多态**旋钮的**数据形态**住在这里（`string`），所以它必须进
+  // round-trip 覆盖度名单并过逐字等值；它的函数形态是 `capabilities.hooks.*`（行为载体，不进）。
+  // issue #898 退役了同族的 `protectedMessage` ⇒ 这里从两项降到一项。
   context: {
     budgetTokens: 1000,
     keepRounds: 2,
-    protectedMessage: ["system", "user"],
     recoveryHint: "需要原文请重读文件",
   },
   toolResultTtl: 1,

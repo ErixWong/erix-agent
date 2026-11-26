@@ -54,6 +54,31 @@
 
 ### Removed (BREAKING)
 
+- **The whole `protectedMessage` mechanism is retired (#898): "mark one message as un-foldable" was
+  bad design — forgetting is the norm, recall is the companion (#896's `recall_read` has landed on
+  main, so deleting the protection is no longer a pure loss of information).** Gone from the engine:
+  `isProtectedMessage`, the "skip the whole round when it holds a protected message" clause in
+  `selectFoldedRounds`, the `protectedMessage` parameter of `safeTruncateMessages`, and the entire
+  "downgrade instead of remove" machinery (the downgrade helper, its predicate, the `protected: true`
+  content marker, the per-round downgrade counter on the compaction stats, and the
+  `budgetUnreachable: "protected_message_exceeds_budget"` value), plus the host's three entry points:
+  the `runToolLoop({ protectedMessage })` option, `config.folding.context.protectedMessage`, and the
+  `foldContextMessage({ protectedMessage })` parameter (the option allowlist in
+  `src/loop/orchestrator.js` dropped that key ⇒ passing it now yields `invalid_option`); on the CLI,
+  `bin/config.js` no longer resolves `folding.protectedMessage` into a function, and the registry
+  entries in `src/assembly-validators.js` (OPTION_TYPES) and `src/loop/capabilities-namespace.js`
+  (OPTION_SURFACES) were deleted in step. **Behaviour change**: a "real user message" that used to be
+  protected now gets folded, truncated, or dropped — no message is exempt. **The collection surface of
+  `foldedPayload` changed too, so this is not a pure deletion**: it used to collect only when a
+  protected message was downgraded, and deleting that branch together with the downgrade would have
+  left it a permanently empty array — yet it is archival evidence (#894's two readers revolve around
+  it: `readLedgerRows` and `recall_read` both read verbatim from `rounds[].messages`). Now the safety
+  layer collects the un-trimmed originals of every round it deletes, before returning; trimmed fields
+  do not enter that array (that text is already in the ledger and `recall_read` gets it back), so the
+  evidence did not shrink — it actually gained the messages that used to be downgraded and never
+  archived. Suggested host landing spot: the upgrade guide needs one line (the 0.35.0 guide did not
+  exist at the time; which version carries it is the reviewer's call), you only delete the three entry
+  points, there is no replacement knob.
 - **`protectedMessage` 整条机制退役（#898）：「把一条消息标记为不可折叠」是坏设计——遗忘是常态，召回才是配套手段（#896 的 `recall_read` 已进 main，所以删保护不再是纯丢信息）。** 引擎侧删的是：`isProtectedMessage`、`selectFoldedRounds` 里「整轮含受保护消息就不折」那一句、`safeTruncateMessages` 的 `protectedMessage` 形参、「降级而不是删除」那一整套（`downgradeProtected` / `isCurrentlyProtected` / 内容上的 `protected: true` 标记 / `compactionStats[].protectedDowngraded` 计数 / `budgetUnreachable: "protected_message_exceeds_budget"` 这个值），以及宿主的三个入口：`runToolLoop({ protectedMessage })` 选项、`config.folding.context.protectedMessage`、`foldContextMessage({ protectedMessage })` 形参（`src/loop/orchestrator.js` 的 option 白名单删了这一项 ⇒ 现在传它得到 `invalid_option`）；CLI 侧 `bin/config.js` 不再把 `folding.protectedMessage` 解析成函数，`src/assembly-validators.js`（OPTION_TYPES）与 `src/loop/capabilities-namespace.js`（OPTION_SURFACES）的登记项同步删除。**行为改变**：以前被保护的「真实用户消息」现在会被折、被裁、被整条删，没有任何消息例外。**`foldedPayload` 的收集面同时改了，这一条不是纯删**：以前它只在「受保护消息被降级」时收集，跟着降级一起删就会变成永远空数组——而它是归档证据（#894 的两种读者就围绕它：`readLedgerRows` 与 `recall_read` 都从 `rounds[].messages` 逐字读）。现在安全层逐条删整轮时，被删轮次的原文（未被裁剪）在返回前收集进去；被裁的字段不进该数组（那些文本本就在账本里，可 `recall_read` 取回），所以证据没有变少、反而多出一批以前只被降级、从不进归档的消息。建议宿主落点：升级指南需要一行（`docs/host-upgrade-guide-0.35.0{,_cn}.md` 当时不存在，该放哪个版本由验收方定），你只需删掉三个入口，没有替代旋钮。
 
 ### Changed

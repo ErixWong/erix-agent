@@ -628,6 +628,8 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
 > un-foldable — is gone from both spellings (`config.folding.context.protectedMessage` and
 > `capabilities.hooks.protectedMessage`), and so is `compactionStats[].protectedDowngraded` (nothing
 > is downgraded any more, so the counter had no meaning). Rounds are now folded on the budget alone.
+> The predicate the CLI used to bind into the knob, `isRealUser` (`src/compact/helpers.js`), is **not**
+> retired: the fold and anchor surfaces still use it to find the real user turn.
 > Writing the old `context` key is treated exactly like `context.onFoldSummary` after #499 — one
 > `context_unknown_option` on the assembly-port route, silence on the fine-grained route, **no throw**
 > — while `capabilities.hooks.protectedMessage` is refused as an unknown `hooks` member. Nothing is
@@ -2324,10 +2326,10 @@ vocabulary, or a CN/EN axis mismatch all go red.
 <!-- erix:snapshot-cell-axes:begin -->
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3408` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:204`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3408` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:204`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:498`, `test/loop-v020-rc.test.js:626` |
 | `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:722`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
 | `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6258` | Both sides are alive: round-record side `test/compaction-observability.test.js:75` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6258` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
+| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6238` | Both sides are alive: round-record side `test/compaction-observability.test.js:75` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6238` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = that cell is not double-written, so there is no authority or handoff condition to state.
@@ -6124,8 +6126,8 @@ visible marker, and the shortfall is stated in the block itself rather than left
 
 - The round that holds the block is **never a fold candidate**: `roundHoldsContinuityBlock`
   (`src/compact/helpers.js`) is the one content-based non-foldable round test left inside
-  `selectFoldedRounds` (`src/compact/helpers.js`) — issue #898 retired `isProtectedMessage`
-  (`src/compact/helpers.js`), the other member of that family, together with the whole mechanism.
+  `selectFoldedRounds` (`src/compact/helpers.js`) — issue #898 retired the protected-message
+  mechanism together with its predicate in that same module.
   So the block's text never
   reaches `foldedPayload`, a fold summary, or `summarizeFoldedPayload`
   (`src/compact/fold-statistical.js`) — including `keepRounds: 0`, where "keep nothing" used to sweep a

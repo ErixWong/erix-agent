@@ -506,7 +506,8 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
 > **已退役（issue #898，BREAKING）。** `protectedMessage`——那个把消息标为「不可折叠」的旋钮——
 > 两种写法都没了（`config.folding.context.protectedMessage` 与 `capabilities.hooks.protectedMessage`），
 > `compactionStats[].protectedDowngraded` 也没了（不再有任何「降级」，那份计数失去意义）。
-> 现在折不折只看预算。写旧 `context` 键的处理与 #499 之后的 `context.onFoldSummary` 逐字同口径：
+> 现在折不折只看预算。CLI 以前绑到这个旋钮上的那条判据 `isRealUser`（`src/compact/helpers.js`）**并未退役**：
+> 折叠与锚点那几面仍然拿它找真实用户轮。写旧 `context` 键的处理与 #499 之后的 `context.onFoldSummary` 逐字同口径：
 > 装配口一条 `context_unknown_option`、直连静默放行、**都不抛**；而 `capabilities.hooks.protectedMessage`
 > 作为未知的 `hooks` 成员被拒。删了保护不丢信息：被折轮的原文仍可用 `recall_read`（issue #896）
 > 从账本按轮号**逐字**取回。
@@ -1880,10 +1881,10 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 <!-- erix:snapshot-cell-axes:begin -->
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3408` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3408` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:204`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:498`、`test/loop-v020-rc.test.js:626` |
 | `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
 | `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6258` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:75` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6258` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
+| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6238` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:75` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6238` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = 该格不双写，没有权威源/交接条件可谈。
@@ -4805,7 +4806,7 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 
 - **带块的轮永远不是折叠候选**：`roundHoldsContinuityBlock` (`src/compact/helpers.js`) 是
   `selectFoldedRounds` (`src/compact/helpers.js`) 里**唯一剩下的**内容型不可折判据——issue #898 连着
-  整条机制一起退役了同族的 `isProtectedMessage` (`src/compact/helpers.js`)。于是块正文不会进 `foldedPayload`、折叠摘要或 `summarizeFoldedPayload`
+  整条机制一起退役了同族的那条受保护消息判据（就在同一个模块里）。于是块正文不会进 `foldedPayload`、折叠摘要或 `summarizeFoldedPayload`
   (`src/compact/fold-statistical.js`)——`keepRounds: 0` 也一样：在「一条都不留」下，一份当前状态快照曾被当成历史扫走
   （issue #589）。「把块挪出 `messages`」并**不是**修法：那会把上面那条计入规则废掉。
 - `ensureUserTurnView` (`src/loop/request-user-view.js`) 不会把块复制成一条用户查询——快照不是查询——

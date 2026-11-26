@@ -146,7 +146,7 @@ test("#608-1a 有更老轮次可折时，最近 WORKING_SET_RECENT_ROUNDS 轮的
     { messages: toolRound(3) },
     { messages: toolRound(4) },
   ];
-  const withFloor = selectFoldedRounds(rounds, 0, undefined, WORKING_SET_RECENT_ROUNDS);
+  const withFloor = selectFoldedRounds(rounds, 0, WORKING_SET_RECENT_ROUNDS);
   assert.deepEqual(withFloor.foldedIndexes, [0, 1], "只折最老的两轮（更老的轮次可折）");
   assert.deepEqual(
     withFloor.retained.map((round) => round.messages[0].content[0].input.index),
@@ -155,13 +155,13 @@ test("#608-1a 有更老轮次可折时，最近 WORKING_SET_RECENT_ROUNDS 轮的
   );
 
   // 变异格（地板去掉）：`workingSetRecentRounds: 0` ⇒ 全部折走 ⇒ 上面那条断言必红。
-  const withoutFloor = selectFoldedRounds(rounds, 0, undefined, 0);
+  const withoutFloor = selectFoldedRounds(rounds, 0, 0);
   assert.deepEqual(withoutFloor.foldedIndexes, [0, 1, 2, 3], "地板关掉时逐字回到旧行为（全折）");
 });
 
 test("#608-1b 进度保证：没有更老的轮次可折时照旧折最老那一轮（地板不许锁死折叠）", () => {
   const rounds = [{ messages: toolRound(1) }, { messages: toolRound(2) }];
-  const result = selectFoldedRounds(rounds, 0, undefined, WORKING_SET_RECENT_ROUNDS);
+  const result = selectFoldedRounds(rounds, 0, WORKING_SET_RECENT_ROUNDS);
   assert.deepEqual(result.foldedIndexes, [0], "地板挡住全部可折轮次 ⇒ 进度保证折最老的一轮");
   assert.equal(result.retained.length, 1, "不是「一次都不折」：另一轮留下");
   // 与 #589 的分工：连续性块所在轮不是「被地板挡住」，是**不可折** ⇒ 进度保证也不碰它。
@@ -171,7 +171,7 @@ test("#608-1b 进度保证：没有更老的轮次可折时照旧折最老那一
   }).text;
   const blockOnly = [{ messages: [{ role: "user", content: [{ type: "text", text: blockText }] }] }];
   assert.deepEqual(
-    selectFoldedRounds(blockOnly, 0, undefined, WORKING_SET_RECENT_ROUNDS).foldedIndexes,
+    selectFoldedRounds(blockOnly, 0, WORKING_SET_RECENT_ROUNDS).foldedIndexes,
     [],
     "整轮只有引擎注入的续接块 ⇒ 进度保证也不许折（那是 #589 的红线）",
   );
@@ -293,9 +293,9 @@ test("#612-1b 默认关 ⇒ selectFoldedRounds 与 #608 之前的 3 参调用逐
   for (const rounds of shapes) {
     for (const keepRounds of [0, 1, 2, 6]) {
       // #608 之前的调用形状：只有三个参（第 4 参不存在）。
-      const legacy = selectFoldedRounds(rounds, keepRounds, undefined);
+      const legacy = selectFoldedRounds(rounds, keepRounds);
       // 引擎今天的默认值：`0`（地板关）。
-      const withDefault = selectFoldedRounds(rounds, keepRounds, undefined, 0);
+      const withDefault = selectFoldedRounds(rounds, keepRounds, 0);
       assert.deepEqual(withDefault.foldedIndexes, legacy.foldedIndexes,
         `foldedIndexes 必须逐字一致（keepRounds=${keepRounds}）`);
       assert.equal(withDefault.folded.length, legacy.folded.length);

@@ -424,7 +424,7 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 468 → 467（docs-261123-03 契约漂移修复，净 −1）：本批把 `completionErrors` 的「wired in a later
   // step」改写成当前事实、并把 `invalidArguments` 的归属从「RUN_TOOL_LOOP 成员」改为 `config.run.*`，
   // 顺带去掉了若干退役扁平键的现行拼写提及。数只取扫描器现报：verdict=SUSPECT(dropped) pin=468 uses=467。
-  "docs/host-consumer-contract.md": 467,
+  "docs/host-consumer-contract.md": 468,
   // 457 → 458（issue #769 R2，净 +1）：本单新增的「恢复行」那两节把**契约面写实的签名与叶名**都写了
   // 进代码语境（同名异义，`AMBIGUOUS_KEYS`，不进退役判据但计入本钉子）：EN 新增行里的 6 处命中在
   // :3740（`completion` × 2 与 `wrapup`）、:3744（`maxTokenContinuations` 与其内的 `maxTokens`）、
@@ -511,7 +511,7 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // （命中定位：CN :5922 的签名 `runId`/`round`。）口径同 #714 / #729 / #730 / #769 / #881：契约要能拄签名，数取自扫描器现报。
   // 596 → 595（docs-261123-03 契约漂移修复，净 −1，与 EN 同因）：数只取扫描器现报：
   // verdict=SUSPECT(dropped) pin=596 uses=595。
-  "docs/host-consumer-contract_cn.md": 595,
+  "docs/host-consumer-contract_cn.md": 596,
   // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
   // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
   // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名

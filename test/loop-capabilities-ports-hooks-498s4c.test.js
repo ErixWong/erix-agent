@@ -2,10 +2,11 @@
 //
 // 本刀五件事，五组用例：
 //
-//   C1（账目 + 「只加目的地，不发明扁平别名」的机器证明）：9 个新叶子（`ports.sleepImpl` /
+//   C1（账目 + 「只加目的地，不发明扁平别名」的机器证明）：本刀当年登记 9 个新叶子（`ports.sleepImpl` /
 //      `ports.judgeProvider` / `ports.strategy` / `hooks.{onReflection,onBeforeFold,onAfterFold,
-//      stubFor,protectedMessage,recoveryHint}`）**一律没有**顶层扁平别名 ⇒ 能力面名单不因它们变长，
-//      三向闭合（配置面 / 能力面 / 容器）依旧成立。这 9 个是「嵌套槽叶子」，
+//      stubFor,recoveryHint}`，外加已随 #898 退役的 `hooks.protectedMessage`）**一律没有**顶层扁平别名
+//      ⇒ 能力面名单不因它们变长，三向闭合（配置面 / 能力面 / 容器）依旧成立。这一些（#898 之后
+//      是 8 个）是「嵌套槽叶子」，
 //      去向登记在 `CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）。
 //      **#498 S3 之后本格不再手抄任何顶层总数**：闭合改成集合等式（与条数无关）。
 //   C2（`capabilities.ports` 的形状闸口）：拼错子键抛并列出可接受值；三条端口各有各的值形状
@@ -222,7 +223,7 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
 }
 
 // ================================================================ C1. 账目 + 不发明扁平别名
-test("C1 账目：白名单被四个面恰好切一遍，11 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
+test("C1 账目：白名单被四个面恰好切一遍，10 个新叶子一律是嵌套槽（没有新顶层选项；#898 从 11 降到 10）", () => {
   // #498 S3：四个字面总数（顶层 / 配置面 / 能力面 / 容器）全部删掉，改成集合等式。
   const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);
   const partition = [...configPlane, ...capability, ...topLevelSurface, ...containers];
@@ -233,10 +234,10 @@ test("C1 账目：白名单被四个面恰好切一遍，11 个新叶子一律�
   // 能力面 schema 的三组与成员数（本刀的判据面）。
   assert.deepEqual([...CAPABILITIES_NAMESPACE_GROUPS], ["hooks", "checks", "ports"]);
   assert.equal(CAPABILITY_HOOK_NAMES.length, 18, "hooks 的回调 12 → 16 → 17（#568 的 continuityProvider）→ 18（#753 C1 的 nextUserTurn）");
-  assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["protectedMessage", "recoveryHint"]);
+  assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["recoveryHint"]);
   assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "strategy"]);
-  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 20, "hooks 接受 18 + 2 = 20 个叶子");
-  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 11, "11 个嵌套槽叶子（#498 S4c 的 9 个 + #568 的 continuityProvider + #753 C1 的 nextUserTurn）");
+  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 19, "hooks 接受 18 + 1 = 19 个叶子（#898 退役了 `protectedMessage`）");
+  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 10, "10 个嵌套槽叶子（#498 S4c 的 8 个 + #568 的 continuityProvider + #753 C1 的 nextUserTurn；#898 从 9 降到 8）");
   assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "扁平叶子仍是 13（别名表 13 条）");
   assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13);
 
@@ -251,7 +252,8 @@ test("C1 账目：白名单被四个面恰好切一遍，11 个新叶子一律�
       `${CAPABILITIES_NAMESPACE_GROUPS.find((group) => CAPABILITIES_NAMESPACE_SCHEMA[group].includes(leaf))}.${leaf}`
     ]?.conflictPath, "string", `${leaf} 必须登记去向（含冲突事件的 path）`);
   }
-  // 去向表就是那 11 条，不多不少（多一条就是死条目，`capabilitiesSchemaSelfCheck` 也核这一条）。
+  // 去向表就是那 10 条，不多不少（多一条就是死条目，`capabilitiesSchemaSelfCheck` 也核这一条；
+  // issue #898 退役 `protectedMessage` ⇒ 它的去向条目必须跟着消失，残留即死条目）。
   assert.deepEqual(
     Object.keys(CAPABILITY_SLOT_DESTINATIONS).sort(),
     [
@@ -260,13 +262,17 @@ test("C1 账目：白名单被四个面恰好切一遍，11 个新叶子一律�
       "hooks.onAfterFold",
       "hooks.onBeforeFold",
       "hooks.onReflection",
-      "hooks.protectedMessage",
       "hooks.recoveryHint",
       "hooks.stubFor",
       "ports.judgeProvider",
       "ports.sleepImpl",
       "ports.strategy",
     ],
+  );
+  assert.equal(
+    Object.keys(CAPABILITY_SLOT_DESTINATIONS).includes("hooks.protectedMessage"),
+    false,
+    "#898：`hooks.protectedMessage` 的去向条目必须已消失（机制退役不留死登记）",
   );
 });
 
@@ -334,11 +340,23 @@ test("C2 capabilities.ports 的形状闸口：拼错子键列可接受值，三�
     ["capabilities.ports.strategy must expose compact as a function (or omitted)"],
   );
   assert.deepEqual(collectCapabilitiesNamespaceProblems({ ports: "nope" }), ["capabilities.ports must be an object"]);
-  // ② `hooks` 的值校验器**不放宽**（反向证 ② 的那一格）：多态旋钮的函数形态也必须是函数。
-  assert.deepEqual(
-    collectCapabilitiesNamespaceProblems({ hooks: { protectedMessage: "user" } }),
-    ["capabilities.hooks.protectedMessage must be a function (or omitted)"],
+  // ② `hooks` 的值校验器**不放宽**（反向证 ② 的那一格）：形态多态旋钮的函数形态也必须是函数。
+  // issue #898：`protectedMessage` 已从 hooks 名单退役 ⇒ 同一个位置现在报的是「未知子键」，
+  // 而可接受值列表里必须**不含**它（这正是宿主升级时会撞上的那句话，钉住 BREAKING）。
+  const retiredKnob = collectCapabilitiesNamespaceProblems({ hooks: { protectedMessage: "user" } });
+  assert.equal(retiredKnob.length, 1, "退役的名字必须被拒，且只报一条");
+  assert.match(
+    retiredKnob[0],
+    /^unknown capabilities\.hooks option: "protectedMessage" \(accepted: /u,
+    "文案必须是「未知子键 + 列可接受值」那一族（不是旧的「must be a function」），实测："
+      + retiredKnob[0],
   );
+  assert.equal(
+    retiredKnob[0].includes(", protectedMessage"),
+    false,
+    "可接受值列表里不许再列退役的名字",
+  );
+  assert.ok(retiredKnob[0].includes("recoveryHint"), "可接受值列表仍要点名剩下的那个旋钮");
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ hooks: { recoveryHint: { hint: "x" } } }),
     ["capabilities.hooks.recoveryHint must be a function (or omitted)"],
@@ -601,84 +619,91 @@ test("C7 行为证据：onBeforeFold / onAfterFold / stubFor 在折叠时、onRe
 });
 
 // ================================================================ C8. 形态多态旋钮
+// issue #898 之后这一族只剩 `recoveryHint` 一个旋钮：`protectedMessage` 已退役，它原来承担的
+// 三条腿（数据形态住 config 且真生效 / 函数形态进 hooks 且行为等价 / 两侧不等价报冲突）随之消失
+// ——那条「看起来像真实用户消息」的内容今天会被**正常折掉**（正向判据见
+// `test/compact/protected-message-retired-898.test.js` 的 #898-2 与 #898-3）。
+// 判据**形状原样保留**，只是三条腿全部改由 `recoveryHint` 承担，一格没删、没改成恒真。
 test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、两侧不等价 ⇒ 恰一条冲突、等价 ⇒ 零", async () => {
-  // ① 数据形态（`string`）住 config，且真的生效：受保护的消息在折叠中保留。
+  // 夹具：#498 S3 A21（`maxRounds` 退役扁平写法）+ A18（`wrapup` 写在 `config.input`）；
+  // #873 MIN_KEEP_ROUNDS=5 + 预算 900（target=585）实测在 len>5 处真折，提示才会进折叠摘要。
+  const c8Config = (context) => ({
+    run: { maxRounds: 14, completion: false },
+    input: { wrapup: false, messages: [
+      { role: "user", content: "PROTECTED-TASK" },
+      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
+    ] },
+    folding: { context: {
+      budgetTokens: 900, keepRounds: 1, strategy: "fold-statistical", ...context,
+    } },
+  });
+  // ① 数据形态（`string`）住 config，且**真的生效**：提示进折叠摘要；只给一条腿 ⇒ 零冲突。
+  const dataEvents = [];
   const dataRun = await runToolLoop({
     provider: createFakeProvider(toolScript(10)),
-    executeTool: async () => "tool output",
-    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
-    // **same** `config` tree — a second `config:` key would silently replace the one below.
-    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    // #873 MIN_KEEP_ROUNDS=5：旧 maxRounds 4 下 len≤4<5 ⇒ 策略不折 ⇒ 保护/赢家观察不到；抬到 10 轮
-    // + 预算 500 让历史长过 5 轮再由策略折（受保护消息存活 / 桩与提示进摘要）。
-    config: { run: { maxRounds: 14, completion: false }, input: { wrapup: false, messages: [
-      { role: "user", content: "PROTECTED-TASK" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ] }, folding: { context: { budgetTokens: 500, keepRounds: 1, protectedMessage: "user" } } },
+    executeTool: async () => "tool output ".repeat(20),
+    config: c8Config({ recoveryHint: "DATA-HINT" }),
+    onEvent: (event) => { dataEvents.push(event); },
   });
   assert.equal(
-    dataRun.messages.some((message) => JSON.stringify(message.content).includes("PROTECTED-TASK")),
+    JSON.stringify(dataRun.messages).includes("DATA-HINT"),
     true,
-    "config.folding.context.protectedMessage 的数据形态真的保护了那条消息",
+    "config.folding.context.recoveryHint 的数据形态真的生效（进的是折叠摘要，不是回显）",
   );
-  // ② 函数形态住 hooks，行为等价。
+  assert.equal(
+    dataEvents.filter((event) => event.type === "config_override_conflict").length,
+    0,
+    "只给配置侧一条腿 ⇒ 零冲突",
+  );
+  // ② 函数形态住 hooks，行为等价（同一个观察点：折叠摘要里出现它，不出现配置侧那份）。
+  const functionEvents = [];
   const functionRun = await runToolLoop({
     provider: createFakeProvider(toolScript(10)),
-    executeTool: async () => "tool output",
-    capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
-    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
-    // **same** `config` tree. #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    // #873 MIN_KEEP_ROUNDS=5：同上，10 轮 + 预算 500 让策略真折。
-    config: { run: { maxRounds: 14, completion: false }, input: { wrapup: false, messages: [
-      { role: "user", content: "PROTECTED-TASK" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ] }, folding: { context: { budgetTokens: 500, keepRounds: 1 } } },
+    executeTool: async () => "tool output ".repeat(20),
+    capabilities: { hooks: { recoveryHint: () => "FUNC-HINT" } },
+    config: c8Config({}),
+    onEvent: (event) => { functionEvents.push(event); },
   });
   assert.equal(
-    functionRun.messages.some((message) => JSON.stringify(message.content).includes("PROTECTED-TASK")),
+    JSON.stringify(functionRun.messages).includes("FUNC-HINT"),
     true,
-    "capabilities.hooks.protectedMessage 的函数形态同样生效",
+    "capabilities.hooks.recoveryHint 的函数形态同样生效",
+  );
+  assert.equal(
+    functionEvents.filter((event) => event.type === "config_override_conflict").length,
+    0,
+    "只给能力侧一条腿 ⇒ 零冲突",
   );
 
   // ③ 两侧都给了**不等价**的值 ⇒ 恰一条 `config_override_conflict`，path 点名该旋钮的配置侧路径。
   const events = [];
   const conflictRun = await runToolLoop({
     provider: createFakeProvider(toolScript(10)),
-    executeTool: async () => "tool output",
-    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
-    // **same** `config` tree — a second `config:` key would silently replace the one below.
-    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    // #873 MIN_KEEP_ROUNDS=5：同上，10 轮 + 预算 500 让策略真折（冲突观察不依赖折，但保持同形状）。
-    config: { run: { maxRounds: 14, completion: false }, input: { wrapup: false, messages: [
-      { role: "user", content: "PROTECTED-TASK" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ] }, folding: { context: { budgetTokens: 500, keepRounds: 1, protectedMessage: "system" } } },
-    capabilities: { hooks: { protectedMessage: () => false } },
+    executeTool: async () => "tool output ".repeat(20),
+    config: c8Config({ recoveryHint: "DATA-HINT" }),
+    capabilities: { hooks: { recoveryHint: () => "FUNC-HINT" } },
     onEvent: (event) => { events.push(event); },
   });
   assert.equal(conflictRun.termination.reason === "end_turn" || conflictRun.termination.reason === "max_rounds_cap", true);
   const conflicts = events.filter((event) => event.type === "config_override_conflict");
   assert.equal(conflicts.length, 1, "不等价 ⇒ 恰一条冲突事件");
   assert.deepEqual(conflicts[0].conflicts, [
-    { path: "folding.context.protectedMessage", key: "protectedMessage" },
+    { path: "folding.context.recoveryHint", key: "recoveryHint" },
   ]);
   assert.equal(conflictRun.termination.reason === "end_turn" || conflictRun.termination.reason === "max_rounds_cap", true);
+  assert.equal(
+    JSON.stringify(conflictRun.messages).includes("DATA-HINT"),
+    false,
+    "#898 之后这条腿的赢家必须仍是函数形态（配置侧那份被覆盖，见下面 ③b 的完整观察）",
+  );
 
   // ③b 同一个旋钮的**赢家**是可观察的：`recoveryHint` 的两条腿同时在场时，函数形态（capabilities）
-  // 赢——折叠摘要里出现 FUNC-HINT、不出现 DATA-HINT（protectedMessage 的赢家不适合做观察点：
-  // 用户轮守卫会保留最近一轮用户消息，与它无关）。
+  // 赢——折叠摘要里出现 FUNC-HINT、不出现 DATA-HINT。
   const winnerEvents = [];
   const winnerRun = await runToolLoop({
     provider: createFakeProvider(toolScript(10)),
     executeTool: async () => "tool output ".repeat(20),
-    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
-    // **same** `config` tree — a second `config:` key would silently replace the one below.
-    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    // #873 MIN_KEEP_ROUNDS=5：同上；预算 900（target=585）实测在 len>5 处真折，FUNC-HINT 进摘要。
-    config: { run: { maxRounds: 14, completion: false }, input: { wrapup: false, messages: [
-      { role: "user", content: "task" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ] }, folding: { context: { budgetTokens: 900, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
+    config: c8Config({ recoveryHint: "DATA-HINT" }),
     capabilities: { hooks: { recoveryHint: () => "FUNC-HINT" } },
     onEvent: (event) => { winnerEvents.push(event); },
   });
@@ -699,8 +724,8 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const sameHook = () => false;
   assert.deepEqual(
     expandCapabilitiesNamespace({
-      context: { protectedMessage: sameHook },
-      capabilities: { hooks: { protectedMessage: sameHook } },
+      context: { recoveryHint: sameHook },
+      capabilities: { hooks: { recoveryHint: sameHook } },
     }).conflicts,
     [],
     "同一个函数对象 ⇒ 零冲突（等价口径 = isDeepStrictEqual / 同一性）",
@@ -823,7 +848,7 @@ test("C10 装配口路线：policy.capabilities.ports 与 hooks 同相生效（s
   assert.equal(counter.calls, 0);
 
   // 两个 `capabilities` 源同时在场：逐叶冲突的 path 也是**目的地**（与扁平 vs 容器同一条口径），
-  // 不是 `hooks.protectedMessage` 这种「组内路径」。
+  // 不是 `hooks.recoveryHint` 这种「组内路径」。
   const policySleep = async () => {};
   const callSleep = async () => {};
   const events = [];

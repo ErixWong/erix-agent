@@ -36,6 +36,7 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { CAPABILITY_CONTEXT_HOOK_NAMES } from "../src/loop/capabilities-namespace.js";
 import { runDirect as sharedRunDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -80,7 +81,7 @@ test("P1 顶层 context ⇒ 当场拒，文案逐字指向 config.folding.contex
       + " the flat spelling is rejected)"
       + " — this shell holds both data and functions: write data as config.folding.context.<leaf>,"
       + " and behaviour members as capabilities.hooks.<name>"
-      + " (onBeforeFold / onAfterFold / stubFor / protectedMessage / recoveryHint)"
+      + " (onBeforeFold / onAfterFold / stubFor / recoveryHint)"
       + " or capabilities.ports.strategy",
     "文案必须一次点名**两站**——少了 config.folding.context 宿主找不到数据之家，"
       + "少了 capabilities.hooks.* 宿主把函数写进 config 会撞第二次",
@@ -146,8 +147,11 @@ test("Q1 顶层 context 的拒绝文案同时含两站：数据 config.folding.c
     "第一站必须说到**叶子**层级（`config.folding.context` 只是壳，宿主要知道叶子写在哪）",
   );
   assert.match(message, /capabilities\.hooks\./u, "第二站：函数之家（少这一句 = 宿主撞第二次）");
-  // 五个 `context` 壳内的回调一个都不许漏（从 schema 派生，不是手抄名单）。
-  for (const hook of ["onBeforeFold", "onAfterFold", "stubFor", "protectedMessage", "recoveryHint"]) {
+  // `context` 壳内的回调一个都不许漏（**从 schema 派生**，不是手抄名单：#898 退役
+  // `protectedMessage` 后这张表自动从 5 降到 4，本格不需要跟着改文案）。
+  assert.equal(CAPABILITY_CONTEXT_HOOK_NAMES.includes("protectedMessage"), false,
+    "#898：`protectedMessage` 必须已不在 `context` 壳的 hooks 名单里");
+  for (const hook of CAPABILITY_CONTEXT_HOOK_NAMES) {
     assert.match(message, new RegExp(`\\b${hook}\\b`, "u"), `文案必须点名 capabilities.hooks.${hook}`);
   }
   // `context.strategy` 是**对象**形态的行为载体 ⇒ 它也有第二站（`capabilities.ports.strategy`）。
@@ -175,9 +179,9 @@ test("Q3 两站的目的地都是真的：照着文案写，两条路都不抛",
   // 第一站：数据。
   const data = await runDirect({ config: { folding: { context: { budgetTokens: 1000 } } } });
   assert.equal(data.termination.reason, "end_turn");
-  // 第二站：函数（文案里点名的五个回调 + 端口位）。
+  // 第二站：函数（文案里点名的那些回调 + 端口位；名单同样从 schema 派生）。
   const hooks = Object.fromEntries(
-    ["onBeforeFold", "onAfterFold", "stubFor", "protectedMessage", "recoveryHint"].map((name) => [name, () => {}]),
+    [...CAPABILITY_CONTEXT_HOOK_NAMES].map((name) => [name, () => {}]),
   );
   const fn = await runDirect({ capabilities: { hooks } });
   assert.equal(fn.termination.reason, "end_turn", "文案指的第二站必须真的收得下函数");

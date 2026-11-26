@@ -304,11 +304,14 @@ test("buildCompactionContext prioritizes an explicit budget", () => {
   assert.equal(context.budgetTokens, 8000);
   // issue #614：CLI 默认策略是 fold-llm（统计摘要降为降级兜底）。
   assert.equal(context.strategy, "fold-llm");
-  assert.equal(context.protectedMessage({ role: "user", content: "task" }), true);
-  assert.equal(context.protectedMessage({
-    role: "user",
-    content: [{ type: "tool_result", content: "result" }],
-  }), false);
+  // issue #898：这里以前还写着 `context.protectedMessage(...)` 的两格真值（CLI 曾默认塞
+  // `protectedMessage: isRealUser`，把「看起来像真实用户消息」的那条钉成不可折叠）。机制已退役
+  // ⇒ 组装出来的 context **不许**再带这个键（带了就是给 CLI 偷偷恢复一条保护）。
+  assert.equal(
+    Object.hasOwn(context, "protectedMessage"),
+    false,
+    "#898：`buildCompactionContext` 不再设 `protectedMessage`",
+  );
 });
 
 test("buildCompactionContext computes a budget from the context window", () => {

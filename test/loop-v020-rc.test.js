@@ -260,7 +260,9 @@ test("enforces the budget after an oversized fold result", async () => {
   assert.ok(result.compactionStats[0].tokensAfter <= budgetTokens);
 });
 
-test("downgrades the oldest protected message when the protected set exceeds the budget", async () => {
+test("#898：超预算时最老的消息被折走，而不是「降级留存」", async () => {
+  // 以前这一格靠 `hooks.protectedMessage: (message) => message?.role === "user"` 把三条里的
+  // 两条 user 钉住，引擎只能「降级而不删」；机制退役后没有任何豁免 ⇒ 同样预算下直接折掉。
   const first = { role: "user", content: [{ type: "text", text: "first protected" }] };
   const second = { role: "user", content: [{ type: "text", text: "second protected" }] };
   const budgetTokens = estimateMessageTokens([first]) + 1;
@@ -268,7 +270,7 @@ test("downgrades the oldest protected message when the protected set exceeds the
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({ capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
+  const result = await runToolLoop({ capabilities: {},
     provider,
     executeTool: async () => "unused",
     config: { input: { messages: [
@@ -282,30 +284,46 @@ test("downgrades the oldest protected message when the protected set exceeds the
     },
   });
 
-  assert.equal(result.compactionStats[0].protectedDowngraded, 1);
-  assert.deepEqual(
-    provider.requests[0].messages.map((message) => message.content?.[0]?.text),
-    ["second protected"],
+  // 退役的计数键必须消失（而不是恒 0）：机制没了，字段也没有意义。
+  assert.equal(
+    Object.hasOwn(result.compactionStats[0], "protectedDowngraded"),
+    false,
+    "#898：`protectedDowngraded` 键已从折叠事实里消失",
   );
+  // 以前被保护而钉在上下文里的那条，今天会被真的折走（基点上它是「降级留存」、仍然在场）。
+  // 证据链不靠这里的 foldedPayload（默认策略是 sliding-window，它不产归档素材），
+  // 而是靠账本：那个面向见 protected-message-retired-898.test.js 的召回那一格。
+  const sentTexts = provider.requests[0].messages.map((message) => message.content?.[0]?.text);
+  assert.equal(
+    sentTexts.includes("second protected"),
+    false,
+    "#898：以前被钉住的「second protected」今天会被真的折走（基点上它仍在上下文里）",
+  );
+  assert.equal(result.compactionStats[0].budgetUnreachable, undefined, "折完就装得下，不需报不可达");
 });
 
-test("#609 a: oversized protected messages return a visible budget fact", async () => {
-  const protectedMessage = {
+test("#609 a: an oversized single message returns a visible budget fact（#898：值域不再有 protected_message_exceeds_budget）", async () => {
+  const oversizedMessage = {
     role: "user",
     content: [{ type: "text", text: "x".repeat(200) }],
   };
 
   const { safeTruncateMessages } = await import("../src/loop/budget.js");
   const result = await safeTruncateMessages(
-    [protectedMessage],
+    [oversizedMessage],
     20,
-    () => true,
   );
 
-  assert.equal(result.budgetUnreachable, "protected_message_exceeds_budget");
-  assert.deepEqual(result.messages, [protectedMessage]);
-  assert.equal(result.tokensAfter, estimateMessageTokens(result.messages));
-  assert.equal(result.protectedDowngraded, 0);
+  // #898 后的新行为：这一条不冉被钉住 ⇒ 硬兑底直接把它截到装得下，连「不可达」都不再报。
+  //（以前唯一能产生 `protected_message_exceeds_budget` 的入口就是「单条受保护且装不下」。）
+  assert.equal(result.budgetUnreachable, undefined, "截短后已装得下 ⇒ 不再有预算不可达事实");
+  assert.equal(
+    result.messages[0]?.content?.[0]?.text,
+    "[已修剪]",
+    "#898：单条超大消息被截短，而不是原样钉住",
+  );
+  assert.ok(result.tokensAfter <= 20, "截完必须真的进预算");
+  assert.equal(Object.hasOwn(result, "protectedDowngraded"), false);
   assert.deepEqual(result.foldedPayload, []);
   assert.deepEqual(result.foldedStubs, []);
   assert.ok(result.enforced);
@@ -625,7 +643,7 @@ test("#609 b: the cannot-fit safety fallback returns a fact instead of throwing"
   assert.deepEqual(result.messages, []);
 });
 
-test("#609 c: a large protected tool result continues to end_turn with a compaction fact", async () => {
+test("#609 c: a large tool result continues to end_turn with a compaction fact（#898：不再受保护 ⇒ 真的能折）", async () => {
   const events = [];
   const provider = createFakeProvider([
     toolResponse("budget-unreachable"),
@@ -634,9 +652,6 @@ test("#609 c: a large protected tool result continues to end_turn with a compact
   const result = await runToolLoop({
     capabilities: {
       hooks: {
-        protectedMessage: (message) => message?.content?.some((block) => (
-          block?.type === "tool_result"
-        )) === true,
         onEvent: (event) => events.push(event),
       },
     },
@@ -651,11 +666,12 @@ test("#609 c: a large protected tool result continues to end_turn with a compact
 
   assert.equal(result.finalText, "done");
   assert.equal(provider.requests.length, 2, "the request after the large tool result must run");
-  const [fact] = events.filter((event) => (
-    event?.type === "compaction"
-    && event.compaction?.budgetUnreachable !== undefined
-  ));
-  assert.equal(fact?.compaction?.budgetUnreachable, "protected_message_exceeds_budget");
+  // #898：以前这一格拿 `budgetUnreachable === "protected_message_exceeds_budget"` 做锈：
+  // 大的 tool_result 因受保护而折不动，只能报「预算不可达」。
+  // 现在没豁免 ⇒ 它真的被折了 ⇒ 可见的折叠事实仍在，但不再是「不可达」那一类。
+  const [fact] = events.filter((event) => event?.type === "compaction");
+  assert.ok(fact, "必须仍有一条可见的 compaction 事实");
+  assert.equal(fact.compaction.budgetUnreachable, undefined, "不再是预算不可达");
   assert.ok(Number.isFinite(fact?.compaction?.tokensAfter));
-  assert.equal(fact?.compaction?.compacted, false, "compacted keeps its existing meaning");
+  assert.equal(fact?.compaction?.compacted, true, "这一轮真的折了");
 });
