@@ -1155,7 +1155,8 @@ A15 / A20 的邻接清单、随包发布契约套件（`assembly-port` / `bounda
 也就是说**取值规则两侧完全一致**——这次退役收窄的是**写侧拼写**，不是可接受的取值。`completion` 是
 **数据壳或字面量 `false`**：引擎只**测**它（`completion !== false`）、从它上面读两个字段
 （`completion?.signals`、`completion?.maxNoToolRounds`），governor 再拿连续无工具轮数与
-`maxNoToolRounds` 比（`src/reflection/governor.js`）。**没有调用点**（`src/` 与 `bin/` 上
+`maxNoToolRounds` 比（该值的家是 `src/loop/orchestrator.js`，governor 从 `signals.maxNoToolRounds` 读回）。
+**没有调用点**（`src/` 与 `bin/` 上
 `grep -nE "completion *\("` 为空），所以函数值在那个位置**从来不是行为**。于是本片退役扁平拼写、
 **接受这条收窄**（函数值现在两个拼写都被拒，理由分开两条），而不是先加一个校验器。**读侧一行未改**：
 展开相把值逐字写回 `effectiveOptions.completion`，所以 `completion: false` 仍然让 `no_tool` 那条理由

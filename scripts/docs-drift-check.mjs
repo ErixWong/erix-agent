@@ -2204,6 +2204,9 @@ const SYMBOL_ANCHOR_FORMS = [
   { re: /`([A-Za-z_$][\w$]*)`\s*[（(]\s*`([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(:\d+(?:-\d+)?)?`\s*[)）]/g, kind: "括号并列" },
   // [SYM](path) / [`SYM`](./path#anchor)
   { re: /\[`?([A-Za-z_$][\w$]*)`?\]\(\.?\/?([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(?:#[^)]*)?\)/g, kind: "markdown 链接" },
+  // #922：`` `SYM` `` 与它后面的 ``(`path`)`` **分在两行**（markdown 换行排版）。上面两条都按**行**匹配，
+  // 所以这种排版此前**根本不在校验面上**——实测 120 处符号锚点从没被看过一眼。整段匹配，行号按前缀换行数算。
+  { re: /`([A-Za-z_$][\w$]*)`[ \t]*\r?\n[ \t]*[（(]\s*`([A-Za-z0-9_./-]+\.(?:js|mjs|cjs|ts))(:\d+(?:-\d+)?)?`\s*[)）]/gu, kind: "括号并列（跨行）", crossLine: true },
 ];
 
 /** 从锚点尾巴 `:N` / `:N-M` 里抽出区间；没有区间后缀返 null（**本判据对它不适用**，见节末理由）。 */
@@ -2237,6 +2240,29 @@ function symbolAnchorsInText(text, doc) {
     }
     lineStart += line.length + 1;
   }
+  // #922：跨行形状（`` `SYM` `` 换行后跟 ``(`path`)``）按行匹配不到，这里对**整段**再扫一遍。
+  // 行号 = 匹配起点之前的换行数 + 1；`start/end` 只覆盖符号名本身（自测定点变异要用）。
+  for (const f of SYMBOL_ANCHOR_FORMS) {
+    if (f.crossLine !== true) continue;
+    f.re.lastIndex = 0;
+    for (const m of text.matchAll(f.re)) {
+      const sym = m[1];
+      if (SYMBOL_NOT_SYMBOL.has(sym)) continue;
+      if (m[2].endsWith(".d.ts")) continue;
+      const start = m.index + 1;                        // 跳过开头的反引号
+      found.push({
+        doc,
+        line: text.slice(0, m.index).split("\n").length,
+        sym,
+        file: m[2],
+        form: f.kind,
+        span: anchorSpan(m[3] ?? null),
+        start,
+        end: start + sym.length,
+      });
+    }
+  }
+  found.sort((a, b) => a.start - b.start);
   return found;
 }
 

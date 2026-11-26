@@ -1418,7 +1418,8 @@ So the **value rules are identical on both sides** — this retirement is a narr
 spelling* only, not of the accepted values. `completion` is a **data shell or the literal `false`**:
 the engine tests it (`completion !== false`), reads two fields off it (`completion?.signals`,
 `completion?.maxNoToolRounds`), and the governor compares a streak against `maxNoToolRounds`
-(`src/reflection/governor.js`). There is no call site (`grep -nE "completion *\("` on `src/` and
+(`src/loop/orchestrator.js`: the value is declared there and handed to the governor, which reads it back as
+`signals.maxNoToolRounds`). There is no call site (`grep -nE "completion *\("` on `src/` and
 `bin/` is empty), so a function was never behaviour at this position. The slice therefore retired
 the flat spelling and **accepted the narrowing** (a function is now rejected on both spellings, for
 two different reasons) instead of adding a validator. **No read-side line was touched**: the
