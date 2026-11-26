@@ -4,6 +4,29 @@
 ## [Unreleased]
 
 ### Changed
+- **`docs-drift-check --self-test` is deleted, together with the overlay machinery that only it used (task 261126-59).**
+  The entry had exactly one consumer — the manual `npm run docs:pass` — and took ≈8.5 minutes over 219 cases; CI never
+  ran it and neither did `npm test`. By the rule this repository already settled on in #908 R2 ("a step no event triggers
+  is a dashboard, not a gate") it was a dashboard. It had also **gone red in 23 cases** after #948 rewrote the two-axis
+  table checks, and nobody noticed, because the only way to make it green again was to delete the stale reverse proofs
+  case by case — the very move #908 rejected. Deleted: `SELF_TEST_CASES` (1,887 lines), `runSelfTest`, the `--self-test`
+  CLI branch, its `docs:pass` step, the 60 zero-reference mutators/fixtures it left behind, and the `OVERLAY` / `SIM_*`
+  indirection layers that made production code branch on an always-empty map (`textOf` now reads directly, `pkgNow()`
+  returns `PKG`, `repoFiles()` keeps only the #914 manifest rule, the `SIM_TREE_SHAPE` fixture trio is gone). Two
+  assertions in `test/docs-anchor-ratchet.test.js` guarded the self-test itself and had nothing left to guard; they are
+  removed while every production-facing assertion in that file stays. **Behaviour change: the checks are unchanged —
+  verified by diffing `--verbose` output before and after, which is byte-identical (128 lines).** The file drops from
+  7,746 to 7,524 lines.
+- **`docs-drift-check --self-test` 删除，连同只有它在用的 overlay 机制一起走（任务 261126-59）。**
+  这个入口只有一个主顾——人工的 `npm run docs:pass`——219 例跑一次约 8.5 分钟；CI 从不跑它，`npm test` 也不跑。
+  按本仓在 #908 R2 已经定下的判据（「一个没有事件触发的步骤是仪表盘，不是闸」），它就是仪表盘。而且它**已经红了
+  23 例**（#948 改写两轴表判据之后），没人发现——因为让它变绿的唯一办法是逐例删掉过期的反向证，那正是 #908 否掉的
+  动作。删除：`SELF_TEST_CASES`（1,887 行）、`runSelfTest`、`--self-test` 的 CLI 分支、它的 `docs:pass` 步骤、
+  它留下的 60 个零引用变异器/夹具，以及让生产代码对一张永远为空的 Map 做分支的 `OVERLAY` / `SIM_*` 间接层
+  （`textOf` 直接读、`pkgNow()` 直接返回 `PKG`、`repoFiles()` 只剩 #914 的 manifest 口径、`SIM_TREE_SHAPE`
+  三形状夹具整组消失）。`test/docs-anchor-ratchet.test.js` 里两条**守自测自己**的断言失去对象，随之删除；该文件里
+  面向生产的断言一条没少。**行为变化：判据没变——用改动前后的 `--verbose` 输出对比验证，逐字节相同（128 行）。**
+  文件从 7,746 行降到 7,524 行。
 - **The one rule that could never go red is deleted (task 261126-58).** `collectRefScanCountClaimErrors()` compared the
   document's claimed document counts against the live scan and reported every mismatch as `notes.push("（提示，不拦）")` —
   it pushed nothing into the error list, so `check:docs` could not fail because of it. A rule that cannot red is a rule

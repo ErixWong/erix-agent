@@ -25,15 +25,17 @@ npm run docs:pass
 ```
 
 That runs, in order: `check:docs` (drift + EN/CN skeleton + version claims + referenced paths), `check:docs:strict`,
-`check:docs:spelling`, `check:docs:examples`, `check:agents-directives`, and the drift checker's own `--self-test`.
+`check:docs:spelling`, `check:docs:examples`, `check:agents-directives`.
 **Its exit code is evidence about the scripts, not about the documents** — the scripts cannot see a sentence that
 is true-looking and wrong.
 
 As of issue #908 R2 (261126) **CI carries no documentation gate at all** — `check:changelog` and the doc-oriented
 self-tests are not pipeline steps any more. The mechanical half therefore has only two owners: this pass, and
-the version boundary (`PREFLIGHT_STEPS[0]`, `release:day --stage writeback`). That makes this the only recurring
-owner of `docs-drift-check --self-test`, which is minutes-slow (one-off timings: ≈7 min 261109, ≈8.5 min 261126).
-Second-scale **code** gates are no longer this pass's business: they run inside `npm test`
+the version boundary (`PREFLIGHT_STEPS[0]`, `release:day --stage writeback`).
+**`docs-drift-check --self-test` no longer exists** (task 261126-59): its only consumer was this pass, it took
+≈8.5 minutes, and it had gone red 23 cases without anyone noticing — a step no event triggers is a dashboard, not a
+gate. What it covered is now covered by the judges themselves (`check:docs` / `check:docs:strict`) and by the code
+suite. Second-scale **code** gates are not this pass's business either: they run inside `npm test`
 (`test/gate-self-tests.test.js`).
 
 ## What the agent must judge by hand (this is the actual pass)
