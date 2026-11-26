@@ -12,7 +12,9 @@ const RETRYABLE_NETWORK_CODES = new Set([
 const MAX_ERROR_MESSAGE_LENGTH = 500;
 
 // issue #930：上下文超窗在上游**也是 400**，只是 body 里写着超窗字样。命中它们不再塌成
-// 不可重试的 `invalid_request`，而是 `context_window_exceeded`（可压缩后重试一发）。
+// 不可重试的 `invalid_request`，而是 `context_window_exceeded`——但**同一个请求本身仍不可重试**
+// （`retryable: false`）：错的是这份请求的**大小**，不是网络抖动。能重试的是**压缩之后的那份
+// 新请求**，由 orchestrator 的自恢复分支按错误码负责（见 `src/loop/orchestrator.js`）。
 //
 // 子串清单来源（**不是凭记忆编**）：与本仓既有同源正则逐字一致——
 // `src/compact/fold-llm.js` 的 `classifyFoldDegradeKind`（摘要器侧早就在用这一套超窗指纹，
@@ -146,7 +148,7 @@ export function classifyHttpError(status, bodyText, opts = {}) {
   } else if (status >= 500 && status <= 599) {
     code = "server";
   } else if (status === 400 || status === 422) {
-    // issue #930：400/422 先看 body 子串。命中超窗指纹 ⇒ `context_window_exceeded`（可重试）；
+    // issue #930：400/422 先看 body 子串。命中超窗指纹 ⇒ `context_window_exceeded`；
     // 其余一律仍为不可重试的 `invalid_request`（不吞别的 400）。
     code = isContextWindowExceededBody(bodyText) ? "context_window_exceeded" : "invalid_request";
   } else if (status === 404) {
@@ -156,9 +158,12 @@ export function classifyHttpError(status, bodyText, opts = {}) {
   }
 
   return new KitError(code, upstreamErrorMessage(bodyText), {
-    // issue #930：`context_window_exceeded` 的 `retryable: true` 只指「压缩后可重试一发」这一件事，
-    // 不改 `RETRYABLE_CODES`（那里是网络/限流/服务错的一族），所以在此处显式置真。
-    retryable: code === "context_window_exceeded" ? true : defaultRetryable(code),
+    // issue #930：`context_window_exceeded` 的 `retryable` 走默认（`RETRYABLE_CODES` 不含它 ⇒ **false**）。
+    // 语义：**同一个超大请求不可原样重试**（错的是请求大小，不是网络抖动；原样重发只会把同一坨
+    // 再撞一次窗口，白烧钱）。只有**压缩之后的新请求**可重试，那件事由 orchestrator 的自恢复分支
+    // 按**错误码** catch 负责（`src/loop/orchestrator.js`），不依赖这个 flag——所以把它置真只会让
+    // 轮内 provider 重试（`provider-runner.js` 对 `retryable` 的错重发同一请求）白白重发超窗请求。
+    retryable: defaultRetryable(code),
     status,
     ...(opts.phase === undefined ? {} : { phase: opts.phase }),
     ...(opts.elapsedMs === undefined ? {} : { elapsedMs: opts.elapsedMs }),

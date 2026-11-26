@@ -46,13 +46,16 @@ const PLAIN_BAD_REQUEST_BODIES = [
   JSON.stringify({ error: { message: "temperature must be between 0 and 2" } }),
 ];
 
-// —— ① 分类：400/422 + 超窗字样 ⇒ context_window_exceeded / retryable:true ——
-test("① classifyHttpError：400/422 命中超窗字样 ⇒ context_window_exceeded、retryable true", () => {
+// —— ① 分类：400/422 + 超窗字样 ⇒ context_window_exceeded / **同一个请求不可重试** ——
+test("① classifyHttpError：400/422 命中超窗字样 ⇒ context_window_exceeded、retryable false（同一个请求不可原样重试）", () => {
   for (const body of CONTEXT_WINDOW_BODIES) {
     for (const status of [400, 422]) {
       const err = classifyHttpError(status, body);
       assert.equal(err.code, "context_window_exceeded", `code for status ${status}`);
-      assert.equal(err.retryable, true, `retryable for status ${status}`);
+      // P2：`context_window_exceeded` 不再被置成可重试——错的是这份请求的**大小**，不是网络抖动。
+      // `RETRYABLE_CODES` 不含它 ⇒ `retryable: false`；原样重发只会把同一坨再撞一次窗口。
+      // 可重试的是「压缩之后的新请求」，那是 orchestrator 自恢复分支按错误码负责的（另一格钉）。
+      assert.equal(err.retryable, false, `retryable for status ${status}`);
       assert.equal(err.status, status);
       assert.ok(isContextWindowExceededBody(body));
     }
@@ -129,8 +132,10 @@ function seededRoundMessages() {
 }
 
 function cwError(status = 400) {
+  // P2：超窗分类后 `retryable: false`——同一个超大请求不可原样重试（只有压缩后的新请求可）。
+  // 自恢复分支按**错误码** catch，不依赖这个 flag，所以这里照抄分类器的真实形状。
   return new KitError("context_window_exceeded", "maximum context length is 8191 tokens", {
-    retryable: true,
+    retryable: false,
     status,
   });
 }
@@ -207,6 +212,39 @@ test("③ 连续两次 400 超窗 ⇒ 只自恢复一次、不再重试第三次
   // 只自恢复一次：压缩恰好一次、provider 恰好两次（不再第三次）。
   assert.equal(strategy.tally.compact, 1, "只允许一次强制压缩");
   assert.equal(provider.requests.length, 2, "第二次还超 ⇒ 不再尝试第三次请求");
+});
+
+// —— P2：轮内 provider 重试不得对超窗请求生效 ——
+// 开了轮内重试（`retry.attempts: 2`）也不得把同一个超大请求原样重发：
+// `context_window_exceeded` 的 `retryable: false` 让 `provider-runner` 立即抛出（不在轮内重发），
+// 错误才能递到 orchestrator 的自恢复分支去压缩。若错误被误标 `retryable: true`，provider-runner
+// 会把同一个超大请求在轮内重发到成功那一格“碰运气”吸收掉 ⇒ 根本不会压缩（compact 会停在 0）。
+test("P2 轮内 provider 重试不得对超窗请求生效（开了重试仍必须走自恢复压缩、不原样重发）", async () => {
+  const strategy = createCountingStrategy();
+  // 用真的分类器产物（而非手拼 KitError），它的 `retryable` 就是分类后的值（现在 false）。
+  const realCw = classifyHttpError(400, CONTEXT_WINDOW_BODIES[0]);
+  assert.equal(realCw.retryable, false, "前置：分类后的超窗错必须不可重试");
+  const provider = createFakeProvider([
+    { throw: realCw },
+    { content: [{ type: "text", text: "压缩后重试成功" }], stopReason: "end_turn" },
+    { content: [{ type: "text", text: "不该被请求到" }], stopReason: "end_turn" },
+  ]);
+  const options = baseOptions(strategy);
+  options.provider = provider;
+  // 显式开启轮内重试（它的家是 `config.timing.retry`，不是顶层扁平 `retry`）：attempts 2，backoff 置 0。
+  // 若超窗错被误标可重试，同一个超大请求会被原样重发。
+  options.config.timing = { retry: { attempts: 2, backoffBaseMs: 0, backoffMaxMs: 0 } };
+
+  const result = await runDirect(options);
+
+  // 自恢复那一发压缩**必须发生**：证明 provider-runner 没有在轮内把超窗错吸收掉。
+  assert.equal(strategy.tally.compact, 1, "超窗请求必须递到自恢复压缩（轮内重试不得吸收）");
+  // 超大请求只被发了一次（失败那一发）；重试那一发是压缩后的新请求。
+  assert.equal(provider.requests.length, 2, "首发 + 压缩后重试一发；不得有轮内原样重发");
+  assert.notEqual(result?.termination?.reason, "failed", "自恢复后应正常收尾");
+  // 那一发压缩是超窗自恢复带来的（不是预算折叠）。
+  const compactions = (result.compactionStats ?? []).filter((s) => s?.trigger === CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER);
+  assert.equal(compactions.length, 1, "账本上必须有且仅有一条超窗自恢复留痕");
 });
 
 // —— ④ 普通 400 ⇒ 零压缩、零重试、直接失败 ——
