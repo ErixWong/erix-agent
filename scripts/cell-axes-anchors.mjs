@@ -114,12 +114,6 @@ export function anchorHitLines(fileLines, entry) {
 /** 一格的第几行 + 哪个轴 + 哪个文件 ⇒ 一组引用的基准键。 */
 export const anchorGroupKey = (key, axis, rowIndex, codePath) => `${key}|${axis}|${rowIndex}|${codePath}`;
 
-/** 等值对账：表里写的行号集合与锚点重算的行号集合是否**完全相等**（多 / 少 / 换一条都是 false）。 */
-export const anchorLinesEqual = (citedLines, anchorLines) => {
-  const sort = (list) => [...list].sort((a, b) => a - b).join(",");
-  return [...citedLines].length === [...anchorLines].length && sort(citedLines) === sort(anchorLines);
-};
-
 /** 注释行判据（#772 R4 M-A）：行首只有 `//`、`/*` 或续行的 `*` ⇒ 那一行是注释，不是代码。 */
 export const CELL_AXES_COMMENT_LINE_RE = /^\s*(\/\/|\/\*|\*)/u;
 

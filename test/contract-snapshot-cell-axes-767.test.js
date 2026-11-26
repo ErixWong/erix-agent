@@ -25,7 +25,6 @@ import {
   anchorHitLines,
   anchorKindError,
   anchorLineIsComment,
-  anchorLinesEqual,
   anchorTableShape,
   cellAxesRequiredSlotKey,
   checkCellAxesCoverage,
@@ -357,534 +356,193 @@ test("G3-C 真实文件上的反例：恢复侧不再保留任何 run-snapshot �
     assert.deepEqual(snapshotReadLines(stripped, key), [], `恢复侧仍读取已退役的 snapshot.${key}`);
   }
 });
-
 /**
- * G4 的「那一行确实提到这格的键名」判据。那不只是本测试里的一个小函数：
- * `scripts/docs-drift-check.mjs` 对两轴载荷表那个标记区给的**定点豁免**（issue #772）绑的就是它的
- * **定义与调用**——定义被删、两个参数不再被用、或断言不再调它（退化成「行号存在就行」）
- * ⇒ 豁免自动失效，`npm run check:docs` 立即回红（登记见 docs/maintenance/command-reference.md#docs-anchors）。
- * 但它只是**词面**那一档（#772 R2 评审数出来的洞：`:3038` 与 `:3015` 都提到 `compactionStats`）——
- * 真正当基准的是下面那份锚点登记表。 */
+ * 「命中那一行确实提到这格的键名」判据（#917：这是替代「行号等值」的真相之一，闸与测试共用同一条口径）。
+ */
 const G4_KEY_NAME_CHECK = (lineText, key) => {
-  const mention = new RegExp(`(?:^|[^A-Za-z0-9_$])${key}(?:[^A-Za-z0-9_$]|$)`, "u");
-  return mention.test(lineText);
+  const pattern = new RegExp(`\\b${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "u");
+  return pattern.test(lineText);
 };
 
-// ── G4 锚点登记表（#772 R2 M1：从「词面匹配」改成「按锚点重算行号再等值对账」）───────────────
-//
-// 为什么词面不够：契约里 `compactionStats` 的写点写 `src/loop/orchestrator.js:3042`，那是
-// `compactionStats: cloneState(compactionStats),`——**把这一格写进快照载荷的那一句**；而 `:3015` 是一句
-// 讲「测试拿它当指纹」的**注释**，两行都提到键名，所词面匹配与「行号在范围内」都分不开它们。
-// 于是每一格登记一条**能区分这件事的代码形状**（`anchor`），行号由锚点**现算**，表里写的 `path:line`
-// 必须逐字符等于算出来的行号。
-//
-// 三条判据（都在 G4 里跑）：
-//   ① 锚点在目标文件里必须**唯一命中**：0 次 = 锚点已失效，>1 次 = **锚点歧义**，两种都不配当基准；
-//   ② 表里那一格该轴引用的行号集合必须与锚点重算的集合**等值**（换一条、多一条、少一条都红）；
-//   ③ 写点/读者两列里每一条 `src/…` 与 `bin/…` 引用都必须有登记锚点，登记了的也必须还在表里
-//      ⇒ 既没有「先随手写个行号」的口子，也没有「表里删了引用但锚点还躺着」的后门。
-//
-// 字段：`key` = 格名；`axis` = `write`（今天的写点；已停写的两格引的是「停写证据」那行注释）
-// / `read`（恢复侧真读这一格那一句）；`path` = 目标文件；`anchor` = 正则字面（`u` 旗标）；
-// `row` = 同一格名底下的第几行（`persistedTranscriptLength` 占两行，默认 0）；
-// `prev` = 可选邻行判据（只靠本行无法消歧时用它，例：`round,` 要靠上一行的 `persist(` 才唯一）。
-//
-// 这段数组是**两份机器共用的**：`scripts/docs-drift-check.mjs` 的 `cellAxesGuardVerdict()` 会把
-// 它原样抽出来自己再算一遍（标记区定点豁免的根据因此是「锚点等值对账」而不是词面）。所以：保持**数组
-// 字面量**与这两行哨兵注释，改成函数/表达式/多行拼合都会让闸抽不到 ⇒ 豁免失效、`npm run check:docs` 回红。
-/** 登记表本体在 `scripts/cell-axes-anchors.mjs`；这里只补一个 `path` 别名给下面那些判据用
- *  （R2 的字段名叫 `path`，R3 按工单口径改名 `codePath`，别名让既有的判据不必整体改写）。 */
+// ── G4 锚点真相校（#917：撤「行号等值对账」，改成三条）─────────────────────────────
+//   ① 每条登记锚点在**它自己声明的 codePath** 里恰好命中一行（0 / 多次都红，歧义锚点不配当基准）；
+//   ② 命中那一行必须提到该 `key`，且种类相符（`code`/`comment`，与闸共用 `anchorKindError()`）；
+//   ③ 两份契约表里那一格点名的 `src/bin` **文件**必须等于登记的 `codePath`（指错文件 ⇒ 红并点名两边）。
+// 反向证全部吃**合成行 / 合成 row**（#917 评审口径），不去改真实 `src/`：行号已经不再是判据，
+// 所以「在锚点命中行上方插一行普通注释」这种纯位移**必须仍判绿**——这正是本单的靶心。
+const G4_GROUP_KEY = anchorGroupKey;
+/** 契约两轴列点名的仓内**文件**（#917：只认 `src/` `bin/`，不带也不看行号）。 */
+const SIDE_FILE_REF = /(?:src|bin)\/[A-Za-z0-9_./-]+\.js/gu;
+/** 登记条目带上 `path` 别名（= `codePath`），与闸读的是同一份登记表。 */
 const CELL_AXES_ANCHORS = CELL_AXES_ANCHORS_SHARED.map((entry) => ({ ...entry, path: entry.codePath }));
 
-/**
- * 锚点在目标文件里命中的行号（1 基）。两条约束都是判据的一部分：`anchor` 那一行必须命中，
- * 带了 `prev` 的还要邻行也命中（只靠本行消不了歧的那些，例：`round,`）。命中 0 次或多次都交给
- * 调用方判红——歧义锚点不配当基准。同样被 `cellAxesGuardVerdict()` 抽名（它自己重算时走同一条形状）。 */
-// 命中语义（anchor + 可选 prev 邻行）与闸**共用同一个函数**：两边算出的行号必须一模一样。
-const G4_ANCHOR_LINE_CHECK = (fileLines, entry) => anchorHitLines(fileLines, entry).hits ?? [];
-/** 表里写的行号集合与锚点重算的行号集合是否**等值**（多 / 少 / 换一条都是 false）。 */
-const G4_ANCHOR_EQ_CHECK = (citedLines, anchorLines) => anchorLinesEqual(citedLines, anchorLines);
-/** 文件按行取（带缓存）：G4 与它的三条反向证共用，避免各自再读一遍盘。 */
 const G4_LINE_CACHE = new Map();
 function G4_LINES_OF(rel) {
   if (!G4_LINE_CACHE.has(rel)) {
-    assert.ok(existsSync(join(ROOT, rel)), `锚点/契约指向的文件不在场：${rel}`);
-    G4_LINE_CACHE.set(rel, readFileSync(join(ROOT, rel), "utf8").split("\n"));
+    G4_LINE_CACHE.set(rel, existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), "utf8").split("\n") : null);
   }
   return G4_LINE_CACHE.get(rel);
 }
 
-/** 一格的第几行 + 哪个轴 + 哪个文件 ⇒ 一组引用的基准键。 */
-const G4_GROUP_KEY = anchorGroupKey;
-
-/**
- * 把锚点登记表算成「组键 → 行号集合」，并把**唯一命中**判据的破口作为错误返回（不抛，
- * 好让反向证拿合成数据问它）。命中 0 次 = 锚点已失效；>1 次 = **锚点歧义**——歧义锚点不配当基准。
- * @param {{key:string,axis:string,path:string,anchor:string,row?:number,prev?:string}[]} anchors
- */
+/** 判据 ①+②（锚点唯一命中 + 种类相符 + 命中行提到键）——纯函数，反向证也复用它。 */
 function G4_ANCHOR_GROUPS(anchors, linesOf) {
   const groups = new Map();
   const errors = [];
   for (const entry of anchors) {
-    const where = `\`${entry.key}\` 的 ${entry.axis} 锚点（${entry.path}${entry.anchor ? `，正则 ${entry.anchor}` : ""}）`;
-    if (!CELL_KEYS.includes(entry.key) || (entry.axis !== "write" && entry.axis !== "read")
-      || typeof entry.path !== "string" || typeof entry.anchor !== "string") {
-      errors.push(`锚点条目形状不合法（key 必须是表里的格名、axis 只许 write/read、path/anchor 必须是字符串）：${where}`);
-      continue;
-    }
-    let hits = [];
-    try {
-      hits = G4_ANCHOR_LINE_CHECK(linesOf(entry.path), entry);
-    } catch (error) {
-      errors.push(`锚点正则跑不起来（${where}）：${error.message}`);
-      continue;
-    }
+    const gk = G4_GROUP_KEY(entry.key, entry.axis, entry.row ?? 0, entry.path);
+    const fileLines = linesOf(entry.path);
+    if (fileLines === null || fileLines === undefined) { errors.push(`登记表把 \`${entry.key}\` 的 ${entry.axis} 锚点指向不在场的文件 ${entry.path}`); continue; }
+    const { hits, error } = anchorHitLines(fileLines, entry);
+    if (error) { errors.push(`\`${entry.key}\` 的 ${entry.axis} 锚点正则跑不通：${error}`); continue; }
     if (hits.length !== 1) {
       errors.push(hits.length === 0
-        ? `锚点 0 命中：${where} 在那份文件里找不到任何一行 ⇒ 锚点已失效（代码形状变了就先改锚点，别顺手把表里的行号改成别的形状）`
-        : `锚点歧义：${where} 命中 ${hits.length} 行（${hits.map((n) => `:${n}`).join(" ")}）⇒ 歧义锚点不配当基准，收紧到只剩那一行（必要时用 prev 邻行判据）`);
+        ? `\`${entry.key}\` 的 ${entry.axis} 锚点 0 命中（正则 ${entry.anchor}）⇒ 锚点已失效`
+        : `\`${entry.key}\` 的 ${entry.axis} 锚点歧义（正则 ${entry.anchor}）命中 ${hits.length} 行 ⇒ 歧义锚点不配当基准`);
       continue;
     }
-    const gk = G4_GROUP_KEY(entry.key, entry.axis, entry.row ?? 0, entry.path);
-    // #772 R4 M-A：「种类」也是硬判据，而且走的是与闸**同一个** `anchorKindError()`（两边不许各写一份）。
-    // 行号等值对账本身看不见「锚点指到一条只是提到键名的注释 + 两份表引文同步改口」那种形状。
-    const kindError = anchorKindError(entry, linesOf(entry.path), hits[0]);
-    if (kindError !== null) errors.push(kindError);
-    groups.set(gk, new Set([...(groups.get(gk) ?? []), ...hits]));
+    groups.set(gk, new Set([...(groups.get(gk) ?? []), hits[0]]));
+    const kindError = anchorKindError(entry, fileLines, hits[0]);
+    if (kindError !== null) { errors.push(kindError); continue; }
+    if (!G4_KEY_NAME_CHECK(fileLines[hits[0] - 1], entry.key)) {
+      errors.push(`\`${entry.key}\` 的 ${entry.axis} 锚点命中 ${entry.path}:${hits[0]}，但那一行没提到键名 \`${entry.key}\``
+        + `（#917 真相校：锚点不许指到不含这格键名的行上）：${fileLines[hits[0] - 1].trim().slice(0, 90)}`);
+    }
   }
   return { groups, errors };
 }
 
-/**
- * 一份契约的「写点 / 读者」两列 ⇄ 锚点重算结果对账。返回错误文本数组（空 = 这一份过）。
- * 判据三条：① 每条 `src/…` 与 `bin/…` 引用都必须有登记锚点；② 那一格那一轴那一文件的行号集合
- * 必须与锚点**等值**（多 / 少 / 换一条都红，并打印「表写 :X / 锚点实际 :Y / 那一行原文」）；
- * ③ 登记了的锚点必须还在表里（表删引用而锚点躺着 = 后门）。
- */
-function G4_SIDE_RECONCILE({ side, rows, groups, linesOf }) {
+/** 判据 ③：文档那一格点名的 src/bin 文件必须== 登记 codePath（正反两面）。 */
+function G4_SIDE_RECONCILE({ side, rows, groups }) {
   const errors = [];
-  const show = (rel, list) => [...list].sort((a, b) => a - b).map((n) => `${rel}:${n}`).join(" / ");
-  const peek = (rel, list) => [...list].sort((a, b) => a - b)
-    .map((n) => `:${n}| ${linesOf(rel)[n - 1].trim().slice(0, 140)}`).join("\n          ");
   const reconciled = new Set();
-  const reconciledGroups = new Set();
+  const namedByCell = new Map();
   const perKey = new Map();
   for (const row of rows) {
     const rowIndex = perKey.get(row.key) ?? 0;
     perKey.set(row.key, rowIndex + 1);
     for (const [axis, cell] of [["write", row.writeSite], ["read", row.readers]]) {
-      const citedByPath = new Map();
-      for (const citation of cell.match(CITATION) ?? []) {
-        const [rel, lineText] = citation.split(":");
-        if (!/^src\//u.test(rel) && !/^bin\//u.test(rel)) continue;   // 测试侧指纹走词面 + 在场那一档
-        citedByPath.set(rel, new Set([...(citedByPath.get(rel) ?? []), Number(lineText)]));
-      }
-      for (const [rel, cited] of citedByPath) {
+      SIDE_FILE_REF.lastIndex = 0;
+      const named = [...new Set(cell.match(SIDE_FILE_REF) ?? [])];
+      namedByCell.set(`${row.key}|${axis}|${rowIndex}`, named);
+      for (const rel of named) {
         const gk = G4_GROUP_KEY(row.key, axis, rowIndex, rel);
-        const anchorLines = groups.get(gk);
-        if (anchorLines === undefined) {
-          errors.push(`${side}：\`${row.key}\` 的 ${axis} 列引了 ${rel}，但这一格这一轴没有登记锚点 ⇒ 那条行号没有基准可对`
-            + `（新增引用要同批在 CELL_AXES_ANCHORS 里登记能区分这件事的代码形状）：${cell}`);
-          continue;
-        }
-        if (!G4_ANCHOR_EQ_CHECK([...cited], [...anchorLines])) {
-          errors.push(`${side}：\`${row.key}\` 的 ${axis} 列与登记锚点不等值（${rel}）——`
-            + `\n          表写：${show(rel, cited)}`
-            + `\n          锚点实际：${show(rel, anchorLines)}`
-            + `\n          表里那一行原文：\n          ${peek(rel, cited)}`);
-          continue;
-        }
-        reconciled.add(`${side}|${row.key}`);
-        reconciledGroups.add(`${side}|${gk}`);
+        if (groups.has(gk)) reconciled.add(gk);
+        else errors.push(`${side}：\`${row.key}\` 的 ${axis} 轴（同名第 ${rowIndex + 1} 行）点名了 ${rel}，`
+          + `但 \`${CELL_AXES_ANCHOR_MODULE}\` 里没有以它为 codePath 的登记锚点（#917 真相校：文档点名的文件对不上登记）`);
       }
     }
   }
   for (const gk of groups.keys()) {
+    if (reconciled.has(gk)) continue;
     const [key, axis, rowIndex, path] = gk.split("|");
-    if (!reconciledGroups.has(`${side}|${gk}`)) {
-      errors.push(`${side}：登记了 \`${key}\` 的 ${axis} 锚点（同名第 ${Number(rowIndex) + 1} 行，${path}），但表里那一格`
-        + `那一轴已经不再引它 ⇒ 引用被删了而锚点还躺着（要么把引用补回来，要么同批删掉这条登记）`);
-    }
+    const named = namedByCell.get(`${key}|${axis}|${rowIndex}`) ?? [];
+    errors.push(`${side}：登记了 \`${key}\` 的 ${axis} 锚点（codePath ${path}），但表里那一格点名的是`
+      + ` ${named.length > 0 ? named.join(" / ") : "（没点名任何 src/bin 文件）"}，没点到 ${path}`
+      + `（#917 真相校：文档那一格不再指向登记 codePath）`);
   }
-  return { errors, reconciled, reconciledGroups };
+  return { errors, reconciled };
 }
 
-/**
- * 反向证的「干扰行」：同一个键名在**别的这件事**里也出现过的那一行（注释——讲测试拿它当指纹，
- * 不是把这一格写进载荷）。行号不写死，按形状现取；表里的引用被换成它时，词面判据照过、锚点判据必红。
- */
-const G4_DISTRACTOR_PROBE = {
-  key: "compactionStats",
-  path: "src/loop/orchestrator.js",
-  anchor: "^ +// 写进 `compactionStats\\[\\]\\.foldSummary`",
-};
-
-test("G4 表里每条 file:line 都复核：文件在场 + 行号在范围内 + 该行确实提到这格的键名 + 两轴引用必须等于登记锚点重算的行号", () => {
-  let checked = 0;
-  for (const { rows, side } of tables.values()) {
-    for (const row of rows) {
-      const rowText = [row.authority, row.handoff, row.writeSite, row.readers].join(" ");
-      for (const citation of rowText.match(CITATION) ?? []) {
-        const [rel, lineText] = citation.split(":");
-        const fileLines = G4_LINES_OF(rel);
-        const retiredMarker = RETIRED_CELL_EVIDENCE.get(rel);
-        if (retiredMarker !== undefined) {
-          assert.ok(["toolUse", "ts"].includes(row.key),
-            `${side}：${rel} 是退役测试证据，只能被它原来覆盖的格引用`);
-          assert.equal(fileLines[0], retiredMarker, `${side}：${rel} 必须保留一行退役标记`);
-          assert.ok(fileLines.slice(1).every((line) => line === ""),
-            `${side}：${rel} 除退役标记外不得残留测试内容`);
-          checked += 1;
-          continue;
-        }
-        const lineNumber = Number(lineText);
-        assert.ok(
-          Number.isSafeInteger(lineNumber) && lineNumber >= 1 && lineNumber <= fileLines.length,
-          `${side}：\`${row.key}\` 引用 ${citation} 的行号越界（${rel} 只有 ${fileLines.length} 行）`,
-        );
-        const line = fileLines[lineNumber - 1];
-        assert.ok(
-          G4_KEY_NAME_CHECK(line, row.key),
-          `${side}：\`${row.key}\` 引用 ${citation}，但那一行没提到这个键名：${line.trim()}`,
-        );
-        checked += 1;
-      }
-    }
-  }
-  assert.ok(checked >= CELL_KEYS.length * 2, `复核到的引用只有 ${checked} 条：表里的行号覆盖面在缩水`);
-
-  // ── 锚点等值对账（#772 R2 M1）：行号由锚点现算，表里写的必须逐字符等于它 ─────────────
-  const groupsSeen = new Set(CELL_AXES_ANCHORS.map(
-    (entry) => G4_GROUP_KEY(entry.key, entry.axis, entry.row ?? 0, entry.path),
-  ));
-  assert.ok(
-    CELL_AXES_ANCHORS.length >= CELL_AXES_ANCHOR_FLOORS.entries && groupsSeen.size >= CELL_AXES_ANCHOR_FLOORS.groups,
-    `锚点登记表只剩 ${CELL_AXES_ANCHORS.length} 条 / ${groupsSeen.size} 组（地板读 scripts/cell-axes-anchors.mjs 的 CELL_AXES_ANCHOR_FLOORS）——登记表被削薄了`,
-  );
+test("G4 真相校（#917）：锚点唯一命中 + 命中行提到键 + 文档那格点名的文件 == 登记 codePath", () => {
   const { groups, errors: anchorErrors } = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF);
-  assert.deepEqual(anchorErrors, [], "锚点登记表自己就不成立（唯一命中判据）");
-
-  const reconciled = new Set();
-  for (const { rows, side } of tables.values()) {
-    const verdict = G4_SIDE_RECONCILE({ side, rows, groups, linesOf: G4_LINES_OF });
-    assert.deepEqual(verdict.errors, [], `${side}：两轴引用与登记锚点的等值对账没过`);
-    for (const entry of verdict.reconciled) reconciled.add(entry);
-    for (const key of new Set(rows.map((row) => row.key))) {
-      assert.ok(
-        verdict.reconciled.has(`${side}|${key}`),
-        `${side}：\`${key}\` 这一格没有进锚点对账（写点列与读者列里的 src/bin 引用一条也没被复算）`,
-      );
-    }
-  }
-  const keysSeen = new Set([...reconciled].map((entry) => entry.split("|")[1]));
-  assert.ok(keysSeen.size >= CELL_KEYS.length, `锚点对账只覆盖 ${keysSeen.size} 个格名，不满 ${CELL_KEYS.length} 格`);
-});
-
-// ── G4 的三条反向证（#772 R2 M1：不是手工跑一次，是常驻用例）────────────────────────────
-//
-// 现场（主会话在 `cb463b0` 上复现过）：把 EN 表 `compactionStats` 的写点从 `:3038`（`compactionStats:
-// cloneState(compactionStats),`）改成 `:3015`（一句讲「测试拿它当指纹」的**注释**）——裸行号棘轮与
-// 旧的词面判据**都不认**这个错引。下面三例把这三步钉成用例：① 错引必红；② 歧义锚点必红并点名「歧义」；
-// ③ 原样必须 0 错（第 ③ 步就是上面 G4 自己，这里再补一条「合成数据上把改动撤回即恢复绿」的直接证据）。
-
-test("G4-R1 反向证：写点被换成「同一键名的注释行」⇒ 词面判据照过、锚点对账必红", () => {
-  const path = G4_DISTRACTOR_PROBE.path;
-  const probeLines = G4_LINES_OF(path).map((line, index) => ({ line, index }))
-    .filter(({ line }) => new RegExp(G4_DISTRACTOR_PROBE.anchor, "u").test(line));
-  assert.ok(probeLines.length === 1, `干扰行必须唯一，实际 ${probeLines.length} 行`);
-  const distractor = probeLines[0].index + 1;
-  const groups = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).groups;
-  const anchorLines = [...groups.get(G4_GROUP_KEY(G4_DISTRACTOR_PROBE.key, "write", 0, path))];
-  assert.ok(
-    anchorLines.length > 0 && !anchorLines.includes(distractor),
-    `基准行（${anchorLines.join(",")}）必须与干扰行（${distractor}）不是同一行，否则这组反向证是空转`,
-  );
-  // 词面判据在**错的那一行**上照样通过 ⇒ 这就是旧 G4 放行 :3015 的原因（评审数出来的洞）
-  assert.ok(
-    G4_KEY_NAME_CHECK(G4_LINES_OF(path)[distractor - 1], G4_DISTRACTOR_PROBE.key),
-    "干扰行必须仍然提到键名（否则它测不出「词面判据是瞎的」这件事）",
-  );
-  assert.ok(
-    G4_KEY_NAME_CHECK(G4_LINES_OF(path)[anchorLines[0] - 1], G4_DISTRACTOR_PROBE.key),
-    "基准行也必须提到键名（否则两行不是同一形状）",
-  );
-  // ① 把 EN 与 CN 表里那一格的写点行号换成干扰行：两侧都必须红，且红话里点名「表写 / 锚点实际 / 那一行原文」
-  for (const { rows, side } of tables.values()) {
-    const mutated = rows.map((row) => {
-      if (row.key !== G4_DISTRACTOR_PROBE.key || row.writeSite.includes(`${path}:${distractor}`)) return row;
-      return {
-        ...row,
-        // 把这一格写点里的**全部**基准行号换成干扰行（那一格写点共两处：快照写点 + 轮记录写点）
-        writeSite: anchorLines.reduce(
-          (cell, n) => cell.replace(`${path}:${n}`, `${path}:${distractor}`),
-          row.writeSite,
-        ),
-      };
-    });
-    assert.notDeepEqual(mutated, rows, `${side}：变异没落上（表里的写点形状变了，先看这里）`);
-    const verdict = G4_SIDE_RECONCILE({ side, rows: mutated, groups, linesOf: G4_LINES_OF });
-    assert.ok(
-      verdict.errors.length > 0,
-      `${side}：把写点换成注释行 ${path}:${distractor} 之后锚点对账仍然全绿 ⇒ 判据没咬住「这件事」`,
-    );
-    const hit = verdict.errors.filter((e) => e.includes(G4_DISTRACTOR_PROBE.key) && e.includes("不等值"));
-    assert.ok(hit.length === 1, `必须恰好一条等值对账红，实际 ${hit.length} 条：${JSON.stringify(verdict.errors)}`);
-    assert.match(hit[0], /表写/u);
-    assert.match(hit[0], /锚点实际/u);
-    assert.match(hit[0], /那一行原文/u);
-    assert.ok(
-      hit[0].includes(`${path}:${distractor}`) && anchorLines.every((n) => hit[0].includes(`${path}:${n}`)),
-      `红话必须同时给出「表写 :${distractor}」与「锚点实际 :${anchorLines.join(" / :")}」：${hit[0]}`,
-    );
-    // ③ 恢复：把行号换回去 ⇒ 同一格同一轴 0 错
-    const restored = G4_SIDE_RECONCILE({ side, rows, groups, linesOf: G4_LINES_OF });
-    assert.deepEqual(restored.errors, [], `${side}：原样的表必须 0 错（恢复证）`);
+  assert.deepEqual(anchorErrors, [], `锚点判据（唯一命中 / 种类 / 提到键）不合格：\n  ${anchorErrors.join("\n  ")}`);
+  for (const [side, table] of tables) {
+    const verdict = G4_SIDE_RECONCILE({ side, rows: table.rows, groups });
+    assert.deepEqual(verdict.errors, [], `${side}：两轴表的 fileMatch 真相校不合格：\n  ${verdict.errors.join("\n  ")}`);
   }
 });
 
-test("G4-R2 反向证：锚点被放宽到命中两行（歧义）⇒ 必红并点名「锚点歧义」", () => {
-  const victim = CELL_AXES_ANCHORS.find(
-    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.kind === "code",
-  );
-  assert.ok(victim !== undefined, "反向证需要 compactionStats 的代码写点锚点在场");
-  const [unique] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(victim.path), victim);
-  const loose = { ...victim, prev: undefined, anchor: "compactionStats" };
-  const looseHits = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(loose.path), loose);
-  assert.ok(looseHits.length > 1, `键名锚点本该命中多行（拿它证歧义），实际 ${looseHits.length} 行`);
-  const mutated = CELL_AXES_ANCHORS.map((entry) => (entry === victim ? loose : entry));
-  assert.notEqual(mutated, CELL_AXES_ANCHORS);
-  const { errors } = G4_ANCHOR_GROUPS(mutated, G4_LINES_OF);
-  assert.ok(errors.length > 0, "锚点命中两行却全绿 ⇒ 歧义锚点被当成了基准");
-  assert.match(errors.join("\n"), /锚点歧义/u);
-  assert.match(errors.join("\n"), /compactionStats/u);
-  // 恢复：原表 0 错
+// ── G4 的长期反向证（#917：四格，全部吃合成输入，变异没落上算失败）──────────────────────
+
+test("G4-R1 反向证：锚点在 codePath 里命中 2 次（歧义）⇒ 必红并点名「锚点歧义」", () => {
+  const victim = CELL_AXES_ANCHORS.find((e) => e.kind === "code" && !/\\s\\S\*/u.test(e.anchor));
+  assert.ok(victim !== undefined, "必须能挑到一个能放宽的代码锚点，否则本例空转");
+  const before = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF);
+  const [unique] = [...before.groups.get(G4_GROUP_KEY(victim.key, victim.axis, victim.row ?? 0, victim.path))];
+  const loosened = CELL_AXES_ANCHORS.map((e) => e === victim ? { ...e, anchor: "^.*$" } : e);
+  const { errors } = G4_ANCHOR_GROUPS(loosened, G4_LINES_OF);
+  const hit = errors.find((e) => e.includes(victim.key) && e.includes("锚点歧义"));
+  assert.ok(hit !== undefined, `放宽到命中整文件应判「锚点歧义」并点名 \`${victim.key}\`，实际：\n  ${errors.join("\n  ")}`);
+  assert.ok(/命中 \d+ 行/u.test(hit), `必须真数到多于一行（${hit}）`);
   assert.deepEqual(G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).errors, [], "原锚点表必须 0 错（恢复证）");
+  void unique;
 });
 
-test("G4-R3 反向证：表里多一条没登记的引用 / 少一条已登记的引用 ⇒ 都必红", () => {
-  const groups = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).groups;
-  const base = G4_SIDE_RECONCILE({ side: "en", rows: tables.get("en").rows, groups, linesOf: G4_LINES_OF });
-  assert.deepEqual(base.errors, [], "原表必须 0 错（本例两条判据的前提）");
-  // ① 多一条没登记的引用（给 `status` 的读者列再引一处 `bin/final-guard-support.js`，但该文件没有锚点）
-  const extra = tables.get("en").rows.map((r) => (r.key === "status"
-    ? { ...r, readers: `${r.readers}、bin/final-guard-support.js:218` }
-    : r));
-  const extraVerdict = G4_SIDE_RECONCILE({ side: "en", rows: extra, groups, linesOf: G4_LINES_OF });
-  assert.ok(extraVerdict.errors.length === 1, `只该多出一条红，实际：${JSON.stringify(extraVerdict.errors)}`);
-  assert.ok(extraVerdict.errors.some((e) => e.includes("没有登记锚点")), JSON.stringify(extraVerdict.errors));
-  // ② 少一条已登记的引用（把 status 的写点引文删掉 ⇒ 锚点躺着、表里没人引）
-  const dropped = tables.get("en").rows.map((r) => (r.key === "status"
-    ? { ...r, writeSite: "见停写说明" }
-    : r));
-  const droppedVerdict = G4_SIDE_RECONCILE({ side: "en", rows: dropped, groups, linesOf: G4_LINES_OF });
-  assert.ok(droppedVerdict.errors.some((e) => e.includes("已经不再引它")), JSON.stringify(droppedVerdict.errors));
-});
-
-test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点指到注释行必红，注释锚点指到代码行也必红（M-A）", () => {
-  // 出厂表的八条锚点全带合法 kind，其中四条钉的是停写解释注释。
-  // 种类写错 ⇒ 下面那条判据当场红。
-  assert.ok(
-    CELL_AXES_ANCHORS.length === CELL_AXES_REQUIRED_CELLS.length,
-    `登记 ${CELL_AXES_ANCHORS.length} 条与人审清单 ${CELL_AXES_REQUIRED_CELLS.length} 格不同数 ⇒ 先对齐两份真值`,
-  );
-  const commentEntries = CELL_AXES_ANCHORS.filter((entry) => entry.kind === "comment");
-  assert.deepEqual(
-    commentEntries.map((entry) => `${entry.key}|${entry.axis}`).sort(),
-    [
-      "compactionStats|write",
-      "status|write",
-      "toolUse|write",
-      "ts|write",
-    ],
-    "注释锚点只许这四条（新增注释锚点必须同批改这里，种类是登记事实，不是机器猜出来的）",
-  );
-  assert.ok(
-    CELL_AXES_ANCHORS.every((entry) => entry.kind === "code" || entry.kind === "comment"),
-    "每条锚点都必须带 kind（code / comment），闸的 parseCellAxesAnchorTable() 也按这个把关",
-  );
-  // 原表：种类全部相符（与闸共用同一个 anchorKindError）
-  assert.deepEqual(G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).errors, [], "原表的种类判据必须 0 错");
-
-  // ① 评审 M-A 的变异本体：把 `compactionStats` 的快照写点锚点改成「只是提到键名的那句注释」，
-  //    并把**两份表**里那一格写点的行号**同步改口**到那一行 ⇒ 行号等值对账全自洽（旧行为：两道闸都绿），
-  //    现在必须被种类判据拦下，且红话里点名「哪一格哪一轴 + 命中行号 + 那一行原文」。
-  const path = G4_DISTRACTOR_PROBE.path;
-  const groups = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).groups;
-  const snapshotAnchor = CELL_AXES_ANCHORS.find(
-    (entry) => entry.key === G4_DISTRACTOR_PROBE.key && entry.axis === "write" && entry.path === path && entry.kind === "code",
-  );
-  assert.ok(snapshotAnchor !== undefined, "需要 compactionStats 的快照写点锚点（kind=code）在场");
-  const [realWrite] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), snapshotAnchor);
-  const distractor = G4_LINES_OF(path)
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) => new RegExp(G4_DISTRACTOR_PROBE.anchor, "u").test(line));
-  assert.ok(distractor.length === 1, `干扰行（注释行）必须唯一，实际 ${distractor.length} 行`);
-  const commentLine = distractor[0].index + 1;
-  assert.ok(anchorLineIsComment(G4_LINES_OF(path)[commentLine - 1]), "干扰行必须真的是注释行，否则本例空转");
-  assert.notEqual(commentLine, realWrite, "干扰行与真写点必须不是同一行");
-
-  const kindMutatedAnchors = CELL_AXES_ANCHORS.map((entry) => (
-    entry === snapshotAnchor ? { ...entry, prev: undefined, anchor: G4_DISTRACTOR_PROBE.anchor } : entry
-  ));
-  const mutatedGroups = G4_ANCHOR_GROUPS(kindMutatedAnchors, G4_LINES_OF);
-  const kindErrors = mutatedGroups.errors.filter((text) => text.includes("锚点种类不符"));
-  assert.ok(kindErrors.length === 1, `必须恰好一条种类红，实际 ${kindErrors.length} 条：${JSON.stringify(mutatedGroups.errors)}`);
-  assert.match(kindErrors[0], /compactionStats/u);
-  assert.match(kindErrors[0], /write 轴/u);
-  assert.match(kindErrors[0], new RegExp(`:${commentLine} 那一行`, "u"));
-  assert.ok(kindErrors[0].includes(G4_LINES_OF(path)[commentLine - 1].trim().slice(0, 40)), "红话必须带上命中那一行的原文");
-
-  // 关键一步：两份表的引文**同步改口**到那一行 ⇒ 等值对账这一侧全绿（= 评审说的「旧行为两道闸都绿」），
-  // 于是「红」只能来自种类判据。
-  for (const { rows, side } of tables.values()) {
-    const synced = rows.map((row) => (row.key === G4_DISTRACTOR_PROBE.key
-      ? { ...row, writeSite: row.writeSite.replace(`${path}:${realWrite}`, `${path}:${commentLine}`) } : row));
-    assert.notDeepEqual(synced, rows, `${side}：同步改口没落上`);
-    const eqOnly = G4_SIDE_RECONCILE({ side, rows: synced, groups: mutatedGroups.groups, linesOf: G4_LINES_OF });
-    assert.deepEqual(eqOnly.errors, [], `${side}：引文同步改口后等值对账必须自洽（不然本例测不到「只有种类看得见」）`);
-  }
-
-  // ② 另一个方向：kind=comment 的锚点被换成真代码行 ⇒ 同样红
-  const commentEntry = commentEntries.find((entry) => entry.key === "toolUse" && entry.axis === "write");
-  assert.ok(commentEntry !== undefined, "需要 toolUse 的注释锚点（kind=comment）在场");
-  const [stoppedCommentLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(commentEntry.path), commentEntry);
-  const flipped = CELL_AXES_ANCHORS.map((entry) => (entry === commentEntry
-    // 拿同一文件里一条真代码行当锚点（写入位置那一形状），种类却没跟着改
-    ? { ...entry, anchor: snapshotAnchor.anchor } : entry));
-  const flipErrors = G4_ANCHOR_GROUPS(flipped, G4_LINES_OF).errors;
-  assert.ok(flipErrors.some((text) => text.includes("锚点种类不符") && text.includes("kind=comment")),
-    JSON.stringify(flipErrors));
-  assert.ok(stoppedCommentLine !== undefined, "注释锚点必须唯一命中（本例前提）");
-
-  // ③ 恢复证：原表 0 错
-  assert.deepEqual(G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).errors, [], "原锚点表必须 0 错（恢复证）");
-});
-
-test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 ⇒ 覆盖面真值必红并点名缺哪一格在哪一份（M-B）", () => {
-  const refsOf = ({ side, rows }) => {
-    const out = new Map();
-    const perKey = new Map();
-    for (const row of rows) {
-      const rowIndex = perKey.get(row.key) ?? 0;
-      perKey.set(row.key, rowIndex + 1);
-      for (const [axis, cell] of [["write", row.writeSite], ["read", row.readers]]) {
-        for (const citation of cell.match(CITATION) ?? []) {
-          const [rel, lineText] = citation.split(":");
-          if (!/^src\//u.test(rel) && !/^bin\//u.test(rel)) continue;
-          const gk = G4_GROUP_KEY(row.key, axis, rowIndex, rel);
-          out.set(gk, new Set([...(out.get(gk) ?? []), Number(lineText)]));
-        }
-      }
-    }
-    return { side, doc: `contract-snapshot-cell-axes(${side})`, refs: out };
-  };
-  const refsByDoc = [...tables.values()].map(({ rows, side }) => refsOf({ side, rows }));
-
-  // ① 正向：出厂的登记 + 两份表必须覆盖清单中的每个槽位（清单 → 登记 → EN → CN 四处）
-  const clean = checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc });
-  assert.deepEqual(clean.errors, [], JSON.stringify(clean.errors));
-  assert.equal(clean.slots, new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => cellAxesRequiredSlotKey(cell))).size,
-    "清单去重后的槽位数必须与判据报出的一致");
-  // 地板是由清单算出来的，不是手填数（#772 R4 M-B）
-  assert.equal(CELL_AXES_ANCHOR_FLOORS.entries, CELL_AXES_REQUIRED_CELLS.length,
-    "entries 地板必须是清单条数算出来的（手填数会留出削薄余量）");
-  assert.equal(CELL_AXES_ANCHOR_FLOORS.groups,
-    new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => `${cell.key}|${cell.axis}`)).size,
-    "groups 地板必须是清单里 key|axis 去重数算出来的");
-
-  // ② 反向变异：从已登记槽位中删一条锚点，并同步删除两份表里对应引用，覆盖面检查必须报红。
-  const statusAnchor = CELL_AXES_ANCHORS.find((entry) => entry.key === "status" && entry.axis === "write");
-  assert.ok(statusAnchor !== undefined, "需要 status 写轴锚点");
-  const [statusLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(statusAnchor.path), statusAnchor);
-  const victims = [
-    { key: "status", axis: "write", path: statusAnchor.path, at: statusLine },
+test("G4-R2 反向证：锚点命中那行不提这格的键名 ⇒ 必红并点名两边", () => {
+  // 合成行：一行不含 victim.key 的代码，却用一条恰好命中它的锚点 —— 命中唯一、种类像代码，但没提键名。
+  const synthKey = "ghostPayloadKey";
+  const synthPath = "src/loop/orchestrator.js";
+  const synthLines = [
+    "  // 一行普通注释锚点行（呰不提那个键名）",
+    "  const unrelated = computeThing();",
   ];
-  const droppedKeys = new Set();
-  const mutatedAnchors = [...CELL_AXES_ANCHORS];
-  const mutatedRows = new Map([...tables.values()].map(({ side, rows }) => [side, rows.map((row) => ({ ...row }))]));
-  const quote = (text) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  for (const victim of victims) {
-    const index = mutatedAnchors.findIndex((entry) => entry.key === victim.key && entry.axis === victim.axis
-      && entry.path === victim.path && G4_ANCHOR_LINE_CHECK(G4_LINES_OF(entry.path), entry).includes(victim.at));
-    assert.ok(index >= 0, `需要 \`${victim.key}\` 的 ${victim.axis} 锚点（命中 ${victim.path}:${victim.at}）在场才能删`);
-    const [removedEntry] = mutatedAnchors.splice(index, 1);
-    droppedKeys.add(G4_GROUP_KEY(removedEntry.key, removedEntry.axis, removedEntry.row ?? 0, removedEntry.path));
-    // 同步从两份表的对应单元格里抹掉这一条 `path:line`（连它旁边的分隔符一起吃掉）
-    const field = removedEntry.axis === "write" ? "writeSite" : "readers";
-    const citation = `${victim.path}:${victim.at}`;
-    for (const [side, rows] of mutatedRows) {
-      let removed = 0;
-      for (const row of rows) {
-        if (row.key !== removedEntry.key || !row[field].includes(citation)) continue;
-        row[field] = row[field].replace(new RegExp(`\\s*[,、；]?\\s*\`?${quote(citation)}\`?\\s*[,、；]?\\s*`, "u"), " ").trim();
-        removed += 1;
-      }
-      assert.equal(removed, 1, `${side}：${citation} 应当只在一条单元格里出现一次（变异没落上）`);
-      assert.ok(!rows.some((row) => row[field].includes(citation)), `${side}：${citation} 没被删干净`);
-    }
-  }
-  assert.equal(mutatedAnchors.length, CELL_AXES_ANCHORS.length - victims.length, "变异应当只删目标登记");
-  const mutatedGroups = G4_ANCHOR_GROUPS(mutatedAnchors, G4_LINES_OF);
-  assert.deepEqual(mutatedGroups.errors, [], "剩下的那些锚点必须各自仍成立（变异是削薄，不是打坏）");
-  for (const [side, rows] of mutatedRows) {
-    const still = G4_SIDE_RECONCILE({ side, rows, groups: mutatedGroups.groups, linesOf: G4_LINES_OF });
-    assert.deepEqual(still.errors, [], `${side}：成对删除后「剩下的自洽」必须成立（这正是旧判据看不见削薄的原因）`);
-  }
-  // 但覆盖面真值看得见：登记那一侧 + EN + CN 每一处都要报出缺的那一格
-  const after = checkCellAxesCoverage({ anchors: mutatedAnchors, refsByDoc: [...mutatedRows.entries()].map(([side, rows]) => refsOf({ side, rows })) });
-  assert.ok(after.errors.length > 0, "成对删掉一个登记槽与两份引文后仍然全绿 ⇒ M-B 没关掉");
-  assert.ok(after.errors.some((text) => text.includes("CELL_AXES_REQUIRED_CELLS")), JSON.stringify(after.errors.slice(0, 3)));
-  for (const gk of droppedKeys) {
-    const [key] = gk.split("|");
-    assert.ok(after.errors.some((text) => text.includes(`\`${key}\``)), `红话必须点名缺的格子 \`${key}\`：${JSON.stringify(after.errors.slice(0, 3))}`);
-  }
-  assert.ok(
-    after.errors.some((text) => text.includes("en 表")) && after.errors.some((text) => text.includes("cn 表")),
-    "红话必须点名缺在哪一份（EN / CN）");
-  // 地板由清单现算：删一条登记必须低于 8 条的地板。
-  assert.ok(mutatedAnchors.length < CELL_AXES_ANCHOR_FLOORS.entries,
-    `削到 ${mutatedAnchors.length} 条必须低于地板 ${CELL_AXES_ANCHOR_FLOORS.entries}（地板由清单算出）`);
-  // ③ 恢复证
-  assert.deepEqual(checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc }).errors, [], "原样必须 0 错（恢复证）");
-  const before = anchorTableShape(CELL_AXES_ANCHORS);
-  const afterShape = anchorTableShape(mutatedAnchors);
-  assert.equal(afterShape.entries, before.entries - victims.length, `应剩 ${before.entries - victims.length} 条，实际 ${afterShape.entries}`);
-  assert.equal(afterShape.groups, before.groups - 1, "删掉 status 写轴应当少一个组");
-  assert.equal(afterShape.cells, before.cells - 1, "删掉 status 唯一的锚点后应当少一个格名");
+  const synthAnchor = { key: synthKey, axis: "write", row: 0, codePath: synthPath, path: synthPath, kind: "comment", anchor: "^ {2}// 一行普通注释锚点行（呰不提那个键名）$" };
+  const { groups, errors } = G4_ANCHOR_GROUPS([synthAnchor], () => synthLines);
+  assert.equal(groups.size, 1, "合成锚点必须唯一命中（否则变异没落在这条判据上）");
+  const hit = errors.find((e) => e.includes(synthKey) && e.includes("没提到键名"));
+  assert.ok(hit !== undefined, `命中行不提键名必须判红并点名 \`${synthKey}\`，实际：\n  ${errors.join("\n  ")}`);
 });
 
-test("G4-R6 特征用例（已知限度，见 command-reference）：锚点改成「同一键名的另一处真写入」+ 两份引文同步改口 ⇒ 现在不红", () => {
-  // 这条不是「修好了」，是把当前的**宽容**钉成契约：机器能证「这一行存在、唯一命中、种类相符、
-  // 两份表与它等值、格子没被削薄」，证不了「这一行讲的是不是这一格这件事」。
-  // 已知限度登记在 docs/maintenance/command-reference.md（#772 R4）；不要再加启发式去堵它。
-  const path = "src/loop/orchestrator.js";
-  const snapshotAnchor = CELL_AXES_ANCHORS.find(
-    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.path === path && entry.kind === "comment",
-  );
-  // #770 之后这一轴有两条登记：注释（解释快照为什么没有写点）与轮记录的真写点。取「命中唯一且是真代码行」那一条。
-  const roundAnchor = CELL_AXES_ANCHORS.find(
-    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.path === path && entry !== snapshotAnchor
-      && G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), entry).length === 1
-      && !anchorLineIsComment(G4_LINES_OF(path)[G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), entry)[0] - 1]),
-  );
-  assert.ok(snapshotAnchor !== undefined && roundAnchor !== undefined, "需要 compactionStats 的两条写点锚点在场");
-  const [snapshotLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), snapshotAnchor);
-  const [roundLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), roundAnchor);
-  assert.notEqual(snapshotLine, roundLine, "停写解释注释与轮记录真写点必须是不同行，否则本例空转（#770 之后快照那一格是注释锚点）");
-  assert.ok(!anchorLineIsComment(G4_LINES_OF(path)[roundLine - 1]), "轮记录那一处必须是真代码行（kind 仍相符）");
-
-  const swapped = CELL_AXES_ANCHORS.map((entry) => (
-    entry === snapshotAnchor ? { ...entry, anchor: roundAnchor.anchor, kind: roundAnchor.kind } : entry));
-  const { groups, errors } = G4_ANCHOR_GROUPS(swapped, G4_LINES_OF);
-  // #770 之后快照那一格是 comment 锚点：这一形要的是「换成另一处真写入」，所以种类也得跟着换成 code，
-  // 否则机器当场就能认出（那是新增的严格面，不是本例要钉的宽容）。
-  assert.deepEqual(errors, [], "种类/唯一命中在这一形上仍然成立（前提）");
-  for (const { rows, side } of tables.values()) {
-    const synced = rows.map((row) => (row.key === "compactionStats"
-      ? { ...row, writeSite: row.writeSite.replace(`${path}:${snapshotLine}`, `${path}:${roundLine}`) } : row));
-    const verdict = G4_SIDE_RECONCILE({ side, rows: synced, groups, linesOf: G4_LINES_OF });
-    assert.deepEqual(verdict.errors, [], `${side}：这个已知限度形状现在必须**不红**（钉成契约；若哪天改判据让它红，记得同步改这条用例与文档）`);
+test("G4-R3 反向证：文档那一格把文件写错（resume-manager.js 写成 orchestrator.js）⇒ 必红并点名两边", () => {
+  const { groups } = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF);
+  // 找一个原本点名 src/loop/resume-manager.js 的读格，把它换成 orchestrator.js（登记 codePath 是 resume-manager.js）。
+  let target = null;
+  const perKey = new Map();
+  for (const row of tables.get("cn").rows) {
+    const rowIndex = perKey.get(row.key) ?? 0;
+    perKey.set(row.key, rowIndex + 1);
+    const gk = G4_GROUP_KEY(row.key, "read", rowIndex, "src/loop/resume-manager.js");
+    if (groups.has(gk) && row.readers.includes("src/loop/resume-manager.js")) { target = { rowIndex, row }; break; }
   }
+  assert.ok(target !== null, "必须能找到一格原本点名 resume-manager.js 且登记锚点以它为 codePath，否则本例空转");
+  const mutated = tables.get("cn").rows.map((row) =>
+    row === target.row ? { ...row, readers: row.readers.replace(/src\/loop\/resume-manager\.js/gu, "src/loop/orchestrator.js") } : row);
+  const verdict = G4_SIDE_RECONCILE({ side: "cn", rows: mutated, groups });
+  const forward = verdict.errors.find((e) => e.includes(target.row.key) && e.includes("src/loop/orchestrator.js") && e.includes("没有以它为 codePath"));
+  const back = verdict.errors.find((e) => e.includes(target.row.key) && e.includes("src/loop/resume-manager.js") && e.includes("没点到"));
+  assert.ok(forward !== undefined, `文档点名的错文件必须判红并点名它，实际：\n  ${verdict.errors.join("\n  ")}`);
+  assert.ok(back !== undefined, `登记的 codePath 没被点名也要判红并点名它，实际：\n  ${verdict.errors.join("\n  ")}`);
+});
+
+test("G4-R4 靶心：在锚点命中行上方插入一行普通注释（纯行号位移）⇒ 判定必须仍然全绿", () => {
+  // 挑一个真实代码锚点，把它命中的那一行往下挪一行（在上方塞一行普通注释）。
+  // #917 撤了「文档抄件 == 锚点行号」之后，行号不再是判据，纯位移不许让判定变红。
+  const target = CELL_AXES_ANCHORS.find((e) => e.kind === "code");
+  assert.ok(target !== undefined, "必须能挑到一个代码锚点，否则本例空转");
+  const realLines = G4_LINES_OF(target.path);
+  const { hits } = anchorHitLines(realLines, target);
+  assert.equal(hits.length, 1, `靶心前置：真实锚点必须唯一命中，实际 ${hits.length}`);
+  const at = hits[0] - 1;
+  // 合成位移：命中行之前插一行**不匹配该锚点**的普通注释 ⇒ 锚点仍唯一命中，只是行号 +1。
+  const shifted = [...realLines.slice(0, at), "  // 靶心：这只是一行普通注释，行号位移探针（#917）。", ...realLines.slice(at)];
+  const linesOf = (rel) => (rel === target.path ? shifted : G4_LINES_OF(rel));
+  const { groups, errors } = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, linesOf);
+  assert.deepEqual(errors, [], `插一行普通注释后锚点判据必须仍全绿（证明行号不再被比对），实际：\n  ${errors.join("\n  ")}`);
+  assert.ok(groups.size > 0, "锚点组必须仍在场（否则变异没落上）");
+  for (const [side, table] of tables) {
+    const verdict = G4_SIDE_RECONCILE({ side, rows: table.rows, groups });
+    assert.deepEqual(verdict.errors, [], `插注释后 ${side} 的 fileMatch 真相校也必须仍全绿：\n  ${verdict.errors.join("\n  ")}`);
+  }
+});
+
+test("G4-R5 反向证：成对删掉某格的登记锚点与两份表里的对应点名 ⇒ 覆盖面真值必红并点名缺哪一格", () => {
+  const victim = CELL_AXES_ANCHORS.find((e) => e.key === "ts" && e.axis === "write");
+  assert.ok(victim !== undefined, "必须能挑到 ts 写锚点，否则本例空转");
+  const anchors = CELL_AXES_ANCHORS.filter((e) => !(e.key === victim.key && e.axis === victim.axis));
+  const { groups } = G4_ANCHOR_GROUPS(anchors, G4_LINES_OF);
+  const drop = (rows) => rows.map((row) => row.key === victim.key
+    ? { ...row, writeSite: row.writeSite.replace(/src\/loop\/[A-Za-z0-9_./-]+\.js/gu, "") } : row);
+  const refsByDoc = [...tables.entries()].map(([side, table]) => ({
+    side, doc: side === "en" ? "docs/host-consumer-contract.md" : "docs/host-consumer-contract_cn.md",
+    refs: new Map(drop(table.rows).flatMap((row, rowIndex) => ["write", "read"].flatMap((axis) => {
+      const cell = axis === "write" ? row.writeSite : row.readers;
+      SIDE_FILE_REF.lastIndex = 0;
+      return [...new Set(cell.match(SIDE_FILE_REF) ?? [])].map((rel) => [G4_GROUP_KEY(row.key, axis, rowIndex, rel), new Set([rel])]);
+    }))),
+  }));
+  const coverage = checkCellAxesCoverage({ anchors, refsByDoc });
+  const hit = coverage.errors.find((e) => e.includes("ts"));
+  assert.ok(hit !== undefined, `成对删掉 ts 写格后覆盖面真值必红并点名 ts，实际：\n  ${coverage.errors.join("\n  ")}`);
 });
 
 test("G6 表里被引为读点的恢复侧行号，必须是剥完源码里真存在的读点（读轴与源码互相对账）", () => {
