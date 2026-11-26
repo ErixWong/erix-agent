@@ -4,6 +4,16 @@
 ## [Unreleased]
 
 ### Changed
+- **The one rule that could never go red is deleted (task 261126-58).** `collectRefScanCountClaimErrors()` compared the
+  document's claimed document counts against the live scan and reported every mismatch as `notes.push("（提示，不拦）")` —
+  it pushed nothing into the error list, so `check:docs` could not fail because of it. A rule that cannot red is a rule
+  nobody answers to; it is deleted with its two call sites, and the three comments that described it now say the counts are
+  no longer reconciled (the truth still comes from the scan itself). Scan of the whole script for the same shape found no
+  other such rule: `collectAnchorErrors` dispatches into its rules, `walk` and `runSelfTest` are helpers.
+- **唯一一条「永远不会红」的判据删掉了（任务 261126-58）。** `collectRefScanCountClaimErrors()` 拿文档里写的份数与实扫结果
+  比对，但每处不一致都走 `notes.push("（提示，不拦）")`——**它一个都不 push 进 errors**，所以 `check:docs` 不可能因为它
+  失败。红不了的判据就是没人负责的判据；连同两处调用点一起删除，三处描述它的注释改成「份数不再对账」（真值仍由实扫给出）。
+  对全脚本做了同形状扫描，没有第二条：`collectAnchorErrors` 是把规则派发进去的，`walk` 与 `runSelfTest` 是辅助函数。
 - **The contribution rule now says "always by PR", because that is what the live ruleset enforces (issue #933, task 261126-57).**
   `AGENTS.md` §5 said "small fixes and documentation may skip the PR, but never land directly on `main`" — self-contradictory,
   and wrong in practice: the active `main-require-pr` ruleset rejects a direct push with `GH013`, while `origin`'s two push

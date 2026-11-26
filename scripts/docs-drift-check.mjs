@@ -77,7 +77,8 @@
 //                 覆盖面曾有只降不升地板 `REF_SCAN_DOCS_MINIMUM`（#908 拆）；「把指南改名到不匹配模式就静默缩面」
 //                 那条报警改由**测试侧硬编码清单**守（`test/docs-anchor-ratchet.test.js` 钉 `SYMBOL_DOCS_STATIC`），
 //                 脚本侧只留「清单里有、工作区里真读不到 = 红」这一真值。文档里写着的「点名几份 + 实扫几份 = 下限」
-//                 也由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）：抄错一格就红并点名是哪份的哪个数。
+//                 （原「文档写的份数逐格对账」那一条已随 #923 删除：它只 push `notes`、**从不报错**，
+//                 属于「红不了」的死判据——删掉它不损失任何判据力。）
 //                 豁免是**三信号 AND**（① 表里点名这一条 ② 引用行含那个占位路径 ③ 同一行有就地声明词）：
 //                 评审 R4 把从前的整行 OR 收紧——同一行只剩一句 `for example` 之类的附带措辞不算声明。
 //                 条目自己还要过配置校 `bareLineExemptionEntryErrors()`：声明词若能匹配空串（这一侧恒真）
@@ -1755,7 +1756,8 @@ function collectMarkerLiteralErrors() {
 // 覆盖面与正则（工单 #286 T-a 的口径，脚本自己会数——别只信注释，跑 `--verbose` 看 note）：
 //   覆盖面 = `SYMBOL_DOCS_STATIC` 点名的那批 + `docs/host-upgrade-guide*.md` 全部（按目录**实扫**：新增一份
 //     指南就自动纳面，不存在「新文档漏在覆盖面外」的形状）。份数不在这里抄——跑 `--verbose` 看 ref-scan 那条 note，
-//     文档里写着的份数由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）。
+//     文档里写着的份数**不再**对账（原 `collectRefScanCountClaimErrors()` 只 push notes、恒不报错，
+//     已随 #923 删除；份数的真值仍由本函数的实测值给出）。
 //   正则 = BARE_LINE_RE：**实现面只算 `src/**.js:N[-M]`**（就是工单那条口径）。这段注释以前写「前缀面
 //     放宽到 src|bin|scripts|test|docs|examples|fixtures」——**那一步对裸行号棘轮从未落地**：现正则只匹配 `src/`，
 //     于是 `bin/cli.js:841-848` 这类行号根本不进棘轮（`bin/final-guard.js:86`、`test/contract/…:124-142`
@@ -1792,7 +1794,7 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
  *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前清单做对照，这里再钉一道份数下限。
  *  现值 = `SYMBOL_DOCS_STATIC.length`（点名那批）+ 目录实扫到的指南份数，**由本文件算出来**：
  *  下限只是「不许比它小」的地板，它本身不解释自己为什么是这个数——所以文档里写的那组份数（点名几份 +
- *  实扫几份 = 下限）由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）。
+ *  实扫几份 = 下限）**不再**与文档声称对账（那条死判据已随 #923 删除）。
  *  历史（每一次抬高的理由：哪份指南落地、哪七份活文档纳面）在 `docs/maintenance/symbol-anchor-ledger.md`。
  *  写法必须保持这一行不变形（自测要改这个数）。 */
 
@@ -1872,54 +1874,6 @@ const REF_SCAN_COUNT_LABEL = Object.freeze({
   pinned: "点名文档", guides: "实扫指南", total: "文档合计", floor: "下限常量",
 });
 
-/**
- * issue #726 后续（切 0.34.0 时裁决）：**这一族从「判红」降级为「只报」**。
- *
- * 它量的是**闸自己的覆盖面**（点名几份 + 实扫几份 = 合计），再要求文档把这个测量**复述**一遍。
- * 复述没有读者：没有人拿「57 份」做任何决定，而每次新增一份指南（例如切版时新增的升级指南对）
- * 都要连带改 README 中英 + 账本中英四处数字——那是自指类判据在收税，不是漂移。
- *
- * 真值仍然**算**（`refScanDocs()` 是覆盖面判据的同源真值），只是不再拿它判文档红：
- * 数字对不上只打印一行提示，谁想改就改，不改也不拦。
- */
-function collectRefScanCountClaimErrors() {
-  const out = [];          // 恒空：这一族不再产生红（保留返回形状，调用点不动）
-  const notes = [];
-  const truth = refScanCountTruth();
-  let claims = 0;
-  let mismatched = 0;
-  for (const { doc, rules } of REF_SCAN_COUNT_CLAIMS) {
-    const text = textOf(doc);
-    if (typeof text !== "string") {
-      notes.push(`ref-scan-claims（提示）：${doc} 读不到文本，跳过`);
-      continue;
-    }
-    for (const { re, groups, label } of rules) {
-      const hits = [...text.matchAll(re)];
-      if (!hits.length) {
-        notes.push(`ref-scan-claims（提示）：${doc} 里没有「${label}」那条份数声称（不拦）`);
-        continue;
-      }
-      for (const m of hits) {
-        const line = text.slice(0, m.index).split("\n").length;
-        groups.forEach((key, i) => {
-          const claimed = Number(m[i + 1]);
-          const want = truth[key];
-          claims += 1;
-          if (claimed !== want) {
-            mismatched += 1;
-            notes.push(`ref-scan-claims（提示，不拦）：${doc}:${line} 写「${REF_SCAN_COUNT_LABEL[key]}」${claimed}，`
-              + `脚本实测 ${want}——这行只是把测量摆出来，要不要改文档由人决定`);
-          }
-        });
-      }
-    }
-  }
-  notes.push(`ref-scan-claims（只报不判）：实测 点名 ${truth.pinned} / 实扫 ${truth.guides} / 合计 ${truth.total}`
-    + ` / 下限 ${truth.floor}；文档里 ${claims} 处复述，其中 ${mismatched} 处与实测不同（不拦）`);
-  collectRefScanCountClaimErrors.notes = notes;
-  return out;
-}
 
 
 /** 行内代码形态的标识符（不是路径：干掉带 `/` 与 `.` 的东西）。 */
@@ -7620,7 +7574,6 @@ function collectAllDrift() {
     // #772 R2 M2：标记区内容的正向不变量（只许包住那张表）
     ...cellAxesRegionContentErrors(),
     // #635 ① / #644 ③：份数声称的机器对账 + 指令面指着账本的那句指针
-    ...collectRefScanCountClaimErrors(),
     ...collectCliFlagErrors(),
     // #668 ①：压缩策略「默认值」的分层对账（库层 / CLI 层各自绑源码真值）
     ...collectCompactionDefaultErrors(),
@@ -7654,8 +7607,6 @@ for (const [label, en, cn] of SKELETON_PAIRS) {
 for (const e of collectRefScanCoverageErrors()) err(e);
 for (const n of collectRefScanCoverageErrors.notes ?? []) note(n);
 // #635 ① / #644 ③
-for (const e of collectRefScanCountClaimErrors()) err(e);
-for (const n of collectRefScanCountClaimErrors.notes ?? []) note(n);
 for (const e of collectSymbolAnchorErrors()) err(e);
 for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
 // #755：「路径先行」与「path:symbol」两种符号坐标必须能在被指文件里抽到声明（存量走只降不升的基线）
