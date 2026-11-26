@@ -4,6 +4,22 @@
 ## [Unreleased]
 
 ### Changed
+- **The plan directive now asks for batched tool calls (task 261126-44).** The sentence appended to the CLI
+  system prompt read `每轮开始先用一句话（≤30字）说明当前计划，再调用工具` — singular "调用工具", which framed the
+  loop as one action per round. Measured on one dispatched run: **112 of 120 rounds carried exactly one
+  `tool_use` block**, so five independent greps became five round trips, and of 43 minutes wall time **35 were
+  model round trips while tool execution totalled 4.3 minutes** (tool duration median 7 ms). The engine already
+  executes every `tool_use` block in one assistant message (`src/loop/orchestrator.js`) and pairs results by
+  `tool_use_id`, so only the wording was missing. The directive is now **one source of truth**: `PLAN_DIRECTIVE`
+  is exported from `bin/system-prompt.js`, `bin/delegation.js` imports it instead of keeping a copy, and
+  `examples/pi-extension/erix-run-core.js` carries the same text with a pointer comment (that layer only receives
+  `bin/tools.js` through `lib.binTools`). **Behaviour change: prompts now ask for independent calls in one round.**
+  Alongside it, two prose pins are gone: the `--no-agents` test no longer compares against a hand-written legacy
+  prompt literal (it pins the three structural segments and `endsWith(PLAN_DIRECTIVE)` instead), and the
+  `R4 兜底文案 golden` snapshot test plus `test/fixtures/inner-tool-list-golden.json` are deleted — a fixture that
+  recorded prose could only ever say "you changed prose", while the real invariants (prompt names ⊆ registered
+  surface, `note_*` visible, build-time throw on either direction) stay pinned by the remaining eight cases in
+  `test/examples/erix-run-tool-list.test.js` and by `assertPromptPhraseTableMatches`.
 - **CI keeps only clean-environment truth; the documentation-claims subsystem is deleted (issue #908 R2,
   261126 operator ruling).** Two rulings land together. ① *Doc family out of CI*: `check:changelog` and the
   remaining doc-oriented self-tests are no longer pipeline steps; they run where they were already wired
