@@ -329,10 +329,10 @@ test("⑥resume：账本里的 seq 灌回分配器 ⇒ 新折叠接在最大号�
     store,
     tools: TOOLS,
     executeTool: async ({ input }) => `ECHO:${String(input?.text ?? "").slice(0, 40)}`,
-    capabilities: { hooks: { onFoldSummary: (payload) => { resumedPayloads.push(payload); } } },
+    capabilities: { ports: { strategy: createSlidingWindowStrategy() }, hooks: { onFoldSummary: (payload) => { resumedPayloads.push(payload); } } },
     config: {
       run: { resume: true, runId, maxRounds: 4, completion: false, reflection: false },
-      folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: createSlidingWindowStrategy() } },
+      folding: { context: { budgetTokens: 300, keepRounds: 1 } },
     },
   });
   assert.ok(resumedPayloads.length >= 1, "前提：resume 出来的 run 必须真的折叠过");

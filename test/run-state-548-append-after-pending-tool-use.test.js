@@ -125,13 +125,14 @@ function baseOptions({ provider, budgetTokens = 400000, maxRounds = 3, stream = 
     provider,
     tools: [PAD_TOOL],
     executeTool,
+    capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
     config: {
       run: { maxRounds, completion: false, stallDetection: false, stream },
       input: { system: "call pad each round, then answer", messages },
       folding: {
         toolResultTtl: 1,
         toolResultFoldMinTokens: 1,
-        context: { strategy: createFoldStatisticalStrategy(), budgetTokens, keepRounds: 2, task: "issue #548" },
+        context: { budgetTokens, keepRounds: 2, task: "issue #548" },
       },
     },
   };

@@ -36,7 +36,7 @@ test("判据①：record.foldedFacts 是 buildFoldedFacts 的真实返回值时�
   const fact = buildFoldedFacts({
     text: "## 阶段\n第 1..3 轮被折叠，工具调用 4 次。",
     source: "strategy",
-    strategy: createSlidingWindowStrategy(),
+    strategy: "sliding-window",
     roundRange: { from: 1, to: 3 },
     rounds: 3,
   });

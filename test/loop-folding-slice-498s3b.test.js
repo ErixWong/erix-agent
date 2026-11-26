@@ -227,7 +227,8 @@ test("R1 context 经新家生效：小预算真的驱动压缩（真 run）", as
     maxRounds: 3,
     completion: false,
     wrapup: false,
-    config: { folding: { context: { budgetTokens: 200, keepRounds: 0, strategy: createSlidingWindowStrategy() } } },
+    capabilities: { ports: { strategy: createSlidingWindowStrategy() } },
+    config: { folding: { context: { budgetTokens: 200, keepRounds: 0 } } },
   }));
   assert.ok(
     (result.compactionStats ?? []).some((stat) => stat.compacted === true),
