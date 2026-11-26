@@ -633,7 +633,15 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
 > `context_unknown_option` on the assembly-port route, silence on the fine-grained route, **no throw**
 > — while `capabilities.hooks.protectedMessage` is refused as an unknown `hooks` member. Nothing is
 > lost with the knob: a folded round's original text stays reachable verbatim through `recall_read`
-> (issue #896), which reads it out of the ledger by round number.
+> (issue #896), which reads it out of the ledger by round number. It also answers `pattern` — a
+> **grep over the ledger**, substring by default and regex when the pattern carries metacharacters
+> (an invalid regex falls back to substring instead of throwing) — so "I know it was written down
+> somewhere" does not require remembering *which* round. Both modes are hard-capped (300 tokens per
+> excerpt, 5 excerpts, 1500 tokens per call) and **always say which state they are in**: `found`,
+> `no_match` (searched and absent), `truncated` (the archive clamped this text, so a miss may be a
+> fragment), `unrecoverable` (the round is there but its body was never stored) and `empty` (nothing
+> was ever written). `no_match` is deliberately **not** folded into `empty`: a model told "no match"
+> when the text was merely clamped would conclude the history never existed.
 
 Naming only one station sends the host into a second wall: putting `onBeforeFold` into
 `config.folding.context` is refused by "`config` holds data only", and only *that* message mentions

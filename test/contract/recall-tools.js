@@ -67,6 +67,28 @@ export function recallToolsContract(label, getEntry) {
     assert.equal(missing.status, "not_folded");
     assert.ok(!("messages" in missing), "not_folded 不得带 messages 字段");
   });
+
+  test(`${label} · grep 模式：pattern 命中 ⇒ 段形状完整、excerpt 是账本原文的逐字子串`, async () => {
+    const marker = "GREP_MARKER_" + "z".repeat(18);
+    const rows = [
+      { round: 2, messages: [{ role: "user", content: `lead ${marker} tail` }] },
+      { round: 5, messages: [{ role: "user", content: "nothing here" }] },
+    ];
+    const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
+    const r = JSON.parse(await executeTool({ name: "recall_read", input: { pattern: marker, fromRound: 1, toRound: 3 } }));
+    assert.equal(r.status, "found");
+    assert.ok(["substring", "regex"].includes(r.matchedBy), "matchedBy 只能是 substring/regex");
+    assert.equal(r.segments.length, 1, "toRound=3 时 round 5 不得进命中");
+    const seg = r.segments[0];
+    for (const key of ["round", "messageIndex", "excerpt", "bytes", "matchedBy"]) {
+      assert.ok(key in seg, `段必须含字段 ${key}`);
+    }
+    assert.equal(seg.round, 2);
+    // excerpt 必须是账本原文的逐字切片（真比子串，不是恒真）。
+    assert.ok(rows[0].messages[0].content.includes(seg.excerpt), "excerpt 必须是账本原文的子串");
+    assert.ok(seg.excerpt.includes(marker));
+    assert.equal(seg.bytes, Buffer.byteLength(seg.excerpt, "utf8"));
+  });
 }
 
 // 仓内参考跑法：对内置实现跑同一组断言（与宿主通过安装好的包跑的是同一份）。
