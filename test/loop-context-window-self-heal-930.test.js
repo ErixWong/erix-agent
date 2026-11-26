@@ -382,3 +382,51 @@ test("同源不变量：errors.js 的子串判定与 fold-llm.js 的归因同一
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// issue #930 P1（copilot 验收）：配额**不能只看局部计数器**——它是 run 循环里的变量，resume 之后
+// 从 0 重来，同一个 run 就能再领一次自恢复。判据必须**同时看账本**：`compactionStats` 里已经有
+// 一条带 `trigger` 的记录 ⇒ 配额已用完。账本经 `deterministic.compactionStats` 过 resume 恢复
+// （`src/loop/resume-manager.js` 的 `ctx.compactionStats = deterministic.compactionStats`），
+// 所以这一格用**真 resume** 验：第一次 run 用掉配额并以 failed 收尾，resume 同一个 runId ⇒
+// 局部计数器从 0 开始，但账本里那条还在 ⇒ **一次都不许再折**。
+// ---------------------------------------------------------------------------
+test("P1 resume 后账本判据仍生效：局部计数器归零也不许再自恢复", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "930-resume-quota";
+
+  // 第一次 run：每次请求都超窗 ⇒ 自恢复一次（折一发）⇒ 第二次仍超窗 ⇒ failed。
+  const firstStrategy = createCountingStrategy();
+  const firstOptions = baseOptions(firstStrategy, undefined);
+  firstOptions.provider = createFakeProvider([{ throw: cwError(400) }, { throw: cwError(400) }]);
+  firstOptions.store = store;
+  firstOptions.runId = runId;
+  await runDirect(firstOptions).catch((error) => error);
+  assert.equal(firstStrategy.tally.compact, 1, "第一次 run 应恰好自恢复一次（前置）");
+  // 账本那条记录要**从持久化的 run-state 读**（第一次 run 以 failed 收尾，异常对象上没有
+  // `compactionStats`；能跨 resume 活下来的也正是 state 里那份）。
+  const persisted = await store.loadRunState(runId);
+  const firstStats = (persisted?.deterministic?.compactionStats ?? []).filter(
+    (stat) => stat?.trigger === CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER,
+  );
+  assert.equal(firstStats.length, 1, `state 里应留下恰好一条恢复记录（前置）：${JSON.stringify(persisted?.deterministic?.compactionStats)}`);
+
+  // 第二次 run：resume 同一个 runId。局部计数器是 0，但账本里那条已在 ⇒ 不许再折。
+  const secondStrategy = createCountingStrategy();
+  const secondOptions = baseOptions(secondStrategy, undefined);
+  secondOptions.provider = createFakeProvider([{ throw: cwError(400) }, { throw: cwError(400) }]);
+  secondOptions.store = store;
+  secondOptions.runId = runId;
+  secondOptions.config.run.resume = true;
+  await runDirect(secondOptions).catch((error) => error);
+  assert.equal(
+    secondStrategy.tally.compact,
+    0,
+    `resume 后配额应仍算用完（账本里已有那条记录），实际又折了 ${secondStrategy.tally.compact} 次`,
+  );
+  const persistedAgain = await store.loadRunState(runId);
+  const secondStats = (persistedAgain?.deterministic?.compactionStats ?? []).filter(
+    (stat) => stat?.trigger === CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER,
+  );
+  assert.equal(secondStats.length, 1, "账本里仍然只有第一次那一条（没有新增）");
+});

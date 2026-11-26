@@ -5726,7 +5726,16 @@ export async function runToolLoop(options) {
     try {
       providerResult = await callProvider(providerRequestArgs);
     } catch (error) {
+      // issue #930 P1（copilot 验收）：配额**不能只看局部计数器**——它是 run 循环里的变量，
+      // resume 之后从 0 重来，同一个 run 就能再领一次自恢复。判据改为**同时看账本**：
+      // `compactionStats` 里已经有一条带这个 `trigger` 的记录 ⇒ 配额已用完。
+      // 账本本来就过 `state.json` 重建（`normalizeCompactionStats` 透传 `trigger`），
+      // 所以 resume 后天然看得见，且**不需要新增任何持久化键**。
+      const recoveredPerLedger = compactionStats.some(
+        (stat) => stat?.trigger === CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER,
+      );
       if (error?.code !== "context_window_exceeded"
+        || recoveredPerLedger
         || contextWindowExceededRecoveries >= CONTEXT_WINDOW_EXCEEDED_RECOVERY_ATTEMPTS
         // 没装配折叠策略（`compactionContext?.strategy` 空）时无折可压，#898 也不允许退回机械摘要
         // ⇒ 不自恢复，直接抛出。

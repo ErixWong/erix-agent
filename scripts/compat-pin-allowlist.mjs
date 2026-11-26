@@ -34,6 +34,7 @@ export const FLAT_WRITE_ALLOWLIST = Object.freeze([
   { file: "test/compact/fold-continuity-block-589.test.js", surfaces: ["data"] },
   { file: "test/compact/mandatory-llm-folding-898b.test.js", surfaces: ["data"] },
   { file: "test/loop-tool-definition-tokens-892.test.js", surfaces: ["data"] },
+  { file: "test/loop-context-window-self-heal-930.test.js", surfaces: ["data"] },
   { file: "test/compact/fold-desc-500tok-897.test.js", surfaces: ["data"] },
   { file: "test/compact/fold-fed-summary-738.test.js", surfaces: ["data"] },
   { file: "test/compact/fold-increment-566.test.js", surfaces: ["data"] },
