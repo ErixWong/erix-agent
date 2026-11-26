@@ -745,7 +745,7 @@ test("默认值 maxRounds = 8", async () => {
   assert.equal(provider.requests.length, 9); // 第 9 次请求只为拼出 truncated 终局
 });
 
-test("默认值 cacheStablePrefix = true 与 wrapup = true", async () => {
+test("默认值 wrapup = true（#926 之后 `cacheStablePrefix` 已整条退役，只剩这一条默认值）", async () => {
   const defaulted = createFakeProvider(DONE);
   // #498 S3 A6：扁平 `system` 已退役，家是 `config.input.system`（展开相写回 `effectiveOptions.system`）。
   await runToolLoop(withSeed({
@@ -755,24 +755,29 @@ test("默认值 cacheStablePrefix = true 与 wrapup = true", async () => {
     config: { input: { system: "SYS" } },
   }));
   const system = defaulted.requests[0].system;
-  assert.equal(typeof system, "object", "默认 cacheStablePrefix:true ⇒ system 带 cacheBoundary 包装");
-  assert.equal(system.cacheBoundary, true);
-  assert.match(system.content, /^SYS\n\n任务完成或需要给出结论时/, "默认 wrapup:true ⇒ 追加 JSON 收尾协议");
-  assert.match(system.content, /\{"done":true,"summary":"任务总结","output":"给用户的结果"\}/);
-  assert.equal(defaulted.requests[0].messages[0].cacheBoundary, true);
+  // issue #926：以前这一格还断言 `typeof system === "object"` 且 `system.cacheBoundary === true`
+  // ——那是 `cacheStablePrefix` 默认为 true 时的 Anthropic 打标包装。打标机制退役后请求原样发出：
+  // system 仍是那条字符串（只被追加了收尾协议文本），消息不带任何缓存字段。判据没有放宽：
+  // 下面 wrapup 的两条逐字判词照旧，外加「不许再出现 cacheBoundary 字段」这条反向钉。
+  assert.equal(typeof system, "string", "system 必须原样发出，不再被包成带缓存标记的对象");
+  assert.match(system, /^SYS\n\n任务完成或需要给出结论时/, "默认 wrapup:true ⇒ 追加 JSON 收尾协议");
+  assert.match(system, /\{"done":true,"summary":"任务总结","output":"给用户的结果"\}/);
+  assert.equal("cacheBoundary" in defaulted.requests[0].messages[0], false,
+    "issue #926：请求视图不再带缓存断点标记");
 
-  const optedOut = createFakeProvider(DONE);
-  // #498 S3（`input` 组 A 段）：`cacheStablePrefix` 的扁平写法已退役，家是
-  // `config.input.cacheStablePrefix`（展开相写回 `effectiveOptions.cacheStablePrefix`）。
-  await runToolLoop(withSeed({
-    provider: optedOut,
-    executeTool: async () => "ok",
-    initialUserMessage: "go",
-    config: { input: { system: "SYS", cacheStablePrefix: false } },
-    wrapup: false,
-  }));
-  assert.equal(optedOut.requests[0].system, "SYS", "两个默认值都能被显式 false 关掉");
-  assert.equal("cacheBoundary" in optedOut.requests[0].messages[0], false);
+  // issue #926：`cacheStablePrefix`（扁平与 `config.input.*` 两个写法）都不再是配置面成员，
+  // 所以「拿 false 关掉打标」这半格没有对象可关；改钉**旧写法当场被拒**（配了就是配错）。
+  await assert.rejects(
+    runToolLoop(withSeed({
+      provider: createFakeProvider(DONE),
+      executeTool: async () => "ok",
+      initialUserMessage: "go",
+      config: { input: { system: "SYS", cacheStablePrefix: false } },
+      wrapup: false,
+    })),
+    (error) => /unknown config\.input option: "cacheStablePrefix"/u.test(String(error?.message ?? error)),
+    "退役叶子的旧写法必须当场红，而不是配了等于没配",
+  );
 });
 
 test("默认值 completion = { signals: [], maxNoToolRounds: 3 }", async () => {

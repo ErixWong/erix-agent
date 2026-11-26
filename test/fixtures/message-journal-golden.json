@@ -753,8 +753,7 @@
               "type": "text",
               "text": "金样任务"
             }
-          ],
-          "cacheBoundary": true
+          ]
         },
         {
           "role": "assistant",
@@ -868,8 +867,7 @@
                 "success": true
               }
             }
-          ],
-          "cacheBoundary": true
+          ]
         }
       ],
       "records": [

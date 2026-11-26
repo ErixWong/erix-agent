@@ -71,7 +71,7 @@ test("#601-8 引擎把折叠记录账本线到渲染处（每折长一条，最�
     store: createMemoryTranscriptStore(),
     // budgetTokens 放大：让折叠由 `shouldCompact` 决定，避免「仍超预算」的兜底再加一次折叠。
     config: {
-      input: { cacheStablePrefix: false },
+      input: {},
       folding: { context: { budgetTokens: 1_000_000, keepRounds: 1 } },
       run: { completion: false },
     },

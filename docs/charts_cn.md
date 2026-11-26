@@ -16,7 +16,7 @@
 flowchart LR
     HOST["宿主应用<br/>app_container / touwaka / CLI"]
     LOOP["runToolLoop<br/>单任务生命周期"]
-    PROV["双协议 Provider<br/>OpenAI / Anthropic"]
+    PROV["Provider<br/>OpenAI 兼容"]
     LLM[("LLM API")]
     TOOLS["executeTool<br/>宿主工具边界"]
     STORE[("TranscriptStore<br/>转录档案")]
@@ -44,7 +44,7 @@ flowchart LR
 - **单向数据流**：任务进、事件出。`runToolLoop` 只拥有**一个**任务生命周期（start/run/stop/resume/event stream）；队列、仲裁、重试调度、收割都属于宿主（ADR-012）
 - **模型视图 ≠ 档案源**：compaction 只改写发给模型的上下文；`foldedPayload` 随 round 记录入档案。折叠改变"模型看到什么"，不改"档案存了什么"
 - **治理在环内、策略在环外**：judge/governor 是引擎内可选层（做“建议与纠偏”），但**执行什么策略**（哪个项目跑哪个 agent、什么操作要确认、网络与写权限）由宿主负责（ADR-009）
-- **请求形态对缓存友好**：`config.input.cacheStablePrefix`（默认开）把 system + 首条真实 user 消息标记为稳定前缀（`cacheBoundary` 提示）交给 provider 缓存适配器——OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`，归一化为 `usage.cacheRead`/`cacheWrite`；`config.tuning.cacheCapable` 端点下工具结果 TTL 默认取 0（显式 `config.folding.toolResultTtl` 始终优先），保住 provider 前缀缓存命中率
+- **缓存对账**：OpenAI 响应里的 `cached_tokens` 归一化为 `usage.cacheRead`（`src/messages/openai-normalization.js`）；OpenAI 的前缀缓存是自动的，库**不打任何断点**（`config.input.cacheStablePrefix` 随 Anthropic 适配器一并退役，issue #926）。`config.tuning.cacheCapable` 端点下工具结果 TTL 默认取 0（显式 `config.folding.toolResultTtl` 始终优先），保住 provider 前缀缓存命中率
 
 ---
 
@@ -76,7 +76,6 @@ flowchart TB
 
     subgraph msg["messages/ 规范消息模型"]
         CAN["canonical.js<br/>Block ↔ OpenAI 消息"]
-        ANT["anthropic.js<br/>Block ↔ Anthropic Messages"]
         ONM["openai-normalization.js<br/>usage/stopReason/流聚合"]
         RND["rounds.js<br/>校验 + 整轮分组"]
         TOK["tokens.js（根）<br/>零依赖 token 估算"]
@@ -172,7 +171,7 @@ flowchart TB
 
 - **纯 ESM、零 npm 依赖**：只 import `node:` 内置模块 + 相对路径；编排核心集中在一个 `orchestrator.js`（行数不写死，用 `wc -l` 现查），周边模块按职责切小文件，依赖单向指向（compact/reflection/store/tools 不反向依赖 loop）
 - **编排核心（`src/loop/`）是心脏**：主循环、provider 调用、检查点执行、预算、终态、恢复、错误记账全部在这里被组装；`src/reflection/` 与 `src/compact/` 是由 loop 驱动的“决策/变换”模块、只被 loop 调用——governor/judge 提示构造是纯函数，fold-llm/wrapup 可调用注入的 summarizer/evaluator（外部调用，绝不硬编码）
-- **消息层是唯一协议适配点**：内部只有一套 CanonicalMessage/Block；OpenAI 与 Anthropic 双向转换 + 流式聚合都在 `src/messages/` + `src/providers/`，新增协议只需加一对适配器
+- **消息层是唯一适配点**：内部只有一套 CanonicalMessage/Block；OpenAI 兼容的转换 + 流式聚合在 `src/messages/` + `src/providers/`，别的协议由宿主自带 provider 对象、在库外转换，新增协议只需加一对适配器
 - **CLI 不是产品**：`bin/` 是校验器/调试器（chat 单发 + repl 交互 + MCP/技能/final-guard 实现），真正验收面是外部 erix-bench 无头 harness；CLI 的 archive/输出捕获行为不属于库契约
 - **`erix-agent/tools` 是可选子路径**：工具注册表、文件工具、笔记工具、技能 loader、以及派生工具（`createDelegateTool` + roster/capacity/notify 簿记）。旧的工具 provider（static/json-file/composite）已随 0.31 bundle 退役、不再是发布面（`src/tools/index.js` 不导出）——宿主可按需取用，不是隐式安装进 runToolLoop 的工具集（recall 已退役，issue #36）
 
@@ -185,7 +184,7 @@ sequenceDiagram
     autonumber
     actor H as 宿主（Host）
     participant L as runToolLoop<br/>（orchestrator）
-    participant P as Provider<br/>（OpenAI / Anthropic）
+    participant P as Provider<br/>（OpenAI 兼容）
     participant M as LLM API
     participant T as executeTool<br/>（宿主实现）
     participant S as TranscriptStore
@@ -281,10 +280,7 @@ flowchart TD
     CC -- 否 --> J["① TTL：单个 tool_result<br/>只构造请求视图"]
     T0 --> Z["发送请求副本"]
     J --> Z
-    Z --> SP{"config.input.cacheStablePrefix?<br/>（默认开）"}
-    SP -- 是 --> SPM["markStablePrefix<br/>system + 首条 user → cacheBoundary 提示"]
-    SPM --> ADAPT["provider 缓存适配器<br/>OpenAI cached_tokens / Anthropic cache_read_input_tokens<br/>→ usage.cacheRead / cacheWrite"]
-    SP -- 否 --> ADAPT
+    Z --> ADAPT["usage 对账<br/>OpenAI cached_tokens → usage.cacheRead"]
 ```
 
 ### 六层注册表（顺序、触发、粒度与产物）
@@ -298,10 +294,9 @@ flowchart TD
   且未显式指定 `config.folding.toolResultTtl` 时，该请求 TTL 解析为 0（单结果折叠关闭，保住
   provider 前缀缓存）；显式 `config.folding.toolResultTtl` 始终优先；整轮折叠策略完全不受影响——
   不是“删除 whole-round compaction”。
-- **`config.input.cacheStablePrefix` → provider 缓存适配器**（默认开）：每次请求前
-  `markStablePrefix`（`src/loop/provider-runner.js`）把 system + 首条真实 user 消息打上
-  `cacheBoundary` 提示；两个协议适配器各自映射（OpenAI `cached_tokens` /
-  Anthropic `cache_read_input_tokens`），归一化为 `usage.cacheRead`/`cacheWrite`。
+- **不打缓存断点（issue #926）**：`config.input.cacheStablePrefix` 与 `cacheBoundary` 标记一并退役——
+  它们本来只为产出 Anthropic 的 `cache_control` 标记。留下的只有对账：OpenAI `cached_tokens`
+  → `usage.cacheRead`。
 
 | 层（注册表顺序） | 触发条件 | 粒度 | 进入模型/档案的产物 |
 |---|---|---|---|
@@ -438,7 +433,7 @@ flowchart TB
 | 关切 | 引擎（本库） | 宿主（调用方） |
 |---|---|---|
 | 单任务生命周期 | start / run / stop / resume / 事件流 | 何时启动、启动哪个任务 |
-| 模型 I/O | 双协议 provider、超时分类、重试、规范消息转换 | 端点/模型/密钥配置（`modelConfig.resolve(slot)`）、配额与回退策略 |
+| 模型 I/O | OpenAI 兼容 provider、超时分类、重试、规范消息转换 | 端点/模型/密钥配置（`modelConfig.resolve(slot)`）、配额与回退策略 |
 | 工具 | `executeTool` 唯一执行入口、入参校验、结果归一 | 工具实现、权限策略、哪些操作需人工确认 |
 | 安全 | 不执行任何策略（ADR-009）；executor 注册表代码持有，数据无法扩权 | 本地=信任域；沙箱/容器隔离由宿主做 |
 | 上下文 | 预算、折叠、保真层、兜底截断 | 预算参数（contextWindow/maxOutputTokens）、策略选择 |
@@ -455,7 +450,7 @@ flowchart TB
 | 问题 | 回答 |
 |---|---|
 | 为什么坚持零 npm 依赖？ | 宿主多是嵌入式/审计敏感场景（app_container、touwaka），依赖第三方框架 = 把供应链风险与版本churn转嫁给每个宿主。纯 ESM + `node:` 内置让"包含第三方框架churn"这条需求由引擎一次买断。代价是 SSE 解析、token 估算自己写——用契约测试锁住行为。 |
-| 为什么内部要一套规范消息模型，而不是透传 OpenAI/Anthropic？ | 双协议只是当下现实，不是架构中心。规范 Block 层让 compaction/judge 只面向一种结构；新增协议 = 加一对适配器，不动引擎。`validateMessages` 在每次 provider 调用前断言协议不变量。 |
+| 为什么内部要一套规范消息模型，而不是透传 wire 格式？ | wire 格式不是架构中心。规范 Block 层让 compaction/judge 只面向一种结构；新增协议 = 加一对适配器，不动引擎。`validateMessages` 在每次 provider 调用前断言协议不变量。 |
 | 为什么用恢复行记录执行证据，而不是在工具前后各打一次 checkpoint？ | 旧的工具前后双 run snapshot 已退役（0.33.0）：执行前后没有 checkpoint 写盘。改为执行后追加一条 `tool-executed` 恢复行，恢复端仍能精确区分 `not_started`（安全重放）与 `executed_uncommitted`（不可盲目重放），把幂等责任边界划清。 |
 | judge 拦截会不会拖慢/误拦正常工具调用？ | 审计有 30s 超时、错误/超时一律**降级为直接执行**（fail-open 执行、fail-closed 治理）；只读工具整类豁免；`off_track` 只提示不拦截。治理故障的路径永远回到"没有 judge 的普通循环"。 |
 | LLM 生成的折叠摘要不可信怎么办？ | 三层防守：① 摘要在进上下文前过确定性 `enforceSize`；② 锚点索引/用户输入引用是机械抽取、不经 LLM；③ 折叠预警提示趁在场 `note_take` 记录要点，之后经 note_list/note_read 取回，未记录的值不声明。摘要只损失“叙述”，不损失“事实”。 |

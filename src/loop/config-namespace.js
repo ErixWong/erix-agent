@@ -168,9 +168,10 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
   // (the flat `initialMessages`; the one registered rename, see `CONFIG_LEAF_ALIASES`).
   // #527 removed `tools`: it is not a data key (entries may carry function members), so its home
   // is the top level (the third station); writing `config.input.tools` is now an unknown leaf.
+  // #926 removed `cacheStablePrefix`: the Anthropic cache-breakpoint machinery it switched is gone
+  // (OpenAI prefix caching is automatic), so a leaf left behind would be a knob nothing reads.
   input: Object.freeze([
     "system",
-    "cacheStablePrefix",
     "initialUserMessage",
     "messages",
     "wrapup",
@@ -682,9 +683,10 @@ export const CONFIG_LEAF_VALUE_RULE_PATHS = CONFIG_LEAF_VALUE_RULES;
 export const CONFIG_LEAF_BINDING = Object.freeze({
   // input —— 一次 run 开头就定下来的那几块（system 提示、种子消息）与它们的开关。
   // `messages` / `initialUserMessage` 是 `call`：它们就是 #524 的那条通道（这次要发什么），
-  // 而 `system` / `cacheStablePrefix` / `wrapup` 是 agent 的装配方式，换一次就是另一个 agent。
+  // 而 `system` / `wrapup` 是 agent 的装配方式，换一次就是另一个 agent。
+  // #926：`input.cacheStablePrefix` 这条叶子随 Anthropic 协议退役（叶子与绑定同删，
+  // `configSchemaSelfCheck` 的对账会钉住两边不得一存一亡）。
   "input.system": "init",
-  "input.cacheStablePrefix": "init",
   "input.initialUserMessage": "call",
   "input.messages": "call",
   "input.wrapup": "init",

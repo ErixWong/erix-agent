@@ -117,7 +117,7 @@ const options = (runId, store, provider, {
   completion: false,
   reflection: false,
   config: {
-    input: { cacheStablePrefix: false },
+    input: {},
     folding: {
       context: {
         budgetTokens,
@@ -210,7 +210,7 @@ test("#738-B 写侧不凑数：`fold-statistical` 那一档拿不到精确插入
     maxRounds: 16,
     completion: false,
     reflection: false,
-    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 7500, keepRounds: 1 } } },
+    config: { input: {}, folding: { context: { budgetTokens: 7500, keepRounds: 1 } } },
     store,
     runId: "738-noexact",
     initialUserMessage: TASK_BODY,

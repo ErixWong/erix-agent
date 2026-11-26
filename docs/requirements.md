@@ -19,7 +19,7 @@ and APIs, not an unqualified list of future plans.
 > paths below are readable today; what changed is which project owns the work, not whether the old
 > code exists.
 
-- Existing capabilities: dual-protocol normalization (OpenAI/Anthropic to common `tool_use`/`tool_result` blocks), stall detection based on signature-window comparison, a fixed ten-round hard window, `max_tokens` continuation, and skeleton folding for idea conversations (`chat_summary_json` plus the `foldedUpTo` watermark).
+- Existing capabilities: wire-format normalization (OpenAI-compatible responses to common `tool_use`/`tool_result` blocks; the Anthropic adapter was withdrawn by issue #926), stall detection based on signature-window comparison, a fixed ten-round hard window, `max_tokens` continuation, and skeleton folding for idea conversations (`chat_summary_json` plus the `foldedUpTo` watermark).
 - Pain points: (1) the hard window silently discards early rounds, so a 24-round development task can lose half its history and the model may redo completed work; (2) a provider error fails the whole task and causes the reaper to start over, wasting the LLM calls already paid for; (3) `pi_models.context_window_tokens` is stored but was not wired into the loop (`llm-context-budget.md` §7, “not changed this cycle”); and (4) skeleton-folding output had no deterministic size enforcement, relying on the LLM to obey the budget instead of keeping the final size a code invariant.
 
 ### touwaka (`touwaka:lib/agent/` + `touwaka:lib/context-organizer/`)
@@ -31,7 +31,7 @@ and APIs, not an unqualified list of future plans.
 
 ### Goals
 
-1. Provide OpenAI-compatible (`chat/completions`) and Anthropic (`messages`) adapters with streaming and non-streaming calls, one canonical internal block format, and common error classification.
+1. Provide an OpenAI-compatible (`chat/completions`) adapter with streaming and non-streaming calls, one canonical internal block format, and common error classification. (Anthropic `messages` support was withdrawn by issue #926.)
 2. Provide the `runToolLoop` single-task lifecycle: injected tools and execution, `config.run.maxRounds`, optional in-round provider retry, stall detection, completion and no-tool policies, `max_tokens` continuation, checkpoint/resume, optional reflection/judge governance, and observable events.
 3. Provide pluggable context-budget compaction: `sliding-window`, `fold-statistical`, and `fold-llm`, with full folded payloads retained in checkpoints while request views can use TTL folding.
 4. Keep configuration and persistence behind adapter contracts. The package includes static, environment, JSON-file, memory, and JSONL-file implementations; database adapters remain in consumer projects.
@@ -55,8 +55,8 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 
 | # | Requirement | Status and implementation |
 |---|---|---|
-| FR-1.1 | OpenAI-compatible (`chat/completions`) and Anthropic (`messages`) protocols, both streaming and non-streaming | **Delivered.** `createOpenAIProvider` exposes `chat` and `chatStream`; the Anthropic adapter is an internal part, so a host that speaks Anthropic supplies its own provider object (the protocol helpers stay public). |
-| FR-1.2 | Normalize both protocols into one internal block format (`text` / `tool_use` / `tool_result`) | **Delivered.** `src/messages/canonical.js` and `src/messages/anthropic.js` also preserve `raw`, image, and reasoning blocks where needed. |
+| FR-1.1 | OpenAI-compatible (`chat/completions`) protocol, streaming and non-streaming | **Delivered.** `createOpenAIProvider` exposes `chat` and `chatStream`. **Withdrawn: the Anthropic (`messages`) adapter and its protocol helpers** — retired by issue #926; a host that speaks Anthropic supplies its own provider object. |
+| FR-1.2 | Normalize the wire format into one internal block format (`text` / `tool_use` / `tool_result`) | **Delivered.** `src/messages/canonical.js` also preserves `raw`, image, and reasoning blocks where needed. |
 | FR-1.3 | Common error classes: `timeout` / `rate_limited` / `auth` / `network` / `server`, with a retryability marker | **Delivered.** `src/providers/errors.js` provides `KitError`, HTTP classification, fetch-exception classification, and `retryable`; it also exposes explicit `aborted`, `provider_config`, `invalid_messages`, and related non-retryable errors. |
 | FR-1.4 | For HTTP 2xx responses containing an error body, preserve the upstream error message instead of reporting a misleading missing-choice error | **Delivered.** Both providers inspect successful response bodies for provider errors and preserve the upstream message; OpenAI responses missing `choices` include a bounded response preview. |
 | FR-1.5 | Pass model metadata (`contextWindowTokens` / `maxOutputTokens`) into the loop so it can derive a compaction budget | **Delivered, with an explicit input contract.** Provider factories return these metadata fields, and `runToolLoop` accepts them from `modelConfig`, `config.metadata.modelMetadata`, `config.metadata.model`, `provider`, or `config.folding.context` and calls `computeBudget` when both values are available. A budget is not inferred when either value is absent. |
@@ -94,7 +94,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 
 | # | Requirement | Status and implementation |
 |---|---|---|
-| FR-5.1 | Define a standard tool schema; let the adapter own protocol serialization; keep execution in the host | **Delivered.** `ToolSchema` uses `inputSchema`; `canonicalToolsToOpenAI` and `canonicalToAnthropicRequest` serialize it for each provider, while `executeTool` remains the loop's injected execution boundary. |
+| FR-5.1 | Define a standard tool schema; let the adapter own protocol serialization; keep execution in the host | **Delivered.** `ToolSchema` uses `inputSchema`; `canonicalToolsToOpenAI` serializes it for the provider, while `executeTool` remains the loop's injected execution boundary. |
 | FR-5.2 | Provide an optional `erix-agent/tools` subpath with tool registration and tool providers | **Delivered.** `package.json` exports `./tools` to `src/tools/index.js`, which exports the tool registry (alongside the file tools, notes, skills loader, and the `delegation/*` group). These are opt-in and are not automatically installed as loop tools; no path-jail or filesystem helper is included. |
 | FR-5.3 | Make tool definitions pluggable (`static` / `json-file` / `composite`, with DB in the consumer project); keep the executor registry in code and fail closed on mismatch | **Delivered for the registry; the pluggable provider factories are retired.** `src/tools/registry.js` keeps executors in a code-owned map, validates inputs, merges provider schema overlays, and throws `tool_unknown_executor` when a provider names an unavailable executor. The three provider factories (`static` / `json-file` / `composite`) retired with the 0.31 bundle: a `ToolProvider` is now a host-built duck-typed `{ listTools(sel) }` object (see `docs/architecture.md` §3.6). The `src/tools/providers.js` file is still present in the tree but is no longer on the release surface — neither `src/tools/index.js` nor the package root re-exports it (only `test/tools/providers.test.js` imports it), so a host must not depend on it. No DB provider is included. |
 

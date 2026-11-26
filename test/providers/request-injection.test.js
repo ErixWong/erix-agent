@@ -6,7 +6,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createAnthropicProvider } from "../../src/providers/anthropic.js";
 import { createOpenAIProvider } from "../../src/providers/openai.js";
 import {
   applyExtraBody,
@@ -46,45 +45,10 @@ const openaiCase = {
   },
 };
 
-const anthropicCase = {
-  label: "anthropic",
-  create: createAnthropicProvider,
-  baseOptions: {
-    endpoint: "https://api.example.test",
-    apiKey: "test-key",
-    model: "claude-test",
-  },
-  url: "https://api.example.test/v1/messages",
-  engineHeaders: {
-    "x-api-key": "test-key",
-    "anthropic-version": "2023-06-01",
-    "content-type": "application/json",
-  },
-  // anthropic 侧受保护 header：x-api-key / anthropic-version（content-type 同属引擎自有）
-  protectedHeaders: ["x-api-key", "X-Api-Key", "anthropic-version", "Anthropic-Version", "Content-Type"],
-  request: { messages: [{ role: "user", content: "hi" }], maxTokens: 32 },
-  okResponse: {
-    json: { content: [{ type: "text", text: "Done" }], stop_reason: "end_turn" },
-  },
-  streamResponse: {
-    body: [
-      "event: message_start\n",
-      'data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n',
-      "event: content_block_start\n",
-      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
-      "event: content_block_delta\n",
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done"}}\n\n',
-      "event: content_block_stop\n",
-      'data: {"type":"content_block_stop","index":0}\n\n',
-      "event: message_delta\n",
-      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
-      "event: message_stop\n",
-      'data: {"type":"message_stop"}\n\n',
-    ].join(""),
-  },
-};
 
-const cases = [openaiCase, anthropicCase];
+// issue #926：这张矩阵原本两份（openai + anthropic）；Anthropic 适配器退役后只剩 OpenAI 一份，
+// 每一格判据照旧逐字跑，没有放宽。
+const cases = [openaiCase];
 
 function makeProvider(testCase, options = {}, responseScript) {
   const fetchImpl = createMockFetch(responseScript ?? [testCase.okResponse]);

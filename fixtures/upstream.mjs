@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 // 用法（T5 复用请照此抄）：
 //
-//   import { createScriptedUpstream, sseOpenAI, sseAnthropic } from "../fixtures/upstream.mjs";
+//   import { createScriptedUpstream, sseOpenAI } from "../fixtures/upstream.mjs";
 //
 //   const upstream = createScriptedUpstream({
 //     // script：按 **请求序号** 依次取用；取完后重复最后一项（便于断言重发次数）
@@ -77,22 +77,6 @@ export function sseOpenAI(chunks, options = {}) {
 }
 
 /**
- * Anthropic 协议 SSE 帧：`event: …\ndata: …\n\n`。
- *
- * @param {Array<{ type: string } & Record<string, any>>} events 事件对象（type 决定 `event:` 行）
- * @param {{ done?: boolean, withEventLine?: boolean }} [options]
- * @returns {string[]} 帧数组
- */
-export function sseAnthropic(events, options = {}) {
-  const frames = events.map((event) => {
-    const data = `data: ${JSON.stringify(event)}\n\n`;
-    return options.withEventLine === false ? data : `event: ${event.type}\n${data}`;
-  });
-  if (options.done === true) frames.push("data: [DONE]\n\n");
-  return frames;
-}
-
-/**
  * 把文本切成 OpenAI 流式文本增量 chunk 序列（`delta.content`）。
  * @param {string[]} parts 文本片段
  * @returns {object[]} chunk 序列
@@ -143,46 +127,6 @@ export function openAIToolCallChunks(name, args, id, options = {}) {
       choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
     },
     { id: `chunk-${id}-usage`, object: "chat.completion.chunk", choices: [], usage },
-  ];
-}
-
-/**
- * Anthropic 文本回复事件序列：message_start → content_block_start → N × content_block_delta
- * → content_block_stop → message_delta → message_stop。
- * @param {string[]} parts 文本片段
- * @param {{ usage?: object, stopReason?: string }} [options]
- * @returns {object[]} 事件序列
- */
-export function anthropicTextEvents(parts, options = {}) {
-  const usage = options.usage ?? {
-    input_tokens: 7,
-    output_tokens: 5,
-  };
-  return [
-    {
-      type: "message_start",
-      message: {
-        id: "msg_scripted",
-        type: "message",
-        role: "assistant",
-        model: "claude-scripted",
-        content: [],
-        usage: { input_tokens: usage.input_tokens, output_tokens: 1 },
-      },
-    },
-    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-    ...parts.map((part) => ({
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: part },
-    })),
-    { type: "content_block_stop", index: 0 },
-    {
-      type: "message_delta",
-      delta: { stop_reason: options.stopReason ?? "end_turn" },
-      usage: { output_tokens: usage.output_tokens },
-    },
-    { type: "message_stop" },
   ];
 }
 

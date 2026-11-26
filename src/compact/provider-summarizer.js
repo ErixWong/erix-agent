@@ -155,6 +155,11 @@ const FOLD_THINKING_OFF_FIELDS = Object.freeze({
  * `summarizer_failed`，`details.kind === "error"`；改前是降级成统计摘要 + 一条 `degradeKind`）。
  * Anthropic 的思考本来就是默认关的，不需要显式关 ⇒ 那边退回 `"inherit"`。
  *
+ * **为什么 #926 退役了 Anthropic 协议还要留这一支**（不是死代码）：引擎自带的适配器只剩
+ * OpenAI，但 `provider` 是宿主递进来的——宿主完全可以自带一个 Anthropic provider 递给
+ * `runToolLoop`。那条线上 `enable_thinking` / `chat_template_kwargs` 依旧会被 400，而 #661 之后
+ * 400 = `summarizer_failed` 终局错误 ⇒ 删掉这个分支会让宿主的**每一次折叠**都直接弄死 run。
+ *
  * @param {string|undefined} protocol provider 的 `protocol` 判别键（`"openai"` / `"anthropic"` / …）
  * @returns {"off"|"inherit"}
  */

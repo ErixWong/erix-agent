@@ -30,7 +30,20 @@ test("rejects invalid initial message pairs before the first provider call", asy
   assert.equal(calls, 0);
 });
 
-test("revalidates messages before each later provider round", async () => {
+test("the request view handed to the provider is a snapshot: a push cannot pollute the history", async () => {
+  // issue #926 之前，这一格钉的是「每轮 provider 轮之前重新校验消息」：它靠
+  // `config.input.cacheStablePrefix: false` **故意关掉**请求视图的拷贝，让 provider 拿到的
+  // `request.messages` 与 `ctx.messages` 同一个数组引用，于是 provider 里 push 一条孤儿
+  // `tool_result` 就能污染历史，第二轮由 `validateMessages` 拒掉。
+  //
+  // 那个旋钮随 Anthropic 断点机制一起退役（#926），而请求视图的拷贝现在**无条件**存在
+  // （`provider-runner.js` 里 `messages: requestMessages.slice()`），所以那条污染通道已经关闭。
+  // 逐轮重新校验本身仍在（`validateMessages(requestView.messages)` 在每次 attempt 之前跑），
+  // 它现在守的是「宿主直接写账本 / 恢复时账本已经脏」那一类入口——那几格在 resume 测试里。
+  //
+  // 本格因此钉**更强的那条**：provider 拿到的是本次请求的快照，push 既不回流，也不会出现在
+  // 下一轮请求里。
+  const seen = [];
   let calls = 0;
   const provider = {
     async chat(request) {
@@ -45,22 +58,27 @@ test("revalidates messages before each later provider round", async () => {
           stopReason: "tool_use",
         };
       }
-      return { content: [{ type: "text", text: "unexpected" }], stopReason: "end_turn" };
+      seen.push(request.messages.map((m) => JSON.stringify(m)));
+      return { content: [{ type: "text", text: "done" }], stopReason: "end_turn" };
     },
   };
 
-  await assert.rejects(
-    runDirect({
-      provider,
-      initialUserMessage: "start",
-      executeTool: async () => "done",
-      completion: false,
-      // #498 S3 (`input` slice A): the flat spelling retired; the home is config.input.*.
-      config: { input: { cacheStablePrefix: false } },
-    }),
-    (error) => error instanceof KitError && error.code === "invalid_messages",
+  const result = await runDirect({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async () => "done",
+    completion: false,
+    // #498 S3 (`input` slice A): the flat spelling retired; the home is config.input.*.
+    config: { input: {} },
+  });
+
+  assert.equal(calls, 2, "第二轮必须真的发生（污染不该把 run 打死）");
+  assert.equal(result.termination?.reason, "end_turn");
+  const second = seen[0] ?? [];
+  assert.ok(
+    !second.some((line) => line.includes("orphan")),
+    "provider 在上一轮往快照里 push 的那条孤儿不许出现在下一轮请求里",
   );
-  assert.equal(calls, 1);
 });
 
 test("allows a truncated tool response to request its continuation", async () => {

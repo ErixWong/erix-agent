@@ -261,7 +261,7 @@ issue #531 的「两个入口、一个家」讲的是这个**容器**，与载�
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
 | 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
-| 0.28.0 及以后（issue #498 S3 第三片） | **当场拒**——请写 `config.input.cacheStablePrefix` / `config.input.messages`。名称闸口抛 `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is config.input.cacheStablePrefix; the flat spelling is rejected)` |
+| 0.28.0 及以后（issue #498 S3 第三片） | **当场拒**——`initialMessages` 请写 `config.input.messages`，名称闸口抛 `unknown runToolLoop option: "initialMessages" (its canonical home is config.input.messages; the flat spelling is rejected)`。`cacheStablePrefix` 现在**一个家都没有**了：它的 `config.input` 叶子随 Anthropic 缓存断点一并退役（issue #926），扁平写法退化成纯粹的 `unknown runToolLoop option: "cacheStablePrefix"` |
 
 `initialMessages` 是这一段里真正要读的一个，理由就在文案本身：**它点名的家是
 `config.input.messages`，不是 `config.input.initialMessages`**。叶子叫 `messages`，它过去被写成
@@ -401,7 +401,7 @@ feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550
 | 模型槽位 / 配置文件字段 `slots.default.maxTokens` | 由 `createProviderForSlot`（`src/config/slot-provider.js`）读、`bin/cli.js` 转发；它摊平成请求体的 `max_tokens` | **一字未动**——配置文件不是 `runToolLoop` 选项，从不经过名称闸口 |
 | 配置文件的采样默认值 `temperature` / `topP` | `src/config/env.js`（`TEMPERATURE` / `TOP_P`） | **一字未动**——同上 |
 | 装配口 `policy.maxTokens` | `src/assembly.js`——它是端口成员，不是顶层选项 | **一字未动**；它照旧到达请求体 |
-| provider 请求字段 `maxTokens` / `temperature` / `topP` | `src/messages/anthropic.js`、`src/providers/openai.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
+| provider 请求字段 `maxTokens` / `temperature` / `topP` | `src/providers/openai.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
 
 一个差点被误伤的邻居：`maxTokenContinuations` 是**另一个键**（家在 `config.run.maxTokenContinuations`，
 扁平写法照旧合法）。整词 grep `maxTokens` 会把它一起捞出来；它不属于本片，扁平写法继续可用。
@@ -435,9 +435,8 @@ A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决�
   证明了理由：宿主交进来的工具声明，其**条目里可以带函数成员**——`handler`、`validate`、`execute`，
   或 `inputSchema` 里的函数。这几种形状经扁平 `tools` **都能交进去**，而写进 `config.input.tools`
   会被拒，因为 `config` 只装数据（子树必须过 JSON round-trip，函数值 intake 当场拒并点名完整路径）。
-  同时引擎从不调用这些成员，所以 `tools` 也不是能力面——两个协议适配器都把每条工具声明投影成
-  `{name, description, inputSchema}`（OpenAI 侧在 `src/messages/canonical.js`，Anthropic 侧在
-  `src/messages/anthropic.js` 的 payload 构造里）。#527 因此**拆掉了那个叶子**：`tools` 只住顶层，
+  同时引擎从不调用这些成员，所以 `tools` 也不是能力面——适配器把每条工具声明投影成
+  `{name, description, inputSchema}`（`src/messages/canonical.js`）。#527 因此**拆掉了那个叶子**：`tools` 只住顶层，
   写 `config.input.tools` 现在是**未知叶子**当场拒，文案指向「第三站在顶层」：
 
   ```text
@@ -486,7 +485,7 @@ A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决�
 | --- | --- | --- |
 | `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | `system` **已被 A6 退役**；`wrapup` **已被 A18 退役**（扁平写法当场拒，家 `config.input.wrapup`）；`tools` 是**永久顶层面（第三站）**，与 `provider` / `executeTool` / `store` 同类——它根本没有嵌套家 |
 | `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input`（`src/loop/config-namespace.js`） | **数据**叶子的规位之家——`tools` 自 #527 起**不在其中**（叶子已拆） |
-| provider 请求字段 `system` / OpenAI 的 `role: "system"` | `src/messages/anthropic.js`、`src/messages/canonical.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
+| provider 请求字段 `system` / OpenAI 的 `role: "system"` | `src/messages/canonical.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
 | `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505 那两片——**独立选项**，从来不是本组的成员 | **一字未动**；两个都不是 `runToolLoop` 的顶层键，也没有配置面之家 |
 | 反思收尾的容器（`config.run.reflection.wrapupNormalize`） | `src/loop/orchestrator.js`、`src/reflection/wrapup.js` | **一字未动**——与顶层那个布尔 `wrapup` 是两个东西 |
 | `erix-agent/tools` 子路径导出与工具注册表（`src/tools/index.js`） | 能力面 | **一字未动**——它是模块导出，不是选项键 |
@@ -762,7 +761,7 @@ config.metadata.session: the opaque per-run payload's home is config.folding.con
 | `user` | provider 请求体字段 `user`（`extraBody` / `providerOptions`） | `src/providers/*`、`test/providers/request-injection.test.js` | **没动** |
 | `model` | `modelConfig` 端口（第三站） | `src/assembly.js`、`src/loop/orchestrator.js` | **没动**（N3） |
 | `model` | 模型槽位字段 `slots.default.model` | `src/config/slot-provider.js`、`bin/cli.js` | **没动** |
-| `model` | provider 请求体字段 `model` | `src/providers/openai.js`、`src/providers/anthropic.js` | **没动** |
+| `model` | provider 请求体字段 `model` | `src/providers/openai.js` | **没动** |
 | `task` | fold-context 壳 `context.task`（显式 task 赢过它——as-is） | `src/loop/task-brief.js`（`resolveTaskBrief`）、`src/assembly-validators.js` | **没动**（N2） |
 | `task` | `task-brief.js` 的字符串读（`typeof === "string"` + `trim()`） | `src/loop/task-brief.js` | **没动**——读侧 |
 | `task` | `erix_run` 扩展自己的 `task` 入参（`core.run({ task })`） | `examples/pi-extension/erix-run-core.js` | **没动**——另一张 API 面 |
@@ -1461,8 +1460,8 @@ promise，与经 `runToolLoop` 进来时逐字相同。
 任何逐字闸门都会把它整条丢掉。加倍则让值逐字等于原文，同时让文本变得可解析。
 
 `parseJsonWithRepair`（`src/text/repair-json.js`）是工具路径用的「先 L0 再 L1」入口，
-`parseToolArguments`（`src/messages/tool-arguments.js`）是 OpenAI 非流式转换、OpenAI 流式累加器、
-Anthropic 流式组装**三处共用**的那一份，所以两条协议在这里不可能各长一套。严格入口一字未动：
+`parseToolArguments`（`src/messages/tool-arguments.js`）是 OpenAI 非流式转换与 OpenAI 流式累加器
+**两处共用**的那一份，所以两条路径在这里不可能各长一套。严格入口一字未动：
 `parseModelJson` 仍然不做任何 repair（见它自己那一节）——修复只存在于工具引数这条路上。
 
 修完仍然解析不出来时，默认行为（`invalidArguments: "reject"`，A11 片退役扁平顶层拼写后其新家为
@@ -1551,8 +1550,7 @@ Anthropic 流式组装**三处共用**的那一份，所以两条协议在这里
 ## Provider 请求注入口（issue #181）
 
 `createOpenAIProvider`——本包唯一发布的 provider 工厂——新增两个完全可选的选项，让宿主无需
-包装 `fetchImpl` 就能给自己的请求打上归因标识（会话级 / run 级）。内部件 Anthropic 适配器
-（`src/providers/anthropic.js`）接受同样两个键，供宿主在它之上自建 provider 对象时使用：
+包装 `fetchImpl` 就能给自己的请求打上归因标识（会话级 / run 级）：
 
 ```js
 const provider = createOpenAIProvider({
@@ -1564,8 +1562,7 @@ await provider.chat({ messages });
 ```
 
 - `defaultHeaders` 是**追加**到引擎自有请求头之后，引擎头的值与顺序保持不变。引擎头
-  不可被覆盖：宿主传入与 OpenAI 侧 `Authorization` / `Content-Type` 或 Anthropic 侧
-  `x-api-key` / `anthropic-version` / `content-type` 同名（大小写不敏感）的键时，在
+  不可被覆盖：宿主传入与引擎自有的 `Authorization` / `Content-Type` 同名（大小写不敏感）的键时，在
   **构造时**抛 `TypeError`，而不是静默忽略。值为 `undefined` / `null` 的键跳过（供宿主
   条件注入）；其余值必须是字符串、数字或布尔，且不得包含 CR、LF、NUL。
 - **header 值不得进入错误文案与日志。** 该注入口新增的每一条文案只写 header 名字，不写
@@ -2205,7 +2202,7 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 | slot 字段 | 单位 | 进 provider 请求 | 驱动预算 / 压缩 | 缺省行为 |
 |---|---|---|---|---|
 | `contextWindowTokens` | token（正安全整数） | 否 | **是**——预算输入，也决定输出截断上限的尺寸 | 推不出预算 → 压缩与聚合输出预算均关；上限退回 `4096` |
-| `maxOutputTokens` | token（≥ 0 的安全整数） | 是，作为 `maxTokens` 缺席时的 `max_tokens` 默认值 | **是**——第二个必需的预算输入 | OpenAI 不写 `max_tokens`；Anthropic 用 `4096`；推不出预算 |
+| `maxOutputTokens` | token（≥ 0 的安全整数） | 是，作为 `maxTokens` 缺席时的 `max_tokens` 默认值 | **是**——第二个必需的预算输入 | provider 不写 `max_tokens`；推不出预算 |
 | `budgetTokens` | token（正安全整数） | 否 | **是**——**显式**压缩预算（issue #682）：原样使用，**优先于** `computeBudget` 派生 | 没有显式预算 ⇒ 由窗口那一对派生；那一对不齐 ⇒ 压缩保持关闭 |
 | `maxTokens` | token | 是——请求 `max_tokens`，优先于 `maxOutputTokens` | **否**，从不参与预算 | 字段省略 |
 | `temperature` | 数值 | 是——`temperature` | 否 | 字段省略 |
@@ -2227,7 +2224,7 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 
 **slot 里的未知字段是惰性的，也是安全的——除了现在变成已知字段的预算键。** 内置 provider 原样拷贝 slot
 （`createJsonFileModelConfigProvider`（`src/config/json-file.js`）、`createStaticModelConfigProvider`（`src/config/static.js`）），两个工厂又只读固定的
-参数列表（`createOpenAIProvider`（`src/providers/openai.js`），内部件 Anthropic 适配器 `src/providers/anthropic.js` 同理），
+参数列表（`createOpenAIProvider`（`src/providers/openai.js`）），
 所以认不出的键既上不了线，也不会抛错。这条安全声明只覆盖
 **slot 对象**：*顶层* `runToolLoop` 选项写错名仍会抛 `TypeError`（见「`runToolLoop`
 选项与工具执行契约」）。**issue #682 为一个键收窄了它：** `budgetTokens`（以及 CLI 的
@@ -2917,18 +2914,15 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
 `request` > `slotDefault` > `providerOptions` > `extraBody`（与载荷装配的优先级同序，所以这格不可能与 body 打架）。
 **没事实就没键**：四个通道与 body 里都没有 reasoning 相关键 ⇒ 整格缺席——不是 `{}`，也不是故意写一个
 `hostValue: undefined`。**边界（契约级）：当前只有本包自带的 OpenAI provider 会交这格**（`chat` 与 `chatStream` 两条路径都接了，
-观测点就在载荷装配点）。**Anthropic provider 与宿主自建 provider 都不交**——前者的载荷由
-`canonicalToAnthropicRequest`（`src/messages/anthropic.js`）拼，本片没把观测点接过去；后者引擎根本看不见它的
-wire body ⇒ 两种情况下该格都**缺席**，而缺席的意思是**「未观测」，绝不是「没发 reasoning 参数」**。
+观测点就在载荷装配点）。**宿主自建 provider 不交**——引擎根本看不见它的 wire body ⇒ 该格**缺席**，
+而缺席的意思是**「未观测」，绝不是「没发 reasoning 参数」**。
 
 **（3）`reasoningTokens`，以及为什么「缺席」不等于 0。** 规范化 usage 的既有三键逐字不动
 （`input_tokens` / `output_tokens` / `cacheRead`），只加一个可选键 `reasoningTokens`（number）——
 **只有上游回报 `completion_tokens_details.reasoning_tokens` 时才写**。回报了 0 就是测到了，照写 0
 （2026-11-08 探针在 `reasoning_effort: "none"` 那一发实测到的真值就是 0）；**没回报**就**没有这个键**，
 任何一层都不许用 `0` 顶替「没测」——这是两个不同的问题，把它们并成一个数正是本格要暴露的「静默 0」失败模式。
-Anthropic 的 usage 面**根本没有**推理 token 字段（`usageFromResponse`（`src/messages/anthropic.js`）只映射
-`input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`，别的没有），
-所以 Anthropic 路径**不**长出这个键：那里它是**事实性缺席**，不是漏写。`record.usage`（逐轮账，issue #438）
+上游根本没回报推理 token 字段时，这个键**不**长出来：那里它是**事实性缺席**，不是漏写。`record.usage`（逐轮账，issue #438）
 一字未改：`reasoningTokens` 随 `record.response.usage`（本轮最后一发）走，**不进**轮账那四个累加字段。
 
 **（4）响应从不回显本次的档位。** 2026-11-08 对真 OpenAI 兼容上游两种形态都量过（非流式 + SSE，同一个无聊 prompt）：
@@ -2946,7 +2940,6 @@ SSE 的 chunk 另加 `prompt_token_ids` / `prompt_text`，choice 上每片带 `t
 |---|---|---|
 | OpenAI 兼容 | **标量** `reasoning_effort` | 未识别的标量会被 **HTTP 400** 拒，错误体回吐**该后端自己**的合法值清单（2026-11-08 探针，`qwen3.8-flash-next` 上的 `"hight"`）；`"none"` 在那里真生效 |
 | GLM（OpenAI 族） | 标量，但是**没有 off 的子集** | `none` 由第 2 层翻译成 `low`（ADR-017）；现场型号当前不可用——见该 ADR 的 status note |
-| Anthropic | **对象形态**（`thinking` / `reasoning`），不是标量 | 它的探针腿**已退役**（本地无端点）：列为文档项，不作验收闸 |
 
 两条措辞纪律，两条都在现实里错过一次：
 
@@ -3676,7 +3669,7 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
   控制文本（issue #393）。注入的 user 消息绝不能把 `tool_use` 与它的结果隔开——否则**本库自己的消息
   校验器**会在任何一个请求发出**之前**本地抛 `invalid_messages` 拒掉整份历史，宿主收到
   `termination: failed`（2026-10-22 实测更正：**零 HTTP**，拒的不是 provider；规矩按本库说的两协议里
-  最严的那一档立——Anthropic 形状对这个形状回 400，而实跑的 OpenAI 兼容中转会回 200 并让模型自己编
+  最严的那一档立——严格的上述游对这个形状回 400，而实跑的 OpenAI 兼容中转会回 200 并让模型自己编
   一个结局）。那条 `tool_result` 陈述的是事实
   （「这次调用根本没跑」），所以该调用**不会**被执行；`tool_use` 的 id 读不出来的畸形尾巴补不出合法
   结果，这一格**不补跑**，行为与未 opt-in 完全一致。
@@ -4791,9 +4784,9 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
   **不给 provider ⇒ 引擎什么都不注入**——行为与 #568 之前逐字相同，所以它是 opt-in，不是每次请求强加的新块。
 - 落点是**请求尾部**、就地刷新：`upsertContinuityInMessages` (`src/loop/continuity-block.js`) 按 marker 替换
   既有块而不是追加，`positionContinuityBlock` (`src/loop/continuity-block.js`) 把它挪到 `messages` 末尾。
-  于是轮次**不会**让历史每条多一条消息。刻意**不**并进 `mainSystem`：`markStablePrefix`
-  (`src/loop/provider-runner.js`) 把提示词开头的块标成前缀头、其后紧跟历史，每轮改 `mainSystem` 会让 100k–200k
-  token 的前缀每次请求都失效。
+  于是轮次**不会**让历史每条多一条消息。刻意**不**并进 `mainSystem`：提示词开头的块就是可缓存前缀的头、其后紧跟
+  历史，每轮改 `mainSystem` 会让 100k–200k token 的前缀每次请求都失效（把这件事显式打标的那套断点机制已随
+  Anthropic 适配器退役，issue #926；上游的前缀缓存是自动的）。
 - 它**被计入估算**：块是 `messages` 里真实的一条，所以 `estimateMessageTokens` (`src/tokens.js`) 会把它算进
   折叠判据读的那份估算——宿主没法用一个压缩器看不见的续接块偷偷把请求撑大。
 - 它的预算与 `config.folding.context.budgetTokens`（回答「何时折叠」）**是两件事**：默认 `CONTINUITY_DEFAULT_MAX_TOKENS`
@@ -5039,7 +5032,7 @@ store——必须按 `round` 归并、按 `dedupKey` 去重，不得假设记录
 
 1. 宿主扩展只能写进 `metadata`；引擎不会读出它们去覆盖引擎事实；
 2. 引擎事实只能写进 `erix`；构造器最后才写该命名空间，因此摊平到顶层的宿主键盖不掉它；
-3. `is_error` 留在顶层——它是 wire 字段（Anthropic 请求构造器会发出去），不是命名空间成员。
+3. `is_error` 留在顶层——它是 wire 字段，不是命名空间成员。
 
 `metadata` 与 `erix` 是**保留的顶层键名**，登记在 `TOOL_RESULT_CONTRACT.reserved.topLevelKeys`
 里。下面那张退役表之后已经**没有摊平这一步**了，所以这两个名字是构造器**独占**的（不再是
@@ -5497,7 +5490,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。issue #335 起，投影里 assistant 条目的**正文正本也以这里为准**（消息一成型就落盘）；`response.content` 只是老账本与宿主手写行的回退。 |
 | `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
 | `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。**它的 `usage` 只含本轮最后一发响应**——本轮的完整逐轮账是同级键 `record.usage`（见「用量分账：逐轮账 vs 引擎开销（issue #438）」）。 |
-| `sentRequestParams` | 模型 / 取证 | **纯加法（issue #785 P1）。**本轮 reasoning 相关参数**实际写进请求体**的值：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`——`hostValue` 是宿主给的值（**取在 payload 翻译之前**），`sentValue` 是真正发出进程的值（GLM `none → low`，ADR-017；两者可以不同，谁也不顶替谁），`source` 是供值通道（`request` / `slotDefault` / `providerOptions` / `extraBody`）。可以当诊断小标题渲染，绝不当模型正文渲染。**没事实就没键**：没有 reasoning 相关键的轮不带这格，而且**只有本包自带的 OpenAI provider 会交**：Anthropic provider 与宿主自建 provider 都交不出（前者本片没接观测点，后者引擎看不见它的 wire body）——缺席要读成*未观测*，不是*没发*。见「`reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）」。 |
+| `sentRequestParams` | 模型 / 取证 | **纯加法（issue #785 P1）。**本轮 reasoning 相关参数**实际写进请求体**的值：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`——`hostValue` 是宿主给的值（**取在 payload 翻译之前**），`sentValue` 是真正发出进程的值（GLM `none → low`，ADR-017；两者可以不同，谁也不顶替谁），`source` 是供值通道（`request` / `slotDefault` / `providerOptions` / `extraBody`）。可以当诊断小标题渲染，绝不当模型正文渲染。**没事实就没键**：没有 reasoning 相关键的轮不带这格，而且**只有本包自带的 OpenAI provider 会交**：宿主自建 provider 交不出（引擎看不见它的 wire body）——缺席要读成*未观测*，不是*没发*。见「`reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）」。 |
 | `l0facts`、`runState`、`runStateMeta`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。**`runState` 是按能力保留的恢复载体（#843）：** 除非 `saveRunState` 与 `loadRunState` 都可调用，否则轮记录会保留副本；只有独立通道能闭合读写时才省掉每轮副本。缺少任一方法的 store 会保留副本，独立 state 缺席时可从最新 record 回退；两方法齐备的 store 依赖独立 state，加载结果缺席时没有新轮记录副本可回退，已存在但无效时也不回退。**`runStateMeta`** `{ bytes, capBytes, truncated }` 是本轮刷新的 run-state 快照体积观测，与存储通道无关；它不表示外层轮记录或独立状态文件的字节数。两方法齐备的 store 上，该键可能与**没有** `runState` 兄弟键的记录同时出现；逐轮体积增长已转移到独立 state 通道。`bytes` 使用夹断同一把尺 `Buffer.byteLength(JSON.stringify(copy), "utf8")`，`capBytes` 来自 `RUN_STATE_MAX_SERIALIZED_BYTES`，`truncated` 是超上限或快照带 `bounds.truncated`（夹断后的快照也可能低于上限；实测 64,893 B / 65,536 B）。无可测状态就不写键；缺席表示未知，不是 `truncated: false`。引擎不读取该元数据，也不影响 resume 或停门；账本节省来自省掉重复的 `runState` 副本。 |
 
 ### 稳定性承诺

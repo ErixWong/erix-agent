@@ -2,7 +2,7 @@
 
 > English version: [README.md](README.md)
 
-**erix-agent** 是一个零依赖、纯 ESM 的无头编码 agent LLM 运行时。它提供双协议流式 provider、工具调用循环、上下文压缩、恢复、note-first 取回，以及可选的 reflection/judge 层，用于无人值守工作。
+**erix-agent** 是一个零依赖、纯 ESM 的无头编码 agent LLM 运行时。它提供 OpenAI 兼容端点的流式 provider、工具调用循环、上下文压缩、恢复、note-first 取回，以及可选的 reflection/judge 层，用于无人值守工作。
 
 **定位：无头 agent。** 产品形态是一个引擎加编程式任务入口：任务进入，agent 运行工具循环，事件离开进程，运行可以恢复。它不是 UI，也不是为坐在终端前的人设计的。`runToolLoop` 管理一个 agent 任务的完整生命周期：启动、运行、停止、恢复，并通过 `onRound`、`onDelta`、`onToolCall`、`onUsage` 和 `onEvent` 流式传出事件。
 
@@ -96,7 +96,7 @@ Agent 行为难以预测。统一 Headless Agent 的价值，就是让业务代�
 
 | 需求 | 本运行时提供 | 由宿主负责 |
 |---|---|---|
-| 降低使用 LLM 的门槛 | `runToolLoop` 单一入口；双协议 provider；规范消息模型；上下文压缩；checkpoint/resume；错误分类 | 产品级的 Prompt 与流程设计 |
+| 降低使用 LLM 的门槛 | `runToolLoop` 单一入口；一条 OpenAI 兼容 provider；规范消息模型；上下文压缩；checkpoint/resume；错误分类 | 产品级的 Prompt 与流程设计 |
 | 统一管理模型配置与运行策略 | 鸭子类型的 `ModelConfigProvider.resolve(slot)`，内置 `static` / `env` / `json-file` 适配器；按 slot 选模型；`apiKey`/`apiKeyEnv`/`apiKeyFile` 间接引用；预算推导 | 配置来源本身（数据库/配置中心）、项目与租户额度、fallback 策略、Prompt 与 Agent 版本 |
 | 统一记录调用、支撑成本分析与事后审计 | 事件流（`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`）、token 计量、`TranscriptStore` 落盘、稳定 run id | 日志与成本存储、监控看板、保留策略、审计流程 |
 | 统一安全、权限与工具调用边界 | 唯一执行入口（`executeTool`）；数据无法扩张的执行器注册表；schema 求交；通过 `note_list` → `note_read` 的 note-first 取回 | 策略本身：哪个项目能用哪些 Agent、可调哪些工具、哪些操作需人工确认、是否允许联网与写操作、调用次数与时长限制 |
@@ -166,14 +166,12 @@ src/
     state-view.js                  活引用状态视图工厂（按显式字段清单生成；#246 已接线两个消费者：runSnapshotContext 的 run-state 转发面、providerContext 的状态转发面；`messages` 仍手写）
     round-run-state-inject.js      同轮 run-state 注入观测的纯合并器，供 `round_end.runStateInject` 加法键（issue #872；布尔通道是本轮的并集，不是最后一次）
   providers/
-    anthropic.js                   Anthropic provider 与流式处理
     errors.js                       provider 错误与分类
     http-shared.js                  两个 provider 共用的 HTTP 与注入 helper（header/extraBody 红线）
     openai.js                       OpenAI-compatible provider 与流式处理
     payload.js                      provider payload 与超时选项
     timeout.js                      provider 超时处理
   messages/
-    anthropic.js                   Anthropic 协议转换与流组装
     canonical.js                    规范消息/工具转换
     openai-normalization.js         OpenAI-compatible 归一化原语
     tool-arguments.js               工具引数解析：先 L0 再 L1 修复，修不出来给解析器原判词（issue #409）

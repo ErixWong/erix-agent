@@ -16,7 +16,7 @@
 flowchart LR
     HOST["Host application<br/>app_container / touwaka / CLI"]
     LOOP["runToolLoop<br/>single task lifecycle"]
-    PROV["Dual-protocol Provider<br/>OpenAI / Anthropic"]
+    PROV["Provider<br/>OpenAI-compatible"]
     LLM[("LLM API")]
     TOOLS["executeTool<br/>host tool boundary"]
     STORE[("TranscriptStore<br/>transcript archive")]
@@ -44,7 +44,7 @@ flowchart LR
 - **One-directional data flow**: tasks in, events out. `runToolLoop` owns exactly **one** task lifecycle (start/run/stop/resume/event stream); queues, arbitration, retry scheduling, and reapers belong to the host (ADR-012).
 - **Model view ≠ archive source**: compaction only rewrites what is sent to the model; `foldedPayload` is persisted with the round record. Folding changes "what the model sees", never "what the archive stores".
 - **Governance in the loop, policy outside it**: judge/governor is an optional in-engine layer (suggestions and corrections), but **which policy to enforce** (which project runs which agent, which operations need confirmation, network and write access) is the host's responsibility (ADR-009).
-- **Cache-aware request shape**: `config.input.cacheStablePrefix` (default on) marks the system + first real user message as a stable prefix boundary (`cacheBoundary` hint) for the provider cache adapter — OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`, normalized into `usage.cacheRead`/`cacheWrite`. For `config.tuning.cacheCapable` endpoints the tool-result TTL defaults to 0 (explicit `config.folding.toolResultTtl` always wins), keeping the provider prefix cache effective.
+- **Cache accounting**: the OpenAI response's `cached_tokens` is normalized into `usage.cacheRead` (`src/messages/openai-normalization.js`); OpenAI caches prefixes automatically, so the library places no breakpoints (`config.input.cacheStablePrefix` was retired with the Anthropic adapter, issue #926). For `config.tuning.cacheCapable` endpoints the tool-result TTL defaults to 0 (explicit `config.folding.toolResultTtl` always wins), keeping the provider prefix cache effective.
 
 ---
 
@@ -76,7 +76,6 @@ flowchart TB
 
     subgraph msg["messages/ canonical message model"]
         CAN["canonical.js<br/>Block ↔ OpenAI messages"]
-        ANT["anthropic.js<br/>Block ↔ Anthropic Messages"]
         ONM["openai-normalization.js<br/>usage/stopReason/stream accumulation"]
         RND["rounds.js<br/>validation + whole-round grouping"]
         TOK["tokens.js (root)<br/>dependency-free token estimation"]
@@ -172,7 +171,7 @@ flowchart TB
 
 - **Pure ESM, zero npm dependencies**: only `node:` built-ins + relative paths. The orchestration core concentrates in a single `orchestrator.js` (its line count is not pinned here — run `wc -l` on it); surrounding modules are small single-responsibility files with one-directional dependencies (compact/reflection/store/tools never depend back on loop).
 - **The orchestration core (`src/loop/`) is the heart**: main loop, provider calls, checkpoint execution, budget, termination, resume, and error accounting are all assembled here; `src/reflection/` and `src/compact/` are loop-driven "decision/transformation" modules only invoked by the loop — governor/judge-prompt building are pure, while fold-llm/wrapup may call an injected summarizer/evaluator (external calls, never hardcoded).
-- **The message layer is the single protocol adaptation point**: internally there is exactly one CanonicalMessage/Block format; OpenAI and Anthropic conversions + stream assembly live in `src/messages/` + `src/providers/`. Adding a protocol means adding one pair of adapters.
+- **The message layer is the single adaptation point**: internally there is exactly one CanonicalMessage/Block format; the OpenAI-compatible conversion + stream assembly live in `src/messages/` + `src/providers/`. Other protocols are the host's own provider object, converted outside the package. Adding a protocol means adding one pair of adapters.
 - **The CLI is not the product**: `bin/` is a verifier/debugger (chat one-shot + repl interactive + MCP/skill/final-guard implementations). The real evaluation surface is the external erix-bench headless harness; CLI archive/output-capture behavior is outside the library contract.
 - **`erix-agent/tools` is an optional subpath**: tool registry, file tools, notes tools, skills loader, and delegation tools (`createDelegateTool` + roster/capacity/notify bookkeeping). The former tool providers (static/json-file/composite) are RETIRED with the 0.31 bundle and are no longer a published surface (not exported from `src/tools/index.js`). The host may opt in; nothing is implicitly installed into runToolLoop (recall retired, issue #36).
 
@@ -185,7 +184,7 @@ sequenceDiagram
     autonumber
     actor H as Host
     participant L as runToolLoop<br/>(orchestrator)
-    participant P as Provider<br/>(OpenAI / Anthropic)
+    participant P as Provider<br/>(OpenAI-compatible)
     participant M as LLM API
     participant T as executeTool<br/>(host implementation)
     participant S as TranscriptStore
@@ -282,10 +281,7 @@ flowchart TD
     CC -- no --> J["① TTL: one tool_result<br/>request-only view"]
     T0 --> Z["send request copy"]
     J --> Z
-    Z --> SP{"config.input.cacheStablePrefix?<br/>(default on)"}
-    SP -- yes --> SPM["markStablePrefix<br/>system + first user → cacheBoundary hint"]
-    SPM --> ADAPT["provider cache adapter<br/>OpenAI cached_tokens / Anthropic cache_read_input_tokens<br/>→ usage.cacheRead / cacheWrite"]
-    SP -- no --> ADAPT
+    Z --> ADAPT["usage accounting<br/>OpenAI cached_tokens → usage.cacheRead"]
 ```
 
 ### Six-layer registry (order, trigger, granularity, and product)
@@ -298,7 +294,7 @@ strategy in one request. `foldStatistical` and `foldLlm` are mutually exclusive
 selected strategies, not two consecutive folds.
 
 - **`config.tuning.cacheCapable` only changes the TTL default** (`resolvedToolResultTtl` (`src/loop/orchestrator.js`)): with `config.tuning.cacheCapable: true` and no explicit `config.folding.toolResultTtl`, the request's TTL resolves to 0 (single-result folding off, keeping the provider prefix cache effective); an explicit `config.folding.toolResultTtl` always wins; whole-round folding strategies are untouched — it does **not** "delete whole-round compaction".
-- **`config.input.cacheStablePrefix` → provider cache adapter** (default on): before each request `markStablePrefix` (`src/loop/provider-runner.js`) marks the system + first real user message with a `cacheBoundary` hint; each protocol adapter maps it its own way (OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`), normalized into `usage.cacheRead`/`cacheWrite`.
+- **No cache breakpoints (issue #926)**: `config.input.cacheStablePrefix` and the `cacheBoundary` marking are retired — they existed to emit Anthropic `cache_control` markers. Only the accounting remains: OpenAI `cached_tokens` → `usage.cacheRead`.
 
 | Layer (registry order) | Trigger | Granularity | Model/archive product |
 |---|---|---|---|
@@ -446,7 +442,7 @@ flowchart TB
 | Concern | Engine (this library) | Host (caller) |
 |---|---|---|
 | Single task lifecycle | start / run / stop / resume / event stream | when to start, which task to start |
-| Model I/O | dual-protocol providers, timeout classification, retries, canonical message conversion | endpoint/model/key configuration (`modelConfig.resolve(slot)`), quota and fallback policy |
+| Model I/O | OpenAI-compatible provider, timeout classification, retries, canonical message conversion | endpoint/model/key configuration (`modelConfig.resolve(slot)`), quota and fallback policy |
 | Tools | `executeTool` as the single execution entry, input validation, result normalization | tool implementations, permission policy, which operations need human confirmation |
 | Security | enforces no policy (ADR-009); executor registry is code-owned — data cannot extend capability | local = trust domain; sandbox/container isolation done by the host |
 | Context | budget, folding, fidelity layer, safe truncation fallback | budget parameters (contextWindow/maxOutputTokens), strategy selection |
@@ -463,7 +459,7 @@ flowchart TB
 | Question | Answer |
 |---|---|
 | Why insist on zero npm dependencies? | Hosts are mostly embedded/audit-sensitive scenarios (app_container, touwaka). Depending on third-party frameworks = pushing supply-chain risk and version churn onto every host. Pure ESM + `node:` built-ins lets the engine absorb "contain third-party framework churn" once. The cost — hand-written SSE parsing and token estimation — is pinned by contract tests. |
-| Why an internal canonical message model instead of passing OpenAI/Anthropic through? | Dual-protocol is today's reality, not the architectural center. The canonical Block layer lets compaction/judge face exactly one structure; adding a protocol = adding one adapter pair without touching the engine. `validateMessages` asserts protocol invariants before every provider call. |
+| Why an internal canonical message model instead of passing the wire format through? | The wire format is not the architectural center. The canonical Block layer lets compaction/judge face exactly one structure; adding a protocol = adding one adapter pair without touching the engine. `validateMessages` asserts protocol invariants before every provider call. |
 | Why record execution evidence via a recovery row rather than checkpoint before and after a tool call? | The former twin pre/post-tool run snapshots are RETIRED (0.33.0): there is no pre/post-tool checkpoint write. A single `tool-executed` recovery row is appended after execution, which still lets the restoring side distinguish `not_started` (safe replay) from `executed_uncommitted` (must not blindly replay), drawing the idempotency responsibility line clearly. |
 | Does judge interception slow down or mis-block normal tool calls? | Audits carry a 30s timeout; errors/timeouts always **degrade to direct execution** (fail-open execution, fail-closed governance); read-only tools are exempted as a class; `off_track` only hints, never blocks. Every governance-failure path falls back to "the plain loop without a judge". |
 | What if an LLM-produced fold summary is untrustworthy? | Three layers of defense: ① summaries pass deterministic `enforceSize` before entering context; ② anchor index / user-input quotes are mechanically extracted, never LLM-rewritten; ③ the fold warning prompts `note_take` while content is in context, later retrieved via note_list/note_read; un-noted values are omitted. Summaries may lose narrative, never facts. |

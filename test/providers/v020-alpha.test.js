@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createAnthropicProvider } from "../../src/providers/anthropic.js";
 import { createOpenAIProvider } from "../../src/providers/openai.js";
 import { createMockFetch } from "../helpers/mock-fetch.js";
 
@@ -121,50 +120,6 @@ test("OpenAI omits reasoning_effort when it is not provided", async () => {
   assert.equal(Object.hasOwn(body, "reasoning_effort"), false);
 });
 
-test("Anthropic forwards alpha payload fields and provider-specific options", async () => {
-  const fetchImpl = createMockFetch([{
-    json: { content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" },
-  }]);
-  const provider = createAnthropicProvider({
-    endpoint: "https://api.example.test",
-    apiKey: "test-key",
-    model: "claude-test",
-    fetchImpl,
-  });
-
-  await provider.chat({
-    ...baseRequest,
-    maxTokens: 32,
-    thinking: { type: "enabled", budget_tokens: 1000 },
-    reasoning: { effort: "medium" },
-    reasoning_effort: "medium",
-    enable_thinking: true,
-    chat_template_kwargs: { enable_thinking: true },
-    providerOptions: {
-      anthropic: { custom_header_mode: "compat", secret: "must-not-leak" },
-    },
-    frequency_penalty: 0,
-    presence_penalty: 0,
-    response_format: { type: "json_object" },
-  });
-
-  assert.deepEqual(fetchImpl.calls[0].body, {
-    model: "claude-test",
-    system: "",
-    messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-    max_tokens: 32,
-    thinking: { type: "enabled", budget_tokens: 1000 },
-    reasoning: { effort: "medium" },
-    reasoning_effort: "medium",
-    enable_thinking: true,
-    chat_template_kwargs: { enable_thinking: true },
-    custom_header_mode: "compat",
-    frequency_penalty: 0,
-    presence_penalty: 0,
-    response_format: { type: "json_object" },
-  });
-});
-
 test("providerOptions cannot override core payload fields", async () => {
   const openAIFetch = createMockFetch([{
     json: { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] },
@@ -193,33 +148,6 @@ test("providerOptions cannot override core payload fields", async () => {
   assert.equal(openAIFetch.calls[0].body.max_tokens, 32);
   assert.equal(openAIFetch.calls[0].body.stream, undefined);
   assert.equal(openAIFetch.calls[0].body.temperature, undefined);
-
-  const anthropicFetch = createMockFetch([{
-    json: { content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" },
-  }]);
-  const anthropic = createAnthropicProvider({
-    endpoint: "https://api.example.test",
-    apiKey: "test-key",
-    model: "claude-test",
-    fetchImpl: anthropicFetch,
-  });
-  await anthropic.chat({
-    ...baseRequest,
-    maxTokens: 32,
-    providerOptions: {
-      anthropic: {
-        model: "wrong-model",
-        messages: [{ role: "user", content: [{ type: "text", text: "wrong" }] }],
-        max_tokens: 1,
-        stream: true,
-      },
-    },
-  });
-  assert.equal(anthropicFetch.calls[0].body.model, "claude-test");
-  assert.deepEqual(anthropicFetch.calls[0].body.messages, [{
-    role: "user",
-    content: [{ type: "text", text: "hello" }],
-  }]);
-  assert.equal(anthropicFetch.calls[0].body.max_tokens, 32);
-  assert.equal(anthropicFetch.calls[0].body.stream, undefined);
+  // issue #926：这一格原本还有 Anthropic 的一半（同一个「providerOptions 不得覆盖 core 字段」
+  // 判据在两个适配器上各验一次）；Anthropic 适配器退役后只剩 OpenAI 这一半，判据本身未放宽。
 });

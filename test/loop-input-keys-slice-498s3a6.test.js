@@ -16,8 +16,8 @@
 // 逐面钉住（每条都有可执行证据）：
 //   · `systemPrompt` / `systemPromptMode` / `systemPromptFile`：**独立选项**（#505 那两片），
 //     不是 `runToolLoop` 的顶层键，也不在本刀；
-//   · provider 请求字段 `system`（`src/messages/anthropic.js`）与消息转换入参
-//     `canonicalToAnthropicRequest({ system })`：不是选项面，从不经过名称闸口；
+//   · provider 请求字段 `system`（引擎自带 OpenAI 适配器的 wire body，`src/providers/openai.js`）：
+//     不是选项面，从不经过名称闸口（issue #926：Anthropic 那一份随适配器一起退役）；
 //   · `wrapup` 组的**嵌套容器**（`config.run.reflection.wrapupNormalize` 那一带）与顶层 `wrapup`
 //     是两个东西；顶层 `wrapup` 本片退回，**#498 S3 A18 已把它退役**（P5-c 现在钉的是退役后的语义）；
 //   · `./tools` 子路径导出 / `createToolRegistry` / 槽位面同名字段：都不是顶层选项。
@@ -45,7 +45,6 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { canonicalToOpenAIMessages, canonicalToolsToOpenAI } from "../src/messages/canonical.js";
-import { canonicalToAnthropicRequest } from "../src/messages/anthropic.js";
 import { createToolRegistry } from "../src/tools/index.js";
 import { runDirect as sharedRunDirect, directError as sharedDirectError } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -139,7 +138,7 @@ test("P3 写错位置各有自己的文案：config 顶层 / 未知叶子", asyn
   // 未知叶子：报未知 + 枚举该组接受名单（`system` 已在名单里，这里用一个真不存在的名字）。
   const unknownLeaf = await directError({ config: { input: { systemPropmt: "SYS" } } });
   assert.match(unknownLeaf.message, /unknown config\.input option: "systemPropmt"/u, "未知叶子必须点名");
-  assert.match(unknownLeaf.message, /accepted: system, cacheStablePrefix/u, "必须枚举该组接受名单");
+  assert.match(unknownLeaf.message, /accepted: system, initialUserMessage/u, "必须枚举该组接受名单");
 });
 
 // ================================================================ P4. 混装壳：这个键不适用（机器派生）
@@ -206,14 +205,8 @@ test("P5-a 专项：systemPrompt / systemPromptMode / systemPromptFile 是独立
 test("P5-b 专项：provider 请求字段 system 与消息转换入参没被本刀动过（真构造）", async () => {
   // 这是**协议面**，不是选项面：它从不经过名称闸口，所以删顶层键与它无关。判据不是「我看过了」，
   // 是一次真构造 + 真 payload。
-  const anthropic = canonicalToAnthropicRequest({
-    system: "SYS",
-    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-    maxTokens: 16,
-  });
-  assert.equal(anthropic.system, "SYS", "Anthropic 的 system 字段必须仍是那个字符串");
-  // OpenAI 侧没有顶层 `system` 字段：它是 messages 里的一条 `role:"system"`。同一句话证明
-  // 「词在别的面上」不靠记忆——这里只钉本片没碰它（入参形状与输出形状都不变）。
+  // issue #926：Anthropic 转换器退役，这一面只剩 OpenAI；判据仍是一次真构造 + 真 payload：
+  // OpenAI 侧没有顶层 `system` 字段，它是 messages 里的一条 `role:"system"`。
   const openaiMessages = canonicalToOpenAIMessages("SYS", [{ role: "user", content: [{ type: "text", text: "hi" }] }]);
   assert.equal(openaiMessages[0].role, "system", "OpenAI 侧仍是 messages 里的一条 role:system");
   assert.equal(openaiMessages[0].content, "SYS");
@@ -253,7 +246,7 @@ test("P5-c 专项：顶层 wrapup 已退役（#498 S3 A18 收口）；wrapup 组
   await sharedRunDirect({
     provider,
     executeTool: async () => "ok",
-    config: { input: { system: "SYS", cacheStablePrefix: false, wrapup: false } },
+    config: { input: { system: "SYS", wrapup: false } },
   });
   assert.equal(provider.requests[0].system, "SYS", "config.input.wrapup:false ⇒ 系统提示不被追加收尾协议");
   // 同一份 run 开回默认（`wrapup` 未给 = true）⇒ 收尾协议回来。两个方向都在，才叫「叶子仍是活旋钮」。
@@ -263,7 +256,7 @@ test("P5-c 专项：顶层 wrapup 已退役（#498 S3 A18 收口）；wrapup 组
     executeTool: async () => "ok",
     seed: "go",
     completion: false,
-    config: { input: { system: "SYS", cacheStablePrefix: false } },
+    config: { input: { system: "SYS" } },
   });
   assert.ok(withWrapup.requests[0].system.includes(WRAPUP_INSTRUCTION), "默认 wrapup:true 仍追加收尾协议");
 });
@@ -362,23 +355,18 @@ test("G3 as-is：纯数据形状扁平照旧收，而规位（无论纯数据还
   }
 });
 
-test("G4 as-is：函数成员在两个协议适配器上都被投影掉（所以它是惰性的，不是「能用」）", async () => {
-  // 这条是给裁决用的证据：成员既不进 OpenAI 的 `function` 体，也不进 Anthropic 的 tool 体。
+test("G4 as-is：函数成员在协议适配器上被投影掉（所以它是惰性的，不是「能用」）", async () => {
+  // 这条是给裁决用的证据：成员不进 OpenAI 的 `function` 体。
   // 于是「扁平可达」的含义是「今天不报错地接受一个惰性成员」，不是「引擎会调用它」。
+  // issue #926：Anthropic 侧的同一条投影（`canonicalToAnthropicRequest` 的 tool 体同样丢掉
+  // `handler`）随适配器退役一起删掉；OpenAI 这条判据一字未动。
   const tools = [{ name: "t", description: "d", inputSchema: { type: "object" }, handler: () => {} }];
   const openai = canonicalToolsToOpenAI(tools);
   assert.deepEqual(openai, [{ type: "function", function: { name: "t", description: "d", parameters: { type: "object" } } }]);
-  const anthropic = canonicalToAnthropicRequest({
-    system: "S",
-    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-    tools,
-    maxTokens: 16,
-  });
-  assert.deepEqual(anthropic.tools, [{ name: "t", description: "d", input_schema: { type: "object" } }]);
   assert.equal(
     JSON.stringify(openai).includes("handler"),
     false,
-    "两个协议都不带函数成员 ⇒ 收窄的是「写点」，不是「能力」",
+    "协议不带函数成员 ⇒ 收窄的是「写点」，不是「能力」",
   );
 });
 
@@ -391,19 +379,19 @@ test("R1 真 run：config.input.system 逐字到达 provider，收尾协议仍�
   const { effectiveOptions } = await normalizeRunToolLoopOptions({ config: atHome("input.system", "SYS") });
   assert.equal(effectiveOptions.system, "SYS", "展开相必须写回 effectiveOptions.system");
 
-  // ① 关掉收尾协议 + 关掉缓存边界 ⇒ 请求体里的 system 就是那句字符串本身（逐字）。
+  // ① 关掉收尾协议 ⇒ 请求体里的 system 就是那句字符串本身（逐字）。
   const plain = createFakeProvider(DONE);
-  await runDirect({ provider: plain, wrapup: false, config: { input: { system: "SYS", cacheStablePrefix: false } } });
+  await runDirect({ provider: plain, wrapup: false, config: { input: { system: "SYS" } } });
   assert.equal(plain.requests[0].system, "SYS", "system 必须逐字来自 config.input.system");
 
-  // ② 默认（wrapup:true / cacheStablePrefix:true）⇒ 同一句话被包成 `{content, cacheBoundary}`，
-  //    且收尾协议拼在后面。这一格证明**读侧那两段装配**（`mainSystem`）一行未改。
+  // ② 默认（wrapup:true）⇒ 同一句话后面拼上收尾协议。这一格证明**读侧那两段装配**（`mainSystem`）
+  //    一行未改。issue #926：以前 `cacheStablePrefix:true` 会把它包成 `{content, cacheBoundary}`，
+  //    打标机制退役后它就是那条字符串 ⇒ 判据从「对象里的 content」改成「字符串本身打头」。
   const wrapped = createFakeProvider(DONE);
   await runDirect({ provider: wrapped, wrapup: true, config: { input: { system: "SYS" } } });
   const system = wrapped.requests[0].system;
-  assert.equal(typeof system, "object", "默认 cacheStablePrefix:true ⇒ system 带缓存边界包装");
-  assert.equal(system.cacheBoundary, true);
-  assert.match(system.content, /^SYS\n\n任务完成或需要给出结论时/u, "system 仍拼在收尾协议之前，逐字");
+  assert.equal(typeof system, "string", "issue #926：system 原样发出，不再被包成带缓存标记的对象");
+  assert.match(system, /^SYS\n\n任务完成或需要给出结论时/u, "system 仍拼在收尾协议之前，逐字");
 });
 
 test("R2 真 run：扁平 system 在**任何 provider 调用之前**就被拒（零请求）", async () => {

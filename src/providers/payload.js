@@ -1,4 +1,4 @@
-const PROVIDER_NAMES = new Set(["openai", "anthropic"]);
+const PROVIDER_NAMES = new Set(["openai"]);
 // 引擎自有 payload 字段：provider 选项表里都有对应入口，宿主经 `extraBody`
 // 注入同名字段时一律以引擎值为准（issue #181 红线 3，见 http-shared.js）。
 export const CORE_PAYLOAD_KEYS = new Set([
@@ -83,12 +83,12 @@ function providerExtraOptions(providerOptions, provider) {
 
 /**
  * Apply optional provider payload fields while omitting all undefined values.
- * Provider options may be either `{openai: {...}}`/`{anthropic: {...}}` or a
+ * Provider options may be either `{openai: {...}}` or a
  * direct provider-specific object. Secret-looking keys are never copied.
  *
  * @param {object} payload
  * @param {object} request
- * @param {"openai"|"anthropic"} provider
+ * @param {"openai"} provider
  * @param {object} [defaults]
  * @returns {object}
  */
@@ -167,7 +167,7 @@ export function applyProviderPayloadOptions(
  *   payload?: Record<string, any>,
  *   request?: Record<string, any>,
  *   defaults?: Record<string, any>,
- *   provider?: "openai" | "anthropic",
+ *   provider?: "openai",
  *   extraBody?: Record<string, unknown>,
  * }} input `payload` 必须是**已应用 extraBody 之后**的最终载荷
  * @returns {{reasoningEffort: {hostValue: any, sentValue: any, source: string, translated?: boolean}}|undefined}

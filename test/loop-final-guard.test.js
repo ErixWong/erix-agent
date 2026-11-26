@@ -87,9 +87,9 @@ test("finalGuard revision is injected as a paired-safe user text message", async
     role: "user",
     meta: { source: "judge-control" },
     content: [{ type: "text", text: "请先核实原始值" }],
-    // issue #192：这条控制消息就是本轮请求的最后一条 ⇒ 尾部滚动断点落在它上面。
-    cacheBoundary: true,
-  });
+// issue #926：这一条原本还带 `cacheBoundary: true`（#192 的缓存断点落点）——那套 Anthropic
+    // 打标机制已随适配器退役，请求视图原样发出。
+      });
   validateMessages(result.messages);
 });
 

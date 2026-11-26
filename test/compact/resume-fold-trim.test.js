@@ -85,7 +85,7 @@ function loopOptions({ runId, store, strategy, steps, resume = false, budgetToke
     initialUserMessage: `start ${big(2000)}`,
     executeTool: async ({ input }) => `MARK-r${String(input.step)} ${big(TOOL_BYTES)}`,
     completion: false,
-    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens, keepRounds: KEEP_ROUNDS } } },
+    config: { input: {}, folding: { context: { budgetTokens, keepRounds: KEEP_ROUNDS } } },
     store,
     runId,
     maxRounds: 10,

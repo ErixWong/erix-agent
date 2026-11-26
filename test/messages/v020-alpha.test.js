@@ -5,10 +5,6 @@ import {
   canonicalToOpenAIMessages,
   openAIResponseToCanonical,
 } from "../../src/messages/canonical.js";
-import {
-  anthropicResponseToCanonical,
-  canonicalToAnthropicRequest,
-} from "../../src/messages/anthropic.js";
 
 const touwakaReasoning = {
   type: "raw",
@@ -91,58 +87,5 @@ test("OpenAI maps canonical URL and base64 images while preserving raw blocks", 
       ],
       raw_blocks: [raw],
     }],
-  );
-});
-
-test("Anthropic maps reasoning, touwaka raw reasoning, images, and raw blocks", () => {
-  const raw = { type: "raw", protocol: "vendor", payload: { kind: "trace" } };
-  assert.deepEqual(
-    canonicalToAnthropicRequest({
-      model: "claude-test",
-      maxTokens: 128,
-      messages: [{
-        role: "assistant",
-        content: [
-          { type: "reasoning", text: "native", signature: "sig" },
-          touwakaReasoning,
-          { type: "image", url: "https://example.test/image.png" },
-          { type: "image", base64: "AAA", mediaType: "image/png" },
-          raw,
-        ],
-      }],
-    }),
-    {
-      model: "claude-test",
-      messages: [{
-        role: "assistant",
-        content: [
-          { type: "thinking", thinking: "native", signature: "sig" },
-          { type: "thinking", thinking: "check the repository first" },
-          { type: "image", source: { type: "url", url: "https://example.test/image.png" } },
-          { type: "image", source: { type: "base64", media_type: "image/png", data: "AAA" } },
-          raw,
-        ],
-      }],
-      max_tokens: 128,
-    },
-  );
-
-  assert.deepEqual(
-    anthropicResponseToCanonical({
-      content: [
-        { type: "thinking", thinking: "reason", signature: "sig" },
-        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "BBB" } },
-        { type: "custom", value: 1 },
-      ],
-      stop_reason: "end_turn",
-    }),
-    {
-      content: [
-        { type: "reasoning", text: "reason", signature: "sig" },
-        { type: "image", base64: "BBB", mediaType: "image/jpeg" },
-        { type: "raw", protocol: "anthropic", payload: { type: "custom", value: 1 } },
-      ],
-      stopReason: "end_turn",
-    },
   );
 });

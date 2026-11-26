@@ -30,11 +30,11 @@
 
 ## 2. 叶子账（实测，不抄任何数字）
 
-**实测 43 叶 = 30 init / 13 call**，分 8 组；今天**已有值规则**的叶子 6 / 43：`config.run.stream`、`config.continuity.handoff`、`config.folding.toolResultTtl`、`config.folding.toolResultFoldMinTokens`、`config.folding.context`、`config.metadata.modelMetadata`。
+**实测 42 叶 = 29 init / 13 call**，分 8 组；今天**已有值规则**的叶子 6 / 42：`config.run.stream`、`config.continuity.handoff`、`config.folding.toolResultTtl`、`config.folding.toolResultFoldMinTokens`、`config.folding.context`、`config.metadata.modelMetadata`。
 
 | 分组 | 叶数 | 叶子 |
 | --- | --- | --- |
-| `input` | 5 | `input.system` `input.cacheStablePrefix` `input.initialUserMessage` `input.messages` `input.wrapup` |
+| `input` | 4 | `input.system` `input.initialUserMessage` `input.messages` `input.wrapup` |
 | `run` | 17 | `run.maxRounds` `run.maxTokenContinuations` `run.stallDetection` `run.completion` `run.replayPolicy` `run.invalidArguments` `run.partialPersistence` `run.persistence` `run.outputHygiene` `run.writeToolNames` `run.writeToolPathKeys` `run.resume` `run.stream` `run.reflection` `run.runId` `run.cwd` `run.parentRunId` |
 | `tuning` | 4 | `tuning.maxTokens` `tuning.temperature` `tuning.topP` `tuning.cacheCapable` |
 | `timing` | 3 | `timing.timeoutMs` `timing.deadlineMs` `timing.retry` |
@@ -42,7 +42,7 @@
 | `guard` | 3 | `guard.finalGuardMaxRetries` `guard.finalGuardTimeoutMs` `guard.finalGuardExtend` |
 | `metadata` | 7 | `metadata.expert` `metadata.user` `metadata.task` `metadata.requestId` `metadata.toolContext` `metadata.model` `metadata.modelMetadata` |
 | `continuity` | 1 | `continuity.handoff` |
-| **合计** | **43** | **30 init / 13 call** |
+| **合计** | **42** | **29 init / 13 call** |
 
 ⚠ 两件事别混进来：① `init` / `call` 这一列是 **#571 片1** 的产物（`CONFIG_LEAF_BINDING`），本单只把它当一列读出来，一个绑定都没新增或改动；② **「键名不存在」那道闸口**（#571 片1 已落地）**不是本单的产物**——表里 `G` 那几格也包括 `CONFIG_LEAF_VALUE_RULES` 的拒绝；名称闸口管的是「这个键存不存在」，本表测的是「这个值合不合法」，值规则叶子由上面的叶账从规则表派生。
 
@@ -55,7 +55,6 @@
 | 叶子 | 绑定 | `"8"` | `"bogus"` | `-1` | `0.5` | `true` | `null` | `[]` | `{}` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `config.input.system` | init | A | A | A | A | A | A | A | A |
-| `config.input.cacheStablePrefix` | init | · | · | · | · | · | · | · | · |
 | `config.input.initialUserMessage` | call | A | A | A | A | A | A | A | A |
 | `config.input.messages` | call | C | C | C | C | C | C | A | C |
 | `config.input.wrapup` | init | A | A | A | A | A | A | A | A |
@@ -108,24 +107,24 @@
 | `C` | 7 | crash：进了 run，第一发请求之前就炸，但**判词不点名这个叶子**（引擎内部错误，宿主读不出该怎么改） |
 | `U` | 0 | use：第一发请求之后才抛（真·带到使用点） |
 | `A` | 117 | accepted+live：没抛，且本次 run 的指纹与基线不同（错值真的生效了） |
-| `·` | 124 | accepted+inert：没抛，且指纹与基线逐字相同（本场景里配了等于没配） |
+| `·` | 116 | accepted+inert：没抛，且指纹与基线逐字相同（本场景里配了等于没配） |
 | `H` | 0 | hung：超过单格上限未结束 |
-| **合计** | **344** | 43 × 8 |
+| **合计** | **336** | 42 × 8 |
 
 ## 5. 逐格明细（非 inert 的每一格：拒在哪层 / 判词原文 / 生效在哪）
 
-共 220 格（其余 124 格是 `·`，即本场景无可观察差异，不列）。判词是引擎的原话，逐字未改。
+共 220 格（其余 116 格是 `·`，即本场景无可观察差异，不列）。判词是引擎的原话，逐字未改。
 
 | 叶子 | 错值 | 结局 | 层 / 生效路径 | 判词原文 / 可观察差异 |
 | --- | --- | --- | --- | --- |
-| `config.input.system` | `"8"` | A | requests[0].system | requests[0].system: (absent) → {"content":"8","cacheBoundary":true} |
-| `config.input.system` | `"bogus"` | A | requests[0].system | requests[0].system: (absent) → {"content":"bogus","cacheBoundary":true} |
-| `config.input.system` | `-1` | A | requests[0].system | requests[0].system: (absent) → {"content":-1,"cacheBoundary":true} |
-| `config.input.system` | `0.5` | A | requests[0].system | requests[0].system: (absent) → {"content":0.5,"cacheBoundary":true} |
-| `config.input.system` | `true` | A | requests[0].system | requests[0].system: (absent) → {"content":true,"cacheBoundary":true} |
+| `config.input.system` | `"8"` | A | requests[0].system | requests[0].system: (absent) → "8" |
+| `config.input.system` | `"bogus"` | A | requests[0].system | requests[0].system: (absent) → "bogus" |
+| `config.input.system` | `-1` | A | requests[0].system | requests[0].system: (absent) → -1 |
+| `config.input.system` | `0.5` | A | requests[0].system | requests[0].system: (absent) → 0.5 |
+| `config.input.system` | `true` | A | requests[0].system | requests[0].system: (absent) → true |
 | `config.input.system` | `null` | A | requests[0].system | requests[0].system: (absent) → null |
-| `config.input.system` | `[]` | A | requests[0].system | requests[0].system: (absent) → {"content":[],"cacheBoundary":true} |
-| `config.input.system` | `{}` | A | requests[0].system | requests[0].system: (absent) → {"content":{},"cacheBoundary":true} |
+| `config.input.system` | `[]` | A | requests[0].system | requests[0].system: (absent) → [] |
+| `config.input.system` | `{}` | A | requests[0].system | requests[0].system: (absent) → {} |
 | `config.input.initialUserMessage` | `"8"` | A | requests[0].messages[0].content[0].text | requests[0].messages[0].content[0].text: "go" → "8" |
 | `config.input.initialUserMessage` | `"bogus"` | A | requests[0].messages[0].content[0].text | requests[0].messages[0].content[0].text: "go" → "bogus" |
 | `config.input.initialUserMessage` | `-1` | A | requests[0].messages[0].content[0].text | requests[0].messages[0].content[0].text: "go" → -1 |
@@ -140,16 +139,16 @@
 | `config.input.messages` | `0.5` | C | orchestrator.js runToolLoop | TypeError: initialMessages is not iterable |
 | `config.input.messages` | `true` | C | orchestrator.js runToolLoop | TypeError: initialMessages is not iterable |
 | `config.input.messages` | `null` | C | orchestrator.js runToolLoop | TypeError: initialMessages is not iterable |
-| `config.input.messages` | `[]` | A | requests[0].messages[0] | requests[0].messages[0]: {"role":"user","content":[{"type":"text","text":"go"}],"cacheBoundary":true} → (absent) |
+| `config.input.messages` | `[]` | A | requests[0].messages[0] | requests[0].messages[0]: {"role":"user","content":[{"type":"text","text":"go"}]} → (absent) |
 | `config.input.messages` | `{}` | C | orchestrator.js runToolLoop | TypeError: initialMessages is not iterable |
-| `config.input.wrapup` | `"8"` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `"bogus"` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `-1` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `0.5` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `true` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `null` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `[]` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
-| `config.input.wrapup` | `{}` | A | requests[0].system | requests[0].system: (absent) → {"content":"任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary... |
+| `config.input.wrapup` | `"8"` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `"bogus"` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `-1` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `0.5` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `true` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `null` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `[]` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
+| `config.input.wrapup` | `{}` | A | requests[0].system | requests[0].system: (absent) → "任务完成或需要给出结论时（不再调用工具），输出 JSON（不要输出其他文本）：\n{\"done\":true,\"summary\":\"任务总结\"... |
 | `config.run.maxRounds` | `"8"` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
 | `config.run.maxRounds` | `"bogus"` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
 | `config.run.maxRounds` | `-1` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
@@ -158,14 +157,14 @@
 | `config.run.maxRounds` | `null` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
 | `config.run.maxRounds` | `[]` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
 | `config.run.maxRounds` | `{}` | S | orchestrator.js runToolLoop | TypeError: maxRounds must be a finite positive integer |
-| `config.run.completion` | `"8"` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `"bogus"` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `-1` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `0.5` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `true` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `null` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `[]` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
-| `config.run.completion` | `{}` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}],"cacheBou... |
+| `config.run.completion` | `"8"` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `"bogus"` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `-1` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `0.5` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `true` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `null` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `[]` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
+| `config.run.completion` | `{}` | A | requests[2] | requests[2]: (absent) → {"messages":[{"role":"user","content":[{"type":"text","text":"go"}]},{"role":... |
 | `config.run.replayPolicy` | `"8"` | S | orchestrator.js runToolLoop | TypeError: replayPolicy must be "always-replay" or "per-tool-declaration" |
 | `config.run.replayPolicy` | `"bogus"` | S | orchestrator.js runToolLoop | TypeError: replayPolicy must be "always-replay" or "per-tool-declaration" |
 | `config.run.replayPolicy` | `-1` | S | orchestrator.js runToolLoop | TypeError: replayPolicy must be "always-replay" or "per-tool-declaration" |
@@ -261,8 +260,8 @@
 | `config.tuning.topP` | `null` | A | requests[0].topP | requests[0].topP: (absent) → null |
 | `config.tuning.topP` | `[]` | A | requests[0].topP | requests[0].topP: (absent) → [] |
 | `config.tuning.topP` | `{}` | A | requests[0].topP | requests[0].topP: (absent) → {} |
-| `config.timing.timeoutMs` | `0.5` | A | requests[1].messages[2].cacheBoundary | requests[1].messages[2].cacheBoundary: true → (absent) |
-| `config.timing.deadlineMs` | `0.5` | A | requests[1].messages[2].cacheBoundary | requests[1].messages[2].cacheBoundary: true → (absent) |
+| `config.timing.timeoutMs` | `0.5` | A | requests[1].messages[3] | requests[1].messages[3]: (absent) → {"role":"user","meta":{"source":"judge-control"},"content":[{"type":"text","t... |
+| `config.timing.deadlineMs` | `0.5` | A | requests[1].messages[3] | requests[1].messages[3]: (absent) → {"role":"user","meta":{"source":"judge-control"},"content":[{"type":"text","t... |
 | `config.timing.retry` | `[]` | A | events[2].maxAttempts | events[2].maxAttempts: 1 → 3 |
 | `config.timing.retry` | `{}` | A | events[2].maxAttempts | events[2].maxAttempts: 1 → 3 |
 | `config.folding.context` | `"8"` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
@@ -345,7 +344,7 @@
 
 - ① 错值**真的生效**（`A`）的叶子 21 个：`config.input.system`、`config.input.initialUserMessage`、`config.input.messages`、`config.input.wrapup`、`config.run.completion`、`config.run.stream`、`config.run.reflection`、`config.run.runId`、`config.run.parentRunId`、`config.tuning.maxTokens`、`config.tuning.temperature`、`config.tuning.topP`、`config.timing.timeoutMs`、`config.timing.deadlineMs`、`config.timing.retry`、`config.metadata.expert`、`config.metadata.user`、`config.metadata.task`、`config.metadata.requestId`、`config.metadata.model`、`config.metadata.modelMetadata`——收窄它们改的是「宿主写错却照跑」的行为，影响面最大，也最容易在宿主侧炸出「以前能跑」；
 - ② 错值炸成**不点名该叶子**的引擎错误（`C` / `U`）的叶子 1 个：`config.input.messages`——这些今天已经是硬失败，但判词不教宿主怎么改，补类型校验是**把错误提前并点名**，不改变「失败」这个事实；
-- ③ 8 个错值**全部静默接受**（`·` 满格）的叶子 10 个：`config.input.cacheStablePrefix`、`config.run.maxTokenContinuations`、`config.run.stallDetection`、`config.run.writeToolNames`、`config.run.writeToolPathKeys`、`config.run.resume`、`config.tuning.cacheCapable`、`config.guard.finalGuardMaxRetries`、`config.guard.finalGuardTimeoutMs`、`config.metadata.toolContext`——它们最像「配了等于没配」，但 `·` 只说明本场景没走到（见 §7），裁定前需要各自的深分支场景。
+- ③ 8 个错值**全部静默接受**（`·` 满格）的叶子 9 个：`config.run.maxTokenContinuations`、`config.run.stallDetection`、`config.run.writeToolNames`、`config.run.writeToolPathKeys`、`config.run.resume`、`config.tuning.cacheCapable`、`config.guard.finalGuardMaxRetries`、`config.guard.finalGuardTimeoutMs`、`config.metadata.toolContext`——它们最像「配了等于没配」，但 `·` 只说明本场景没走到（见 §7），裁定前需要各自的深分支场景。
 
 ## 7. 残留风险 / 这张表不覆盖的东西
 

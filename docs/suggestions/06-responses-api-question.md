@@ -4,7 +4,7 @@
 
 ## Background
 
-erix speaks two wire protocols: OpenAI-compatible `/chat/completions` and Anthropic `messages` (`docs/requirements.md` Goal 1, FR-1.1). OpenAI's own agent stack has moved to the **Responses API**: Codex CLI uses it, and Responses is where OpenAI reasoning models carry reasoning state across turns. Reasoning items are not returned through Chat Completions. Pi 1.x also ships a Responses adapter. It handles usage accounting by subtracting `cached_tokens` / cache-write tokens from `input_tokens` (`packages/ai/src/api/openai-responses-shared.ts`).
+erix speaks one wire protocol: OpenAI-compatible `/chat/completions` (`docs/requirements.md` Goal 1, FR-1.1; the Anthropic `messages` adapter was withdrawn by issue #926). OpenAI's own agent stack has moved to the **Responses API**: Codex CLI uses it, and Responses is where OpenAI reasoning models carry reasoning state across turns. Reasoning items are not returned through Chat Completions. Pi 1.x also ships a Responses adapter. It handles usage accounting by subtracting `cached_tokens` / cache-write tokens from `input_tokens` (`packages/ai/src/api/openai-responses-shared.ts`).
 
 `docs/maintenance-policy.md` rule 1 says that when "a third non-OpenAI-compatible native protocol (Gemini native / Bedrock / Azure)" is needed, erix should migrate to AI SDK. Responses is an OpenAI protocol but is not chat-completions-compatible, so it is unclear whether it would trigger that rule.
 

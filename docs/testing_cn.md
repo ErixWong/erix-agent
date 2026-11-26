@@ -149,7 +149,7 @@ test/
 
 | 区域 | 文件 | 覆盖内容 |
 |---|---|---|
-| Provider 与错误 | `test/providers/openai.test.js`、`test/app-container-p0.test.js` | OpenAI 请求/响应映射、工具调用、endpoint 规范化、配置校验、错误分类、abort 行为，以及基础 Anthropic/loop 路径 |
+| Provider 与错误 | `test/providers/openai.test.js`、`test/app-container-p0.test.js` | OpenAI 请求/响应映射、工具调用、endpoint 规范化、配置校验、错误分类、abort 行为，以及基础 provider/loop 路径 |
 | Canonical 消息 | `test/messages/canonical.test.js` | Canonical 转换、tool-result 顺序、工具 schema、旧版 function calls、无效响应诊断和原始协议字段 |
 | Token 估算 | `test/tokens.test.js` | CJK 与非 CJK 估算、安全余量、可配置系数、消息/块成本和工具标识符 |
 | 工具循环 | `test/loop.test.js` | 文本完成、工具结果反馈、`config.run.maxRounds`、stall 提示与终止、工具错误、`onToolResult`、轮次快照和 usage 累计 |
@@ -161,7 +161,7 @@ test/
 
 | 区域 | 文件 | 覆盖内容 |
 |---|---|---|
-| Anthropic 与 OpenAI 协议路径 | `test/providers/anthropic.test.js`、`test/providers/openai-stream.test.js`、`test/messages/anthropic.test.js`、`test/messages/rounds.test.js` | 非流式和 SSE 转换、流式文本与工具调用组装、usage、畸形流式输入、错误分类、受保护的消息头、工具配对和校验错误 |
+| OpenAI 协议路径 | `test/providers/openai-stream.test.js`、`test/messages/rounds.test.js` | 非流式和 SSE 转换、流式文本与工具调用组装、usage、畸形流式输入、错误分类、工具配对和校验错误。（Anthropic 那几格随适配器一并删除，issue #926。） |
 | Loop 重试与完成 | `test/loop-fr2.test.js`、`test/loop-stream.test.js`、`test/loop-termination.test.js` | 可重试与不可重试错误、原始消息重试、退避上限、完成信号、无工具完成、`max_tokens` continuation、相邻 assistant 合并、流式 observer、流式重试、回退到 `chat` 和终止原因 |
 | 预算与压缩 | `test/compact/budget.test.js`、`test/compact/sliding-window.test.js`、`test/compact/fold-statistical.test.js`、`test/compact/enforce-size.test.js` | 预算计算、完整轮次滑动窗口、确定性的统计折叠、有界导航与恢复 stub、受保护的头部，以及确定性的字段优先级尺寸执法 |
 | Model 配置 | `test/config/static.test.js`、`test/config/env.test.js`、`test/config/api-key.test.js` | 静态和基于环境的 provider、数字和布尔解析、无效配置错误，以及直接/environment/file API-key 优先级 |

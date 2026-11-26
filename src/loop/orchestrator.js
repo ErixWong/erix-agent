@@ -582,7 +582,7 @@ function mergeFoldedRoundRanges(first, second) {
  *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"skip",reason:string}|{action:"revise",message:string}>,
  *   deliverables?: {name: string, check: (facts: object) => any}[], // issue #386 slice 2: host-declared delivery checks, verified before every guard call (the canonical home is `capabilities.checks.deliverables`; the flat spelling is a live option).
  *   config?: { // issue #497（S2）：嵌套配置命名空间，八组见下（叶子名逐字等于同名顶层选项，类型也一致；唯一例外是 `input.messages` → `initialMessages`，见 `CONFIG_LEAF_ALIASES`）。
- *     input?: {system?: string, cacheStablePrefix?: boolean, initialUserMessage?: string, messages?: object[], wrapup?: boolean, tools?: object[]},
+ *     input?: {system?: string, initialUserMessage?: string, messages?: object[], wrapup?: boolean, tools?: object[]},
  *     run?: {maxRounds?: number, maxTokenContinuations?: number,
  *       stallDetection?: {window?: number, mode?: "appear"|"consecutive"}|false,
  *       completion?: {signals?: string[], maxNoToolRounds?: number}|false,
@@ -810,7 +810,8 @@ export async function runToolLoop(options) {
   const {
     provider,
     system,
-    cacheStablePrefix = true,
+    // issue #926：这里原本还解构一个 `cacheStablePrefix = true`。它开关的是 Anthropic 缓存断点
+    // 打标（`markStablePrefix` / `markTailCacheBoundary`），随协议适配器一起退役。
     wrapup = true,
     initialUserMessage,
     initialMessages,
@@ -2763,7 +2764,6 @@ export async function runToolLoop(options) {
   const providerContext = {
     provider,
     mainSystem,
-    cacheStablePrefix,
     tools: providerTools,
     signal,
     // issue #598：请求尾部的**交接指令**（`off` ⇒ `undefined`，请求逐字回到今天）。
@@ -3792,7 +3792,7 @@ export async function runToolLoop(options) {
     addUsage,
     estimateMessageTokens,
     mainSystem,
-    cacheStablePrefix,
+    // issue #926：`cacheStablePrefix` 不再递给下面这个上下文——请求视图原样发出。
     maxTokens,
     temperature,
     topP,

@@ -629,10 +629,10 @@ test("S6 collectConfigNamespaceProblems 纯函数：函数问题逐条可断言�
  * 并点名该叶子（这正是「将来谁把函数键放进 config，它会立刻红」的机制）。
  */
 const REPRESENTATIVE_CONFIG_VALUES = {
-  // input（#498 S4b：`prompt` 改名 `input`，成员 = system + cacheStablePrefix + initialUserMessage
-  // + `messages`（顶层 `initialMessages` 的嵌套别名）+ wrapup；#527 拆掉了 `tools`，它不属配置面）
+  // input（#498 S4b：`prompt` 改名 `input`，成员 = system + initialUserMessage
+  // + `messages`（顶层 `initialMessages` 的嵌套别名）+ wrapup；#527 拆掉了 `tools`，它不属配置面；
+  // #926 又拆掉了 `cacheStablePrefix`——它开关的那套 Anthropic 缓存断点机制已整体退役）
   system: "you are a test",
-  cacheStablePrefix: false,
   initialUserMessage: "go",
   messages: [],
   wrapup: false,
@@ -811,7 +811,7 @@ test("S9 端到端语义等价：整棵 config 与扁平形态规范化后逐键
   //   ① 剩下的键：扁平形态 vs config 形态逐键深度相等；
   //   ② 已退役的键：展开相必须逐字写回 `effectiveOptions.<扁平名>`（引擎读侧读的就是它们）。
   // **哪些键已退役是派生集合**（`RETIRED_FLAT_KEYS` = 配置面叶子映射到的键里已不在白名单的那些），
-  // 不是手抄的组名：`timing` 片、`folding` 片、本片（`input` 组的 `cacheStablePrefix` +
+  // 不是手抄的组名：`timing` 片、`folding` 片、本片（`input` 组的扁平退役名 +
   // `initialMessages`）跑的是同一条判据，下一片也不需要改这里。
   const RETIRED_FLAT_KEYS = CONFIG_SURFACE_OPTION_NAMES
     .filter((name) => !RUN_TOOL_LOOP_OPTION_NAMES.includes(name));

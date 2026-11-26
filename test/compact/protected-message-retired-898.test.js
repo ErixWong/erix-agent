@@ -91,7 +91,7 @@ async function buildFold(extra = {}) {
     stallDetection: false,
     config: {
       run: { maxRounds: 40 },
-      input: { cacheStablePrefix: false },
+      input: {},
       folding: { context: { budgetTokens: 3000, keepRounds: 1, ...extra } },
     },
     capabilities: {

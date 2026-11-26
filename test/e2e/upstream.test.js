@@ -1,7 +1,8 @@
 // 真上游 HTTP 端到端层（issue #257 T1）。
 //
 // 与 test/providers/*.test.js 的**相反**做法：这里**不注入 fetchImpl**，用真的
-// `createOpenAIProvider` / `createAnthropicProvider` 打 `fixtures/upstream.mjs`
+// `createOpenAIProvider` 打 `fixtures/upstream.mjs`（issue #926 之后库里只剩这一种线协议，
+// 原先并排跑的 Anthropic 各格随适配器一起删除）
 // 起的真 `http.createServer`，于是 SSE 分帧、跨包切片、半截流、真 HTTP 状态码与
 // 首字节超时都是**真 socket 上发生的事**，而不是测试自己写的假 fetch 的形状。
 //
@@ -13,17 +14,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  anthropicTextEvents,
   createScriptedUpstream,
   DEFAULT_IRREGULAR_SLICE_CYCLE,
   jsonResponse,
   openAITextChunks,
-  sseAnthropic,
   sseOpenAI,
   sseResponse,
   textResponse,
 } from "../../fixtures/upstream.mjs";
-import { createAnthropicProvider } from "../../src/providers/anthropic.js";
 import { createOpenAIProvider } from "../../src/providers/openai.js";
 import { runToolLoop } from "../../src/loop/orchestrator.js";
 import { withSeed } from "./../helpers/run-direct.js";
@@ -70,10 +68,6 @@ async function startUpstream(t, options) {
 
 function openAIProvider(baseUrl) {
   return createOpenAIProvider({ endpoint: baseUrl, apiKey: API_KEY, model: MODEL });
-}
-
-function anthropicProvider(baseUrl) {
-  return createAnthropicProvider({ endpoint: baseUrl, apiKey: API_KEY, model: MODEL });
 }
 
 const USER_MSG = [{ role: "user", content: "go" }];
@@ -132,7 +126,7 @@ function boundariesInsideFrames(frames, sliceSizes) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 流完整性（两种协议各一条）
+// 1. 流完整性（issue #926 之后只剩 OpenAI 一种协议）
 // ---------------------------------------------------------------------------
 
 const OPENAI_TOOL_FRAMES = sseOpenAI([
@@ -197,66 +191,6 @@ test("真上游：OpenAI 流完整性——文本增量、tool_calls 跨帧累�
   assert.deepEqual(request.json.stream_options, { include_usage: true });
   // 一帧一次 write：写分片数必须等于帧数（也是「协议确实发全了」的证据）。
   assert.equal(upstream.responses[0].writes.length, OPENAI_TOOL_FRAMES.length);
-});
-
-test("真上游：Anthropic 流完整性——event/data 双行帧、usage 合并、stop_reason 走真 socket（#257 T1）", async (t) => {
-  const events = anthropicTextEvents(["你好", " Anthropic"], {
-    usage: { input_tokens: 7, output_tokens: 5 },
-  });
-  const frames = sseAnthropic(events);
-  const { upstream, baseUrl } = await startUpstream(t, {
-    script: [sseResponse({ frames })],
-  });
-
-  const deltas = [];
-  const usageCallbacks = [];
-  const result = await anthropicProvider(baseUrl).chatStream(providerRequest({
-    onDelta: (text) => deltas.push(text),
-    onUsage: (usage) => usageCallbacks.push(usage),
-  }));
-
-  assert.equal(deltas.join(""), "你好 Anthropic");
-  assert.deepEqual(result.content, [{ type: "text", text: "你好 Anthropic" }]);
-  assert.equal(result.stopReason, "end_turn");
-  assert.deepEqual(result.usage, { input_tokens: 7, output_tokens: 5 }, "message_start 的 input 与 message_delta 的 output 必须合并");
-  assert.equal(usageCallbacks.length, 1);
-
-  await upstream.settled();
-  const request = upstream.requests[0];
-  assert.equal(request.path, "/v1/messages");
-  assert.equal(request.headers["x-api-key"], API_KEY);
-  assert.equal(request.headers["anthropic-version"], "2023-06-01");
-  assert.equal(request.headers["content-type"], "application/json");
-  assert.equal(request.json.stream, true);
-  // 协议完整性：message_start → …→ message_stop 六个事件必须**逐个一次 write** 发完，
-  // 且**服务端实际发出的最后一帧**就是 message_stop（取服务端记录，不是测试自指）。
-  assert.equal(upstream.responses[0].writes.length, events.length);
-  assert.ok(
-    String(upstream.responses[0].frames.at(-1)).includes("message_stop"),
-    "服务端发出的最后一帧必须是 message_stop",
-  );
-  assert.ok(
-    String(upstream.responses[0].frames[0]).includes("message_start"),
-    "服务端发出的第一帧必须是 message_start",
-  );
-});
-
-test("真上游：Anthropic 缺 message_stop 时引擎当前行为（容忍，不报错）（#257 T1）", async (t) => {
-  // 「当前行为」：装配器在流 EOF 处收尾，少一个 message_stop 不改变 content/usage，
-  // 只有 stop_reason 的来源会丢（这里 message_delta 已给，所以整体不变）。
-  // 之所以钉住：如果哪天引擎改成「必须见到 message_stop」，这条会红，而不是静默漂移。
-  const events = anthropicTextEvents(["少了", "收尾"]);
-  const frames = sseAnthropic(events.slice(0, -1));
-  const { upstream, baseUrl } = await startUpstream(t, {
-    script: [sseResponse({ frames })],
-  });
-
-  const result = await anthropicProvider(baseUrl).chatStream(providerRequest());
-  await upstream.settled();
-  assert.deepEqual(result.content, [{ type: "text", text: "少了收尾" }]);
-  assert.equal(result.stopReason, "end_turn");
-  assert.equal(upstream.responses[0].writes.length, frames.length);
-  assert.equal(upstream.responses[0].completed, true, "这一条是正常 end，不是 destroy");
 });
 
 // ---------------------------------------------------------------------------
@@ -413,28 +347,6 @@ test("真上游：OpenAI 半截流（帧中间断，半行 JSON）当前行为�
   assert.equal(threw, true);
   assert.equal(err.code, "network");
   assert.equal(err.retryable, false);
-});
-
-test("真上游：Anthropic 半截流——无 message_stop 就 destroy，当前行为（#257 T1）", async (t) => {
-  const events = anthropicTextEvents(["断了", "一半"]);
-  const frames = sseAnthropic(events.slice(0, 4));
-  const { upstream, baseUrl } = await startUpstream(t, {
-    script: [sseResponse({ frames, truncateAfterWrites: frames.length, destroyDelayMs: 20 })],
-  });
-
-  const deltas = [];
-  const { threw, err, value } = await rejection(
-    anthropicProvider(baseUrl).chatStream(providerRequest({ onDelta: (text) => deltas.push(text) })),
-  );
-  assert.equal(upstream.responses[0].truncated, true);
-  await upstream.settled();
-  assert.equal(upstream.responses[0].truncated, true, "destroy 不能被后续写覆盖");
-  assert.equal(threw, true, `必须失败，实际拿到 ${JSON.stringify(value)}`);
-  assert.equal(err.name, "KitError");
-  assert.equal(err.code, "network");
-  assert.equal(err.retryable, false);
-  assert.equal(err.status, 200);
-  assert.equal(deltas.join(""), "断了一半", "destroy 之前送达的增量必须已经回调出去");
 });
 
 // ---------------------------------------------------------------------------
