@@ -196,9 +196,10 @@ test("#286 覆盖面里没有任何一处裸行号越界（工单点名的 notes
 
 test("#286 反向证不许被整批删掉，豁免条目必须条条带理由（条目 + 就地声明双条件）", () => {
   const script = read("scripts/docs-drift-check.mjs");
-  const proofs = [...script.matchAll(/label: "#286 /g)].length;
-  assert.ok(proofs >= 15, `--self-test 里带 #286 的反向证只剩 ${proofs} 例（#908 拆掉 6 例棘轮/地板反向证：地板原 21 例→现 15 例；再删就算把真值反向证整批拆了）`);
-  assert.ok(/expectMutateMiss: true/.test(script), "「变异没打上」那一例（expectMutateMiss）被删了——变异器空转就没人管了");
+  // 任务 261126-59：`--self-test` 整个删除（零消费者：CI 与 `npm test` 都不跑它，只有人手跑
+  // `docs:pass`，一次 512 秒）。原本这里的两条断言（`#286` 反向证 ≥15 例、`expectMutateMiss` 在场）
+  // 守的是**自测自己**；自测没了，它们没有对象。**下面的守卫一条没少**——裸行号豁免条目的必填理由、
+  // `decl` 最短长度、以及「就地声明」的 AND 两刀，都是**生产判据**的锁。
 
   const entries = [...script.matchAll(/target: "(src\/[^"]+)",/g)];
   assert.ok(entries.length >= 4, `裸行号豁免条目少于 4 条（工单口径是 4 处示例/外仓路径）：实测 ${entries.length}`);
