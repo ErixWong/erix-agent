@@ -1457,92 +1457,13 @@ test("judge-log persists raw tool input and judge reason verbatim (redaction ret
   }
 });
 
-test("parseChatArgs accepts --compaction with the built-in strategy names (#167)", () => {
-  assert.equal(
-    parseChatArgs(["hello", "--compaction", "fold-llm"], "/tmp/project").compaction,
-    "fold-llm",
-  );
-  assert.equal(
-    parseChatArgs(["hello", "--compaction", " sliding-window "], "/tmp/project").compaction,
-    "sliding-window",
-  );
-  assert.equal(parseChatArgs(["hello"], "/tmp/project").compaction, undefined);
-});
+// issue #898 第二刀：删除三格钉已删行为的既有判据——
+//   • `parseChatArgs accepts --compaction with the built-in strategy names (#167)`
+//   • `parseChatArgs rejects unknown or missing --compaction values (#167)`
+//   • `runChat keeps the default compaction strategy and forwards an explicit name (#167/#614)`
+// 它们钉的是「`--compaction` 可被解析 / `config.compaction` 可透传策略名」这一已删退路
+// （CLI 不再认 `--compaction`，config 不再认 `compaction`；见 mandatory-llm-folding-898b ④a/④b）。
 
-test("parseChatArgs rejects unknown or missing --compaction values (#167)", () => {
-  assert.throws(
-    () => parseChatArgs(["hello", "--compaction", "psyche"], "/tmp/project"),
-    /--compaction[\s\S]*sliding-window \| fold-statistical \| fold-llm/u,
-  );
-  assert.throws(() => parseChatArgs(["hello", "--compaction", ""], "/tmp/project"), /不能为空/u);
-  assert.throws(() => parseChatArgs(["hello", "--compaction"], "/tmp/project"), /缺少数值/u);
-  assert.throws(
-    () => parseChatArgs(["hello", "--compaction", "--stream"], "/tmp/project"),
-    /缺少数值/u,
-  );
-  assert.throws(
-    () => parseChatArgs(
-      ["hello", "--compaction", "fold-llm", "--compaction", "fold-llm"],
-      "/tmp/project",
-    ),
-    /参数重复/u,
-  );
-});
-
-test("runChat keeps the default compaction strategy and forwards an explicit name (#167/#614)", async () => {
-  const dir = await makeTmp("erix-cli-compaction-test-");
-  try {
-    const configPath = await writeEmptyMcpConfig(dir);
-    const captureLoop = async (options) => {
-      return {
-        finalText: "done",
-        messages: [],
-        rounds: 1,
-        truncated: false,
-        usage: { input_tokens: 0, output_tokens: 0 },
-        compactionStats: [],
-        _context: options.config?.folding?.context,
-      };
-    };
-    const shared = {
-      prompt: "compaction strategy wiring",
-      dir,
-      notesDir: join(dir, "notes"),
-      skillsDir: join(dir, "skills"),
-      configPath,
-      config: { model: "fake-model", maxOutputTokens: 1000, contextWindowTokens: 20000 },
-      provider: createFakeProvider([]),
-      loop: captureLoop,
-      toolOutput: () => {},
-      idleTimeout: 0,
-    };
-
-    const defaulted = await runChat({ ...shared, session: "compaction-default" });
-    // issue #614：CLI 默认策略改成 fold-llm（语义折叠）；统计摘要降为降级兜底。
-    assert.equal(defaulted._context.strategy, "fold-llm");
-
-    const named = await runChat({
-      ...shared,
-      session: "compaction-named",
-      compaction: "fold-llm",
-    });
-    assert.equal(named._context.strategy, "fold-llm");
-
-    const fromConfig = await runChat({
-      ...shared,
-      session: "compaction-config",
-      config: {
-        model: "fake-model",
-        maxOutputTokens: 1000,
-        contextWindowTokens: 20000,
-        compaction: "sliding-window",
-      },
-    });
-    assert.equal(fromConfig._context.strategy, "sliding-window");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
 // ---------------------------------------------------------------------------
 // issue #326（wo-D）：`-c/--session` 续跑一份**含引擎事实行**的账本。

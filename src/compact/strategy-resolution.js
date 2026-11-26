@@ -1,16 +1,17 @@
 import { createFoldLlmStrategy } from "./fold-llm.js";
-import { createFoldStatisticalStrategy } from "./fold-statistical.js";
-import { createSlidingWindowStrategy } from "./sliding-window.js";
 
 /**
- * Built-in compaction strategy names (issue #167 方案 C).
+ * Built-in compaction strategy names (issue #167 方案 C；issue #898 第二刀收敛为单一默认).
  *
- * `context.strategy` accepts either one of these names or a strategy object
- * (object behaviour is unchanged: the engine passes it through verbatim).
+ * `context.strategy` accepts either this name or a strategy object (object behaviour
+ * is unchanged: the engine passes it through verbatim).
+ *
+ * issue #898: 折叠**必须由 LLM 完成**，`sliding-window` / `fold-statistical` 不再是「宿主可显式
+ * 选择的零 LLM 策略」——机械折叠产出的是 `工具足迹：exec×5` 这种零语义文本，等于把历史丢进一个
+ * 看起来像摘要的壳里。这里只保留 `fold-llm` 作为唯一可选默认；底层模块（`sliding-window.js` /
+ * `fold-statistical.js`）**不删**——引擎的预算兜底仍复用 `sliding-window`（见 orchestrator）。
  */
 export const BUILTIN_COMPACTION_STRATEGIES = Object.freeze({
-  "sliding-window": createSlidingWindowStrategy,
-  "fold-statistical": createFoldStatisticalStrategy,
   "fold-llm": createFoldLlmStrategy,
 });
 

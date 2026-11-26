@@ -1244,7 +1244,7 @@ async function offlineSyncPayload({ sessionDir } = {}) {
     { content: [{ type: "text", text: "任务已完成：修好了 a.js" }], stopReason: "end_turn", usage: { input_tokens: 5, output_tokens: 3 } },
   ]);
   return core.runErixRun(
-    { task: "修 bug", cwd: repoRoot, maxRounds: 4, strategy: "sliding-window", ...(sessionDir === undefined ? {} : { sessionDir }) },
+    { task: "修 bug", cwd: repoRoot, maxRounds: 4, strategy: "fold-llm", ...(sessionDir === undefined ? {} : { sessionDir }) },
     {
       env: {},
       home: await tempDir("erix-run-276-home-"),

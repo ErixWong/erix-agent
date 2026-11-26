@@ -851,16 +851,9 @@ test("chat artifacts resume in REPL and pass the final guard", async () => {
   }
 });
 
-test("parseReplArgs accepts --compaction and rejects unknown strategy names (#167)", () => {
-  assert.equal(parseReplArgs(["--compaction", "fold-llm"]).compaction, "fold-llm");
-  assert.equal(parseReplArgs([]).compaction, undefined);
-  assert.throws(
-    () => parseReplArgs(["--compaction", "fold-lm"]),
-    /--compaction[\s\S]*sliding-window \| fold-statistical \| fold-llm/u,
-  );
-  assert.throws(() => parseReplArgs(["--compaction", " "]), /--compaction 不能为空/u);
-  assert.throws(() => parseReplArgs(["--compaction"]), /--compaction 缺少数值/u);
-});
+// #898-2：`--compaction` CLI 旗标已删（折叠必须由 LLM 做、不再有可选机械策略名可选），
+// 原 `parseReplArgs accepts --compaction ...`（钉 parseReplArgs 对 --compaction 的解析/校验）
+// 已随之删除——它钉的是被删掉的入口。
 
 // ---------------------------------------------------------------------------
 // issue #326（wo-D）：`已恢复会话 X（N 条消息）` 这个 N 以前是

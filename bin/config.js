@@ -273,10 +273,15 @@ export async function loadCliConfig({ configPath, model: modelOverride, effort: 
   const contextWindowTokens = parsePositiveInteger(fileConfig.contextWindowTokens);
   // issue #682：slot 字段 compactBudgetTokens（非法值在 load 期就报错，照 `compaction` 的既有做法）。
   const compactBudgetTokens = resolveCompactBudgetTokens(fileConfig.compactBudgetTokens);
-  // issue #167：config 字段 compaction（非法值在 load 期就报错，带合法值列表）
-  const compaction = fileConfig.compaction === undefined
-    ? undefined
-    : resolveCompactionStrategyName(fileConfig.compaction);
+  // issue #898：config 字段 compaction 已删除（折叠必须由 LLM 完成，「零 LLM 的机械折叠」
+  // 这条退路不再可选）。用户仍传它 ⇒ 按未知键报错（与引擎对未知 option 的处理一致），
+  // 而不是静默忽略（「配了等于没配」是本仓反复拒绝的形状）。
+  if (fileConfig.compaction !== undefined) {
+    throw new Error(
+      `未知的 config 字段：compaction（已删除）。折叠恒由 LLM 完成（fold-llm），`
+      + "不再有可显式选择的压缩策略；请从配置里移除 compaction。",
+    );
+  }
   // issue #598：config 字段 continuity（同上：非法值在 load 期就报错，带合法值列表）
   const continuity = buildContinuityConfig({ continuity: fileConfig.continuity });
   // issue #798：这里只**裁决**，**不**把它写进下面的 `modelOptions.reasoning_effort`——那条路在引擎
@@ -348,7 +353,6 @@ export async function loadCliConfig({ configPath, model: modelOverride, effort: 
     // 没事实就不产键（与统计行同一条口径）。
     ...(reasoningEffort.value === undefined ? {} : { reasoningEffort }),
     ...(compactBudgetTokens === undefined ? {} : { compactBudgetTokens }),
-    ...(compaction === undefined ? {} : { compaction }),
     ...(continuity === undefined ? {} : { continuity }),
   };
 }

@@ -1862,17 +1862,17 @@ export async function runToolLoop(options) {
             ? runLoopState.foldedThrough
             : ledgerWatermark(resumedLedgerRecords),
         )?.fact?.text,
-        ...(context.summarizerBudgetMs === undefined
+        ...(context?.summarizerBudgetMs === undefined
           ? {}
           : { summarizerBudgetMs: context.summarizerBudgetMs }),
-        ...(context.maxSummarizerInputBytes === undefined
+        ...(context?.maxSummarizerInputBytes === undefined
           ? {}
           : { maxSummarizerInputBytes: context.maxSummarizerInputBytes }),
-        ...(context.maxPriorSummaryBytes === undefined
+        ...(context?.maxPriorSummaryBytes === undefined
           ? {}
           : { maxPriorSummaryBytes: context.maxPriorSummaryBytes }),
         // issue #493：它以前是唯一没开的那个（直连路径静默无效、装配口反倒报错）。
-        ...(context.maxSummaryTokens === undefined
+        ...(context?.maxSummaryTokens === undefined
           ? {}
           : { maxSummaryTokens: context.maxSummaryTokens }),
       },
@@ -4177,7 +4177,15 @@ export async function runToolLoop(options) {
     // "preserved_latest_user_turn" | "abandoned_fold" | "unrecoverable"
     let userTurnGuard;
     let userTurnGuardChannel;
-    if (strategyRequestsCompaction || overBudget) {
+    if ((strategyRequestsCompaction || overBudget) && configuredStrategy) {
+      // issue #898 第二刀（修订设计）：**折叠必须由 LLM 完成**的含义是「不许用机械折叠冒充摘要」，
+      // 不是「不给策略就不许跑」。所以宿主没给 `compactionStrategy` / 没给 summarizer（即
+      // `configuredStrategy` 为空）时，引擎**根本不触发折叠**——不再抛错、也不再静默退回引擎库层
+      // 的 `sliding-window`（那产出 `工具足迹：exec×5` 这种零语义文本，等于把历史丢进一个看起来像
+      // 摘要的壳里）。不给策略 = 你放弃了折叠能力，就明明白白地不折；上下文超预算时**已有的**报错
+      // 路径（`cannot_fit` / `budgetUnreachable` 那套）会大声失败，比偷偷塞一段机械文本诚实得多。
+      // 预算兜底（下面 `budgetFallbackStrategy`）是另一回事：它跑在 LLM 折完之后、同一折预算仍超时
+      // 那一格，保留机械路径但已可检测（`degradeReason = "budget_fallback_mechanical"`）。
       const [budgetFallbackLayer, safetyFallbackLayer] = getCompactionFallbackChain();
       const strategy = strategyRequestsCompaction
         ? configuredStrategy
@@ -4874,7 +4882,9 @@ export async function runToolLoop(options) {
         strategy: actualFolderName ?? "unknown",
         roundRange: foldedRoundRange ?? undefined,
         rounds: foldedRounds,
-        degradeReason: strategyFoldSummary?.degradeReason,
+        degradeReason: budgetFallbackFoldedRounds > 0
+          ? "budget_fallback_mechanical"
+          : strategyFoldSummary?.degradeReason,
         fingerprint: foldedFingerprint,
         // issue #470-D：夹断上界开了 `context` 旋钮（默认不变 = `FOLDED_FACTS_MAX_BYTES`），
         // 让宿主的「输入上限 / 输出预算 / 容器上限」三者可以同源；非法值（非正整数）

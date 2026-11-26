@@ -2326,10 +2326,10 @@ vocabulary, or a CN/EN axis mismatch all go red.
 <!-- erix:snapshot-cell-axes:begin -->
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3408` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:204`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:498`, `test/loop-v020-rc.test.js:626` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3408` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:204`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:499`, `test/loop-v020-rc.test.js:635` |
 | `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:722`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
 | `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3411` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:651` |
-| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6238` | Both sides are alive: round-record side `test/compaction-observability.test.js:75` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6238` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
+| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6248` | Both sides are alive: round-record side `test/compaction-observability.test.js:75` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3412`、`src/loop/orchestrator.js:6248` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = that cell is not double-written, so there is no authority or handoff condition to state.
@@ -2818,7 +2818,9 @@ not begun, so the thrown error carries no `termination`, `usage`, `rounds`, or
 ### Compaction strategy selection (issue #167)
 
 `context.strategy` accepts a strategy **object** (semantics unchanged, byte for byte) or
-one of the built-in **names** `"sliding-window" | "fold-statistical" | "fold-llm"`.
+the single built-in **name** `"fold-llm"` (#898 narrowed the name set: the mechanical
+strategies remain reachable only as objects, and the engine still uses one internally as the
+budget fallback).
 A name is resolved **once at run startup** into the same object the host would have
 built (`src/compact/strategy-resolution.js`, wired at
 `src/loop/orchestrator.js`), so the downstream configured-strategy channel is

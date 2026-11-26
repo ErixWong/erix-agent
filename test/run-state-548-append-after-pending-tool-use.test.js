@@ -37,6 +37,7 @@ import assert from "node:assert/strict";
 import { appendRunStateToRequestView, renderRunState } from "../src/run-state.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 
 const filler = (count, char) => char.repeat(count);
 const MARKER = "[run state deterministic v1]";
@@ -124,13 +125,14 @@ function baseOptions({ provider, budgetTokens = 400000, maxRounds = 3, stream = 
     provider,
     tools: [PAD_TOOL],
     executeTool,
+    capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
     config: {
       run: { maxRounds, completion: false, stallDetection: false, stream },
       input: { system: "call pad each round, then answer", messages },
       folding: {
         toolResultTtl: 1,
         toolResultFoldMinTokens: 1,
-        context: { strategy: "fold-statistical", budgetTokens, keepRounds: 2, task: "issue #548" },
+        context: { budgetTokens, keepRounds: 2, task: "issue #548" },
       },
     },
   };

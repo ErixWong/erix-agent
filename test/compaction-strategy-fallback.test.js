@@ -11,6 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runDirect } from "./helpers/run-direct.js";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { groupIntoRounds } from "../src/messages/rounds.js";
@@ -57,7 +58,7 @@ async function run(options = {}) {
   // `modelMetadataFor` 的读侧一字未动）。调用方仍可传自己的 `config`（例如
   // `config.folding.context.strategy`），这里**并进同一个容器**——第二个 `config` 键会静默盖掉
   // 前一个，那会让「配了策略」的两格悄悄丢掉预算元数据（压缩整体不进，断言全绿而判据失效）。
-  const { config, ...rest } = options;
+  const { config, strategy, ...rest } = options;
   const store = createMemoryTranscriptStore();
   const result = await runDirect({
     provider: toolProvider(8),
@@ -69,7 +70,7 @@ async function run(options = {}) {
     completion: false,
     store,
     runId: "464-fallback",
-    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+    capabilities: { ...(strategy === undefined ? {} : { ports: { strategy } }), hooks: { onEvent: (event) => events.push(event) } },
     ...rest,
   });
   return {
@@ -86,31 +87,14 @@ async function run(options = {}) {
 
 
 test("unconfigured context.strategy + budget fallback emits exactly one diagnostic and names the fallback (issue #464 A)", async () => {
-  const { result, compactions, notices } = await run();
-
-  assert.equal(result.finalText, "done");
-  assert.ok(compactions.length >= 1, "预算兜底必须真的触发折叠，否则本用例无从对照");
-  // 补齐前这里全是空白：事件面说不出「跑的是引擎库层兜底」。
-  assert.equal(notices.length, 1, "一个 run 只允许一条兜底诊断事件");
-  assert.equal(notices[0].type, EVENT_TYPE);
-  assert.equal(notices[0].runId, "464-fallback");
-  assert.ok(
-    notices[0].detail.startsWith(DETAIL_PREFIX),
-    `detail 首句必须是固定原文，实得：${notices[0].detail}`,
-  );
-  // 能解析出预算时如实报数（宿主据此判断自己的装配是否把折叠量推到了极端）。
-  assert.match(notices[0].detail, /budgetTokens=1584/u);
-  assert.match(notices[0].detail, /estimatedTokens=\d+/u);
-  // ①：strategyName 写的是真正执行折叠的实例名，兜底那一格就是 "sliding-window"。
-  for (const event of compactions) {
-    assert.equal(event.compaction.strategyName, "sliding-window");
-  }
+  // issue #898-2：本格删——钉的是「未配策略⇒引擎库层用 sliding-window 兜底并发一条 context.strategy is not
+  // configured 兜底诊断」。新设计「无策略⇒不折叠」后无策略不再进折叠块（连预算兜底也不跑）⇒ 无该诊断。
 });
 
 test("configured strategy suppresses the diagnostic; strategyName names whoever really folded (issue #464 A, #657)", async () => {
   const { compactions, notices } = await run({
     runId: "464-configured",
-    config: { folding: { context: { strategy: "fold-statistical" } } },
+    strategy: createFoldStatisticalStrategy(),
   });
 
   assert.ok(compactions.length >= 1, "配置策略也必须真的折叠");
@@ -135,25 +119,15 @@ test("configured strategy suppresses the diagnostic; strategyName names whoever 
 });
 
 test("the fallback notice is run-scoped: repeated folds share one, a second run gets its own (issue #464 A)", async () => {
-  const first = await run({ runId: "464-run-a" });
-  const second = await run({ runId: "464-run-b" });
-
-  assert.equal(first.notices.length, 1);
-  assert.equal(second.notices.length, 1);
-  assert.equal(second.notices[0].runId, "464-run-b");
-  // 去重是 run 作用域：同一 run 内即便折叠多次（轮次持续增长 ⇒ 每次都从头重折），也只有一条。
-  assert.ok(
-    first.compactions.length >= 1
-      && first.notices.length < first.compactions.length + 1,
-    "诊断事件不得随折叠次数线性增长",
-  );
+  // issue #898-2：本格删——同「unconfigured ... emits exactly one diagnostic」：跨 run 去重的库层兜底诊断，
+  // 无策略不再折叠 ⇒ 该诊断不再产生，钉的是已删行为。
 });
 
 test("hosts that ignore the additive keys still see the previous compaction shape (issue #464 A)", async () => {
   const { compactions } = await run({ runId: "464-shape" });
   const { compactions: configured } = await run({
     runId: "464-shape-configured",
-    config: { folding: { context: { strategy: "fold-statistical" } } },
+    strategy: createFoldStatisticalStrategy(),
   });
 
   for (const event of [...compactions, ...configured]) {
@@ -609,8 +583,8 @@ test("#657 交叉锁：`strategyName` 必须与同一条 stat 上 `layers` 里 b
 
   // 五格覆盖真值表的四行 × 两种策略来源：未配置（入口兜底）/ 配置折 0 + 兜底折 / 配置真折 /
   // 两层都折 / 宿主自带对象真折（它没有层可对，走的是非内置名那一支）。
-  const unconfigured = await run({ runId: "657-lock-unconfigured" });
-  check("未配置策略", unconfigured.compactions.map((event) => event.compaction));
+  // #898-2：删「未配置策略」那一支 check——它靠「未配策略⇒引擎库层兜底真折」产 compaction 统计；
+  // 新设计无策略⇒不折叠 ⇒ 无统计可查（钉已删行为）。其余四支用配置化 fold-llm 链/宿主对象，仍覆盖真值表。
   check("配置折 0 + 兜底折", (await runFoldLlmChain({
     runId: "657-lock-missing-cell", budgetTokens: 1200, keepRounds: 6, foldAtRatio: 1,
     toolTurns: 4, toolBytes: 9000, seedBytes: 200, summaryBytes: 400,

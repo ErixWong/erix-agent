@@ -12,6 +12,7 @@ import { createAssemblyPort } from "../src/assembly.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { modelMetadataFor, resolveBudgetTokens } from "../src/loop/budget.js";
+import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 
 const EVENT_TYPE = "model_metadata_missing";
 // issue #182 约定的 detail 原文（无显式 outputHygiene.limit 时的完整形态）。
@@ -104,7 +105,7 @@ test("complete model metadata emits zero model_metadata_missing and keeps compac
     completion: false,
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-complete",
-    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+    capabilities: { ports: { strategy: createSlidingWindowStrategy() }, hooks: { onEvent: (event) => events.push(event) } },
   });
 
   assert.equal(result.finalText, "done");
@@ -409,7 +410,7 @@ test("#682 判据：modelMetadata.budgetTokens 真的被引擎消费（小预算
     config: { run: { completion: false }, metadata: { modelMetadata: { budgetTokens: 64 } } },
     store: createMemoryTranscriptStore(),
     runId: "metadata-explicit-budget-leaf",
-    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+    capabilities: { ports: { strategy: createSlidingWindowStrategy() }, hooks: { onEvent: (event) => events.push(event) } },
   });
 
   assert.equal(result.finalText, "done");

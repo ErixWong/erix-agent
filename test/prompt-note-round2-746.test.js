@@ -163,7 +163,7 @@ test("必修 2d：子侧折叠桩不再撞 ReferenceError（noteToolSurface 必�
   };
   const delegation = createCliDelegation({
     buildProvider: () => provider,
-    config: { model: "fake-model", maxOutputTokens: 200, compaction: "fold-statistical", compactBudgetTokens: 3000 },
+    config: { model: "fake-model", maxOutputTokens: 200, compaction: "fold-llm", compactBudgetTokens: 3000 },
     cwd: root,
     todo: false,
     notesDir: join(root, "notes"),

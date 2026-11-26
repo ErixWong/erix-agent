@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 // 真上游的失败面在 (400, 1200] 之间；离线估算系数不同，所以把同一档位的判据下推到 8。
 import { runDirect } from "./helpers/run-direct.js";
 import { validateMessages } from "../src/messages/rounds.js";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import {
   ensureUserTurnView,
   hasUserTurn,
@@ -98,11 +99,13 @@ function toolLoopOptions({ budgetTokens, stream, provider, initialMessages }) {
       system: "每轮都必须调用 pad 工具，最后一次直接回答。",
       messages: initialMessages,
     }, folding: { toolResultTtl: 1, toolResultFoldMinTokens: 1, context: {
-      strategy: "fold-statistical",
       budgetTokens,
       keepRounds: 2,
       task: "issue #292 复现",
     } } },
+    // #898-2：折叠必须由策略对象驱动；策略对象（behaviour）的canonical家是
+    // `capabilities.ports.strategy`（config 子树只装数据），这里用机械工厂（== 被删名解析到的同一对象）。
+    capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
   };
 }
 

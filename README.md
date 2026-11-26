@@ -742,7 +742,9 @@ decide whether to consume the result.
 - `context` is optional and defaults to `undefined`; when supplied, it
   accepts `strategy`, `budgetTokens`, `keepRounds`, `toolContext`, and
   `task`. `strategy` takes either a strategy object or one of the built-in
-  names `"sliding-window" | "fold-statistical" | "fold-llm"` (issue #167); an
+  name `"fold-llm"` (issue #167, narrowed by #898: the mechanical strategies are
+  internal — the budget fallback still uses one — but they are no longer
+  selectable names); an
   unknown name or other type raises a `TypeError` at run startup, and the
   `fold-llm` name makes the engine summarize with this run's own provider (one
   extra tool-free completion per compaction, billed into `result.usage` and
@@ -873,8 +875,8 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--no-agents]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--no-agents]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -1080,12 +1082,12 @@ The shared CLI flags are:
   closing `=== 统计 ===` line gains `reasoningTokens=…` **only when the upstream reported it** —
   nothing is printed rather than a `0` standing in for "did not think" (the issue #785 P1 rule) —
   plus `effort=none→low` when the engine's one GLM translation (ADR-017) fired.
-- `--compaction <name>` selects the compaction strategy
-  (`sliding-window | fold-statistical | fold-llm`; the CLI slot default is `fold-llm`, also
-  settable as the `slots.default.compaction` config field). `fold-llm` costs one extra
-  main-model call per compaction. A host that calls the library with no strategy gets the
-  library behaviour instead — see the contract's "default" note: the two layers are separate
-  facts, and `bin/` is a verifier/debugger, not the contract surface. Since issue #673 `erix chat`
+- Context folding is always done by the LLM (`fold-llm`); there is no `--compaction` flag or
+  `slots.default.compaction` field any more (issue #898 removed the "explicitly pick a zero-LLM
+  strategy" escape hatch). `fold-llm` costs one extra main-model call per compaction. A host that
+  calls the library with no strategy and no summarizer simply does not fold (the engine no longer
+  silently substitutes a mechanical summary); an over-budget run fails through the existing
+  `cannot_fit` / `budgetUnreachable` path. Since issue #673 `erix chat`
   also **shows** which layer really folded: each real fold prints one stderr line
   (`[compaction] round=… strategy=… foldedRounds=… tokensBefore=… tokensAfter=…`), the run ends
   with one machine-parsable `=== 折叠 === strategy=… folds=… foldedRounds=… tokens=…` line next

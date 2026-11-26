@@ -50,6 +50,7 @@ import { readFileSync } from "node:fs";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 
 const filler = (count, char) => char.repeat(count);
 
@@ -120,6 +121,7 @@ function baseOptions({ provider, budgetTokens = 400000, maxRounds = 6, stream, r
     ...(store === undefined ? {} : { store }),
     tools: [PAD_TOOL],
     executeTool,
+    capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
     config: {
       run: { ...run, maxRounds, completion: false, stallDetection: false, ...(stream === undefined ? {} : { stream }) },
       input: {
@@ -129,7 +131,7 @@ function baseOptions({ provider, budgetTokens = 400000, maxRounds = 6, stream, r
       folding: {
         toolResultTtl: 1,
         toolResultFoldMinTokens: 1,
-        context: { strategy: "fold-statistical", budgetTokens, keepRounds: 2, task: "issue #547" },
+        context: { budgetTokens, keepRounds: 2, task: "issue #547" },
       },
     },
   };

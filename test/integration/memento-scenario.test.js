@@ -5,7 +5,8 @@ import path from "node:path";
 
 import { buildCaptureRecoveryHint, buildCaptureStub } from "../../bin/final-guard.js";
 import { createCliTools, wrapExecuteTool } from "../../bin/tools.js";
-import { buildCompactionContext, splitCompactionContext } from "../../bin/config.js";
+import { splitCompactionContext } from "../../bin/config.js";
+import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistical.js";
 import { runDirect } from "./../helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { estimateMessageTokens } from "../../src/tokens.js";
@@ -23,9 +24,22 @@ import { makeTmp } from "../helpers/tmp.js";
  */
 function splitContextForRun(context) {
   const { data, hooks } = splitCompactionContext(context);
+  const dataObj = data ?? {};
+  const ports = {};
+  // #898-2：策略的**对象形态**（带 `shouldCompact`/`compact` 这些函数成员）不能住 config
+  // （config 子树必须能原样过 JSON round-trip），它的 canonical 家是 `capabilities.ports.strategy`。
+  // `splitCompactionContext` 只按**顶层**值的形态分类，会把嵌套的策略对象当作数据留在
+  // data 侧，这里补一步：把对象形态的 `strategy` 从 data 摘到 ports（名字形态仍留数据侧）。
+  if (dataObj.strategy !== null && typeof dataObj.strategy === "object") {
+    ports.strategy = dataObj.strategy;
+    delete dataObj.strategy;
+  }
   return {
-    config: { folding: { context: data ?? {} } },
-    capabilities: { hooks: hooks ?? {} },
+    config: { folding: { context: dataObj } },
+    capabilities: {
+      hooks: hooks ?? {},
+      ...(Object.keys(ports).length === 0 ? {} : { ports }),
+    },
   };
 }
 
@@ -58,13 +72,22 @@ test("S1 folds an early value into the provider request", async () => {
   // issue #614：`buildCompactionContext` 的**默认策略**现在是 `fold-llm`（语义折叠）。本场景验的是
   // 统计折叠那条零 LLM 路径（`[已折叠]` 存根 / 归档指针 / 逐字 stub），所以显式点名策略——
   // 否则每次折叠会多一发摘要器请求，`createFakeProvider` 的脚本就多消费一项。
-  const context = buildCompactionContext(
-    { compaction: "fold-statistical" },
-    360,
-    ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
-    (message) => buildCaptureStub(message),
-  );
-  context.keepRounds = 0;
+  // #898-2：`fold-statistical` 不再是可选内置策略名（`buildCompactionContext` 只认 `fold-llm`），
+  // 所以直接把统计策略**工厂实例**拼进折叠上下文（对象形态经 `splitCompactionContext` 落数据侧、
+  // 引擎原样透传），不再走名字解析。
+  const context = {
+    budgetTokens: 360,
+    keepRounds: 0,
+    // #898-2：对象形态的策略，`recoveryHint`/`stubFor` 由宿主烘进策略工厂（引擎的 compactOptions
+    // 只透传 `stubFor` 等，名字形态才吃 context 级 `recoveryHint`；对象形态这两个字段住在策略
+    // 对象上——见 orchestrator.js `resolveCompactionStrategy` 注释）。
+    strategy: createFoldStatisticalStrategy({
+      recoveryHint: ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
+      stubFor: (message) => buildCaptureStub(message),
+    }),
+    recoveryHint: ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
+    stubFor: (message) => buildCaptureStub(message),
+  };
 
   try {
     const result = await runDirect({
@@ -125,14 +148,21 @@ test("S2 folds a stub verbatim (no agent-side credential filter, #55) while reta
     returnMetadata: true,
   });
   const executeTool = (options) => wrappedExecuteTool(options);
-  // issue #614：同上——显式点名统计策略（本场景验的是零 LLM 折叠的存根/归档指针语义）。
-  const context = buildCompactionContext(
-    { compaction: "fold-statistical" },
-    360,
-    ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
-    (message) => buildCaptureStub(message),
-  );
-  context.keepRounds = 0;
+  // issue #614：同上——本场景验的是零 LLM 折叠的存根/归档指针语义。
+  // #898-2：直接拼折叠上下文，策略用统计工厂实例（见 S1 注释）。
+  const context = {
+    budgetTokens: 360,
+    keepRounds: 0,
+    // #898-2：对象形态的策略，`recoveryHint`/`stubFor` 由宿主烘进策略工厂（引擎的 compactOptions
+    // 只透传 `stubFor` 等，名字形态才吃 context 级 `recoveryHint`；对象形态这两个字段住在策略
+    // 对象上——见 orchestrator.js `resolveCompactionStrategy` 注释）。
+    strategy: createFoldStatisticalStrategy({
+      recoveryHint: ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
+      stubFor: (message) => buildCaptureStub(message),
+    }),
+    recoveryHint: ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
+    stubFor: (message) => buildCaptureStub(message),
+  };
 
   try {
     await runDirect({
@@ -288,17 +318,23 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
     returnMetadata: true,
   });
   const executeTool = (options) => wrappedExecuteTool(options);
-  // issue #614：同上——显式点名统计策略（本场景验的是两次统计折叠之间的存根去重）。
-  const context = buildCompactionContext(
-    { compaction: "fold-statistical" },
-    // 抬高预算（旧 1200）：让 est>budget 的首次触发落在 ≥6 轮之后（实测：每轮 exec 输出被
-    // 截小，预算需抬到这个量级才能集齐 >MIN_KEEP_ROUNDS 的轮数），使配置的 fold-statistical
-    // 自己折（而非被 sliding-window 兑底）。
-    5000,
-    ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
-    (message) => buildCaptureStub(message),
-  );
-  context.keepRounds = 0;
+  // issue #614：同上——本场景验的是两次统计折叠之间的存根去重。
+  // #898-2：直接拼折叠上下文，策略用统计工厂实例（见 S1 注释）。
+  // 抬高预算（旧 1200）：让 est>budget 的首次触发落在 ≥6 轮之后（实测：每轮 exec 输出被
+  // 截小，预算需抬到这个量级才能集齐 >MIN_KEEP_ROUNDS 的轮数），使统计策略自己折。
+  const context = {
+    budgetTokens: 5000,
+    keepRounds: 0,
+    // #898-2：对象形态的策略，`recoveryHint`/`stubFor` 由宿主烘进策略工厂（引擎的 compactOptions
+    // 只透传 `stubFor` 等，名字形态才吃 context 级 `recoveryHint`；对象形态这两个字段住在策略
+    // 对象上——见 orchestrator.js `resolveCompactionStrategy` 注释）。
+    strategy: createFoldStatisticalStrategy({
+      recoveryHint: ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
+      stubFor: (message) => buildCaptureStub(message),
+    }),
+    recoveryHint: ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
+    stubFor: (message) => buildCaptureStub(message),
+  };
 
   try {
     await runDirect({

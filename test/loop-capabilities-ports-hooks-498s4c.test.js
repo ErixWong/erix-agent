@@ -30,6 +30,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createAssemblyPort } from "../src/assembly.js";
+import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import {
   CAPABILITIES_ALIAS_PATHS,
   CAPABILITIES_NAMESPACE_GROUPS,
@@ -634,7 +635,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] },
     folding: { context: {
-      budgetTokens: 900, keepRounds: 1, strategy: "fold-statistical", ...context,
+      budgetTokens: 900, keepRounds: 1, strategy: "fold-llm", ...context,
     } },
   });
   // ① 数据形态（`string`）住 config，且**真的生效**：提示进折叠摘要；只给一条腿 ⇒ 零冲突。
@@ -751,7 +752,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
       folding: { context: {
         budgetTokens: 900,
         keepRounds: 1,
-        strategy: "fold-statistical",
+        strategy: "fold-llm",
         ...(extra.context ?? {}),
       } },
     },
@@ -941,7 +942,9 @@ test("C12 逐叶（真 run，3 个折叠 hooks）：壳内老槽位在 policy �
     const result = await sharedRunDirect({
       assemblyPort: foldingPort({
         context: { budgetTokens: 1, keepRounds: 0 },
-        capabilities: { hooks: { [leaf]: portFn } },
+        // #898-2：无策略⇒不折叠；这一格要折叠真发生才能验端口位钩子真被调。
+        // 策略工厂实例走兄弟位 `ports.strategy`（policy 里的 capabilities 会转交引擎）。
+        capabilities: { ports: { strategy: createSlidingWindowStrategy() }, hooks: { [leaf]: portFn } },
       }),
       initialUserMessage: "go",
       config: { run: { completion: false } },

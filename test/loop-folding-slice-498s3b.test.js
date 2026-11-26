@@ -39,6 +39,7 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { CAPABILITY_CONTEXT_HOOK_NAMES } from "../src/loop/capabilities-namespace.js";
 import { runDirect as sharedRunDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
 
@@ -226,7 +227,8 @@ test("R1 context 经新家生效：小预算真的驱动压缩（真 run）", as
     maxRounds: 3,
     completion: false,
     wrapup: false,
-    config: { folding: { context: { budgetTokens: 200, keepRounds: 0, strategy: "sliding-window" } } },
+    capabilities: { ports: { strategy: createSlidingWindowStrategy() } },
+    config: { folding: { context: { budgetTokens: 200, keepRounds: 0 } } },
   }));
   assert.ok(
     (result.compactionStats ?? []).some((stat) => stat.compacted === true),

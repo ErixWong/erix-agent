@@ -27,6 +27,7 @@ import {
 // the protocol layer stays public, the factory does not). soak is a repository script, not a host,
 // so it reaches the module directly instead of going through the package entry.
 import { createAnthropicProvider } from "../src/providers/anthropic.js";
+import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 
 // 中止/重试路径上，被抛弃的 in-flight 请求可能在 run 已经收口之后才拒绝。Node 22 默认
 // `--unhandled-rejections=throw` 会**直接把进程打死**（真机 soak 实测：abort 之后报告根本没写出来）。
@@ -1459,6 +1460,10 @@ async function main() {
     // 注：文档写的 governor 选项**不在** src/loop/option-normalization.js:36-97 的白名单里
     // （传入即 unknown runToolLoop option），soak 只观察不改：见报告 engineDefects。
     store: createFileTranscriptStore({ dir: storeDir }),
+    // #898-2：折叠必须由策略驱动；soak 用**机械策略**逼强制压缩。`fold-statistical` 这个
+    // 内置名已不再是可选数据名，而对象形态不能住 `config.folding.context`（那里要过 JSON
+    // round-trip），故把策略工厂实例送到兄弟位 `capabilities.ports.strategy`。
+    capabilities: { ports: { strategy: createSlidingWindowStrategy() } },
     config: {
       // #498 S3（`run` 片 A13）：顶层 `stallDetection` 已退役，家是 `config.run.stallDetection`
       // （展开相写回 `effectiveOptions.stallDetection`，引擎读侧不变）。soak 是**观察脚本**，
@@ -1476,7 +1481,6 @@ async function main() {
       input: { system: "soak：长跑一致性观察（工具循环、压缩、落盘）" },
       folding: {
         context: {
-          strategy: "fold-statistical",
           budgetTokens,
           keepRounds: 2,
           task: "soak 观察",

@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { ensureUserTurnView } from "../src/loop/request-user-view.js";
 import { validateMessages } from "../src/messages/rounds.js";
+import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 
 const filler = (count, char) => char.repeat(count);
 
@@ -87,7 +88,10 @@ function baseOptions({
     tools: [PAD_TOOL],
     executeTool,
     // 观察者回调写在**规范之家** `capabilities.hooks.*`（#498：回调收能力面，不再加顶层扁平键）。
-    ...(events === undefined ? {} : { capabilities: { hooks: { onEvent: (event) => events.push(event) } } }),
+    capabilities: {
+      ports: { strategy: createFoldStatisticalStrategy() },
+      ...(events === undefined ? {} : { hooks: { onEvent: (event) => events.push(event) } }),
+    },
     config: {
       run: {
         ...run,
@@ -98,7 +102,7 @@ function baseOptions({
       },
       input: { system: "call pad each round, then answer", messages },
       ...(folding
-        ? { folding: { context: { strategy: "fold-statistical", budgetTokens, keepRounds: 2, task: "issue #296" } } }
+        ? { folding: { context: { budgetTokens, keepRounds: 2, task: "issue #296" } } }
         : {}),
     },
   };

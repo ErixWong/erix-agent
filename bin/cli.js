@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   DEFAULT_REFLECTION_MIN_ROUNDS,
-  BUILTIN_COMPACTION_STRATEGY_NAMES,
   appendUserTurn,
   createBuiltinNotesTools,
   createOpenAIProvider,
@@ -30,7 +29,6 @@ import {
   buildCompactionContext,
   buildContinuityConfig,
   loadCliConfig,
-  normalizeCompactionOption,
   resolveCompactionBudget,
   splitCompactionContext,
 } from "./config.js";
@@ -102,8 +100,8 @@ const DEFAULT_MAX_ROUNDS = 64;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>] [--no-agents]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>] [--no-agents]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -170,12 +168,10 @@ const HELP_TEXT = `用法：
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
   --error-log <path>   将持久化错误事件追加写入 JSONL（默认仅 stderr；也可用 ERIX_ERROR_LOG）
   --tools <名1,名2>    工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
-  --compaction <名>   上下文压缩策略：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}（默认：fold-llm）。
-                      fold-llm 每次压缩会多一次主力模型调用（输入为被折叠的老轮次），其 usage
-                      已计入本次 run 总账；摘要器失败（含默认 30s 上限的超时）是**终局错误**
-                      summarizer_failed：run 以 failed 结束、退出码 5，不会退回统计摘要。想要
-                      「一次 LLM 都不调、永不失败」的折叠就显式选 fold-statistical（零 LLM）。
-                      也可用 config 字段 compaction 固定（旗标优先）。
+  折叠（压缩）恒由 LLM 完成（fold-llm）：每次压缩会多一次主力模型调用（输入为被折叠的老轮次），
+                      其 usage 已计入本次 run 总账；摘要器失败（含默认 30s 上限的超时）是**终局错误**
+                      summarizer_failed：run 以 failed 结束、退出码 5。已无 --compaction 旗标——
+                      不再提供「零 LLM 的机械折叠」这一退路。
   --effort <值>       思考强度（reasoning_effort，issue #798）。优先级 **--effort >
                       LLM_KIT_REASONING_EFFORT > slots.default.reasoning_effort**——与既有 --model
                       （env **压过**旗标）**故意不同**：旗标是「就这一轮」的意图，应当赢。
@@ -213,9 +209,8 @@ const HELP_TEXT = `用法：
   MCP 配置默认读取当前目录 .mcp.json 或 ~/.erix/mcp.json。
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
   slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。
-  slots.default.compaction 可固定压缩策略（sliding-window / fold-statistical / fold-llm，默认 fold-llm；
-                      摘要器失败（含超时）是终局错误 summarizer_failed，不会退回统计摘要；
-                      想要零 LLM 且永不失败的折叠就显式选 fold-statistical）；--compaction 可覆盖。
+  折叠恒由 LLM 完成（fold-llm）：摘要器失败（含超时）是终局错误 summarizer_failed，不会退回统计摘要。
+                      已无 config 字段 compaction / 旗标 --compaction（机械折叠退路已删）。
 
 退出码：
   0  成功（开了 --final-guard 时为 verified）
@@ -270,17 +265,6 @@ function parseReflectionOption(rawValue) {
     usageError("--reflection 必须是 on 或 off");
   }
   return rawValue === "on";
-}
-
-// issue #167：--compaction 只收内置策略名；非法名字直接报 usage 错误（带合法值列表）
-function parseCompactionOption(name, rawValue) {
-  if (rawValue.trim() === "") usageError(`${name} 不能为空`);
-  try {
-    return normalizeCompactionOption(rawValue);
-  } catch (error) {
-    usageError(`${name}：${error?.message ?? String(error)}`);
-  }
-  return undefined;
 }
 
 // issue #391 R1：`--cwd` 必须解析成**已存在的目录**（绝对化之后才算数）。它会被原样交给
@@ -551,7 +535,6 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--cwd"
       || argument === "--dir"
       || argument === "--compact-budget"
-      || argument === "--compaction"
       || argument === "--max-rounds"
       || argument === "--reflection"
       || argument === "--timeout"
@@ -578,7 +561,6 @@ export function parseChatArgs(args, cwd = process.cwd()) {
           || argument === "--cwd"
           || argument === "--dir"
           || argument === "--reflection"
-          || argument === "--compaction"
           || argument === "--judge-log"
           || argument === "--error-log"
           || argument === "--tools"
@@ -607,8 +589,6 @@ export function parseChatArgs(args, cwd = process.cwd()) {
         options.dir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
-      } else if (argument === "--compaction") {
-        options.compaction = parseCompactionOption(argument, rawValue);
       } else if (argument === "--max-rounds") {
         options.maxRounds = parseIntegerOption(argument, rawValue, 1);
       } else if (argument === "--reflection") {
@@ -957,7 +937,6 @@ async function runChatWithNotes({
   configPath,
   skillsDir,
   compactBudget,
-  compaction,
   maxRounds,
   reflection,
   finalGuard,
@@ -1006,10 +985,9 @@ async function runChatWithNotes({
   const runId = _notesRunId ?? session ?? defaultSessionId(cwd, { unique: true });
   const explicitSession = sessionExplicit ?? session !== undefined;
   const loadedConfig = configOverride ?? await loadCliConfig({ configPath, effort });
-  // --compaction 覆盖 config.compaction（名字仍往下传字符串，引擎负责实例化）
-  const config = compaction === undefined
-    ? loadedConfig
-    : { ...loadedConfig, compaction };
+  // issue #898：折叠恒由 LLM 完成，`--compaction` / `config.compaction` 已删除，
+  // CLI 不再注入策略名——`buildCompactionContext` 走默认 `fold-llm`。
+  const config = loadedConfig;
   // issue #798：思考强度的三通道裁决（旗标 > env > slot）。配置面（`loadCliConfig`）已带着
   // `reasoningEffort` 回来；宿主直接注入 `config` 时那里没有这一格，就在**入口处**用同一个
   // `resolveReasoningEffort` 现算——同一个函数、同一个次序，两条路不可能给出不一致的优先级。

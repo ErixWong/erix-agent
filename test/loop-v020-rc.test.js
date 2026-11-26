@@ -8,6 +8,7 @@ import { KitError } from "../src/providers/errors.js";
 import { computeBudget } from "../src/compact/budget.js";
 import { estimateMessageTokens } from "../src/tokens.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
+import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { createModelConfigResolver } from "../src/config/static.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { appendLedgerMessages } from "./helpers/journal-crash-body.js";
@@ -270,7 +271,7 @@ test("#898：超预算时最老的消息被折走，而不是「降级留存」"
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({ capabilities: {},
+  const result = await runToolLoop({ capabilities: { ports: { strategy: createSlidingWindowStrategy() } },
     provider,
     executeTool: async () => "unused",
     config: { input: { messages: [
@@ -651,6 +652,8 @@ test("#609 c: a large tool result continues to end_turn with a compaction fact�
   ]);
   const result = await runToolLoop({
     capabilities: {
+      // #898-2：不传策略⇒不折叠；这一格要真的折，所以显式给机械工厂（以前的缺省行为）。
+      ports: { strategy: createSlidingWindowStrategy() },
       hooks: {
         onEvent: (event) => events.push(event),
       },
