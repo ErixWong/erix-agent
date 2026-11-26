@@ -243,7 +243,7 @@ test("正常 run 的请求视图桩事件不带恢复标记，宿主提示也不
     tools: TOOLS,
     executeTool: async () => { throw new Error("不应执行历史工具调用"); },
     config: {
-      input: { messages: history, cacheStablePrefix: false },
+      input: { messages: history },
       run: { runId: "request-view-stub-fresh", resume: false, maxRounds: 1, completion: false, reflection: false },
     },
     capabilities: {
@@ -514,7 +514,6 @@ test("T8 反向证：把这一层去掉（直接吃 ctx.messages）⇒ 同一份
     messages: folded.map((message) => structuredClone(message)),
     tools: [],
     stream: false,
-    cacheStablePrefix: false,
     retryOptions: null,
     retryAttempts: 0,
     backoffBaseMs: 0,

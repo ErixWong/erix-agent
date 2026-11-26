@@ -68,7 +68,7 @@ async function runExecOnly(commands, options = {}) {
     store,
     executeTool: shellTool(dir),
     config: {
-      input: { initialUserMessage: "write the files", cacheStablePrefix: false, wrapup: false },
+      input: { initialUserMessage: "write the files", wrapup: false },
       run: {
         cwd: dir,
         maxRounds: commands.length + 2,
@@ -423,7 +423,7 @@ test("#711 判据 5：同一个 run 从账本重建，fileWrites 与非 resume �
     store,
     executeTool: async () => "unused",
     config: {
-      input: { initialUserMessage: "write the files", cacheStablePrefix: false, wrapup: false },
+      input: { initialUserMessage: "write the files", wrapup: false },
       run: { cwd: dir, runId, resume: true, maxRounds: 1, completion: false, reflection: false },
     },
     capabilities: {

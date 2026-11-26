@@ -226,10 +226,13 @@ export async function callProvider(ctx, {
     };
     try {
       // issue #926：旧 `markStablePrefix` 缓存打标已随 Anthropic 协议退役（OpenAI 前缀缓存自动），
-      // 请求视图原样发出。
+      // 请求视图原样发出。`.slice()` 不是可有可无：旧打标路径本来就会 `map` 出一个新数组，
+      // 因此交给 provider / 宿主的 `request.messages` 是**本次请求的快照**；直接递 `requestMessages`
+      // 会把实时 `ctx.messages` 的引用交出去，run 在调用之后追加的 assistant 轮会回流进
+      // 宿主已经拿到的视图里（#296 那格就是这样红的）。
       const request = {
         system: ctx.mainSystem,
-        messages: requestMessages,
+        messages: requestMessages.slice(),
         signal: ctx.signal,
       };
       if (omitTools !== true) request.tools = ctx.tools;

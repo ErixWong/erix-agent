@@ -323,7 +323,7 @@ and the first one whose keys live in `config.input`):
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
 | 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
-| 0.28.0 and later (issue #498 S3, third slice) | **rejected on the spot** — write `config.input.cacheStablePrefix` / `config.input.messages`. The name gate throws `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is config.input.cacheStablePrefix; the flat spelling is rejected)` |
+| 0.28.0 and later (issue #498 S3, third slice) | **rejected on the spot** — write `config.input.messages` for `initialMessages`; the name gate throws `unknown runToolLoop option: "initialMessages" (its canonical home is config.input.messages; the flat spelling is rejected)`. `cacheStablePrefix` has **no home at all** any more: its `config.input` leaf was retired together with the Anthropic cache breakpoints (issue #926), so the flat spelling is now the plain `unknown runToolLoop option: "cacheStablePrefix"` |
 
 `initialMessages` is the interesting one, and the message is the reason to read this paragraph:
 **the home it names is `config.input.messages`, not `config.input.initialMessages`**. The leaf is
@@ -501,7 +501,7 @@ option that just retired, and migrating any of the rest would be a regression. C
 | model-slot / config-file field `slots.default.maxTokens` | read by `createProviderForSlot` (`src/config/slot-provider.js`) and forwarded by `bin/cli.js`; it flattens to the request's `max_tokens` | **untouched** — a config file is not a `runToolLoop` option and never went through the name gate |
 | config-file sampling defaults `temperature` / `topP` | `src/config/env.js` (`TEMPERATURE` / `TOP_P`) | **untouched** — same reason |
 | assembly `policy.maxTokens` | `src/assembly.js` — a port member, not a top-level option | **untouched**; it still reaches the request body |
-| provider request fields `maxTokens` / `temperature` / `topP` | `src/messages/anthropic.js`, `src/providers/openai.js` | **untouched** — that is the engine's *read* side, and the expansion phase feeds it |
+| provider request fields `maxTokens` / `temperature` / `topP` | `src/providers/openai.js` | **untouched** — that is the engine's *read* side, and the expansion phase feeds it |
 
 One near-miss worth naming: `maxTokenContinuations` is a **different key** (its home is
 `config.run.maxTokenContinuations`, and it stays a legal flat option). A whole-word grep for
@@ -604,7 +604,7 @@ rest would be a regression:
 | --- | --- | --- |
 | `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | `system` **retired by the A6 slice**; `wrapup` **retired by A18** (its flat spelling is rejected, home `config.input.wrapup`); `tools` is a **permanent top-level option** (the third station, same class as `provider` / `executeTool` / `store`) — it has no nested home at all |
 | `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input` (`src/loop/config-namespace.js`) | the canonical home for **data** leaves — `tools` is **not** one of them since #527 (the leaf was removed) |
-| provider request field `system` / OpenAI `role: "system"` | `src/messages/anthropic.js`, `src/messages/canonical.js` | **untouched** — that is the engine's *read* side, and the expansion phase feeds it |
+| provider request field `system` / OpenAI `role: "system"` | `src/messages/canonical.js` | **untouched** — that is the engine's *read* side, and the expansion phase feeds it |
 | `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505's two slices — **independent options**, never members of this group | **untouched**; neither is a `runToolLoop` top-level key, and neither has a config home |
 | the reflection wrap-up container (`config.run.reflection.wrapupNormalize`) | `src/loop/orchestrator.js`, `src/reflection/wrapup.js` | **untouched** — a different thing from the top-level boolean `wrapup` |
 | `erix-agent/tools` subpath export and the tool registry (`src/tools/index.js`) | capability surface | **untouched** — a module export, not an option key |
@@ -947,7 +947,7 @@ group is therefore **closed**: `config.metadata` has no flat twin left.
 | `user` | provider request body field `user` (`extraBody` / `providerOptions`) | `src/providers/*`, `test/providers/request-injection.test.js` | **no** |
 | `model` | the `modelConfig` port (the third station) | `src/assembly.js`, `src/loop/orchestrator.js` | **no** (N3) |
 | `model` | the model-slot field `slots.default.model` | `src/config/slot-provider.js`, `bin/cli.js` | **no** |
-| `model` | the provider request body field `model` | `src/providers/openai.js`, `src/providers/anthropic.js` | **no** |
+| `model` | the provider request body field `model` | `src/providers/openai.js` | **no** |
 | `task` | the fold-context shell `context.task` (explicit task wins over it — as-is) | `src/loop/task-brief.js` (`resolveTaskBrief`), `src/assembly-validators.js` | **no** (N2) |
 | `task` | `task-brief.js`'s string read (`typeof === "string"` + `trim()`) | `src/loop/task-brief.js` | **no** — read side |
 | `task` | the `erix_run` extension's own `task` parameter (`core.run({ task })`) | `examples/pi-extension/erix-run-core.js` | **no** — a different API plane |
@@ -6099,8 +6099,9 @@ visible marker, and the shortfall is stated in the block itself rather than left
   (`src/loop/continuity-block.js`) replaces the existing block by marker rather than appending, and
   `positionContinuityBlock` (`src/loop/continuity-block.js`) moves it to the end of `messages`. Rounds
   therefore never grow the history by one message. It is deliberately *not* folded into `mainSystem`:
-  `markStablePrefix` (`src/loop/provider-runner.js`) marks the prompt's opening block as prefix-head, and history
-  follows it, so a per-round `mainSystem` edit would invalidate a 100k–200k token prefix on every request.
+  the prompt's opening block is the head of the cacheable prefix and history follows it, so a per-round
+  `mainSystem` edit would invalidate a 100k–200k token prefix on every request (the explicit breakpoint marking
+  that used to express this was retired with the Anthropic adapter, issue #926; upstream prefix caching is automatic).
 - It is **counted**: the block is a real entry in `messages`, so `estimateMessageTokens` (`src/tokens.js`)
   includes it in the same estimate the fold trigger reads — a host cannot inflate the request with a continuity
   block the compactor cannot see.

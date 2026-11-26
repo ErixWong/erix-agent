@@ -3,7 +3,7 @@
 // （400 只活在注释里），`test/providers/*.test.js` 只把 400/422 分类成 `invalid_request` 而从不
 // 让一条**真的**请求带着「没有 user 轮」的形状走到那一步。两者之间的缝就是本文件补的那一格：
 //
-//   · provider 是**真的** `createOpenAIProvider` / `createAnthropicProvider`（真适配器自己拼 URL、
+//   · provider 是**真的** `createOpenAIProvider`（真适配器自己拼 URL、issue #926 之后库里只剩这一个适配器，
 //     自己组 body、自己解析状态码），只有 `fetchImpl` 是离线的——不碰网络、不要密钥、不写盘、
 //     不读 `~/.erix`；
 //   · stub 上游**不是无条件回 400**：它读请求体，`messages` 里真有 `role:"user"` 就回 200。于是
@@ -24,7 +24,6 @@ import assert from "node:assert/strict";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createOpenAIProvider } from "../src/providers/openai.js";
-import { createAnthropicProvider } from "../src/providers/anthropic.js";
 
 const API_KEY = "offline-stub-key";
 const MODEL = "offline-stub-model";
@@ -199,47 +198,4 @@ test("T1 #296 真 OpenAI 适配器：守卫 unrecoverable → 真请求被上游
     true,
     "顺序：守卫事件在 run_outcome 之前（「先有归因，后有终局」）",
   );
-});
-
-test("T1b #296 真 Anthropic 适配器 + 流式通道：同一条链，事件通道名跟着真调用走", async () => {
-  const events = [];
-  const relay = strictRelay({ events });
-  const provider = createAnthropicProvider({
-    endpoint: "https://relay.invalid",
-    apiKey: API_KEY,
-    model: MODEL,
-    fetchImpl: relay.fetchImpl,
-  });
-
-  const { failure } = await runCapturing(baseOptions({ provider, events, stream: true }));
-
-  assert.equal(relay.calls.length, 1, "不可重试 ⇒ 只发一发");
-  assert.equal(
-    relay.calls[0].url,
-    "https://relay.invalid/v1/messages",
-    "Anthropic 适配器自己拼的那条 URL",
-  );
-  assert.equal(relay.calls[0].body.stream, true, "前提：这一跑真的走了流式通道（适配器把 stream 写进 body）");
-  assert.equal(
-    relay.calls[0].roles.includes("user"),
-    false,
-    `同一个被拒形态：流式通道的请求体里也没有 user 轮，实测 ${JSON.stringify(relay.calls[0].roles)}`,
-  );
-  assert.deepEqual(
-    relay.calls[0].roles,
-    ["assistant"],
-    "Anthropic 协议的 system 走独立字段 ⇒ `messages` 里只剩那条孤儿 assistant 轮",
-  );
-  assert.equal(relay.calls[0].guardEventsAtCallTime, 1, "流式通道下事件同样先于请求");
-
-  const guardEvents = unrecoverableEvents(events);
-  assert.equal(guardEvents.length, 1);
-  assert.equal(guardEvents[0].channel, "chatStream", "通道名必须报真被调用的那一条（不许写死 chat）");
-
-  assert.ok(failure, "流式通道的 400 同样以 failed 收口");
-  assert.equal(failure.code, "invalid_request");
-  assert.equal(failure.status, 400);
-  assert.equal(failure.termination?.errorCode, "invalid_request");
-  const outcome = events.find((event) => event?.type === "run_outcome");
-  assert.equal(outcome?.termination?.errorCode, "invalid_request");
 });

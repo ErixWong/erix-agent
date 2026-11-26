@@ -403,7 +403,7 @@ test("keeps the configured keepRounds when only API usage is over budget", async
   assert.deepEqual(provider.requests[1].messages, [{
     role: "user",
     content: [{ type: "text", text: "start" }],
-    cacheBoundary: true,
+    // issue #926：原本这里还有 `cacheBoundary: true`（#192 的缓存断点），随 Anthropic 退役删除。
   }]);
 });
 

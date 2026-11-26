@@ -86,8 +86,11 @@ test("returns max_rounds_cap when the effective round limit is reached", async (
   assert.equal(result.truncated, true);
   assert.equal(result.rounds, 2);
   const forcedFinal = provider.requests.at(-1);
-  assert.equal(forcedFinal.system.cacheBoundary, true);
-  assert.equal(forcedFinal.messages[0].cacheBoundary, true);
+  // issue #926：这两行原本断言强制收尾请求**带**缓存断点标记（system 被包成
+  // `{content, cacheBoundary:true}`、首条消息带标记）。打标机制已随 Anthropic 适配器退役 ⇒
+  // 现在钉的是「请求原样发出」：system 仍是宿主给的那条字符串，消息也没被加过标记字段。
+  assert.equal(typeof forcedFinal.system, "string", "system 必须原样发出，不再被包成带标记的对象");
+  assert.equal("cacheBoundary" in forcedFinal.messages[0], false, "请求视图不再被打上缓存断点");
 });
 
 test("returns continuation_exhausted after max-token continuations run out", async () => {

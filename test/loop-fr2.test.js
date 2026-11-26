@@ -154,9 +154,9 @@ test("continues after transition text when tools were used", async () => {
     role: "user",
     content: [{ type: "text", text: "（请继续完成任务）" }],
     meta: { source: "judge-control" },
-    // issue #192：续跑控制消息是本轮请求的最后一条 ⇒ 尾部滚动断点落在它上面。
-    cacheBoundary: true,
-  });
+// issue #926：这一条原本还带 `cacheBoundary: true`（#192 的缓存断点落点）——那套 Anthropic
+    // 打标机制已随适配器退役，请求视图原样发出。
+      });
 });
 
 test("forces completion after maxNoToolRounds without a signal", async () => {
@@ -222,17 +222,15 @@ test("continues max_tokens responses in one assistant message", async () => {
     role: "assistant",
     content: [{ type: "text", text: "part-1part-2done" }],
   });
-  // issue #192：续写请求的最后一条同样是本轮请求尾部 ⇒ 滚动断点落在它上面（`result.messages`
-  // 里那份不带标记，标记只在请求视图的副本上）。
+  // issue #926：这两条原本各带一个 `cacheBoundary: true`（#192 的滚动尾部断点）——打标机制
+  // 已随 Anthropic 适配器退役，请求视图原样发出；正文与轮数的判据一字未动。
   assert.deepEqual(provider.requests[1].messages.at(-1), {
     role: "assistant",
     content: [{ type: "text", text: "part-1" }],
-    cacheBoundary: true,
   });
   assert.deepEqual(provider.requests[2].messages.at(-1), {
     role: "assistant",
     content: [{ type: "text", text: "part-1part-2" }],
-    cacheBoundary: true,
   });
   assert.equal(result.rounds, 1);
 });
@@ -253,7 +251,6 @@ test("merges adjacent assistant messages before every provider call", async () =
           { role: "assistant", content: [{ type: "text", text: "first" }] },
           { role: "assistant", content: [{ type: "text", text: "second" }] },
         ],
-        cacheStablePrefix: false,
       },
     },
     executeTool: async () => "unused",
@@ -310,7 +307,7 @@ test("compacts context before the second round and records its payload and stats
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 99, keepRounds: 4 } } },
+    config: { input: {}, folding: { context: { budgetTokens: 99, keepRounds: 4 } } },
     store: (() => {
       const store = createMemoryTranscriptStore();
       const appendRound = store.appendRound.bind(store);

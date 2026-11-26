@@ -271,7 +271,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
     executeTool: async ({ input }) => `completed-${input.step}`,
     maxRounds: 3,
     // #498 S3 (`input` slice A): the flat spelling retired; the home is config.input.*.
-    config: { input: { cacheStablePrefix: false }, run: { completion: false } },
+    config: { input: {}, run: { completion: false } },
     store,
     runId: "resume-run",
   });
@@ -310,7 +310,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
     provider: resumedProvider,
     initialUserMessage: "must be ignored",
     // #498 S3 (`input` slice A): `messages` is the leaf alias of the retired flat `initialMessages`.
-    config: { input: { messages: [{ role: "user", content: "must also be ignored" }], cacheStablePrefix: false }, run: { completion: false } },
+    config: { input: { messages: [{ role: "user", content: "must also be ignored" }] }, run: { completion: false } },
     executeTool: async () => "unused",
     maxRounds: 4,
     store,

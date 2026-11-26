@@ -66,7 +66,7 @@ async function buildRealFold() {
     completion: false,
     config: {
       run: { maxRounds: 40 },
-      input: { cacheStablePrefix: false },
+      input: {},
       folding: { context: { budgetTokens: 3000, keepRounds: 1, maxFoldedPayloadBytes: 200 } },
     },
     capabilities: { ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) } },

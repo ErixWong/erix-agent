@@ -77,7 +77,7 @@ test("#711 d: resume rebuilds an exec count from ledger tool_use blocks when run
     tools: [],
     executeTool: async () => "unused",
     config: {
-      input: { cacheStablePrefix: false, wrapup: false },
+      input: { wrapup: false },
       run: { runId, resume: true, maxRounds: 1, completion: false, reflection: false },
     },
     capabilities: {

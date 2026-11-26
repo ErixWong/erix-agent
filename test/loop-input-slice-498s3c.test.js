@@ -1,5 +1,7 @@
 // issue #498（S3）—— `input` 组 A 段的**垂直切片**（第三片）：删掉顶层扁平 `cacheStablePrefix` 与
-// `initialMessages`，它们的规范之家是 `config.input.cacheStablePrefix` / `config.input.messages`。
+// `initialMessages`，后者的规范之家是 `config.input.messages`。
+// issue #926 把 `cacheStablePrefix` 整条叶子也拆了（它开关的 Anthropic 缓存断点机制随协议退役），
+// 所以 P1 / P3 / R1 三格改钉「两个写法都拒 + 组里只剩四个叶子 + 请求不带标记」；其余各格一字未动。
 //
 // 本文件钉五件事（其余在本刀改过的既有用例里，见交付报告）：
 //
@@ -20,10 +22,10 @@
 //      每个顶层选项恰好一个家；配置叶子可以没有顶层键）。
 //   R. **读侧不变的机制证据**：两个键写在新家之后，展开相会把它们逐字写回
 //      `effectiveOptions.<扁平名>`——这正是「删了顶层键、引擎读侧一行都不用改」的原因。
-//      两条**真 run**（`cacheStablePrefix` 关掉缓存边界标记、`messages` 真的成为种子历史），
+//      两条**真 run**（#926 之后 `cacheStablePrefix` 那一格改钉「请求不带缓存标记」、`messages` 真的成为种子历史），
 //      外加一条**装配口旧路零回归**（`policy.session.initialMessages` 走的是另一条写侧，
 //      本刀没动它，也不许它坏）。
-//   C. **叶子还在**（本刀删的是**写法**，不是叶子）：`config.input` 组原样保留六个叶子，
+//   C. **叶子还在**（那些刀删的是**写法**，不是叶子）：`config.input` 组保留四个叶子（#926 拆掉一个），
 //      且逐叶子 round-trip 覆盖名单仍按**叶子名**取到 `messages` 的值（`#498` 的 S7 族）。
 //
 // 为什么单独一个文件：这三条是「迁移完成」与「只删了键」的分界线。放在任何既有用例里都会被
@@ -82,23 +84,27 @@ function gateMessage(optionName) {
 // 每格两段：① 逐字相等的文案（含新家路径）；② 同一个值写在新家里必须**不抛**——
 // 「拒旧名」与「收新家」必须同时成立，否则这条钉子只是在说「我把键弄丢了」。
 
-test("P1 顶层 cacheStablePrefix ⇒ 当场拒，文案逐字指向 config.input.cacheStablePrefix", async () => {
+test("P1 顶层 cacheStablePrefix ⇒ 当场拒；#926 之后它连新家也没有了（两个写法都拒）", async () => {
+  // #498 S3 A 段：这一格原本钉的是「扁平写法被拒 + 文案指向 `config.input.cacheStablePrefix`」，
+  // 而同一值写在新家里必须不抛。#926 把那条叶子整条退役（它开关的 Anthropic 缓存断点机制没了），
+  // 所以判据换形但不放宽：**两个写法都必须当场抛 TypeError**，且文案不许再指一个不存在的家。
   const error = await directError({ cacheStablePrefix: false });
   assert.equal(error instanceof TypeError, true, "旧名必须在名称闸口抛 TypeError（不是静默忽略）");
   assert.equal(
     error.message,
-    'unknown runToolLoop option: "cacheStablePrefix" (its canonical home is'
-      + " config.input.cacheStablePrefix; the flat spelling is rejected)",
-    "文案必须点名新家——少了 config.input.cacheStablePrefix，升级的宿主只能自己猜",
+    'unknown runToolLoop option: "cacheStablePrefix"',
+    "退役键没有新家 ⇒ 文案必须只说「未知选项」，不许指向一个已经不存在的 config.input 叶子",
   );
-  // 同一个值写在新家里 ⇒ 不抛，且展开相把它写回扁平名（读侧不变）。
-  const { effectiveOptions } = await normalizeRunToolLoopOptions({
-    config: { input: { cacheStablePrefix: false } },
-  });
   assert.equal(
-    effectiveOptions.cacheStablePrefix,
+    error.message.includes("config.input.cacheStablePrefix"),
     false,
-    "config.input.cacheStablePrefix 必须写回 effectiveOptions.cacheStablePrefix",
+    "文案不许把宿主指到已退役的叶子（那会让宿主撞第二次）",
+  );
+  // 嵌套写法同样必须当场红：叶子已从 `CONFIG_NAMESPACE_SCHEMA.input` 删掉。
+  await assert.rejects(
+    normalizeRunToolLoopOptions({ config: { input: { cacheStablePrefix: false } } }),
+    (nestedError) => /unknown config\.input option: "cacheStablePrefix"/u.test(String(nestedError?.message ?? nestedError)),
+    "config.input.cacheStablePrefix 也必须是未知叶子——配了等于没配的正解就是当场拒",
   );
 });
 
@@ -144,16 +150,17 @@ test("P2 顶层 initialMessages ⇒ 当场拒，文案逐字指向 config.input.
 });
 
 // 旧名**真的**不在白名单里了（不是「拒了但又留着」）。
-test("P3 三个旧名都不在白名单里，而 config.input 组原样保留五个叶子", () => {
+test("P3 三个旧名都不在白名单里，而 config.input 组保留四个叶子（#926 拆掉了 cacheStablePrefix）", () => {
   // #498 S3 A2b：`initialUserMessage` 是第三个（`input` 组最后一个离开顶层白名单的成员）。
   for (const name of ["cacheStablePrefix", "initialMessages", "initialUserMessage"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(name), false, `${name} 必须已经离开顶层白名单`);
   }
-  // 新家还在（本刀删的是**写法**，不是叶子）：否则 P1/P2 的文案会指向一个不存在的组。
+  // 新家还在（那些刀删的是**写法**，不是叶子）：否则 P2 的文案会指向一个不存在的组。
+  // #926 是例外：`cacheStablePrefix` 连叶子一起退役了，所以它从这个集合里消失。
   assert.deepEqual(
     [...CONFIG_NAMESPACE_SCHEMA.input].sort(),
-    ["cacheStablePrefix", "initialUserMessage", "messages", "system", "wrapup"],
-    "config.input 组必须原样保留五个叶子（它就是新家；#527 已把 tools 拆成永久顶层面）",
+    ["initialUserMessage", "messages", "system", "wrapup"],
+    "config.input 组保留这四个叶子（#527 已把 tools 拆成永久顶层面，#926 拆掉 cacheStablePrefix）",
   );
   // 纯数据键不该被塞「第二站」（它们不是混装壳）：两条文案都是「一句话」形态。
   for (const name of ["cacheStablePrefix", "initialMessages", "initialUserMessage"]) {
@@ -297,8 +304,10 @@ test("S1 configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES) === []", () => {
 //
 // 「引擎读的是 `effectiveOptions.<扁平名>`」这句话必须用行为证明，不能靠读代码。
 
-test("R1 cacheStablePrefix 经新家生效：缓存边界标记真的消失（真 run）", async () => {
-  // 默认 `true` ⇒ system 被包成 `{content, cacheBoundary:true}`、首条消息带 `cacheBoundary`。
+test("R1 #926：默认请求不带任何缓存断点标记（真 run，两个旧写法都进不来）", async () => {
+  // 这一格原本是「经新家关掉 cacheStablePrefix ⇒ 标记消失」的行为证据（对照组是默认打标）。
+  // #926 之后打标机制整体退役：没有开关，也没有标记。判据因此改成钉**结果面**——
+  // 真 run 发出去的请求里 `system` 是原样字符串、消息不带 `cacheBoundary` 字段。
   const defaulted = createFakeProvider(DONE);
   await runToolLoop(withSeed({
     provider: defaulted,
@@ -308,19 +317,9 @@ test("R1 cacheStablePrefix 经新家生效：缓存边界标记真的消失（�
     config: { input: { system: "SYS" } },
     wrapup: false,
   }));
-  assert.equal(defaulted.requests[0].system.cacheBoundary, true, "对照组：默认必须打标记");
-
-  // 经新家关掉 ⇒ 两条标记都必须消失（这就是引擎真的读到了 `effectiveOptions.cacheStablePrefix`）。
-  const optedOut = createFakeProvider(DONE);
-  await runToolLoop(withSeed({
-    provider: optedOut,
-    executeTool: async () => "ok",
-    initialUserMessage: "go",
-    wrapup: false,
-    config: { input: { system: "SYS", cacheStablePrefix: false } },
-  }));
-  assert.equal(optedOut.requests[0].system, "SYS", "config.input.cacheStablePrefix:false 必须真的生效");
-  assert.equal("cacheBoundary" in optedOut.requests[0].messages[0], false);
+  const shipped = defaulted.requests[0];
+  assert.equal(shipped.system, "SYS", "system 必须原样发出（旧实现会包成 {content, cacheBoundary}）");
+  assert.equal("cacheBoundary" in shipped.messages[0], false, "请求视图不许再带缓存断点字段");
 });
 
 test("R2 initialMessages 经新家生效：config.input.messages 真的成为种子历史（真 run）", async () => {

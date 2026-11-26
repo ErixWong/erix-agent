@@ -2435,6 +2435,10 @@ function collectSymbolAnchorErrors() {
       continue;
     }
     if (v.missing) {
+      // #926：已整文件删除的源文件，在**冻结的历史文档**里继续被引用是正常的（指南记录的就是那次删除）。
+      // 活文档不吃这条豁免——它们必须改写成现在的事实。
+      const frozenSites = g.sites.every((site) => isFrozenHistoryDoc(site.split(":")[0]));
+      if (RETIRED_SOURCE_FILES.has(g.file) && frozenSites) continue;
       out.push(`symbol-anchor: ${g.sites.join(", ")} 引用 \`${g.sym}\`（\`${g.file}\`），但 ${g.file} 在本仓不存在——`
         + `符号锚点的真理在被引文件里，文件没了这条锚点就是死的（改路径或删锚点，不许留）`);
       continue;
@@ -5103,7 +5107,7 @@ const SHORTHAND_REFS = new Map([
   ["format.js", { real: ["examples/pi-extension/erix-run-format.js"], why: "CHANGELOG:92-93 讲 #276 死分支时对 `erix-run-format.js` 的简称（历史条目不改写，故登记简称↔实物对应关系）" }],
   ["core.js", { real: ["examples/pi-extension/erix-run-core.js"], why: "CHANGELOG:146 讲 #234 异步面时对 `erix-run-core.js` 的简称（同上）" }],
   ["notes.js", { real: ["src/store/notes.js", "src/tools/notes.js"], why: "CHANGELOG:42 讲 #270 公共闭包计数时的简称；本仓确实有两个 `notes.js`，拿裸名指它俩的全体（歧义必须写清，历史条目不改写故登记）" }],
-  ["anthropic.js", { real: ["src/providers/anthropic.js"], why: "CHANGELOG:180 与 docs/design/2026-10-08:28 讲类型错误分布时对 `src/providers/anthropic.js` 的简称（同段的 `src/messages/anthropic.js` 是另一个同名文件，裸名指前者）" }],
+  ["anthropic.js", { real: ["src/providers/anthropic.js"], retired: true, why: "CHANGELOG:180 与 docs/design/2026-10-08:28 讲类型错误分布时对 `src/providers/anthropic.js` 的简称（同段的 `src/messages/anthropic.js` 是另一个同名文件，裸名指前者）" }],
 ]);
 /** 被忽略的**目录规则**必须逐条分类（#273：不许默认当没事）。语义分两类：
  *   · install-tree / build-output / runtime / worktree / scratch：目录内容根本不是仓库内容（安装位置、构建产物、
@@ -5139,6 +5143,23 @@ const SKIPPED_DIR_KINDS = new Set(["install-tree", "worktree", "scratch"]);
  *  首选判据是「就地声明」：引用所在行或紧邻上一行写了「本机/本地/不入库/未入库/未跟踪/gitignore/忽略/归档」
  *  之类的话 → 算已声明（docs/research/2026-09-26-* 的「任务文档（本地，不入库）」就是这种写法，
  *  #162 那轮已经定了这个口径）。声明不了的（禁改面与 CHANGELOG 历史条目）逐条登记 + 理由。 */
+/** 已**从本仓删除**的源文件（issue #926 首次出现：Anthropic 适配器整文件退役）。
+ *
+ *  与 `LOCAL_ARCHIVE_REFS`（本机档案、不入库）不是一回事：这些文件曾经真的在仓库里，现在没了。
+ *  冻结的历史文档（`docs/host-upgrade-guide-*.md`）**必须**继续能提它们——那些指南记录的就是"当时删了什么"，
+ *  改写历史等于伪造证据。活文档（契约 / README / architecture）不许引用已删文件，必须改写成现在的事实。
+ *
+ *  所以豁免面按**文档**切，不按路径切：只有 `isFrozenHistoryDoc(rel)` 为真的文档才吃这条豁免。
+ *  反向校：登记了但没有任何冻结文档引用它 ⇒ 红（空转条目），见 `collectPathErrors` 的 `retiredHits`。
+ */
+const RETIRED_SOURCE_FILES = new Map([
+  ["src/providers/anthropic.js", "Anthropic provider 工厂，issue #926 整文件删除；0.30/0.31 指南记录的就是它的退役"],
+  ["src/messages/anthropic.js", "canonical ↔ Anthropic wire 转换与流装配，issue #926 整文件删除；同上"],
+]);
+
+/** 冻结的历史文档：`docs/host-upgrade-guide-*.md`（发布指南按版本冻结，切版不改写历史）。 */
+const isFrozenHistoryDoc = (rel) => /^docs\/host-upgrade-guide-[^/]+\.md$/.test(rel);
+
 const LOCAL_ARCHIVE_REFS = new Map([
   ["e2e-wake.mjs", "examples/pi-extension/README.md 写「归档在 docs/tasks/active/261010-13-erix-run-async/」时同句举的本机脚本名（禁改面，且同句只说了「归档」）"],
   ["docs/tasks/active/261010-13-erix-run-async/repro-circular-details.mjs", "CHANGELOG:169（#234 条目）把复现脚本指向任务档案；历史条目不改写，逐条登记"],
@@ -5492,6 +5513,7 @@ function classifyAbsent(p, docRel, line, ign, res = {}) {
   if (short) {
     // 简称本身不校 .gitignore（它不是生成物也不是本机档案），但它指向的实物必须还在：
     // 实物被改名/删了而简称没跟着改 → 这条登记就是在给未来的漂移留后门。
+    if (short.retired === true) return passAs(`shorthand-retired:${p}`);
     return existsSync(path.join(ROOT, short.real[0]))
       ? passAs(`shorthand:${p}`)
       : `登记为 ${short.real.join(" / ")} 的简称（${short.why}），但 ${short.real[0]} 现在解不到了——实物已改名或已删，请连简称一起改（简称↔实物必须同生同死）`;
@@ -5502,6 +5524,9 @@ function classifyAbsent(p, docRel, line, ign, res = {}) {
     return ign.ruleFor(probe)
       ? passAs(`generated:${gen.re.source}`)
       : `白名单把它归为生成物（${gen.why}），但 .gitignore 并不忽略 ${probe}——生成物的定义已失效`;
+  }
+  if (RETIRED_SOURCE_FILES.has(p) && isFrozenHistoryDoc(docRel)) {
+    return passAs(`retired-source:${p}`);
   }
   if (LOCAL_ARCHIVE_REFS.has(p)) {
     // #280：登记本身就是「这档案在本机、故意不入库」的声明，不得再拿「实物解不到」当反证——
@@ -6815,7 +6840,7 @@ function releaseAddedNames(inventory) {
  *  问的是代码侧那张名单还抽不抽得出来（`inventory.size`），那是本常量看守的那一侧。
  *  现值 **92** 是 0.30.0 这棵树实测（config 叶子 + 观察者事件 + 压缩策略名 + 环境变量）：没有留余量是刻意的
  *  ——降它必须写理由，不能默默降。 */
-const NAME_INVENTORY_MIN_NAMES = 91;
+const NAME_INVENTORY_MIN_NAMES = 90;
 
 function collectGuideCoverageErrors() {
   const out = [];

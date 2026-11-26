@@ -79,7 +79,7 @@ async function runBlindRun(options) {
     store: createMemoryTranscriptStore(),
     executeTool: shellTool(dir),
     config: {
-      input: { initialUserMessage: "write the files", cacheStablePrefix: false, wrapup: false },
+      input: { initialUserMessage: "write the files", wrapup: false },
       run: {
         cwd: dir,
         maxRounds: script.length + 3,

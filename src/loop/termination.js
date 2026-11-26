@@ -1,3 +1,4 @@
+// issue #926：本模块不再 import `markStablePrefix`——Anthropic 缓存断点打标随协议适配器一起退役。
 import { answerPendingTailToolUses } from "./pending-tool-result.js";
 import { runDeliverables } from "./deliverables.js";
 import { EXEC_TOOL_NAME } from "./exec-writes.js";
@@ -684,9 +685,10 @@ export function createTerminationManager(ctx) {
     ctx.messageRounds.set(instruction, ctx.rounds);
     validateMessages(ctx.messages, { allowPendingToolUse: true });
     // issue #926：旧 Anthropic 缓存打标（`markStablePrefix`）已退役——OpenAI 前缀缓存自动。
+    // `.slice()` 同上：交给 provider 的必须是快照，不是实时 `ctx.messages` 的引用。
     const request = {
       system: ctx.mainSystem,
-      messages: ctx.messages,
+      messages: ctx.messages.slice(),
       tools: [],
       signal: ctx.signal,
       // issue #419 ② 的**终态裁定：有意不发 `reasoning_effort`**（见 CHANGELOG #419 ① 的覆盖面清单里

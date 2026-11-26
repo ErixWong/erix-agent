@@ -261,7 +261,7 @@ issue #531 的「两个入口、一个家」讲的是这个**容器**，与载�
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
 | 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
-| 0.28.0 及以后（issue #498 S3 第三片） | **当场拒**——请写 `config.input.cacheStablePrefix` / `config.input.messages`。名称闸口抛 `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is config.input.cacheStablePrefix; the flat spelling is rejected)` |
+| 0.28.0 及以后（issue #498 S3 第三片） | **当场拒**——`initialMessages` 请写 `config.input.messages`，名称闸口抛 `unknown runToolLoop option: "initialMessages" (its canonical home is config.input.messages; the flat spelling is rejected)`。`cacheStablePrefix` 现在**一个家都没有**了：它的 `config.input` 叶子随 Anthropic 缓存断点一并退役（issue #926），扁平写法退化成纯粹的 `unknown runToolLoop option: "cacheStablePrefix"` |
 
 `initialMessages` 是这一段里真正要读的一个，理由就在文案本身：**它点名的家是
 `config.input.messages`，不是 `config.input.initialMessages`**。叶子叫 `messages`，它过去被写成
@@ -401,7 +401,7 @@ feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550
 | 模型槽位 / 配置文件字段 `slots.default.maxTokens` | 由 `createProviderForSlot`（`src/config/slot-provider.js`）读、`bin/cli.js` 转发；它摊平成请求体的 `max_tokens` | **一字未动**——配置文件不是 `runToolLoop` 选项，从不经过名称闸口 |
 | 配置文件的采样默认值 `temperature` / `topP` | `src/config/env.js`（`TEMPERATURE` / `TOP_P`） | **一字未动**——同上 |
 | 装配口 `policy.maxTokens` | `src/assembly.js`——它是端口成员，不是顶层选项 | **一字未动**；它照旧到达请求体 |
-| provider 请求字段 `maxTokens` / `temperature` / `topP` | `src/messages/anthropic.js`、`src/providers/openai.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
+| provider 请求字段 `maxTokens` / `temperature` / `topP` | `src/providers/openai.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
 
 一个差点被误伤的邻居：`maxTokenContinuations` 是**另一个键**（家在 `config.run.maxTokenContinuations`，
 扁平写法照旧合法）。整词 grep `maxTokens` 会把它一起捞出来；它不属于本片，扁平写法继续可用。
@@ -485,7 +485,7 @@ A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决�
 | --- | --- | --- |
 | `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | `system` **已被 A6 退役**；`wrapup` **已被 A18 退役**（扁平写法当场拒，家 `config.input.wrapup`）；`tools` 是**永久顶层面（第三站）**，与 `provider` / `executeTool` / `store` 同类——它根本没有嵌套家 |
 | `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input`（`src/loop/config-namespace.js`） | **数据**叶子的规位之家——`tools` 自 #527 起**不在其中**（叶子已拆） |
-| provider 请求字段 `system` / OpenAI 的 `role: "system"` | `src/messages/anthropic.js`、`src/messages/canonical.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
+| provider 请求字段 `system` / OpenAI 的 `role: "system"` | `src/messages/canonical.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
 | `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505 那两片——**独立选项**，从来不是本组的成员 | **一字未动**；两个都不是 `runToolLoop` 的顶层键，也没有配置面之家 |
 | 反思收尾的容器（`config.run.reflection.wrapupNormalize`） | `src/loop/orchestrator.js`、`src/reflection/wrapup.js` | **一字未动**——与顶层那个布尔 `wrapup` 是两个东西 |
 | `erix-agent/tools` 子路径导出与工具注册表（`src/tools/index.js`） | 能力面 | **一字未动**——它是模块导出，不是选项键 |
@@ -761,7 +761,7 @@ config.metadata.session: the opaque per-run payload's home is config.folding.con
 | `user` | provider 请求体字段 `user`（`extraBody` / `providerOptions`） | `src/providers/*`、`test/providers/request-injection.test.js` | **没动** |
 | `model` | `modelConfig` 端口（第三站） | `src/assembly.js`、`src/loop/orchestrator.js` | **没动**（N3） |
 | `model` | 模型槽位字段 `slots.default.model` | `src/config/slot-provider.js`、`bin/cli.js` | **没动** |
-| `model` | provider 请求体字段 `model` | `src/providers/openai.js`、`src/providers/anthropic.js` | **没动** |
+| `model` | provider 请求体字段 `model` | `src/providers/openai.js` | **没动** |
 | `task` | fold-context 壳 `context.task`（显式 task 赢过它——as-is） | `src/loop/task-brief.js`（`resolveTaskBrief`）、`src/assembly-validators.js` | **没动**（N2） |
 | `task` | `task-brief.js` 的字符串读（`typeof === "string"` + `trim()`） | `src/loop/task-brief.js` | **没动**——读侧 |
 | `task` | `erix_run` 扩展自己的 `task` 入参（`core.run({ task })`） | `examples/pi-extension/erix-run-core.js` | **没动**——另一张 API 面 |
@@ -4784,9 +4784,9 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
   **不给 provider ⇒ 引擎什么都不注入**——行为与 #568 之前逐字相同，所以它是 opt-in，不是每次请求强加的新块。
 - 落点是**请求尾部**、就地刷新：`upsertContinuityInMessages` (`src/loop/continuity-block.js`) 按 marker 替换
   既有块而不是追加，`positionContinuityBlock` (`src/loop/continuity-block.js`) 把它挪到 `messages` 末尾。
-  于是轮次**不会**让历史每条多一条消息。刻意**不**并进 `mainSystem`：`markStablePrefix`
-  (`src/loop/provider-runner.js`) 把提示词开头的块标成前缀头、其后紧跟历史，每轮改 `mainSystem` 会让 100k–200k
-  token 的前缀每次请求都失效。
+  于是轮次**不会**让历史每条多一条消息。刻意**不**并进 `mainSystem`：提示词开头的块就是可缓存前缀的头、其后紧跟
+  历史，每轮改 `mainSystem` 会让 100k–200k token 的前缀每次请求都失效（把这件事显式打标的那套断点机制已随
+  Anthropic 适配器退役，issue #926；上游的前缀缓存是自动的）。
 - 它**被计入估算**：块是 `messages` 里真实的一条，所以 `estimateMessageTokens` (`src/tokens.js`) 会把它算进
   折叠判据读的那份估算——宿主没法用一个压缩器看不见的续接块偷偷把请求撑大。
 - 它的预算与 `config.folding.context.budgetTokens`（回答「何时折叠」）**是两件事**：默认 `CONTINUITY_DEFAULT_MAX_TOKENS`

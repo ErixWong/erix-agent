@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runDirect } from "./helpers/run-direct.js";
-import { createAnthropicProvider } from "../src/providers/anthropic.js";
 import {
   KitError,
   classifyFetchException,
@@ -11,11 +10,10 @@ import { createOpenAIProvider } from "../src/providers/openai.js";
 import { createMockFetch } from "./helpers/mock-fetch.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
-function successfulAnthropicResponse() {
+function successfulOpenAIResponse() {
   return {
     json: {
-      content: [{ type: "text", text: "done" }],
-      stop_reason: "end_turn",
+      choices: [{ message: { content: "done" }, finish_reason: "stop" }],
     },
   };
 }
@@ -50,9 +48,9 @@ test("normalizes OpenAI endpoints with and without /v1", async () => {
 });
 
 test("fails fast for missing or non-string provider configuration without fetching", async () => {
+  // issue #926：provider 矩阵从 2 收到 1（Anthropic 适配器已退役，库里只剩 OpenAI 一条线协议）。
   for (const [name, createProvider] of [
     ["OpenAI", createOpenAIProvider],
-    ["Anthropic", createAnthropicProvider],
   ]) {
     for (const field of ["endpoint", "apiKey", "model"]) {
       let fetchCalls = 0;
@@ -82,29 +80,27 @@ test("fails fast for missing or non-string provider configuration without fetchi
   }
 });
 
-test("uses Anthropic max_tokens=4096 through direct and loop requests", async () => {
-  const directFetch = createMockFetch([successfulAnthropicResponse()]);
-  await createAnthropicProvider(validProviderOptions(directFetch)).chat({
-    system: "",
-    messages: [{ role: "user", content: "hello" }],
-  });
-  assert.equal(directFetch.calls[0].body.max_tokens, 4096);
+// issue #926：这里原本有一格「Anthropic 缺省 max_tokens=4096」——它钉的是 Anthropic 适配器自己的
+// 缺省值（OpenAI 侧只在显式配了 `maxOutputTokens` 时才发 `max_tokens`），适配器退役后该格无物可钉。
+test("passes the configured max_tokens through direct and loop requests", async () => {
+  const directFetch = createMockFetch([successfulOpenAIResponse()]);
+  await createOpenAIProvider({
+    ...validProviderOptions(directFetch),
+    maxOutputTokens: 123,
+  }).chat({ system: "", messages: [{ role: "user", content: "hello" }] });
+  assert.equal(directFetch.calls[0].body.max_tokens, 123);
 
-  const loopFetch = createMockFetch([successfulAnthropicResponse()]);
+  const loopFetch = createMockFetch([successfulOpenAIResponse()]);
   const result = await runDirect({
-    provider: createAnthropicProvider(validProviderOptions(loopFetch)),
+    provider: createOpenAIProvider({
+      ...validProviderOptions(loopFetch),
+      maxOutputTokens: 123,
+    }),
     initialUserMessage: "hello",
     executeTool: async () => "unused",
   });
   assert.equal(result.finalText, "done");
-  assert.equal(loopFetch.calls[0].body.max_tokens, 4096);
-
-  const configuredFetch = createMockFetch([successfulAnthropicResponse()]);
-  await createAnthropicProvider({
-    ...validProviderOptions(configuredFetch),
-    maxOutputTokens: 123,
-  }).chat({ system: "", messages: [] });
-  assert.equal(configuredFetch.calls[0].body.max_tokens, 123);
+  assert.equal(loopFetch.calls[0].body.max_tokens, 123);
 });
 
 test("classifies AbortError and aborted signals as non-retryable aborted errors", () => {

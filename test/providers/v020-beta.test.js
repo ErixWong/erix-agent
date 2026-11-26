@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createAnthropicProvider } from "../../src/providers/anthropic.js";
 import { createOpenAIProvider } from "../../src/providers/openai.js";
 import { KitError, classifyFetchException, classifyHttpError } from "../../src/providers/errors.js";
 import { createMockFetch } from "../helpers/mock-fetch.js";
@@ -20,16 +19,6 @@ function openAIProvider(responseScript, options = {}) {
   });
 }
 
-function anthropicProvider(responseScript, options = {}) {
-  return createAnthropicProvider({
-    endpoint: "https://api.example.test",
-    apiKey: "test-key",
-    model: "test-model",
-    fetchImpl: createMockFetch(responseScript),
-    maxTokens: 64,
-    ...options,
-  });
-}
 
 const streamRequest = {
   system: "",
@@ -99,67 +88,6 @@ test("OpenAI emits reasoning, incremental tool-call, usage, and neutral events",
   assert.deepEqual(events.map((event) => event.type), [
     "reasoning_delta",
     "delta",
-    "tool_call",
-    "tool_call",
-    "usage",
-  ]);
-});
-
-test("Anthropic assembles thinking snapshots/signatures and emits tool fragments", async () => {
-  const events = [];
-  const reasoning = [];
-  const toolCalls = [];
-  const usage = [];
-  const provider = anthropicProvider([{
-    body: [
-      "event: message_start\n",
-      'data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}\n\n',
-      "event: content_block_start\n",
-      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
-      "event: content_block_delta\n",
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"thin"}}\n\n',
-      "event: content_block_delta\n",
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta.snapshot","thinking":"thinking"}}\n\n',
-      "event: content_block_delta\n",
-      'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}\n\n',
-      "event: content_block_start\n",
-      'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu-1","name":"lookup","input":{}}}\n\n',
-      "event: content_block_delta\n",
-      'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"x\\":1}"}}\n\n',
-      "event: message_delta\n",
-      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":6}}\n\n',
-      "event: message_stop\n",
-      'data: {"type":"message_stop"}\n\n',
-    ].join(""),
-  }]);
-
-  const response = await provider.chatStream({
-    ...streamRequest,
-    onEvent: (event) => events.push(event),
-    onReasoningDelta: (delta) => reasoning.push(delta),
-    onToolCall: (fragment) => toolCalls.push(fragment),
-    onUsage: (reportedUsage) => usage.push(reportedUsage),
-  });
-
-  assert.deepEqual(reasoning, ["thin", "king"]);
-  assert.deepEqual(toolCalls, [
-    { index: 1, id: "toolu-1", name: "lookup" },
-    {
-      index: 1,
-      id: "toolu-1",
-      name: "lookup",
-      argumentsDelta: "{\"x\":1}",
-    },
-  ]);
-  assert.deepEqual(usage, [{ input_tokens: 3, output_tokens: 6 }]);
-  assert.deepEqual(response.content, [
-    { type: "reasoning", text: "thinking", signature: "sig" },
-    { type: "tool_use", id: "toolu-1", name: "lookup", input: { x: 1 } },
-  ]);
-  assert.deepEqual(events.map((event) => event.type), [
-    "reasoning_delta",
-    "reasoning_delta",
-    "reasoning_delta",
     "tool_call",
     "tool_call",
     "usage",

@@ -810,6 +810,8 @@ export async function runToolLoop(options) {
   const {
     provider,
     system,
+    // issue #926：这里原本还解构一个 `cacheStablePrefix = true`。它开关的是 Anthropic 缓存断点
+    // 打标（`markStablePrefix` / `markTailCacheBoundary`），随协议适配器一起退役。
     wrapup = true,
     initialUserMessage,
     initialMessages,
@@ -3790,6 +3792,7 @@ export async function runToolLoop(options) {
     addUsage,
     estimateMessageTokens,
     mainSystem,
+    // issue #926：`cacheStablePrefix` 不再递给下面这个上下文——请求视图原样发出。
     maxTokens,
     temperature,
     topP,

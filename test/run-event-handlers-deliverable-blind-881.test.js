@@ -92,7 +92,7 @@ async function runWithCliHandlers(commands) {
       return "ok";
     },
     config: {
-      input: { initialUserMessage: "write the files", cacheStablePrefix: false, wrapup: false },
+      input: { initialUserMessage: "write the files", wrapup: false },
       run: { cwd: dir, maxRounds: commands.length + 3, completion: false, reflection: false },
     },
     capabilities: {

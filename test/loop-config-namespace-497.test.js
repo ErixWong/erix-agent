@@ -542,8 +542,9 @@ const RETIRED_FLAT_VALUES = {
   context: { budgetTokens: 1000, keepRounds: 2 },
   toolResultTtl: 1,
   toolResultFoldMinTokens: 10,
-  // #498 S3（`input` 组 A 段）：`cacheStablePrefix` + 唯一那条登记别名 `input.messages`
-  cacheStablePrefix: false,
+  // #498 S3（`input` 组 A 段）：唯一那条登记别名 `input.messages`。
+  // #926：同一片的 `cacheStablePrefix` 不再出现在这里——它不是「扁平写法退役、 nested 家还在」，
+  // 而是整条叶子随 Anthropic 缓存断点机制一起退役，所以它连配置面名单都不在了。
   initialMessages: [],
   // #498 S3（`input` 组 A2b 段）：`initialUserMessage`——种子首轮消息。
   initialUserMessage: "go",

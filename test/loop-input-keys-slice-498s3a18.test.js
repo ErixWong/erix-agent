@@ -184,14 +184,14 @@ test("R2 真 run：规位 false 仍关掉整条收尾协议，不给（缺省 tr
   const off = createFakeProvider(DONE);
   await runToolLoop(base({
     provider: off,
-    config: { input: { system: "SYS", cacheStablePrefix: false, [KEY]: false } },
+    config: { input: { system: "SYS", [KEY]: false } },
   }));
   assert.equal(off.requests[0].system, "SYS", "config.input.wrapup:false ⇒ 系统提示不被追加收尾协议");
 
   const on = createFakeProvider(DONE);
   await runToolLoop(base({
     provider: on,
-    config: { input: { system: "SYS", cacheStablePrefix: false } },
+    config: { input: { system: "SYS" } },
   }));
   assert.match(on.requests[0].system, /任务完成或需要给出结论时/u, "缺省 wrapup:true 仍追加收尾协议");
 });

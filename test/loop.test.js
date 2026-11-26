@@ -29,35 +29,6 @@ test("returns a single-turn final response", async () => {
   ]);
 });
 
-test("marks the stable prefix by default and supports opting out", async () => {
-  const run = async (cacheStablePrefix) => {
-    const provider = createFakeProvider([
-      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
-    ]);
-    await runDirect({
-      provider,
-      wrapup: false,
-      initialUserMessage: "hello",
-      executeTool: async () => "unused",
-      // #498 S3（`input` 组 A 段）：扁平 `cacheStablePrefix` 已退役，家是 `config.input.*`。
-      // #498 S3 A6：扁平 `system` 同样退役（`config.input.system`），并进同一个 `config.input`。
-      config: { input: { system: "stable system", ...(cacheStablePrefix === undefined ? {} : { cacheStablePrefix }) } },
-    });
-    return provider.requests[0];
-  };
-
-  const marked = await run(undefined);
-  assert.deepEqual(marked.system, {
-    content: "stable system",
-    cacheBoundary: true,
-  });
-  assert.equal(marked.messages[0].cacheBoundary, true);
-
-  const unmarked = await run(false);
-  assert.equal(unmarked.system, "stable system");
-  assert.equal("cacheBoundary" in unmarked.messages[0], false);
-});
-
 test("feeds tool results back to the provider on the next round", async () => {
   const provider = createFakeProvider([
     {
@@ -94,9 +65,8 @@ test("feeds tool results back to the provider on the next round", async () => {
       content: "lookup:x",
       erix: { round: 1, success: true },   // issue #35 年龄标记 = erix.round
     }],
-    // issue #192：这一轮的最后一条就是持久历史的尾巴 ⇒ 它是滚动断点的落点（请求视图上的标记，
-    // `ctx.messages` 不带）。断点因此逐轮前移，下一轮的同一个前缀可以按缓存读。
-    cacheBoundary: true,
+    // issue #926：这里原本还断言这一条带 `cacheBoundary: true`（#192 的滚动尾部断点落点）。
+    // 那套 Anthropic 缓存断点机制已整体退役，请求视图不再被打标 ⇒ 字段从夹具里去掉。
   });
 });
 
