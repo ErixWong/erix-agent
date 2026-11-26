@@ -227,8 +227,11 @@ export function classify(rel) {
  * @type {Readonly<Record<string, number>>}
  */
 const HISTORY_BODY_PINS = Object.freeze({
-  // issue #929：新增 0.35.0 升级指南（两份），退役扁平键命中数现测各 4
-  "docs/host-upgrade-guide-0.35.0.md": 4,
+  // issue #929：新增 0.35.0 升级指南（两份）。初登记各 4；#938 给两份指南各加了 §2.4（三个 Anthropic 导出的
+  // 逐名交代），EN 侧命中升到 5、CN 侧仍是 4，而那一刀没跟着重钉 ⇒ main 上 `check:docs-spelling` 红了（issue #952）。
+  // 现在按扫描器自己报的 ✗ 行重钉（`… 0.35.0.md … pin=4 uses=5`）。**两侧数字不同是正常的**：
+  // 那份 CN 指南的 §2.4 用的措辞里没有命中退役扁平键，不是漏译。
+  "docs/host-upgrade-guide-0.35.0.md": 5,
   "docs/host-upgrade-guide-0.35.0_cn.md": 4,
 
   "docs/decisions/001-config-adapters.md": 4,
