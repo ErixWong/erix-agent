@@ -18,7 +18,9 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { buildChildSystemPrompt, createCliDelegation } from "../bin/delegation.js";
+import { CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES } from "../bin/tools.js";
 import { notesOnToolNames } from "../bin/system-prompt.js";
+import { NOTE_RECALL_CLAUSE } from "../src/loop/note-prompt-hint.js";
 import { readRecord } from "../src/tools/delegation/roster.js";
 import { makeTmp } from "./helpers/tmp.js";
 
@@ -70,7 +72,8 @@ test("必修①b：`toolNames` 里点名整族笔记 ⇒ 同一条路推回 note
   });
   assert.match(wide, /立刻 note_take/u, "整族在名单上 ⇒ 处境段回到有笔记那一份");
   assert.match(wide, /先 note_list 再 note_read/u);
-  assert.match(wide, /先用 note_list 查找记录，再用 note_read 读取/u, "归档提示也要跟着回到 note-first");
+  // 261126-45：钉常量（唯一措辞之家 `NOTE_RECALL_CLAUSE`），不再手抄文案。
+  assert.ok(wide.includes(NOTE_RECALL_CLAUSE), "归档提示也要跟着回到 note-first");
   // 清单行仍只列**有清单文案**的那些名字：`note_*` 不在 CLI 注册面里，塞进去会让短语表核对当场抛。
   const line = toolListLine(wide);
   assert.ok(line !== null);
@@ -86,7 +89,9 @@ test("必修①c：缺省路径逐字节不变（不传 toolNames / notes ⇒ �
   const golden = buildChildSystemPrompt({ cwd: "/tmp/x" });
   assert.match(golden, /立刻 note_take/u);
   assert.match(golden, /先 note_list 再 note_read/u);
-  assert.match(golden, /具体数值必须来自当前工具返回或 note_read/u);
+  // 261126-45：这份 golden 钉的是「缺省装配面有笔记 ⇒ 那条 bullet 指名 note_read」这件事，
+  // 不是那串字——文案的家在 `bin/tools.js`，手抄进测试就变成改文案要同步两处。
+  assert.ok(golden.includes(CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES));
   // `notes: true` 显式给一遍，必须与缺省逐字节相同（「不表态」与「表态有」在这一位同值）。
   assert.equal(golden, buildChildSystemPrompt({ cwd: "/tmp/x", notes: true }));
   // `notes: false` 仍然是一条**显式覆盖**：即使名单里点名整族，它也压过推导。

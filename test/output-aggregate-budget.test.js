@@ -20,6 +20,7 @@ import {
   estimateInlineCost,
 } from "../src/loop/aggregate-budget.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { AGGREGATE_STUB_BUDGET_PREFIX } from "../src/loop/aggregate-budget.js";
 
 // clamp(floor(0.30 × 53337), 16000, 200000) = 16001（刚好不被下限夹到）
 const BUDGET_BASE = 53337;
@@ -516,7 +517,7 @@ test("round judge sees the stub (it must not misjudge the replaced original)", a
   });
   assert.equal(call, 2);
   const judgePayload = JSON.stringify(judge.requests[0]);
-  assert.match(judgePayload, /本轮工具输出已超单轮聚合预算/u, "judge 看到的是替换后 stub");
+  assert.ok(judgePayload.includes(AGGREGATE_STUB_BUDGET_PREFIX), "judge 看到的是替换后 stub");
   assert.doesNotMatch(
     judgePayload,
     new RegExp(marker),

@@ -44,10 +44,31 @@ export const AGGREGATE_ERROR_SNIPPET_CHARS = 200;
  * issue #609：这句原先只长在聚合桩里，而单条截断（`truncateTextToBudget`）是第三种「内容丢失」
  * 位点 —— 抄一份到那边就等于养两套口径，必然过期。所以把它抽成常量，两侧共用；
  * `aggregateStubText()` 的输出因此**逐字不变**（只是拼法换了）。
+ *
+ * 261126-45：两个「要点」再各拆一个常量，让测试能钉「这一句里两件要点都还在」而**不拿手抄的
+ * 子串当尺**（以前 `output-hygiene.test.js` / 本文件把这两半句当字面量钉，改文案要同时改两处）。
+ * 拼出来的 `NO_RERUN_SIDE_EFFECT_CLAUSE` 逐字不变。
  */
+export const NO_RERUN_JUDGE_CLAUSE = "若原命令有副作用，不要仅凭截断输出判断成败";
+export const NO_RERUN_RERUN_CLAUSE = "也不要为补全输出重跑有副作用的命令";
 export const NO_RERUN_SIDE_EFFECT_CLAUSE =
-  "若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；"
-  + "改用只读方式复核。";
+  `${NO_RERUN_JUDGE_CLAUSE}，${NO_RERUN_RERUN_CLAUSE}；` + "改用只读方式复核。";
+
+/**
+ * 「没记下来就省略 findings 声明」那半句（聚合桩与逐条卫生桩都说它，261126-45 抽出）。
+ * 两个位点的**尾巴**不同（一个「；」接下一句、一个「。」收尾），所以只抽共同的前半。
+ */
+export const FINDINGS_OMISSION_CLAUSE = "若未记录且无法确定性重算，请省略对应 findings 声明";
+
+/**
+ * 「完整输出已由引擎归档（第 N 轮，共 M 字符）。」这个形状（逐条卫生桩与聚合桩共用，261126-45 抽出）。
+ * 只抽文案，数字仍由各调用方填；输出逐字不变。
+ */
+export const ARCHIVED_HEAD = "完整输出已由引擎归档（第 ";
+export const ARCHIVED_INFIX = " 轮，共 ";
+export const ARCHIVED_SUFFIX = " 字符）。";
+/** 聚合桩比逐条桩多说的开头一句（超的是**单轮聚合**预算，不是一条的预算）。 */
+export const AGGREGATE_STUB_BUDGET_PREFIX = "本轮工具输出已超单轮聚合预算：";
 
 const UNRECOVERABLE_REASONS = Object.freeze({
   invalid_content: "输出内容不是可归档的文本",
@@ -114,9 +135,9 @@ export function aggregateStubText({ round, length, errorSnippet: snippet, retrie
   // 缺省那一格走「无证据」口径（`noteRecallHint({})` ⇒ reason「无笔记证据」）——fail-closed，
   // 与 #741 的「证据缺席即未知，绝不默认有笔记」是同一条纪律。
   const hint = retrieval ?? noteRecallHint({});
-  return `[本轮工具输出已超单轮聚合预算：完整输出已由引擎归档（第 ${round} 轮，共 ${length} 字符）。${failed}`
+  return `[${AGGREGATE_STUB_BUDGET_PREFIX}${ARCHIVED_HEAD}${round}${ARCHIVED_INFIX}${length}${ARCHIVED_SUFFIX}${failed}`
     + `后续需要该值：${hint.clause}；`
-    + "若未记录且无法确定性重算，请省略对应 findings 声明，不要猜测；"
+    + `${FINDINGS_OMISSION_CLAUSE}，不要猜测；`
     + NO_RERUN_SIDE_EFFECT_CLAUSE + "]";
 }
 

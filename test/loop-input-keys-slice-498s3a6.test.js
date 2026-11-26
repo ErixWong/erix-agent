@@ -49,6 +49,7 @@ import { canonicalToAnthropicRequest } from "../src/messages/anthropic.js";
 import { createToolRegistry } from "../src/tools/index.js";
 import { runDirect as sharedRunDirect, directError as sharedDirectError } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { WRAPUP_INSTRUCTION } from "../src/loop/reflection.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
 
@@ -264,7 +265,7 @@ test("P5-c 专项：顶层 wrapup 已退役（#498 S3 A18 收口）；wrapup 组
     completion: false,
     config: { input: { system: "SYS", cacheStablePrefix: false } },
   });
-  assert.match(withWrapup.requests[0].system, /任务完成或需要给出结论时/u, "默认 wrapup:true 仍追加收尾协议");
+  assert.ok(withWrapup.requests[0].system.includes(WRAPUP_INSTRUCTION), "默认 wrapup:true 仍追加收尾协议");
 });
 
 test("P5-d 专项：./tools 子路径导出与 createToolRegistry 不是顶层选项", async () => {

@@ -618,6 +618,12 @@ function buildCliToolsToolListLine(names, { phrases = CLI_TOOL_PROMPT_PHRASES } 
 
 // ADR-010：「跳了什么 + 怎么撤销」必须进提示词——
 // 模型不知道被排除就无从发起取回。排除账同时写在工具结果尾部。
+/**
+ * 「重跑同一命令可能得到不同的值」这半句在提示词里出现两处（261126-45 导出）：两处后半不同，
+ * 所以只抽共同的前半，由调用方各接各的尾巴。
+ */
+export const RERUN_VALUE_DRIFT_CLAUSE = "重跑同一命令可能得到不同的值";
+
 const CLI_TOOLS_SYSTEM_PROMPT_VENDOR =
   "\n搜索与目录类工具（searchText/rg/grep/tree）默认跳过 node_modules、dist、build、target、vendor 与 . 开头的目录（结果尾部会回报跳过数量）；要一起搜传 include_vendor=true、include_hidden=true";
 
@@ -628,12 +634,12 @@ const CLI_TOOLS_SYSTEM_PROMPT_VENDOR =
 const CLI_TOOLS_SYSTEM_PROMPT_SITUATION_NOTES = `拿到后面还要用的具体值/决定时，立刻 note_take；
 需要早期细节而想不起来时，先 note_list 再 note_read，不要猜。
 若你决定重读文件而不先查笔记（note_list/note_read），必须在可见输出里用一行说明理由（如「笔记可能过期，需最新行号」），便于审计你的取回决策。
-重跑同一命令可能得到不同的值；后续需要精确值时先 note_take 记下，不要凭记忆。
+${RERUN_VALUE_DRIFT_CLAUSE}；后续需要精确值时先 note_take 记下，不要凭记忆。
 `;
 /** 无笔记工具面那一份（一个 `note_*` 都不出现）：取回只剩「重读」这一条真能跑的路。 */
 const CLI_TOOLS_SYSTEM_PROMPT_SITUATION_NO_NOTES = `本场没装配笔记工具，要留住后面还要用的具体值/决定，就写进交付物或可见输出；
 需要早期细节而想不起来时，请重读源文件（或改用只读方式复核），不要凭记忆，也不要猜。
-重跑同一命令可能得到不同的值；不要为了补全输出而重跑有副作用的命令。
+${RERUN_VALUE_DRIFT_CLAUSE}；不要为了补全输出而重跑有副作用的命令。
 `;
 
 const CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE_HEAD = `
@@ -642,16 +648,29 @@ const CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE_HEAD = `
 上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
 `;
 
+/**
+ * 「[工具纪律]」首条 bullet（无 todo 分句的基础部分；todo 分句拼在它后面）。
+ *
+ * 261126-45：导出——它被 `test/tools.test.js` 逐字钉过，改文案要同时改两处；现在测试只写常量名。
+ * 声明必须住在 `CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE_TAIL` **之前**（ESM 顶层 `const` 有 TDZ）。
+ */
+export const CLI_TOOLS_SYSTEM_PROMPT_PLAN_BULLET = "- 复杂任务先规划并逐步执行";
+
 const CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE_TAIL = `内部思考（reasoning）一律使用英文；对用户的可见输出不受此限，跟随用户语言。
 终稿的结束协议 JSON 必须带 findings 字段，只把归档输出中出现过的字面值声明为 label→精确值（如 "findings":{"nonce":"abc123"}）；不要声明计数/次数/引用等派生结论；没有关键值时省略该字段。
 
 [工具纪律]
-- 复杂任务先规划并逐步执行`;
+${CLI_TOOLS_SYSTEM_PROMPT_PLAN_BULLET}`;
 
-/** 「具体数值来源」那条 bullet：有笔记面时指名 `note_read`，没有时不指（issue #746）。 */
-const CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES =
+/**
+ * 「具体数值来源」那条 bullet：有笔记面时指名取回工具，没有时不指（issue #746）。
+ *
+ * 261126-45：导出。这两句 bullet 被测试逐字钉过 ⇒ 改文案要同时改源码与测试两处。
+ * 导出后测试只写常量名，文案的家仍然只有一个。
+ */
+export const CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES =
   "- 具体数值必须来自当前工具返回或 note_read，不得编造";
-const CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NO_NOTES =
+export const CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NO_NOTES =
   "- 具体数值必须来自当前工具返回，不得编造";
 
 // todo 段②：工具纪律行首条 bullet 的 todo 分句（接在基础段「先规划并逐步执行」之后）

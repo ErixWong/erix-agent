@@ -32,6 +32,7 @@ import {
 } from "../../src/loop/tool-result-ttl.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { runDirect } from "../helpers/run-direct.js";
+import { OMIT_UNRECORDED_CLAUSE } from "../../src/loop/tool-result-ttl.js";
 
 // —— 夹具 ——
 
@@ -109,7 +110,7 @@ test("①TTL 占位符：笔记为空 ⇒ 同样说「无可复原的决策记�
   const placeholder = placeholderOf(view);
   assert.match(placeholder, new RegExp(`${NO_RECORD_CLAUSE}（原因：无笔记写入）`, "u"));
   assert.equal(placeholder.includes(NOTE_TAIL), false, "占位符不得再说「要点见对话中已有笔记」");
-  assert.match(placeholder, /未记录且无法确定性重算时请省略，不要猜测/u,
+  assert.ok(placeholder.includes(OMIT_UNRECORDED_CLAUSE),
     "「不要猜测」半句必须保留：本切片修的是「有没有记录」，不是放松反幻觉约束");
 });
 
@@ -123,7 +124,7 @@ test("①有笔记证据时两句逐字不变（回归锁：条件式不是删�
   const placeholder = placeholderOf(view);
   // 有证据 ⇒ 仍是那句**条件式**检索指导（note-first），并且不说「无可复原的决策记录」。
   assert.match(placeholder, /先用 note_list 查找，再用 note_read 读取/u);
-  assert.match(placeholder, /未记录且无法确定性重算时请省略，不要猜测/u);
+  assert.ok(placeholder.includes(OMIT_UNRECORDED_CLAUSE));
   assert.equal(placeholder.includes(NO_RECORD_CLAUSE), false);
   // 评审必修 1：旧尾巴「要点见对话中已有笔记/结论」断言的是**覆盖率**（这条内容的要点已在笔记里），
   // 而证据只证得到「本 run 有过一次没被撤销的成功写入」⇒ 覆盖率证不到，整句删掉（不留条件式残骸）。

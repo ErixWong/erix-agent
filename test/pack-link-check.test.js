@@ -32,6 +32,7 @@ import {
   reclaimGeneratedDeclarations,
 } from "../scripts/generated-declarations.mjs";
 import { makeTmp } from "./helpers/tmp.js";
+import { PACK_CLAIM_MISMATCH_NOTE } from "../scripts/pack-link-check.mjs";
 
 const PACK_OK_JSON = JSON.stringify([{ files: [{ path: "package/src/index.js" }] }]);
 
@@ -291,7 +292,7 @@ test(".d.ts 声称对账的反向证：声称 ≠ 随包声明数 → 红，且�
   assert.match(text, /AGENTS\.md:4 声称「装包应列 67 个 \.d\.ts」（句式 en-should-list）/);
   assert.match(text, /AGENTS_cn\.md:3 声称「装包应列 67 个 \.d\.ts」（句式 cn-应列出）/);
   assert.match(text, /npm pack 的清单里有 69 个 src\/\*\*\/\*\.d\.ts/);
-  assert.match(text, /这个数由本门禁与包内容对账，不许手抄/);
+  assert.ok(text.includes(PACK_CLAIM_MISMATCH_NOTE));
 });
 
 test("issue #802：四份文档在树里、却一句声明都没抽到 → **不红**，只留一条 note（句子不在 ≠ 声称值错了）", async () => {
