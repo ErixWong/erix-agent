@@ -271,6 +271,28 @@ test("parses multiple tool calls and normalizes length finish reason", async () 
   assert.equal(response.stopReason, "max_tokens");
 });
 
+// 任务 261126-50（#938 ①）：`truncateBody` 的 500 字符上限**唯一**的判据原本住在
+// `test/providers/anthropic.test.js:403-412`，那个文件随 #926（退役 Anthropic 协议）整删，
+// 而 `truncateBody`（`src/providers/http-shared.js:24-25`）**仍在活路径上**——
+// `src/providers/openai.js:415,421,511,555,651` 都用它构造错误体。这一格把守卫装回去。
+//
+// 形状：上游回 200 但正文不是合法 JSON ⇒ 走 `!parsed` 分支 ⇒ `new KitError("server", truncateBody(bodyText))`。
+// 正文故意做 700 字符：上限若被改成 700（或删掉 slice），这一格必须红。
+test("#938 truncateBody：非 JSON 错误体被截到 500 字符（原先只有被删的 anthropic 测试钉过）", async () => {
+  const oversized = "x".repeat(700);
+  const { provider } = makeProvider([{ status: 200, body: oversized }]);
+  await assert.rejects(
+    provider.chat({ system: "", messages: [] }),
+    (err) => {
+      assert.ok(err instanceof KitError, "必须是 KitError");
+      assert.equal(err.code, "server");
+      assert.equal(err.message.length, 500, "错误体必须被截到 500 字符");
+      assert.equal(err.message, oversized.slice(0, 500), "截断必须是「取前 500 字符」，不是别的形状");
+      return true;
+    },
+  );
+});
+
 test("classifies timeout, rate limit, auth, server, 4xx client, network, and unmapped errors", async (t) => {
   const abortError = new Error("aborted");
   abortError.name = "AbortError";
