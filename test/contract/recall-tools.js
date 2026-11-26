@@ -36,8 +36,12 @@ export function recallToolsContract(label, getEntry) {
     assert.equal(definitions.length, 1);
     const tool = definitions[0];
     assert.equal(tool.name, "recall_read");
-    assert.ok(Array.isArray(tool.inputSchema.required) && tool.inputSchema.required.includes("round"),
-      "inputSchema.required 必须含 round");
+    // issue #896 §3-B（PR #964 第二轮 P0）：`round` **不再是必填**。本工具的全部价值就是
+    // 「记得写过、记不得第几轮」时用 `pattern` 检索，若 schema 仍强制 `round`，合规调用方
+    // 根本调不通那条路。「至少给一个」这条约束在实现里校验（两个都没给 ⇒ status: invalid）。
+    const required = tool.inputSchema.required;
+    assert.ok(required === undefined || (Array.isArray(required) && !required.includes("round")),
+      "inputSchema.required 不许强制 round（否则 pattern-only 的调用方调不通）");
     assert.equal(tool.inputSchema.additionalProperties, false);
   });
 

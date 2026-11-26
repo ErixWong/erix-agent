@@ -277,3 +277,24 @@ test("#896B-invalid：fromRound>toRound / pattern 非字符串 ⇒ invalid", asy
     .executeTool({ name: "recall_read", input: {} }));
   assert.equal(neither.status, "invalid", "round 与 pattern 都没给 ⇒ invalid");
 });
+
+test("#896B-6e truncated 是 run 级事实：夹断记录落在检索窗口外也必须报（不许漏报）", async () => {
+  // copilot #964 审查第 ③ 条：`foldedPayloadMeta` 挂在折叠记录行上、描述的是「归档到此轮之前被夹断过」，
+  // 是 **run 级事实**。若夹断检测跟着窗口走，把窗口收窄到受影响的那几轮就会漏报 ⇒ 模型把残片当「确实没有」。
+  // 本格把夹断记录放在第 9 轮、检索窗口限在第 1–2 轮：必须仍然报 truncated。
+  const rows = [
+    { round: 1, messages: [{ role: "user", content: "第一轮正文 fragment one" }] },
+    { round: 2, messages: [{ role: "user", content: "第二轮正文 fragment two" }] },
+    {
+      round: 9,
+      messages: [{ role: "user", content: "第九轮正文" }],
+      foldedPayloadMeta: { count: 1, bytes: 10, droppedMessages: 4, droppedBytes: 2048 },
+    },
+  ];
+  const r = JSON.parse(await tool(rows).executeTool({
+    name: "recall_read",
+    input: { pattern: "ZZZ_NOT_THERE", fromRound: 1, toRound: 2 },
+  }));
+  assert.equal(r.status, "truncated", "窗口外的夹断记录也必须让结果变成 truncated");
+  assert.equal(r.clamped, true);
+});
