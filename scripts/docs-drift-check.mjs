@@ -1769,7 +1769,8 @@ function collectMarkerLiteralErrors() {
 //     按工单那条只算 src/**.js 的口径实测：唯一 (文档,目标文件,行区间) **236** / 总出现 **271**
 //     （T-b1a 之前是 248 / 279；契约那两大段锚点族被符号化 + 合并重复区间后降到这里。减去 4 处声明式
 //     豁免 ⇒ 当时的棘轮基线 **232**——那是 T-b1a 落点，**不是现值**（现值 142，见下面常量的注释），
-//     每一刀降基线的逐条理由就写在 `BARE_LINE_REF_BASELINE` 的注释里。）
+//     每一刀降基线的逐条理由当年写在 `BARE_LINE_REF_BASELINE` 的注释里；该常数与台账已随 #908 拆除，
+//     历史理由见 issue #908 的回帖。）
 //     `--verbose` 的 note 打的是**现实现**（只算 `src/`）那两个数，基线常量的注释里写了怎么复现。
 //   `CHANGELOG.md` **不参与**：历史条目描述的是**当时**那份代码的行号，把它们改掉等于伪造历史
 //     （同口径先例：#278 对 CHANGELOG 里的简称只登记不改写、#273 对历史条目逐条登记）。CHANGELOG 里
@@ -2407,7 +2408,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  抬到它现报的数，**不在旧值上做加法**；
  *  同批把四处现值声称一起抬（名单见上面 #769 R8 那条），
  *  流水记在 `docs/maintenance/symbol-anchor-ledger.md`。
- *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
+ *  这里只留判据与写法：当年的 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;`（已随 #908 拆除）必须保持一行（自测的两例要改这个数）。 */
 
 
 function collectSymbolAnchorErrors() {
@@ -2777,7 +2778,7 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  `shouldContinue` 2739-2740、`dispatchAttemptEvent` provider-runner 96-110；中英各一份 ⇒ 8 个唯一键），
  *  另有 2 个唯一键是**三条不同写法指向同一段真身**（2739-2745 / 2742-2745 / 2743-2745 全部是
  *  `completionSignalDetected` 的声明处 3121-3125）合并成一条 ⇒ 每份文档再降 2 处。
- *  写法必须保持 `const BARE_LINE_REF_BASELINE = <数字>;` 一行（自测的「调低就红」用例要能改这个数）。
+ *  写法当年必须保持 `const BARE_LINE_REF_BASELINE = <数字>;` 一行（该常数已随 #908 拆除）（自测的「调低就红」用例要能改这个数）。
  *
  *  降基线的理由（#286 **T-b1b**，178 → **144**，本刀累计 232 → 144、降 88）：终止裁决决策表及其后三节里
  *  剩余的 orchestrator 区间同样按结局 (a) 删区间 + 写进真名（`runToolLoop` / `messageRounds` /
@@ -2955,7 +2956,7 @@ const CELL_AXES_CALIBER_LINES = {
 };
 
 /**
- * 登记表的**生效值从本脚本自己的文本里读**（与 `BARE_LINE_REF_BASELINE` / `SYMBOL_ANCHOR_MIN_UNIQUE`
+ * 登记表的**生效值从本脚本自己的文本里读**（当年与 `BARE_LINE_REF_BASELINE` / `SYMBOL_ANCHOR_MIN_UNIQUE`（两个都已随 #908 拆除）
  * 同构）。不这么写的话 `--self-test` 的覆盖层根本改不动它——R2 那条「塞一条区域内没有的口径行 ⇒ 红」
  * 的自测例正是这样**空转**的：overlay 只改文本，改不了已加载的运行时数组，那条假条目从没被看过一眼
  * （#772 R3：这是第 3 条红的真实根因，不是判据没写）。
@@ -5046,7 +5047,7 @@ const EXTERNAL_REPO_PATHS = new Map([
  *   `touwaka:lib/agent/`、`pi-subagents:src/runs/background/async-execution.js:4`
  * 冒号前是**已知外部仓名**（下表逐仓点名 + 写归属），冒号后是那个仓里的路径。于是
  *   ① 不查本仓存在性（那本来就不是本仓文件），
- *   ② **不计入裸行号棘轮**（`BARE_LINE_REF_BASELINE` 数的是本仓可核对的裸行号；一条外仓引用不该把
+ *   ② **不计入裸行号棘轮**（当年 `BARE_LINE_REF_BASELINE`（已随 #908 拆除）数的是本仓可核对的裸行号；一条外仓引用不该把
  *      只减不增的基线顶上去，也不该为了让它不顶而删掉真证据）；
  *   ③ 前缀**不在**已知清单里 ⇒ 红 —— 这条是全部放宽的代价：否则「随手编个前缀」就成了死链的免检通道。
  * 已知清单还会被**反向校**（没有任何一处引用用到这个仓名 ⇒ 红，与四张白名单登记表同口径），条目不会烂在那儿。
@@ -6886,7 +6887,7 @@ function releaseAddedNames(inventory) {
   return out;
 }
 
-/** 代码侧名字集的**下限**（只许涨不许降的探针，与 `REF_SCAN_DOCS_MINIMUM` / `SYMBOL_ANCHOR_MIN_UNIQUE` 同构）：
+/** 代码侧名字集的**下限**（只许涨不许降的探针，与已拆除的 `REF_SCAN_DOCS_MINIMUM` / `SYMBOL_ANCHOR_MIN_UNIQUE` 同构）：
  *  低于它说明 `nameInventory()` 的抽取逻辑被削（config schema / 事件发点 / 策略名 / `process.env` 读点里
  *  有一张脸抽不出来了）——那时本节会「绿得理直气壮」。
  *
@@ -7760,7 +7761,7 @@ function mutateRef(from, to, opts = {}) {
  *  `mutate` 收到注入的锚点字面量，返回要写进副本的那一条；返回值与入参**逐字相同**时原样返回文本
  *  ⇒ `runSelfTest` 的「变异没落上」判据会红，不会留下「注入了但没变异」的假绿。
  *
- *  注意：`bin/` 前缀不在 `BARE_LINE_RE` 的 `src/` 覆盖面里，注入**不抬** `BARE_LINE_REF_BASELINE` 棘轮。
+ *  注意：`bin/` 前缀不在 `BARE_LINE_RE` 的 `src/` 覆盖面里，注入不计入裸行号棘轮（那条棘轮已随 #908 拆除，这里只保留「不计入」这个历史口径）。
  */
 function injectRangeAnchor(mutate) {
   const injected = "`bin/cli.js:1032-1042`";
@@ -9166,7 +9167,7 @@ const SELF_TEST_CASES = [
   // —— 返工 R1（评审阻断项）：符号锚点的**只增不减下限**。病根：裸行号棘轮的唯一键不含文档行号，
   // 所以「把符号锚点换成裸行号」这种**退化**在棘轮那一侧一字不变，没有下限就没人报警。
   //
-  // 下面两例的**前提数字**（`CONST - 1` / `CONST` / `CONST + 1`）全部从 `SYMBOL_ANCHOR_MIN_UNIQUE` 现算，
+  // 下面两例的**前提数字**（`CONST - 1` / `CONST` / `CONST + 1`）当年从 `SYMBOL_ANCHOR_MIN_UNIQUE`（已随 #908 拆除）现算，
   // 不在这里拄字面量——这不是偷懒，是这两例成立的前提：**常量必须等于现测**。
   //   · 现测 = `node scripts/docs-drift-check.mjs --verbose` 那条 note 报的数（#769 R8 在 `727af80` 上量：**243**）。
   //   · 本例退化完的唯一组数 = 现测 - 1（同是量出来的：#769 R8 把下面两条 `replace` 原样落到两份契约上跑

@@ -4,6 +4,20 @@
 ## [Unreleased]
 
 ### Changed
+- **Stale comment pointers to the #908-removed ratchets are corrected (task 261126-53, issue #923 ④).** Eight comments in
+  `scripts/docs-drift-check.mjs` still described `SYMBOL_ANCHOR_MIN_UNIQUE` / `BARE_LINE_REF_BASELINE` /
+  `REF_SCAN_DOCS_MINIMUM` as live constants ("keep `const X = <n>;` on one line", "this raises the ratchet"), so the next
+  reader would go looking for a constant that no longer exists. They now say the constant was removed with #908 and where
+  the history lives. The two regexes that *detect* documents still quoting those constants are untouched — those are a
+  live check, not a stale pointer. **Issue #923 ⑤ (byte-budget equality → interval) is deliberately not done**: the
+  equality is a forgery guard (a hand-written number is red in both directions) and the tax is a single `--sync`
+  command, so weakening it to an interval would trade a real guard for convenience.
+- **指向 #908 已拆除棘轮的死注释已修正（任务 261126-53，issue #923 ④）。** `scripts/docs-drift-check.mjs` 里有八处注释
+  仍把 `SYMBOL_ANCHOR_MIN_UNIQUE` / `BARE_LINE_REF_BASELINE` / `REF_SCAN_DOCS_MINIMUM` 当成**活着的**常数来描述
+  （「写法必须保持 `const X = <n>;` 一行」「这条会抬棘轮」），下一任读者会去找一个根本不存在的常量。现在它们写明
+  该常数已随 #908 拆除、历史在哪。**用来检测「文档仍在引用这些常数」的两条正则没有动**——那是活判据，不是死指针。
+  **#923 ⑤（字节预算相等改区间）决定不做**：那个相等是防伪造的闸（手写数字双向都红），而它的代价只是跑一次
+  `--sync`；改成区间等于拿真闸换方便。
 - **The dead `#462` forensic probe is deleted, and the docs stop pointing at retired files (task 261126-52, issue #938 ②③④).**
   `scripts/probe-462-resume-refold.mjs` could not run any more: it passed the retired `config.input.cacheStablePrefix`
   (rejected as an unknown config leaf) **and** the retired `context.strategy: "fold-statistical"` (only `fold-llm`
