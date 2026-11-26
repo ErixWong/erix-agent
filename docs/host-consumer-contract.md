@@ -2322,7 +2322,7 @@ written into this table (so a source comment no longer drags a copy out of sync)
 by that test: a missing row, an axis value outside the vocabulary, or a CN/EN axis mismatch all go red.
 
 <!-- erix:snapshot-cell-axes:begin -->
-| Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write-site file — or, for a cell that no longer writes, the file whose comment documents the stop | Today's readers |
+| Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site file — or, for a cell that no longer writes, the file whose comment documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
 | `status` | stopped | not-source | — | — | `src/loop/orchestrator.js` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:204`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:498`, `test/loop-v020-rc.test.js:626` |
 | `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:722`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
