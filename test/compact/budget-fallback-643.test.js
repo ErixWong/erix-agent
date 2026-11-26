@@ -227,7 +227,7 @@ test("#643-③ 兜底也产摘要：模型请求里有 marker、轮记录 folded
   assert.match(String(facts[0].text), /上下文折叠/u, "替代物正文必须是机械摘要");
 });
 
-test("#643-③ 没配策略（库层兜底独自干活）也产摘要，且覆盖被折的全部轮次", async () => {
+test("#643-③ 没配策略 ⇒ 不折叠（模型请求里不出现折叠摘要；issue #898 修订设计）", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createFakeProvider([
     ...Array.from({ length: 4 }, (_unused, index) => ({
@@ -247,9 +247,14 @@ test("#643-③ 没配策略（库层兜底独自干活）也产摘要，且覆�
       run: { maxRounds: 7, completion: false, outputHygiene: { limit: 100_000 } },
     },
   });
+  // issue #898 修订：以前这一格靠引擎库层的机械 `sliding-window` 兜底（“库层兜底独自干活”）。
+  // 新设计：没配策略 ⇒ 引擎**不触发折叠**，也不再静默塞一段机械摘要。
   const afterFold = provider.requests.find((request) => JSON.stringify(request).includes(FOLD_MARKER));
-  assert.ok(afterFold, "未配策略时兜底那一发也必须给模型一份摘要（策略那一折同样只落账、不进消息）");
-  const summaryText = afterFold.messages.map(textOf).join("\n");
-  // 策略那一发折的是**最老**那几轮（keepRounds 6 之外的），摘要必须覆盖到它们，不能只补兜底这一折。
-  assert.match(summaryText, /mod0\.md/u, "摘要必须覆盖到最老那一轮（否则最老那批轮次照样只剩计数）");
+  assert.equal(afterFold, undefined,
+    "没配策略时引擎不得折叠：模型请求里不应出现任何折叠摘要 marker（机械兜底已退）");
+  const records = await store.load("643-unconfigured");
+  const factCount = records
+    .filter((r) => r[FOLDED_FACTS_RECORD_FIELD] !== undefined)
+    .reduce((n, r) => n + r[FOLDED_FACTS_RECORD_FIELD].length, 0);
+  assert.equal(factCount, 0, "没配策略 ⇒ 不得落任何折叠 fact");
 });
