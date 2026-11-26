@@ -9,7 +9,7 @@
 // 根 README 补进面内）：README 是宿主与模型读到的**第一个**文件，它的快速开始示例被照抄就执行——
 // #560 的面只装 `docs/`，于是 #572 之前 `README.md:95` / `README_cn.md:67` 那段示例里的四个退役扁平名
 // （`system` / `initialUserMessage` / `maxRounds` / `runId`）一次都没被这道门看过。扩面**不靠启发式**：
-// 两份根文档按「根文档」这一档登记命中数钉子（`ROOT_DOC_BODY_PINS`），总数变了就红；面本身仍是
+// 两份根文档按「根文档」这一档分类（命中合法、#961 A 起不再靠命中数钉子判红）；面本身仍是
 // **显式** pathspec（`SCAN_PATHSPECS` = `docs` + 两份根 README），**不是** `.`——
 // 扫描面不许偷偷变成「整个仓库」。
 //
@@ -33,7 +33,7 @@
 // `gate.{strict,gating,mode,red,counts,exitCode,wouldExitCode}`，所以机器读的那份**不可能**与进程
 // 真实退出码不一致（自测里有反向证）。
 //
-// 三条判据（每条都能被反向证打红，见报告）：
+// 两条判据（每条都能被反向证打红，见报告；#961 A 拆掉了第三条「非现状类正文命中数钉子」）：
 //   1. **分类**（`classify()`，纯路径，第一等公民）：
 //        · **现状描述**（current，该迁移）：`docs/architecture*` / `docs/charts*` / `docs/requirements*` /
 //          `docs/testing*` / `docs/maintenance-policy*` / `docs/soak.md` —— 它们教的是「今天怎么写」；
@@ -45,21 +45,16 @@
 //          口径本来就是「扫非契约文档」；契约命名空间表里 `config.run` 那一行的 `maxRounds` 是**叶子名**，
 //          不是扁平写点。
 //        · **根文档**（rootdoc，`README.md` / `README_cn.md`，#572）：按 contract 那一档处理——正文里的
-//          同名命中**不是漂移**（它讲默认值、列选项名、给端口形状），一个词都不许“改干净”，所以靠
-//          命中数钉子（`ROOT_DOC_BODY_PINS`）看守。它的快速开始示例是**唯一**被逐字执行的段落，
-//          那一截必须写成规位形态（已改）；钉子只是把“谁再往 README 里补一句扁平拼写”变成红。
+//          同名命中**不是漂移**（它讲默认值、列选项名、给端口形状），一个词都不许“改干净”。它的快速开始示例是
+//          **唯一**被逐字执行的段落，那一截必须写成规位形态（已改）；#961 A 起不再靠命中数钉子看守 README。
 //        · **未登记 ⇒ 按现状描述扫**：未知分类不是免检，宁可多红一句。临时改动范围（「本单只改 …」）
 //          **不是**分类理由，那条理由已按 #560 从本文件删掉。
 //      分类错 = 改错文件，所以分类表不在别处隐式决定。
 //   2. **命中**：退役键名出现在**代码语境**里（围栏内的键位、行内代码 span），且**不在** `config.*`
 //      之下（`config.timing.timeoutMs` 的尾段不是扁平写点 —— 那正是规位拼写）。围栏内的 `config: { … }`
 //      子树按花括号配对整体跳过：叶子名逐字等于扁平键名，但它是**叶子**，不是顶层写点。
-//   3. **非现状类的正文不许被改写**：`HISTORY_BODY_PINS` / `CONTRACT_BODY_PINS` / `ROOT_DOC_BODY_PINS`
-//      钉住每份历史/契约/根文档的命中数。把某份 ADR 的正文改写成规位形态 ⇒ 命中数**掉** ⇒ `SUSPECT(dropped)`；往历史里
-//      补一句扁平拼写 ⇒ 命中数**涨** ⇒ `SUSPECT(raised)`；新入历史/契约/根文档类却忘了钉 ⇒ `UNPINNED`。
-//      没有这条，分类判据是空的：「这份历史文档本来就没有命中」与「有人把它改成规位形态了」在文本上
-//      长得一模一样。钉子只许登记**入库**文件：指向一份不在 `git ls-files` 清单里的文件 = **死条目**
-//      （`DEAD-PIN`，同样红），因为那份文件在干净克隆里根本不在面上，钉子在那里是空转的。
+//      **只有现状类（current）的命中进 `--strict` 判据**（`REGRESSION`）；历史 / 契约 / 根文档类出现退役
+//      拼写是合法历史（当时的写法、契约的定义、README 在讲默认值），一律不红（#961 A：不再靠命中数钉子）。
 //
 // 口径（缺一条数就对不上）：
 //   · 退役键表**派生**自源码（`src/loop/config-namespace.js` 的 schema 叶子 − `RUN_TOOL_LOOP_OPTION_NAMES`），
@@ -76,7 +71,7 @@
 // 用法：
 //   node scripts/retired-spelling-scan.mjs            # 全量报告，exit 0（人读视图）
 //   node scripts/retired-spelling-scan.mjs --json     # 同一份事实的机器读法（含 `gate` 段：红数 + 退出码）
-//   node scripts/retired-spelling-scan.mjs --strict   # 门禁：现状类有 use / 历史契约根文档类钉子不符 ⇒ exit 1；
+//   node scripts/retired-spelling-scan.mjs --strict   # 门禁：现状类有非 ambiguous 的 use 命中 ⇒ exit 1；
 //                                                     # 清单拿不到（git 不可用 / 不在仓库内 / 空清单）⇒ exit 2
 //   node scripts/retired-spelling-scan.mjs --strict --json  # 同一道门，机器读法：红数 > 0 ⇒ 非 0（#575 A）
 //   node scripts/retired-spelling-scan.mjs --self-test # 反向证：内存夹具里改一处 ⇒ 报；不改 ⇒ 不报
@@ -175,10 +170,10 @@ const CONTRACT_DOC_PATTERNS = [
  * 为什么按 contract 那一档（非现状）而不是 current：README 正文里那批同名命中不是漂移——
  * `maxRounds` defaults to `8`、`toolResultTtl` 默认值表、`session: { id, resume?, initialMessages? }`
  * 这些句子是它在**讲默认值/讲端口形状**，而且其中若干句是 `check:docs` 的逐字锚点（#572 红线：
- * 一个字都不许改）。所以正文不要求“改干净”，只要**不许被静默改写**——那正是命中数钉子干的事。
+ * 一个字都不许改）。所以正文不要求“改干净”，也不靠命中数钉子看守（#961 A）——只有现状类才进判据。
  * 真正必须写成规位形态的是它的快速开始示例（已按 #572 改并实跑过）。
  *
- * 它与 contract 的差别只在名字：钉子表叫 `ROOT_DOC_BODY_PINS`，报错文案说“根文档”，不把 contract
+ * 它与 contract 的差别只在名字：这一档叫 `rootdoc`，报错文案说“根文档”，不把 contract
  * 的名字硬套到 README 上。
  */
 const ROOT_DOC_PATTERNS = [
@@ -204,474 +199,6 @@ export function classify(rel) {
     kind: "current",
     why: "未登记路径 ⇒ 按现状描述扫（未知分类不是免检：宁可多红一句）",
   };
-}
-
-// ── 3. 非现状类正文的命中数钉子 ──────────────────────────────────────────
-/**
- * 历史/契约文档的 `use` 命中数（本树上实测）。
- *
- * 这份事实在 `--json` 输出里**只有一处**：逐文件的 `files[].pin`（每份文件自己那一格）。
- * 从前还有一个聚合的 `pins` 段，但它只装了本表这一档（`pins: HISTORY_BODY_PINS`），于是 #575 加了
- * contract 档、#572 加了 rootdoc 档之后，机器读者很容易把那个字段读成「全部钉子」——实际另两档
- * 一份都不在里面。**重复一份只带来漂移面**，所以 #577 A 把它删了：`files[].pin` 已经是完整事实。
- * 别再加回来（自测里有反向证：`pins` 段一旦重新出现就红）。
- *
- * 为什么需要它：本脚本的分类判据要说得出「这份 ADR 的正文被改写成规位形态了」。文本级扫描做不到
- * ——改写之后命中数变成 0，而「本来就没有命中」也是 0，两者长得一模一样。所以把实测的数钉在这里：
- * **掉下去 = 有人在改历史**（`SUSPECT(dropped)`），**涨上去 = 有人往历史里补了扁平拼写**（`SUSPECT(raised)`），
- * 而**有命中却没登记** = 新入历史类却忘了钉（`UNPINNED`，同样红）。
- * 改这份表只有一个合法理由：**历史文档真的被替换成另一份历史**（那要连横幅一起重写）。
- *
- * 零命中的历史文件故意不登记：它们本来就没东西可丢，而一旦被补进扁平拼写就会命中 > 0 ⇒ `UNPINNED`。
- *
- * @type {Readonly<Record<string, number>>}
- */
-const HISTORY_BODY_PINS = Object.freeze({
-  // issue #929：新增 0.35.0 升级指南（两份）。初登记各 4；#938 给两份指南各加了 §2.4（三个 Anthropic 导出的
-  // 逐名交代），EN 侧命中升到 5、CN 侧仍是 4，而那一刀没跟着重钉 ⇒ main 上 `check:docs-spelling` 红了（issue #952）。
-  // 现在按扫描器自己报的 ✗ 行重钉（`… 0.35.0.md … pin=4 uses=5`）。**两侧数字不同是正常的**：
-  // 那份 CN 指南的 §2.4 用的措辞里没有命中退役扁平键，不是漏译。
-  "docs/host-upgrade-guide-0.35.0.md": 5,
-  "docs/host-upgrade-guide-0.35.0_cn.md": 4,
-
-  "docs/decisions/001-config-adapters.md": 4,
-  "docs/decisions/001-config-adapters_cn.md": 2,
-  "docs/decisions/002-transcript-store.md": 2,
-  "docs/decisions/003-compaction-strategies.md": 2,
-  "docs/decisions/004-reflection-deferred.md": 2,
-  "docs/decisions/005-tool-system.md": 4,
-  "docs/decisions/005-tool-system_cn.md": 2,
-  "docs/decisions/006-tool-provider.md": 2,
-  "docs/decisions/007-memory-architecture.md": 6,
-  "docs/decisions/007-memory-architecture_cn.md": 1,
-  "docs/decisions/008-skill-system.md": 2,
-  "docs/decisions/009-safety-layering.md": 2,
-  "docs/decisions/010-context-shaping-philosophy.md": 2,
-  "docs/decisions/011-judge-direction.md": 4,
-  "docs/decisions/011-judge-direction_cn.md": 1,
-  "docs/decisions/012-engine-truth-model-efficiency-host-policy.md": 2,
-  "docs/decisions/013-guard-charter.md": 2,
-  "docs/decisions/014-host-port-framework.md": 12,
-  "docs/decisions/017-glm-reasoning-effort-translation.md": 2,
-  "docs/decisions/020-transcript-single-source.md": 7,
-  "docs/design/2026-09-14-bounded-recall-api.md": 3,
-  "docs/design/2026-09-14-revised-scope-evaluation.md": 7,
-  "docs/design/2026-09-15-release-0.5.0-review.md": 1,
-  "docs/design/2026-09-17-context-memory-improvement-plan.md": 4,
-  "docs/design/2026-10-08-architecture-review.md": 9,
-  // issue #598: 3 → 4。新增的配置叶子 `config.continuity.handoff` 把 `handoff` 带进了退役键表（退役 =
-  // 叶子还在 schema、顶层白名单没有它），而这份**对比文档**里的 `handoff` 说的是 **pi 自己的**
-  // `examples/extensions/handoff.ts` 扩展（「生成交接 prompt 开新 session」），与 runToolLoop 的选项面
-  // 毫无关系。钉子比的是**全部**命中数（`ambiguous` 只影响 `--strict` 的违规判据，不影响钉子），所以表
-  // 得跟着实测抬这一格——值取自扫描器自己报的 `uses=4`，不是手算。只抬这一份：`handoff` 在跟踪文档里
-  // 就出现在这一份。
-  "docs/harness-comparison/01-pi-agent.md": 4,
-  "docs/harness-comparison/02-touwaka.md": 2,
-  "docs/harness-comparison/03-codex.md": 2,
-  "docs/harness-comparison/04-hermes-agent.md": 2,
-  "docs/harness-comparison/05-erix-llm-kit.md": 5,
-  "docs/harness-comparison/06-cross-comparison.md": 3,
-  "docs/harness-comparison/07-takeaways-and-open-questions.md": 2,
-  "docs/host-upgrade-guide-0.12.0.md": 1,
-  "docs/host-upgrade-guide-0.14.0.md": 19,
-  "docs/host-upgrade-guide-0.15.0.md": 9,
-  "docs/host-upgrade-guide-0.17.0.md": 4,
-  "docs/host-upgrade-guide-0.18.0.md": 8,
-  "docs/host-upgrade-guide-0.18.0_cn.md": 8,
-  "docs/host-upgrade-guide-0.20.0.md": 5,
-  "docs/host-upgrade-guide-0.20.0_cn.md": 5,
-  "docs/host-upgrade-guide-0.21.0.md": 5,
-  "docs/host-upgrade-guide-0.21.0_cn.md": 6,
-  "docs/host-upgrade-guide-0.22.0.md": 2,
-  "docs/host-upgrade-guide-0.22.0_cn.md": 2,
-  "docs/host-upgrade-guide-0.23.0.md": 1,
-  "docs/host-upgrade-guide-0.23.0_cn.md": 1,
-  "docs/host-upgrade-guide-0.24.0.md": 37,
-  "docs/host-upgrade-guide-0.24.0_cn.md": 34,
-  "docs/host-upgrade-guide-0.26.0.md": 3,
-  "docs/host-upgrade-guide-0.26.0_cn.md": 3,
-  "docs/host-upgrade-guide-0.27.0.md": 37,
-  "docs/host-upgrade-guide-0.27.0_cn.md": 35,
-  "docs/host-upgrade-guide-0.28.0.md": 72,
-  "docs/host-upgrade-guide-0.28.0_cn.md": 71,
-  // 工单 docs-261031-01（0.29.0 发版准备）：新的 0.29.0 中英指南对落地，两份各 15 处「退役写法只作为
-  // 历史/代价被提到」的命中（`cwd` / `deadlineMs` / `runId` / `termination` 这类 0.28.0 已退役的扁平名，
-  // 以及 `parentRunId` 的新家说明）。值取自扫描器自己报的 `uses=15`，不是手算；正文一个字不改（历史类
-  // 钉子只钉命中数，钉住「没人改写这一段历史」）。
-  "docs/host-upgrade-guide-0.29.0.md": 15,
-  "docs/host-upgrade-guide-0.29.0_cn.md": 15,
-  // 0.30.0 的逐名表与 provider 配方：12 处全是 provider 工厂参数（`model` / `maxTokens` / `system` /
-  // `temperature` / `stream`），按 AMBIGUOUS_KEYS 一律标 ambiguous——它们不是 runToolLoop 的输入面拼写。
-  "docs/host-upgrade-guide-0.30.0.md": 12,
-  "docs/host-upgrade-guide-0.30.0_cn.md": 12,
-  // issue #811 那一段工作里落地的 0.32.0 中英指南（PR #810）：三份命中全部是**同名异义**
-  // （EN 124 / CN 113 的 `runId` = `loadRawRows(runId)` 的**形参**，不是已退役的半扁平选项；
-  //  EN 232 的 `resume` = 散文里的「续跑」；EN 233 / CN 215 的 `user` = 一页用户消息），
-  // 与 0.30.0 那两份的 provider 工厂参数同一个形状。值取自扫描器自己报的 `uses=3` / `uses=2`，
-  // 不是手算；历史类钉的只是「这一段没被改写成规位形态」。
-  "docs/host-upgrade-guide-0.32.0.md": 3,
-  "docs/host-upgrade-guide-0.32.0_cn.md": 2,
-  "docs/host-upgrade-guide-0.33.0.md": 2,
-  "docs/host-upgrade-guide-0.33.0_cn.md": 2,
-  // 0.34.0 中英指南（切版时新增）：命中全是**同名异义**——EN 的 `options` / `defaults` 是六个
-  // 「不变面」的小标题，`runId` 是 `loadRunState(runId)` 的形参；CN 侧同形。值取自扫描器自己报的
-  // `uses=2` / `uses=3`，不是手算；历史类钉的只是「这一段没被改写成规位形态」。
-  "docs/host-upgrade-guide-0.34.0.md": 2,
-  "docs/host-upgrade-guide-0.34.0_cn.md": 3,
-  "docs/host-upgrade-guide-0.6.0.md": 12,
-  "docs/host-upgrade-guide-v030.md": 49,
-  "docs/host-upgrade-guide-v030_cn.md": 49,
-  "docs/issue-469-470-analysis.md": 4,
-  "docs/issue-469-470-fix-plan.md": 9,
-  // issue #644 ③：符号锚点声称链从 AGENTS 搬到这两份之后新入历史类。各 1 处命中，且那 1 处是
-  // **同名异义**（`user`：链里讲的是「一条聚合 `user` 消息」，不是 runToolLoop 的顶层拼写）——所以它
-  // 不触发 `--strict` 的 REGRESSION，但**计入钉子**：钉子的活就是「这份历史没被改写成规位形态」。
-  // 值取自扫描器自己报的 `uses=1`（不是手算），与其它历史钉子同一个口径。
-  "docs/research/2026-09-13-notes-why.md": 15,
-  "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": 2,
-  "docs/research/2026-10-13-pi-subagents-async-attribution.md": 3,
-  "docs/suggestions/00-README.md": 1,
-  "docs/suggestions/01-test-tmpdir.md": 1,
-  "docs/suggestions/05-pi-1x-refresh.md": 1,
-  "docs/tasks/261026-c469.md": 1,
-  "docs/v0.0-contracts.md": 26,
-  "docs/v0.0-contracts_cn.md": 23,
-  "docs/v0.1-contracts.md": 29,
-  "docs/v0.1-contracts_cn.md": 26,
-  "docs/v0.2-contracts.md": 18,
-  "docs/v0.2-contracts_cn.md": 15,
-});
-
-/**
- * 契约正文的命中数钉子（同上，但契约类）。契约本身就是退役拼写的**定义处**：它逐条点名「扁平
- * `toolResultTtl` → `config.folding.toolResultTtl`」，并把 `config.run` 一行的叶子名列表原样列出来。
- * 这些命中不是漂移，所以既不报错也不许被「改干净」；钉子只负责让“改写正文”这件事必须过门。
- *
- * issue #571 片2：契约中英的 `createAgent` 一节按新行为重写（四种形状 + `signal` 裁定 + 一次到位的
- * 扁平名判词 + feeder 裁定），正文因此多引了几处扁平名 ⇒ 钉子由扫描器自己的 `uses=` 报出来后再抬：
- *
- *     ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=452  uses=456
- *     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=562  uses=564
- *
- * 452 → 456 / 562 → 564（只增不减的方向：契约正文只会在讲退役拼写时多提它们，不会“改干净”）。
- *
- * @type {Readonly<Record<string, number>>}
- */
-const CONTRACT_BODY_PINS = Object.freeze({
-  // 456 → 440（issue #617 P0，2026-10-30）：`config.run` 叶子表那一行补了 `parentRunId` 并写明
-  // 「flat spelling is rejected」——整行命中**退役措辞行**判据（mention），行内 16 个叶子 span 从
-  // uses 转入 mentions。数取自扫描器自己报的 `uses=440`。
-  // 440 → 441（issue #637）：L2 兜底新增「截断自成一档」一段，其中「加预算」那句必须写出旋钮真名
-  // `maxTokens`（它是 normalizeModelJson 的选项面，契约明写这一处不受退役影响）——按判据登记扫描器
-  // 自己报的 `uses=441`，不为了躲钉子改写成模糊说法。
-  // 442 → 443（issue #714，PR #723）：store 面新增可选读口那一段必须写出可执行签名
-  // `foldMessageRows(await store.loadRawRows(runId))` 与 `await store.load(runId)`，扫描器在新增加区间里
-  // 计到 1 处 use：`runId`——契约这里的 `runId` 是 **store 方法的入参**，与 `config.run.runId` 同名异义（它就在
-  // `AMBIGUOUS_KEYS` 里，不进「退役拼写」判据，但计入本钉子的 uses）。同 #565 / #637 的先例：契约要能拄签名，
-  // 不因躲钉子而改写法；数取自扫描器自己报的 `uses=443`。
-  // 443 → 444（issue #729）：`loadRawRows` 那节新增两条边界（该轮载体已带正文 ⇒ 不给锚点 / 候选行 `round`
-  // 必须严格相等），其中「孤儿 `user` 消息」那句必须写出真实判词 `user tool_result has no matching assistant
-  // tool_use`——`user` 是消息角色，同名异义（`AMBIGUOUS_KEYS`），不进退役判据但计入本钉子的 uses。
-  // 同 #637 / #714 的先例：不为了躲钉子把判词改写成模糊说法。数取自扫描器自己报的（`--strict` 的 ✗ 行原文）：
-  //
-  //     ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=443  uses=444
-  //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=552  uses=553
-  // 444 → 454（issue #743）：新增的「事件分级与清理判据」一节里，档位名 `stream` 是个**同名异义**命中——
-  // 它说的是事件分级表的三档之一（`fact` / `stream` / `derived`），不是 `config.run.stream`；那一节要逐类
-  // 给档位，而档位名就是这个词，所以**不为了躲钉子把表改成描述说法**（同 #565 / #637 / #714 / #729 的先例：
-  // 契约要能写出真实名字）。EN 新命中 10 处 = 档位名 `stream` 9 处（表内 5 行档位列 + 正文与判据 4 处）
-  // + `runId` 1 处。数取自扫描器自己报的 ✗ 行：
-  //
-  //     ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=444  uses=454
-  //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=553  uses=564
-  // 454 → 455（同一刀的后续）：那一节里可执行的围栏改成了「自含且真能跑」的一格（L3 要真执行它），
-  // 它的一句行内注释就写的是「`stream` + terminal + over the window」——进了代码语境就多一处同名异义。
-  // 数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=454 uses=455`。
-  // 455 → 454（独立评审 #743 必修 1 之后）：那一格围栏的行内注释换成了「all four hold ⇒ deletable」
-  // （判据多了「落盘证据」这一条，那句旧措辞本身被换掉），上面那处同名异义因此**掉了一处** ——
-  // 这是「契约改干净了」的方向，不是漏钉。数取自扫描器现报：
-  // `docs/host-consumer-contract.md [contract] verdict=SUSPECT(dropped) pin=455 uses=454`。
-  // 454 → 457（issue #730）：新增「中段补桩的四条放弃路径」一节，代码语境命中多 3 处，三处都是
-  // **同名异义**（`AMBIGUOUS_KEYS`，不进退役判据，但计入本钉子）：1 处 `runId`（"这个 runId 永久起不来"，
-  // store 语境）+ 2 处 `user`（detail 表 `next_message_is_not_user` / `aggregate_has_no_tool_result` 两行写的
-  // 就是「紧接的那条不是 user」）。为躲钉子把 `user` 换成中文说法会把 detail 名和它的含义拆开，所以
-  // 不改写法；数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=454 uses=457`
-  // （3 处逐条定位：EN :2395 `runId`、:2415/:2416 `user`；CN :1924 `runId`、:1942/:1943 `user`）。
-  // 457 → 458（工单 261108-02）：契约新增「响应从不回显本次档位」那一格（issue #785 的第四层补证），
-  // 它必须逐字列出上游返回体的顶层键名，其中 `model` 是一次同名异义命中（不是扁平选项）。
-  // 不为了躲钉子把键名换成中文说法（那一格验的正是「返回体里没有 `reasoning_effort`」，键名清单就是证据）。
-  // 数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=457 uses=458`
-  // （命中定位：EN :3714 `model`）。
-  // 458 → 466（**合并树现测**：本支 `fix-261108-27-recovery-read-strict-erix` + main `4f9b908`（#793 / #785 续））：
-  // ⚠ **不是 458 + 8 加出来的，也不是本支单边的 465**：main（#793）把同一句钉到 458，本支在旧主干上量到 465，
-  // 合并树两边都算不上。数只取扫描器在这棵合并树上现报那一行：
-  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=458  uses=466
-  // 口径同 #714 / #729 / #730 / #753 / #769-R5：契约要能写出真实签名与真实角色名，不为了躲钉子改成描述说法。
-  // 466 → 464（**合并树现测 · R7 之后**：本支 `fix-261108-27-recovery-read-strict-erix` + main `4f9b908` + R7 文案修 `fix-261109-01-capability-docs-audit`）：
-  // R7 把能力表那一行「只留两个前提 + 一句指向」，删掉的展开后果里有同名异义命中 ⇒ EN 侧**降 2**。
-  // ⚠ 这不是 466 − 2 的算术结论，是上一次重钉前扫描器在这棵树上报的那一行：
-  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(dropped)  pin=466  uses=464
-  // 钉子随文案走、不许反推：改文案 ⇒ 现测 ⇒ 重钉（口径同 #714 / #729 / #730 / #753 / #769-R5）。
-  // #838 S2 closeout: current strict-scan measurement.
-  // 467 → 468（issue #881，本支现测）：加法事件表新增那一行必须逐字写出事件的载荷形状
-  // `{ type: "deliverable_blind", runId?, round, execWriteCount?, execWriteUnresolvedCount? }`，
-  // 其中的 `runId` 是**同名异义**命中（事件载荷的键，不是扁平选项 `config.run.runId`）；
-  // 不为了躲钉子把载荷形状改成中文描述（契约读者要的就是那个形状）。
-  // 数只取扫描器在这棵树上现报的那一行：
-  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=467  uses=468
-  // （命中定位：EN :3737 `runId`。口径同 #714 / #729 / #730 / #753 / #769 / #865：现测 ⇒ 重钉，不反推。）
-  // 468 → 467（docs-261123-03 契约漂移修复，净 −1）：本批把 `completionErrors` 的「wired in a later
-  // step」改写成当前事实、并把 `invalidArguments` 的归属从「RUN_TOOL_LOOP 成员」改为 `config.run.*`，
-  // 顺带去掉了若干退役扁平键的现行拼写提及。数只取扫描器现报：verdict=SUSPECT(dropped) pin=468 uses=467。
-  "docs/host-consumer-contract.md": 466,
-  // 457 → 458（issue #769 R2，净 +1）：本单新增的「恢复行」那两节把**契约面写实的签名与叶名**都写了
-  // 进代码语境（同名异义，`AMBIGUOUS_KEYS`，不进退役判据但计入本钉子）：EN 新增行里的 6 处命中在
-  // :3740（`completion` × 2 与 `wrapup`）、:3744（`maxTokenContinuations` 与其内的 `maxTokens`）、
-  // :7391（`partialPersistence`），而同一刀删改的行带走了 5 处旧命中 ⇒ **净 +1**。
-  // 不改写法（同 #730 / #714 / #729 先例：为了躲钉子把真实签名改成描述说法，代价是契约读者拿不到签名）。
-  // 数只取扫描器现报那一行：`docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=457  uses=458`。
-  // 458 → 462（issue #769 R4，净 +4）：R4 只改了「恢复行」那一节的两处说明（F1 改口 + F4 字段面），
-  // 新增全是**同名异义**（`AMBIGUOUS_KEYS`，不进退役判据但计入本钉子）：`resume`（“ends the resume with …”、
-  // “during a resume …”、`phase: "resume_recovery_rows"` 的词面）与 `persistence`（`reason: "persistence_failed"`）。
-  // 逐条定位（本文档现行号）：7393 / 7396 / 7397 / 7398 / 7401 / 7405 / 7409 —— 扫描器按 use 计数，
-  // 行数多于命中数；数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=458  uses=462
-  // 462 → 463（issue #769 R5 M3，净 +1）：把生命周期段改成**有条件**时，宿主义务那一句必须写出
-  // 真实旋钮名：`a host that implements appendRecoveryRow / listRecoveryRows but not clearRecoveryRows must
-  // either give every new logical run a new runId or never resume`。`runId` 在 `AMBIGUOUS_KEYS` 里（store 方法
-  // 入参 / 代际标识，与 `config.run.runId` 同名异义），不进退役判据但计入本钉子。
-  // 逐条定位（本文档现行号）：:7431（R2 那句“move to a new runId”位移后的位置）与 :7435（本刀新增那一句）
-  // 共 2 处，R2 旧面同一段只有 1 处 ⇒ 净 +1。同 #714 / #729 / #730 先例：契约要能写出真名，不为躲钉子改写法。
-  // 数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=462  uses=463
-  // 463 → 465（issue #769 R6 文案修正②，净 +2）：能力表「Optional ledger recovery-row clear」那一行补上清盘的
-  // 两个前提，句子必须写出真旋钮名与代际标识（两处都是 `AMBIGUOUS_KEYS` 里的同名异义：持久化这个概念 /
-  // store 形参与 `config.run.*` 同名，不进退役判据但计入本钉子）。逐条定位：:2265 一行从 1 处（`runId`）
-  // 变成 3 处（`persistence` 一个 + `runId` 两个），同面其他行未动 ⇒ 净 +2。
-  // CN 侧同一刀同数（587 → 589，:1835）。
-  // 同 #714 / #729 / #730 / #769-R5 先例：不为了躲钉子把真名写成描述说法。数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=463  uses=465
-  // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
-  // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
-  // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
-  // （`config.folding.context` 的 `.` 前缀被排除），因此 EN 钉子 456 不动。
-  // 565 → 549（issue #617 P0，2026-10-30）：同一片的 CN 行（措辞换成「扁平拼写当场被拒」，同样落
-  // mention 判据），行内 16 个叶子 span 从 uses 转入 mentions。数取自扫描器自己报的 `uses=549`。
-  // 549 → 550（issue #637）：同上一句的中文侧（`maxTokens` 一次），数取自扫描器自己报的 `uses=550`。
-  // 551 → 552（issue #714，PR #723）：同 EN 侧那一句的中文侧（`store.loadRawRows(runId)` / `store.load(runId)`
-  // 的入参名，同名异义），新增区间内扫描器计到 1 处 use；数取自它自己报的 `uses=552`。
-  // 552 → 553（issue #729）：同 EN 侧那一句的中文侧（`user tool_result has no matching assistant tool_use`
-  // 里的 `user`，消息角色，同名异义）；数取自扫描器自己报的 `uses=553`（✗ 行原文见上面 EN 那一格）。
-  // 553 → 564（issue #743）：同 EN 侧那一节的中文侧，同样是档位名 `stream` 的同名异义命中 9 处，外加
-  // `runId` 2 处（store 方法入参名，也是同名异义）；数取自扫描器自己报的 `uses=564`。
-  // 564 → 566（独立评审 #743 必修 1 与 2 之后）：CN 那一节新写了「只有这一档是判据可能删的」与
-  // 「`type ∈ stream ∧ … ∧ 成型副本确实落盘 ∧ …`」这两句（档位名在代码围栏与行内代码里各算一次同名异义）。
-  // 数取自扫描器现报：`docs/host-consumer-contract_cn.md [contract] verdict=SUSPECT(raised) pin=564 uses=566`。
-  // 566 → 568（issue #753 C1）：CN 契约新增的「宿主在轮边界塞进一条真用户轮」那一节必须拄两处**同名异义**：
-  // 钩子的调用形式写的是 `({ runId, state, round }) => string | null | undefined`（`runId` 是**宿主/引擎传的上下文
-  // 字段**，与 `config.run.runId` 同名异义），以及那条注入行的角色 `role: "user"`（消息角色，与
-  // `config.metadata.user` 同名异义）。同 #714 / #729 的先例：契约要能写出真实签名与真实角色名，不为了躲钉子
-  // 改成描述说法。数取自扫描器现报的 ✗ 行原文：
-  //
-  //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=566  uses=568
-  // 568 → **571**（issue #730，合并树上由扫描器现报）：中英成对新增的那一节里，同名异义命中多 3 处
-  // （`config.loadRawRows` 是命名空间叶子、`reason: "end_turn"` 与 `role: "assistant"` 各一个）。
-  // ⚠ **不是 568 + 3 加出来的，也不是本支单边的 569**：main（#753 C1）刚把同一句钉到 568，而本支在自己
-  // 树上测的是 569 ⇒ 合并树既不等于 568 也不等于 569。数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=568  uses=571
-  // （与 #753 / #714 / #729 同一条先例：契约要能写出真实签名与真实角色名，不为躲钉子改成描述说法。）
-  // 571 → 572（工单 261108-02，中英成对）：新增「响应从不回显本次档位」那一格，同样必须逐字列出返回体
-  // 顶层键名，`model` 是一次同名异义命中。数取自扫描器现报：`pin=571 uses=572`（命中定位：CN :2946 `model`）。
-  // 572 → 590（**合并树现测**：同上，本支 + main `4f9b908`）：⚠ 不是 572 + 18，也不是本支单边的 589。
-  // 数只取扫描器在这棵合并树上现报那一行：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=572  uses=590
-  // 590 → 588（**合并树现测 · R7 之后**：本支 `fix-261108-27-recovery-read-strict-erix` + main `4f9b908` + R7 文案修 `fix-261109-01-capability-docs-audit`）：
-  // R7 把能力表那一行「只留两个前提 + 一句指向」，删掉的展开后果里有同名异义命中 ⇒ CN 侧**降 2**。
-  // ⚠ 这不是 466 − 2 的算术结论，是扫描器在这棵树上现报的那一行：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(dropped)  pin=590  uses=588
-  // 钉子随文案走、不许反推：改文案 ⇒ 现测 ⇒ 重钉（口径同 #714 / #729 / #730 / #753 / #769-R5）。
-  // 588 → 589（issue #827 第 3 刀，工单 261113-08，现测 uses=589）：CN 的「恢复行」那节改成
-  // **两份文件**，新增正文里点了 `<runId>.partial.jsonl` / `<runId>.recovery.jsonl` 两次，其中
-  // 一次 `runId` 落在扫描器的扁平拼写命中面上（形如 `config.run.runId` 的同名异义）。这是正文
-  // **有意新增**的一处（文件名是字面量，改写成模糊说法会让宿主对不上真文件名），所以抬钉子而
-  // 不是躲它——口径同上面 #714 / #729 / #730 那几条：数取自扫描器当时在这棵树上报的 `uses=589`。
-  // #843: remeasured after the CN runState carrier wording change (prior pin 590; current uses 591).
-  // 591 → 592（issue #865 / #862 修法 B，本支现测）：CN 新增「文本化工具调用不算交付物」那一段，
-  // 新增正文里一处同名异义命中（扫描器在这棵树上现报 `verdict=SUSPECT(raised)  pin=591  uses=592`）。
-  // 口径同上面 #714 / #729 / #730 / #753 / #769：改文案 ⇒ 现测 ⇒ 重钉，不反推、不躲它。
-  // 594 → 595（issue #881，本支现测）：CN 加法事件表新增那一行同样逐字写出事件载荷形状，
-  // 里面那个 `runId` 是一次同名异义命中（事件载荷键，不是扁平选项）。扫描器现报：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=594  uses=595
-  // （命中定位：CN :2966 `runId`。）
-  // 595 → 596（工单 261122-01，本支现测）：退役 run-snapshot 文档同步里，B5 把 `buildRecoveryEventKey`
-  // 改成真实签名 `recoveryEventKey(runId, round, event, discriminator)`（工单钉死、不许躲写法）——签名里的
-  // `runId` / `round` 是同名异义命中（store 方法入参名，不是扁平选项）。扫描器现报：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=595  uses=596
-  // （命中定位：CN :5922 的签名 `runId`/`round`。）口径同 #714 / #729 / #730 / #769 / #881：契约要能拄签名，数取自扫描器现报。
-  // 596 → 595（docs-261123-03 契约漂移修复，净 −1，与 EN 同因）：数只取扫描器现报：
-  // verdict=SUSPECT(dropped) pin=596 uses=595。
-  "docs/host-consumer-contract_cn.md": 595,
-  // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
-  // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
-  // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名
-  // `appendRecoveryRow(runId, row)` / `listRecoveryRows(runId)` / `clearRecoveryRows(runId)`，与
-  // `config.run.runId` 同名异义）；:5811 `partialPersistence`（命名空间叶子）。同 #714 / #729 / #730 先例：
-  // 契约要能写出真实签名，不为了躲钉子改成描述说法。数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=571  uses=579
-  // 579 → 584（issue #769 R4，净 +5）：同一刀的 CN 侧（F1 改口 + F4 字段面）。同名异义命中：
-  // `persistence`（`reason: "persistence_failed"`）与 `resume`（`phase: "resume_recovery_rows"`、（`resume !== true`））。
-  // 逐条定位（本文档现行号）：5811 / 5812 / 5815 / 5819（同一行可能含多次命中，故行数少于净增数）。
-  // 数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=579  uses=584
-  // 584 → 585（issue #769 R5 M3，净 +1）：同一刀的 CN 侧——生命周期段改成有条件后，宿主义务那一句
-  // 也必须写出真名（「必须要么给每个新逻辑 run 换一个**新 `runId`**，要么**永不续跑**」）。
-  // 逐条定位（本文档现行号）：:5825 那一行现在含 3 处 `runId`（R2 那两处 + 本刀新增那一句），
-  // 而 :5839 / :5842 / :5846 三处是 R2 段落旧命中（base 的 :5821 / :5825）随改稿位移 ⇒ 该段 5 → 6，净 +1。
-  // 数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=584  uses=585
-  // 585 → 587（issue #769 R6 文案修正①，净 +2）：把「三者缺席 ⇒ 都报一条」拆成「写侧与清盘侧各一条 / 读侧静默」
-  // 时，能力表那一行与恢复行那一节都必须把**事件的真名字与事件字段面**写出来，两处同名异义命中
-  // （都在 `AMBIGUOUS_KEYS` 里：store 形参 / run 标识与文件名，不进退役拼写判据，但计入本钉子）。
-  // 逐条定位（本文档现行号，改稿后实测）：
-  //   · :5888 `runId` —— 新加的子项里事件字段面必须逐字写 `persistence_capability_degraded` 的载荷
-  //     `{type, runId, method, detail}`（不写成「带方法名的那条降级事件」）；
-  //   · :5889 `resume` —— 静默那一条要指回真实现处，写的是文件路径 `src/loop/resume-manager.js`（路径里的
-  //     `resume` 被扫描器计到）。
-  // 同段旧命中 (:5880 x2 / :5881 x1) 随改稿位移到 :5881 x2 / :5882 x1 ⇒ 该段 3 → 5，净 +2。
-  // EN 侧同一刀净 0（463 → 463，扫描器现报 verdict=ok）：EN 原本就在那两行写着这些真名，本次只是把它们搬进子项。
-  // 同 #714 / #729 / #730 / #769-R5 先例：契约要能写出真名与真字段面，不为躲钉子改成描述说法。
-  // 数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=585  uses=587
-  // 587 → 589（issue #769 R6 文案修正②，净 +2）：同一刀的 CN 侧——能力表「可选恢复行清除」那一行补两个前提，
-  // 同样必须写出真名。逐条定位：:1835 一行从 1 处（`runId`）变成 3 处（`persistence` 一个 + `runId` 两个），
-  // 与 EN :2265 同数 ⇒ 中英成对。数只取扫描器现报那一行：
-  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=587  uses=589
-});
-
-/**
- * 根文档（随包 README）的命中数钉子（#572）。
- *
- * 与 `HISTORY_BODY_PINS` / `CONTRACT_BODY_PINS` 同一套机制、同一份判据（`verdictFor()`），只是名字
- * 贴合“根文档”这件事。数**由扫描器自己报出来**（报告里每份文件那行 `uses=N`）再登记，不手抄：
- * 手抄的数会在下一次无关联的改写里静默偏一格，而钉子只在“等于”时绿，偏一格就是红——那时谁也说不清
- * 是真回归还是抄错了。
- *
- * 登记两个文件（中英各一）：漏登一份就是 `UNPINNED`（有命中却没钉），写错路径就是 `DEAD-PIN`，
- * 两条都在红集合里。
- *
- * 最近一次重登记（issue #716 / #719）：78→79 / 63→64。新增的那 1 处 `cwd`（`canonical:
- * config.run.cwd`，`ambiguous: true`）来自两份 README 里新写的 `<cwd>/AGENTS.md` 那句——
- * **同名异义**：那里的 `cwd` 指「当前工作目录」，不是退役的扁平选项键。按 #565 / #637 先例
- * （main 上 `104c1f9` 那一笔：`loadRawRows` 签名里的 `runId` 是 store 入参，同样登记而不是改写法）
- * **登记**，**不改写法**：把「`<cwd>/AGENTS.md`」改写成「项目根目录的 AGENTS.md」只是把扫描器的
- * 一个假阳性搬到散文里，而那句要表达的正是「根就是 cwd」——改完反而说不清根是怎么来的。
- *
- * @type {Readonly<Record<string, number>>}
- */
-const ROOT_DOC_BODY_PINS = Object.freeze({
-  // 79 → 80 / 64 → 65（issue #743）：两份根文档的模块地图多一行 `event-tiers.js`，而那一行必须写出
-  // 三个档位名，其中 `stream` 与退役的扁平选项 `config.run.stream` 同名异义（它在 `AMBIGUOUS_KEYS` 里，
-  // 不进退役判据，但计入本钉子的 uses）。同 #729 的先例：不为了躲钉子把模块名后面的说明改模糊。
-  // 数取自扫描器自己报的 ✗ 行：`README.md … pin=79 uses=80` / `README_cn.md … pin=64 uses=65`。
-  // 80 → 81 / 65 → 66（issue #838 261122-01 验收修）：README 两份的 resume 段新增了一句「无 store /
-  // `persistence: "none"` 时 `restoreResume` 直接返回」——`persistence` 是退役的扁平选项（`config.run.persistence`，
-  // 同名异义已在 `AMBIGUOUS_KEYS` 里，不进退役判据但计入本钉子 uses），与 README 既有的 `persistence: "none"` 写法
-  // 同一口径，不为躲钉子把这句改模糊。同 #743/#729 先例。数取自扫描器现报：`README.md … pin=80 uses=81` / `README_cn.md … pin=65 uses=66`。
-  "README.md": 80,
-  "README_cn.md": 66,
-});
-
-/** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */
-const PIN_TABLES = Object.freeze({
-  history: HISTORY_BODY_PINS,
-  contract: CONTRACT_BODY_PINS,
-  rootdoc: ROOT_DOC_BODY_PINS,
-});
-
-/**
- * 钉子与**扫描面同源**的判据（#560）。
- *
- * 钉子从“依赖巧合被跟踪”改成“与清单同源”：登记一份不在 `git ls-files` 清单里的文件就是**死条目**
- * —— 它在开发树上也许读得到，但在干净克隆里根本不在面上，钉子在那里永远空转；而一旦这份文件被跟踪，
- * 它又会在两个树里给出不同的数。两种情况都不许静默，所以这里把它们逐条点名（`--strict` 计入红数）。
- *
- * 另一个方向：钉子挂错表（历史类的钉子写进契约表，或反过来）也点名 —— 那样 `verdictFor()` 会用错的
- * 规则去判，同样是“没在看它该看的东西”。
- *
- * @param {"history"|"contract"} kind 钉子表对应的分类
- * @param {Readonly<Record<string, number>>} table 钉子表
- * @param {readonly string[]} manifest 入库文件清单（`gitTrackedScanSurface()` 的返回值）
- * @returns {Array<{file: string, why: string}>} 空数组 = 每条钉子都指向一份入库的非现状类文档
- */
-export function pinEntryProblems(kind, table, manifest) {
-  const tracked = new Set(manifest);
-  const problems = [];
-  for (const rel of Object.keys(table)) {
-    const actual = classify(rel).kind;
-    if (actual !== kind) {
-      problems.push({ file: rel, why: `登记在 ${kind} 的钉子里，实测分类是 ${actual}（钉子挂错了表）` });
-      continue;
-    }
-    if (!tracked.has(rel)) {
-      problems.push({ file: rel, why: "不在 `git ls-files` 清单里（不入库的文件不许登记命中数钉子 ⇒ 死条目）" });
-    }
-  }
-  return problems;
-}
-
-/** 全部钉子表里的死条目（钉子与扫描面不同源 ⇒ 红）。 */
-export function deadPinEntries(manifest) {
-  return Object.entries(PIN_TABLES).flatMap(([kind, table]) => pinEntryProblems(kind, table, manifest));
-}
-
-/**
- * `--json` 输出里**钉子事实只有一份**（#577 A）：逐文件的 `files[].pin`。
- *
- * 病根：从前 `runCli()` 里还写死了一个聚合段 `pins: HISTORY_BODY_PINS`。它只装**一档**（72 份历史文档），
- * 而 #575 之后有 contract 档（2 份）、#572 之后有 rootdoc 档（2 份）——那些钉子只住在 `files[].pin` 里。
- * 于是一个叫 `pins` 的字段**看起来**是全部钉子、实际只装三档里的一档：扩面越多，这个误读越贵。
- * 修法是删掉重复（不是补全它）：`files[].pin` 已经是完整事实，两份副本只会漂。
- *
- * 本函数是那条判据：它**只看** `files[].pin`（三档逐条对账 + 非空 pin 数 = 三档合计），并把任何
- * 重新出现的 `pins` 段判成红——包括 #577 之前那个只装 history 档的形状。自测拿真实 `--json` 输出跑
- * 它（必须 0 条），再拿四种变异跑（必须非 0），所以「变不出来」也算失败（#210 R2）。
- *
- * @param {{files?: Array<{file: string, kind: string, pin?: number|null}>}} payload `--json` 的输出
- * @returns {string[]} 空数组 = 钉子事实齐全且只有一份
- */
-function pinFactProblems(payload) {
-  const problems = [];
-  if (payload !== null && typeof payload === "object"
-    && Object.prototype.hasOwnProperty.call(payload, "pins")) {
-    problems.push("`pins` 段又回来了：那是钉子事实的第二份副本（#577 A 删的就是它，扩面后它只装一档）");
-  }
-  const files = Array.isArray(payload?.files) ? payload.files : [];
-  if (files.length === 0) {
-    problems.push("`files` 是空的：钉子事实没有地方装");
-    return problems;
-  }
-  const byFile = new Map(files.map((entry) => [entry.file, entry]));
-  for (const [kind, table] of Object.entries(PIN_TABLES)) {
-    for (const [rel, count] of Object.entries(table)) {
-      const entry = byFile.get(rel);
-      if (entry === undefined) {
-        problems.push(`${rel} 不在 files[] 里（${kind} 档的钉子没被报出来）`);
-        continue;
-      }
-      if (entry.kind !== kind) problems.push(`${rel} 的分类报成 ${entry.kind}，钉子在 ${kind} 档`);
-      if (entry.pin !== count) {
-        problems.push(`${rel} 的 files[].pin=${entry.pin === null || entry.pin === undefined ? "（未登记）" : entry.pin}`
-          + ` ≠ 钉子表的 ${count}`);
-      }
-    }
-  }
-  const pinned = files.filter((entry) => entry.pin !== null && entry.pin !== undefined).length;
-  const expected = Object.values(PIN_TABLES).reduce((n, table) => n + Object.keys(table).length, 0);
-  if (pinned !== expected) {
-    problems.push(`files[].pin 非空的条目 ${pinned} 份 ≠ 三档钉子合计 ${expected} 份`
-      + "（少的那几份就是被漏掉的一档）");
-  }
-  return problems;
 }
 
 // ── 4. 文本级扫描 ────────────────────────────────────────────────────────────
@@ -803,8 +330,8 @@ export const SCAN_PATHSPECS = Object.freeze(["docs", ...ROOT_DOC_TARGETS]);
  * 所以：`git` 不可用 / 不在仓库内 / 仓库顶层不是本脚本所在目录 / 清单为空 ⇒ **抛错**，由 `main` 显式
  * 报错并 exit 2。**没有**文件系统回退分支：静默回退等于把「两个答案」留在原地，只是更难发现。
  *
- * `docs/tasks/*.md` 里**被跟踪**的那几份（`261026-*`）照扫不变；它们与其它历史类文档的命中数钉子
- * 也因此与清单同源（`deadPinEntries()`）。两份根 README 同理：钉子在、文件不在清单里 ⇒ `DEAD-PIN`。
+ * `docs/tasks/*.md` 里**被跟踪**的那几份（`261026-*`）照扫不变（命中数钉子已随 #961 A 拆掉）
+ * 扫描面与实际内容始终一致。两份根 README 同理：不在 `git ls-files` 清单里就不进面。
  *
  * @param {string} [root] 仓库顶层（默认 = 本脚本所在仓库）
  * @param {{exec?: (args: string[], root: string) => string}} [io] 执行器（自测注入；生产走 git）
@@ -852,22 +379,20 @@ export function gitTrackedScanSurface(root = ROOT, { exec = defaultGit } = {}) {
 }
 
 /**
- * 一份文件的判定（纯函数：分类 + 命中数 + 钉子 → verdict）。
+ * 一份文件的判定（纯函数：分类 + 命中数 → verdict）。
  *
- * `#560` 的失败方向：只有 `current` 类能「干净地」有 0 命中；历史/契约/根文档类一旦有命中就必须**钉得上**
- * （`UNPINNED` = 新入这一类却忘了钉，与 `SUSPECT` 一样红）。未知路径已经被 `classify()` 归到
- * `current`，所以不存在「没分类 ⇒ 放行」这条路。
+ * 只有 `current` 类进判据：历史 / 契约 / 根文档里出现退役拼写是**合法历史**（当时的写法、契约的定义、
+ * README 在讲默认值），一律 `ok`（#961 A 拆掉了命中数钉子，非现状类不再靠钉子判定）。未知路径已被
+ * `classify()` 归到 `current`，所以不存在「没分类 ⇒ 放行」这条路。
  *
- * @param {{kind: "current"|"history"|"contract"|"rootdoc", uses: number, strictUses: number, pin?: number}} input
- * @returns {"ok"|"REGRESSION"|"review(ambiguous-only)"|"UNPINNED"|"SUSPECT(dropped)"|"SUSPECT(raised)"}
+ * @param {{kind: "current"|"history"|"contract"|"rootdoc", uses: number, strictUses: number}} input
+ * @returns {"ok"|"REGRESSION"|"review(ambiguous-only)"}
  */
-export function verdictFor({ kind, uses, strictUses, pin }) {
-  if (kind === "current") {
-    if (strictUses > 0) return "REGRESSION";
-    return uses > 0 ? "review(ambiguous-only)" : "ok";
-  }
-  if (pin === undefined) return uses > 0 ? "UNPINNED" : "ok";
-  return uses < pin ? "SUSPECT(dropped)" : uses > pin ? "SUSPECT(raised)" : "ok";
+export function verdictFor({ kind, uses, strictUses }) {
+  // 只有现状类进判据：历史 / 契约 / 根文档里出现退役拼写是合法历史，不再靠命中数钉子看守（#961 A 拆了③④⑤）。
+  if (kind !== "current") return "ok";
+  if (strictUses > 0) return "REGRESSION";
+  return uses > 0 ? "review(ambiguous-only)" : "ok";
 }
 
 /**
@@ -892,11 +417,9 @@ export function scanDocs({ root = ROOT, retired, files = gitTrackedScanSurface(r
     const { kind, why } = classify(rel);
     const hits = scanText(text, retired);
     const uses = hits.filter((h) => h.verdict === "use");
-    const pinTable = PIN_TABLES[kind];
-    const pin = pinTable === undefined ? undefined : pinTable[rel];
     const strictUses = uses.filter((h) => !AMBIGUOUS_KEYS.has(h.key));
-    const verdict = verdictFor({ kind, uses: uses.length, strictUses: strictUses.length, pin });
-    report.push({ file: rel, kind, why, pin, hits, uses, verdict });
+    const verdict = verdictFor({ kind, uses: uses.length, strictUses: strictUses.length });
+    report.push({ file: rel, kind, why, hits, uses, verdict });
   }
   return report;
 }
@@ -909,45 +432,26 @@ export function scanDocs({ root = ROOT, retired, files = gitTrackedScanSurface(r
  * 于是 `--strict --json` 在有红的面子上恒 exit 0。假绿不是「少了一个 if」，而是「同一套判据写了两遍、
  * 其中一遍没写全」。所以红集合只在这里定义一次，两条输出分支（含 JSON 里的 `gate.red`）都只能读它。
  *
- * 红集合（四条，少一条就是假绿）：
+ * 红集合（一条，#961 A 拆掉了正文钉子三判据后只剩这一条）：
  *   · `currentUses`：现状类的 `use` 命中（`REGRESSION`）；`AMBIGUOUS_KEYS` 里的同名异义**不算**
- *     （文本级扫描分不清形参名与输入面拼写，`review(ambiguous-only)` 因此不红）；
- *   · `suspect`：`SUSPECT(dropped)` / `SUSPECT(raised)`（历史/契约正文钉子不符）；
- *   · `unpinned`：历史/契约类有命中却没登记钉子（新入历史类却忘了钉）；
- *   · `deadPins`：钉子指向不在 `git ls-files` 清单里的文件（空转条目）。
- * `ok` / `review(ambiguous-only)` 不在集合里。
+ *     （文本级扫描分不清形参名与输入面拼写，`review(ambiguous-only)` 因此不红）。
+ * `ok` / `review(ambiguous-only)` 不在集合里；历史 / 契约 / 根文档类的命中合法，一律不红。
  *
- * @param {{report: Array<{kind: string, verdict: string, uses: Array<{key: string}>}>, deadPins?: Array<{file: string, why: string}>}} input
- * @returns {{currentUses: Array<object>, suspect: Array<object>, unpinned: Array<object>,
- *   deadPins: Array<{file: string, why: string}>, red: number,
- *   counts: {regression: number, suspect: number, unpinned: number, deadPins: number}}}
+ * @param {{report: Array<{kind: string, verdict: string, uses: Array<{key: string}>}>}} input
+ * @returns {{currentUses: Array<object>, red: number, counts: {regression: number}}}
  */
-export function gateVerdicts({ report, deadPins = [] }) {
+export function gateVerdicts({ report }) {
   const currentUses = report
     .filter((r) => r.kind === "current")
     .flatMap((r) => r.uses.filter((h) => !AMBIGUOUS_KEYS.has(h.key)));
-  const suspect = report.filter((r) => r.verdict.startsWith("SUSPECT"));
-  const unpinned = report.filter((r) => r.verdict === "UNPINNED");
-  const counts = {
-    regression: currentUses.length,
-    suspect: suspect.length,
-    unpinned: unpinned.length,
-    deadPins: deadPins.length,
-  };
-  return {
-    currentUses,
-    suspect,
-    unpinned,
-    deadPins,
-    counts,
-    red: counts.regression + counts.suspect + counts.unpinned + counts.deadPins,
-  };
+  const counts = { regression: currentUses.length };
+  return { currentUses, counts, red: counts.regression };
 }
 
 /**
  * 红数 → 退出码。**唯一**一处把 `--strict` 应用上去的地方（文本分支与 `--json` 分支共用）。
  *
- * · `--strict`（= 门禁，`npm run check:docs-spelling`）：红数 0 ⇒ 0，否则 1。`SUSPECT` 因此是**只在
+ * · `--strict`（= 门禁，`npm run check:docs-spelling`）：红数 0 ⇒ 0，否则 1。`REGRESSION` 一种（现状类非 ambiguous 命中），**只在
  *   门禁下**才算红的判词 —— 这条规则（`#563` 起的既有语义）只在这里兑现，别处不许再判一次。
  * · 不带 `--strict`（报告模式）：**恒 0**。那是既有语义：默认视图是给人读的报告，门禁跑的是
  *   `--strict`。所以 `--json` 把红数（**事实**）与 `gating: false`（**不判**）**都**打出来 ——
@@ -1004,14 +508,13 @@ function printReport(report, retired, { manifest, gate, strict }) {
   for (const r of report.filter((x) => x.kind === "history")) console.log(`    ${r.file} — ${r.why}`);
   console.log("  契约（退役拼写的定义处，正文同样不改）：");
   for (const r of report.filter((x) => x.kind === "contract")) console.log(`    ${r.file} — ${r.why}`);
-  console.log("  根文档（随包 README；示例必须可执行，其余同名命中靠钉子看守）：");
+  console.log("  根文档（随包 README；示例必须可执行，#961 A 起不再靠命中数钉子看守）：");
   for (const r of report.filter((x) => x.kind === "rootdoc")) console.log(`    ${r.file} — ${r.why}`);
 
   console.log("\n── 命中清单（只在代码语境里算；散文里的同名英文词不算） ───────");
   if (actionable.length === 0) console.log("  （无）");
   for (const r of actionable) {
-    console.log(`\n  ${r.file}  [${r.kind}]  verdict=${r.verdict}`
-      + `${r.pin === undefined ? "" : `  pin=${r.pin}`}`);
+    console.log(`\n  ${r.file}  [${r.kind}]  verdict=${r.verdict}`);
     for (const h of r.uses) {
       console.log(`    L${h.line}  ${h.key} → ${h.canonical}`
         + `${ambiguous(h.key) ? "  (ambiguous: 见 AMBIGUOUS_KEYS)" : ""}`);
@@ -1028,20 +531,6 @@ function printReport(report, retired, { manifest, gate, strict }) {
   const mentions = report.reduce((n, r) => n + r.hits.filter((h) => h.verdict === "mention").length, 0);
   // 红集合**不在这里算**（#575 A）：它来自 `gateVerdicts()`，与 `--json` 分支是同一份。
   const strictHits = gate.currentUses;
-  const pinProblems = gate.suspect;
-  const unpinned = gate.unpinned;
-  const deadPins = gate.deadPins;
-
-  // 钉子不符的文件必须**点名**：掉到 0 命中的文件不会出现在上面的命中清单里，
-  // 所以「见上」必须真的指得到东西（门禁的红要能一眼看出是哪份文档）。
-  if (pinProblems.length > 0 || unpinned.length > 0 || deadPins.length > 0) {
-    console.log("\n── 钉子不符（正文被改写 / 新入历史类却没钉 / 钉子不在扫描面上） ────");
-    for (const r of [...pinProblems, ...unpinned]) {
-      console.log(`  ✗ ${r.file}  [${r.kind}]  verdict=${r.verdict}`
-        + `  pin=${r.pin === undefined ? "（未登记）" : r.pin}  uses=${r.uses.length}`);
-    }
-    for (const p of deadPins) console.log(`  ✗ ${p.file}  DEAD-PIN  ${p.why}`);
-  }
 
   console.log("\n── 判据 ───────────────────────────────────────────────────────");
   const curAll = actionable.filter((r) => r.kind === "current").reduce((n, r) => n + r.uses.length, 0);
@@ -1049,14 +538,8 @@ function printReport(report, retired, { manifest, gate, strict }) {
     + `；另有 ${curAll - strictHits.length} 处同名异义（ambiguous，不进判据）`);
   console.log(`  ② 历史/契约/根文档类 use 命中：${
     actionable.filter((r) => r.kind !== "current").reduce((n, r) => n + r.uses.length, 0)} 处`
-    + "（**不算错**：那是当时的写法/契约的定义/README 在讲默认值，正文一个字不改；根文档的示例已在 #572 改对）");
-  console.log(`  ③ 历史/契约/根文档正文钉子：${Object.keys(HISTORY_BODY_PINS).length}`
-    + ` + ${Object.keys(CONTRACT_BODY_PINS).length} + ${Object.keys(ROOT_DOC_BODY_PINS).length} 份，`
-    + `${pinProblems.length === 0 ? "全部等于实测（没有人在改写历史/契约/根文档）" : `${pinProblems.length} 份不符 ⇒ 见上`}`);
-  console.log(`  ④ 有命中却没钉（新入历史/契约/根文档类忘了钉）：${unpinned.length} 份`
-    + `${unpinned.length === 0 ? "" : ` ⇒ ${unpinned.map((r) => r.file).join(", ")}`}`);
-  console.log(`  ⑤ 钉子与扫描面同源（每条钉子都得是一份入库文件）：${deadPins.length === 0 ? "全部在 `git ls-files` 清单里" : `${deadPins.length} 条死条目 ⇒ ${deadPins.map((p) => p.file).join(", ")}`}`);
-  console.log(`  ⑥ 退役措辞行（mention，在讲退役这件事）：${mentions} 处，不计入上面五条`);
+    + "（**不算错**：那是当时的写法/契约的定义/README 在讲默认值，正文一个字不改；#961 A 起不再靠命中数钉子看守）");
+  console.log(`  ③ 退役措辞行（mention，在讲退役这件事）：${mentions} 处，不计入上面两条`);
 
   if (strict) {
     console.log(`\n--strict: ${gate.red === 0 ? "OK — 0 处红" : `${gate.red} 处红`}`);
@@ -1098,46 +581,14 @@ async function selfTest(retired, manifest) {
   t("散文里的同名英文词不报（`user` message / `context` compaction）", () => {
     eq(keys("every user message is legal; context compaction rewrites the model view").length, 0, "散文");
   });
-  t("分类判据不是空的：历史类命中数掉下去 ⇒ SUSPECT(dropped)", () => {
+  t("分类判据不是空的：扫描器认得扁平命中，改写成规位形态后归零（② 的机制）", () => {
     const text = "```js\nrunToolLoop({ toolResultTtl = 2 })\n```";
     const uses = scanText(text, retired).filter((h) => h.verdict === "use");
     eq(uses.length, 1, "夹具先有 1 处命中");
     const rewritten = "```js\nrunToolLoop({ config: { folding: { toolResultTtl = 2 } } })\n```";
     eq(scanText(rewritten, retired).filter((h) => h.verdict === "use").length, 0, "改写成规位形态后命中归零");
-    // 钉子机制本身：钉 1、实测 0 ⇒ 报 SUSPECT(dropped)（与真实扫描同一段判据）
-    eq(verdictFor({ kind: "history", uses: 0, strictUses: 0, pin: 1 }), "SUSPECT(dropped)", "钉子没咬住");
-  });
-  t("每一条 pin 都与扫描面同源：既在盘上、又在 `git ls-files` 清单里（空转条目 = 后门）", () => {
-    eq(deadPinEntries(manifest).length, 0,
-      `真实树上的死条目（${deadPinEntries(manifest).map((p) => `${p.file}: ${p.why}`).join(" / ")}）`);
-    for (const table of Object.values(PIN_TABLES)) {
-      for (const rel of Object.keys(table)) {
-        try {
-          readFileSync(path.join(ROOT, rel), "utf8");
-        } catch {
-          throw new Error(`${rel} 不在盘上（死条目）`);
-        }
-      }
-    }
-  });
-  t("死条目必须报错：钉子登记到一份不在清单里的文件 ⇒ 点名它（不入库的文件不许登记命中数）", () => {
-    const pinned = Object.keys(HISTORY_BODY_PINS)[0];
-    const mutated = manifest.filter((rel) => rel !== pinned);
-    if (mutated.length === manifest.length) throw new Error(`变异没落上：${pinned} 不在清单里`);
-    const dead = deadPinEntries(mutated);
-    eq(dead.length, 1, "去掉一份钉住的文档后的死条目数");
-    eq(dead[0].file, pinned, "死条目必须点名文件");
-    if (!/git ls-files/.test(dead[0].why)) throw new Error(`死条目的理由没说清是清单问题：${dead[0].why}`);
-    // 反向：钉子登记到一份本就不入库的路径 ⇒ 同样点名（这就是本单的病根形态）
-    const untrackedPin = pinEntryProblems("history", { "docs/tasks/zzz-never-committed.md": 3 }, manifest);
-    eq(untrackedPin.length, 1, "未入库路径的钉子数");
-    eq(untrackedPin[0].file, "docs/tasks/zzz-never-committed.md", "未入库钉子的点名");
-    // 另一个方向：钉子挂错表也要点名（否则用错规则去判）
-    const wrongTable = pinEntryProblems("contract", { "docs/architecture.md": 2 }, manifest);
-    eq(wrongTable.length, 1, "挂错表的钉子数");
-    if (!/history|current/.test(wrongTable[0].why)) throw new Error(`挂错表没说清实测分类：${wrongTable[0].why}`);
-    // 改回去（真实钉子表 + 真实清单）⇒ 绿
-    eq(deadPinEntries(manifest).length, 0, "改回来之后必须绿");
+    // #961 A：历史 / 契约 / 根文档类的命中不再靠命中数钉子判红——一律 ok（只有现状类进判据）。
+    eq(verdictFor({ kind: "history", uses: 1, strictUses: 1 }), "ok", "历史类有命中也不红（钉子已拆）");
   });
   t("清单只取 `git ls-files`：盘上有、但没入库的文件不进扫描面；面也**不是**整个仓库", () => {
     // 独立推导一次（不调本文件的函数，pathspec 也**逐字重写一遍**）：同一棵树里 git 说了算，
@@ -1232,8 +683,8 @@ async function selfTest(retired, manifest) {
   });
   t("未知分类没有退路：拿一份未登记路径的真文本跑，判定仍按现状类算", () => {
     eq(verdictFor({ kind: classify("docs/zzz-unknown.md").kind, uses: 1, strictUses: 1 }), "REGRESSION", "未登记 + 1 处 use");
-    eq(verdictFor({ kind: "history", uses: 1, strictUses: 1 }), "UNPINNED", "历史类有命中却没钉");
-    eq(verdictFor({ kind: "contract", uses: 449, strictUses: 1, pin: 448 }), "SUSPECT(raised)", "契约钉子抬了");
+    eq(verdictFor({ kind: "history", uses: 1, strictUses: 1 }), "ok", "历史类有命中也不红（#961 A：只有现状类进判据）");
+    eq(verdictFor({ kind: "contract", uses: 449, strictUses: 1 }), "ok", "契约类命中再多也不红");
     eq(verdictFor({ kind: "current", uses: 2, strictUses: 0 }), "review(ambiguous-only)", "只剩同名异义");
   });
 
@@ -1333,202 +784,37 @@ async function selfTest(retired, manifest) {
       }
     }));
 
-  t("`--strict` 把 SUSPECT 抬成红（既有规则不变）：只掉历史钉子时门禁非 0、报告模式仍 0",
+  t("根文档扩面的反向证（#572 / #961 A）：README 在扫描面上、扁平拼写被检出，但根文档类不 gating（不靠钉子）",
     () => withTree(async (tree) => {
-      // 靶子：一份**有钉子**的历史文档被清空（= 有人把历史改写没了）⇒ SUSPECT(dropped)，与现状类无关
-      const target = Object.keys(HISTORY_BODY_PINS)[0];
-      writeFileSync(path.join(tree.dir, target), "# 空\n");
-      const gate = await runCaptured(["--strict", "--json"], tree);
-      const payload = JSON.parse(gate.stdout);
-      eq(payload.gate.counts.suspect, 1, "SUSPECT 的条数");
-      eq(payload.gate.counts.regression, 0, "这一格不该有现状类回归（否则证的不是「SUSPECT 抬红」）");
-      eq(gate.code, 1, "`--strict` 下 SUSPECT 必须算红");
-      const report = await runCaptured(["--json"], tree);
-      eq(report.code, 0, "不带 `--strict` 时 SUSPECT 不算红（既有语义）");
-      eq(JSON.parse(report.stdout).gate.counts.suspect, 1, "报告模式仍要把 SUSPECT 报出来（不判 ≠ 没红）");
-    }));
-
-  t("DEAD-PIN 也在同一份红集合里：钉子指向清单外文件 ⇒ `--strict --json` 非 0（两路同判）",
-    () => withTree(async (tree) => {
-      // 钉子表指向的某份文件**不在**清单里：这是 #560 定的「空转条目」，它本身就该红
-      const victim = Object.keys(HISTORY_BODY_PINS)[0];
-      const trimmed = manifest.filter((rel) => rel !== victim);
-      const exec = (args) => {
-        if (args[0] === "rev-parse") return `${tree.dir}\n`;
-        if (args[0] === "ls-files") return trimmed.map((rel) => `${rel}\0`).join("");
-        throw new Error(`夹具 git 不认识这个子命令：${args.join(" ")}`);
-      };
-      const gate = await runCaptured(["--strict", "--json"], { dir: tree.dir, io: { exec } });
-      const payload = JSON.parse(gate.stdout);
-      eq(payload.gate.counts.deadPins, 1, "死条目数");
-      eq(payload.deadPins.length, 1, "JSON 的 deadPins 段");
-      eq(gate.code, 1, "死条目在门禁下必须算红（`--json` 也不许把它吃掉）");
-      const report = await runCaptured(["--json"], { dir: tree.dir, io: { exec } });
-      eq(report.code, 0, "不带 `--strict` 时死条目不算红（既有语义）");
-      eq(JSON.parse(report.stdout).gate.counts.deadPins, 1, "报告模式仍要把死条目报出来");
-    }));
-
-  // ── #572 的反向证：扫描面从 `docs/` 扩到「docs + 两份根 README」 ─────────────────
-  //
-  // 三格：① 往 README 里塞一句旧写法 ⇒ `--strict` 与 `--strict --json` 都红，还原 ⇒ 两路都绿；
-  // ② 根文档的钉子对不上（正文被换掉 ⇒ 命中掉下去）⇒ SUSPECT(dropped) ⇒ 红；
-  // ③ 根文档的钉子指向清单外（README 不在 `git ls-files` 里）⇒ DEAD-PIN ⇒ 红。
-  // 三格都在临时树副本上做（不碰真文档），且都先跑一遍放行证。
-  t("根文档扩面的反向证（#572）：README 里塞一句旧写法 ⇒ `--strict` 与 `--strict --json` 都红，还原 ⇒ 都绿",
-    () => withTree(async (tree) => {
-      // 放行证先跑：干净面上两路必须绿，否则下面的「非 0」可能只是恒非 0
-      eq((await runCaptured(["--strict"], tree)).code, 0, "干净面 `--strict` 的退出码");
-      const cleanJson = await runCaptured(["--strict", "--json"], tree);
-      eq(cleanJson.code, 0, "干净面 `--strict --json` 的退出码");
-      eq(JSON.parse(cleanJson.stdout).gate.red, 0, "干净面的红数");
-
-      // 造红：往根文档里补一句**扁平拼写**（就是 #572 修的同一类形状）。
-      // 选 README.md 而不是 `docs/`：这一格证的正是「面已经装进根文档了」——面没扩的话它恒绿。
+      // 造“污染”：往根文档里补一句**扁平拼写**（#572 修的同一类形状）。
+      // 选 README.md 而不是 `docs/`：这一格证的正是「面已经装进根文档了」——面没扩的话 README 不在 files[]。
       const readme = path.join(tree.dir, "README.md");
       const polluted = `${readFileSync(readme, "utf8")}\n\`\`\`js\nrunToolLoop({ maxRounds: 16 })\n\`\`\`\n`;
       writeFileSync(readme, polluted);
-
-      const redText = await runCaptured(["--strict"], tree);
-      const redJson = await runCaptured(["--strict", "--json"], tree);
-      const payload = JSON.parse(redJson.stdout);
-      // 变异必须真的落上（#210 R2）：面不红 ⇒ 下面两条退出码证不到任何东西
-      if (payload.gate.red === 0) throw new Error("夹具没变红：根文档扩面的反向证失去靶子");
-      eq(redText.code, 1, "根文档有旧写法时 `--strict` 的退出码");
-      eq(redJson.code, 1, "根文档有旧写法时 `--strict --json` 的退出码（#575 A：两路同判）");
-      eq(redJson.code, redText.code, "两条输出分支的退出码必须相同");
-      eq(payload.gate.counts.suspect, 1, "根文档的钉子被抬了一格 ⇒ SUSPECT 一条");
+      const json = await runCaptured(["--strict", "--json"], tree);
+      const payload = JSON.parse(json.stdout);
       const hit = payload.files.find((f) => f.file === "README.md");
-      eq(hit?.kind, "rootdoc", "README.md 的分类");
+      if (!hit) throw new Error("README.md 不在扫描面上：#572 的扩面没生效");
+      eq(hit.kind, "rootdoc", "README.md 的分类");
       if (!hit.uses.some((u) => u.key === "maxRounds")) {
         throw new Error(`README.md 里新塞的 maxRounds 没被报出来：${JSON.stringify(hit.uses.map((u) => u.key))}`);
       }
-      if (!redText.stdout.includes("README.md")) {
-        throw new Error("文本分支没点名 README.md：根文档的红看不见是哪份文件");
-      }
-
-      // 还原 ⇒ 两路都绿（不是“塞进去就永远红”）。
-      writeFileSync(readme, readFileSync(readme, "utf8")
-        .replace("\n```js\nrunToolLoop({ maxRounds: 16 })\n```\n", ""));
-      eq((await runCaptured(["--strict"], tree)).code, 0, "还原后 `--strict` 的退出码");
-      eq((await runCaptured(["--strict", "--json"], tree)).code, 0, "还原后 `--strict --json` 的退出码");
-    }));
-
-  t("根文档的钉子对不上 ⇒ 红（#572）：正文被换掉 ⇒ 命中掉下去 ⇒ SUSPECT(dropped)，门禁非 0、报告模式仍 0",
-    () => withTree(async (tree) => {
-      const readme = path.join(tree.dir, "README.md");
-      writeFileSync(readme, "# README\n\n（正文被换掉了）\n");
-      const gate = await runCaptured(["--strict", "--json"], tree);
-      const payload = JSON.parse(gate.stdout);
-      eq(payload.gate.counts.suspect, 1, "SUSPECT 的条数");
-      eq(payload.gate.counts.regression, 0, "这一格不该有现状类回归（否则证的不是「钉子对不上」）");
-      const entry = payload.files.find((f) => f.file === "README.md");
-      eq(entry?.verdict, "SUSPECT(dropped)", "README.md 的判词");
-      eq(entry?.pin, ROOT_DOC_BODY_PINS["README.md"], "钉子值必须原样报出来（好让人看出差多少）");
-      eq(gate.code, 1, "钉子对不上时 `--strict --json` 必须非 0");
-      eq((await runCaptured(["--strict"], tree)).code, 1, "文本分支同判");
-      eq((await runCaptured(["--json"], tree)).code, 0, "报告模式仍 0（既有语义）");
-    }));
-
-  t("根文档的钉子指向清单外 ⇒ DEAD-PIN（#572）：README 不在 `git ls-files` 清单里 ⇒ `--strict` 非 0",
-    () => withTree(async (tree) => {
-      const trimmed = manifest.filter((rel) => !ROOT_DOC_TARGETS.includes(rel));
-      if (trimmed.length === manifest.length) throw new Error("变异没落上：根文档本来就不在清单里");
-      const exec = (args) => {
-        if (args[0] === "rev-parse") return `${tree.dir}\n`;
-        if (args[0] === "ls-files") return trimmed.map((rel) => `${rel}\0`).join("");
-        throw new Error(`夹具 git 不认识这个子命令：${args.join(" ")}`);
-      };
-      const gate = await runCaptured(["--strict", "--json"], { dir: tree.dir, io: { exec } });
-      const payload = JSON.parse(gate.stdout);
-      eq(payload.gate.counts.deadPins, ROOT_DOC_TARGETS.length, "根文档的死条目数（中英各一条）");
-      eq(payload.deadPins.map((p) => p.file).sort().join("|"), [...ROOT_DOC_TARGETS].sort().join("|"),
-        "死条目必须点名两份根文档");
-      for (const p of payload.deadPins) {
-        if (!/git ls-files/.test(p.why)) throw new Error(`死条目没说清是清单问题：${p.why}`);
-      }
-      eq(gate.code, 1, "根文档的钉子是死条目时门禁必须红");
-      // 文本分支必须走**同一份变异清单**（否则证的是另一个面，不是两路同判）
-      eq((await runCaptured(["--strict"], { dir: tree.dir, io: { exec } })).code, 1, "文本分支同判");
-      eq((await runCaptured(["--json"], { dir: tree.dir, io: { exec } })).code, 0, "报告模式仍 0（既有语义）");
-    }));
-
-  // ── #577 A 的反向证：`--json` 里的钉子事实**只有一份** ────────────────────────
-  //
-  // 病根：从前 `runCli()` 里写死 `pins: HISTORY_BODY_PINS` —— 那个字段只装三档里的历史一档，而名字
-  // 看上去像“全部钉子”。本格四件事：① 干净面上真实 `--json` 输出必须让 `pinFactProblems()` 返回 0 条；
-  // ② 三档**各自**都得真有带 pin 的条目（否则“三档都齐”是空话）；③ 把 #577 之前那个只装一档的 `pins`
-  // 段塞回去 ⇒ 必须红；④ 把 contract/rootdoc 两档从 `files[].pin` 里掏空、或改一格值、或删一份带钉
-  // 子的文件 ⇒ 必须红。“变不出来”也算失败（#210 R2）。
-  t("`--json` 只带一份钉子事实（#577 A）：三档都在 `files[].pin` 里，只装一档的 `pins` 段回来了就红",
-    () => withTree(async (tree) => {
-      const clean = await runCaptured(["--strict", "--json"], tree);
-      eq(clean.code, 0, "干净面 `--strict --json` 的退出码");
-      const payload = JSON.parse(clean.stdout);
-      const problems = pinFactProblems(payload);
-      eq(problems.length, 0, `干净面的钉子事实（${problems.join(" / ")}）`);
-
-      // 放行证：三档**各自**都有条目落在 `files[].pin` 上（空表也算“齐”的话本格就证不到东西）
-      for (const [kind, table] of Object.entries(PIN_TABLES)) {
-        const expected = Object.keys(table).length;
-        if (expected === 0) throw new Error(`${kind} 档的钉子表是空的：这一格证不到“三档都齐”`);
-        eq(payload.files.filter((f) => f.kind === kind && f.pin !== null && f.pin !== undefined).length,
-          expected, `${kind} 档在 files[] 里带 pin 的条目数`);
-      }
-      // 且**不是**只装一档：三档合计远大于任何单独一档（否则“三档”退化成同一份事实）
-      const total = Object.values(PIN_TABLES).reduce((n, table) => n + Object.keys(table).length, 0);
-      if (!(total > Object.keys(HISTORY_BODY_PINS).length)) {
-        throw new Error("三档合计不大于 history 一档：这一格已经退化成 #577 之前的形状");
-      }
-
-      // 反向证①：把 #577 之前那个字段原样塞回去（只装 history 档）⇒ 必须红
-      const legacy = { ...payload, pins: HISTORY_BODY_PINS };
-      if (pinFactProblems(legacy).length === 0) {
-        throw new Error("`pins: HISTORY_BODY_PINS` 塞回去了却没红：反向证是空的");
-      }
-      // 反向证②：把 contract / rootdoc 两档从 `files[].pin` 里掏空（只留 history 档）⇒ 必须红
-      const onlyHistory = {
-        ...payload,
-        files: payload.files.map((f) => (f.kind === "history" ? f : { ...f, pin: null })),
-      };
-      const emptied = pinFactProblems(onlyHistory);
-      if (emptied.length === 0) throw new Error("contract/rootdoc 两档被掏空却没红：扩面后仍会被读成全部钉子");
-      if (!emptied.some((p) => /≠ 三档钉子合计/.test(p))) {
-        throw new Error(`掏空两档没报出“条目数对不上”：${emptied.join(" / ")}`);
-      }
-      // 反向证③：只改一格钉子值 ⇒ 必须点名那份文件（不是“总数对了就算”）
-      const skewed = {
-        ...payload,
-        files: payload.files.map((f) => (f.file === "README.md" ? { ...f, pin: (f.pin ?? 0) + 1 } : f)),
-      };
-      const skewProblems = pinFactProblems(skewed);
-      if (!skewProblems.some((p) => p.includes("README.md"))) {
-        throw new Error(`改了一格钉子值却没点名 README.md：${skewProblems.join(" / ")}`);
-      }
-      // 反向证④：把一份带钉子的文件从 files[] 里删掉 ⇒ 必须红（总数会少一份，且那份文件点不到）
-      const dropped = { ...payload, files: payload.files.filter((f) => f.file !== "README_cn.md") };
-      if (pinFactProblems(dropped).length === 0) throw new Error("删掉一份带钉子的文件却没红");
-
-      // 报告模式（不带 `--strict`）是同一份事实：钉子只跟扫描结果有关，与门禁开关无关
-      const report = JSON.parse((await runCaptured(["--json"], tree)).stdout);
-      eq(pinFactProblems(report).length, 0, "报告模式的钉子事实");
-      eq(Object.prototype.hasOwnProperty.call(report, "pins"), false, "报告模式也不许带 `pins` 段");
+      // #961 A：根文档类命中合法，不再靠命中数钉子判红 ⇒ 塞一句旧写法仍不红（红集合只认现状类）。
+      eq(hit.verdict, "ok", "README.md 是根文档类：有命中也不红");
+      eq(payload.gate.counts.regression, 0, "根文档的命中不进 regression");
+      eq(json.code, 0, "根文档有旧写法但 `--strict` 仍绿（非现状类不 gating）");
     }));
 
   t("红集合是纯函数，且「红数 → 退出码」只有一份（门禁/报告两种模式逐格对账）", () => {
     const report = [
       { file: "docs/soak.md", kind: "current", verdict: "REGRESSION", uses: [{ key: "toolResultTtl" }] },
       { file: "docs/architecture.md", kind: "current", verdict: "review(ambiguous-only)", uses: [{ key: "timeoutMs" }] },
-      { file: "docs/decisions/x.md", kind: "history", verdict: "SUSPECT(dropped)", uses: [] },
-      { file: "docs/design/y.md", kind: "history", verdict: "UNPINNED", uses: [{ key: "maxTokens" }] },
+      { file: "docs/decisions/x.md", kind: "history", verdict: "ok", uses: [{ key: "maxTokens" }] },
       { file: "docs/charts.md", kind: "current", verdict: "ok", uses: [] },
     ];
-    const deadPins = [{ file: "docs/zzz.md", why: "夹具" }];
-    const gate = gateVerdicts({ report, deadPins });
-    eq(gate.counts.regression, 1, "REGRESSION 条数");
-    eq(gate.counts.suspect, 1, "SUSPECT 条数");
-    eq(gate.counts.unpinned, 1, "UNPINNED 条数");
-    eq(gate.counts.deadPins, 1, "DEAD-PIN 条数");
-    eq(gate.red, 4, "红数（ambiguous-only 与 ok 都不进集合）");
+    const gate = gateVerdicts({ report });
+    eq(gate.counts.regression, 1, "REGRESSION 条数（只有现状类的非 ambiguous 命中进集合）");
+    eq(gate.red, 1, "红数（历史类命中、ambiguous-only、ok 都不进集合，#961 A）");
     eq(gateExitCode(gate, { strict: true }), 1, "门禁模式：红数 > 0 ⇒ 1");
     eq(gateExitCode(gate, { strict: false }), 0, "报告模式：恒 0（既有语义）");
     const clean = gateVerdicts({ report: [{ file: "docs/charts.md", kind: "current", verdict: "ok", uses: [] }] });
@@ -1585,15 +871,14 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io } =
   const retired = await retiredFlatKeys();
   if (selfTestMode) return selfTest(retired, manifest);
 
-  const deadPins = deadPinEntries(manifest);
   const report = scanDocs({ root, retired, files: manifest });
   // 判据与退出码**只在这里算一次**（#575 A）：两条输出分支读同一份，谁都不许自己再拼一个 0。
-  const gate = gateVerdicts({ report, deadPins });
+  const gate = gateVerdicts({ report });
   const exitCode = gateExitCode(gate, { strict });
 
   if (jsonOut) {
     const slim = report.map((r) => ({
-      file: r.file, kind: r.kind, verdict: r.verdict, pin: r.pin ?? null,
+      file: r.file, kind: r.kind, verdict: r.verdict,
       uses: r.uses.map((h) => ({ line: h.line, key: h.key, canonical: h.canonical, ambiguous: AMBIGUOUS_KEYS.has(h.key) })),
       mentions: r.hits.filter((h) => h.verdict === "mention").length,
     }));
@@ -1616,18 +901,11 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io } =
         exitCodes: { clean: 0, red: 1, manifestUnavailable: 2 },
       },
       retiredKeys: Object.fromEntries(retired),
-      // 这里**故意没有**聚合的 `pins` 段（#577 A）：从前它是 `pins: HISTORY_BODY_PINS`，只装三档里的
-      // 历史那一档（contract 2 份 / rootdoc 2 份都不在），而名字看上去像“全部钉子”。
-      // 钉子事实只从 `files[].pin` 读——那份逐文件的事实本身就是完整的（`null` = 该文件无钉子），
-      // 再聚一份只会漂：每多一档，重复那份就多一处会被读错的地方。
-      deadPins,
       files: slim,
     }, null, 2));
     // 机器读法失败时也留一句人话在 stderr（stdout 必须保持是纯 JSON，不能被解释成脏数据）。
     if (exitCode !== 0) {
-      console.error(`retired-spelling-scan --strict --json: ${gate.red} 处红`
-        + `（REGRESSION ${gate.counts.regression} / SUSPECT ${gate.counts.suspect}`
-        + ` / UNPINNED ${gate.counts.unpinned} / DEAD-PIN ${gate.counts.deadPins}）`);
+      console.error(`retired-spelling-scan --strict --json: ${gate.red} 处红（REGRESSION ${gate.counts.regression}）`);
     }
     return exitCode;
   }
