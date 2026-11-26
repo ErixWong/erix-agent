@@ -2,20 +2,26 @@
 // **实际选中的轮索引**，而不是只有「已折轮数」。
 //
 // 旧实现：`fold-statistical` 的开销回调用 `rounds.slice(0, foldedCount)` 重建摘要，即「前 N 轮」。
-// 但选择器折的**不是连续前缀**——`protectedMessage` / 连续性块 / 工作集地板都会让中间轮被保留
-// ⇒ 估算对象与实际被折轮次不符：被保护那轮（本夹具里带 20 条锚点的大轮）被算进摘要，
+// 但选择器折的**不是连续前缀**——续接块 / 工作集地板都会让中间轮被保留
+// ⇒ 估算对象与实际被折轮次不符：夹在中间那一轮（本夹具里带 20 条锚点的大轮）被算进摘要，
 // 而真被折的后续轮被漏掉。两种方向的错都可能发生（这里表现为「按前缀」高估 ⇒ 少折一轮）。
 // 修复：`selectFoldedRounds` 把「此刻已选中的轮索引（升序）」作为回调第二参 `foldedIndexes`
 // 传出，`fold-statistical` 按这个集合重建（范围句也走同一个 `roundRangeForIndexes` 口径）。
 //
+// ⚠ 夹具的取材在 issue #898 换过一次：原来这一格靠 `protectedMessage` 把中间那一轮钉成
+// 「不可折」来制造非前缀的选中集合。该机制已随 #898 退役，于是改用**续接块**那一轮
+// （`roundHoldsContinuityBlock`，#589）——它是引擎里今天真实存在的「中间轮不可折」机制，
+// 制造出来的形状（中间一个洞 + 那个洞是最贵的一轮）与原夹具逐字同形，**断言意图不变**：
+// ① 选中集合非前缀；② 两种重建口径落点不同；③ 策略跟「按选中集合」那支；④ 内容级覆盖选中集合。
+//
 // 判据：
-//   ① 夹具让选中集合**非前缀**（被保护的两轮夹在中间被跳过）；
+//   ① 夹具让选中集合**非前缀**（夹着续接块的那一轮被跳过）；
 //   ② 「按选中集合重建」与「按前缀重建」两种开销**给出不同的折叠轮数**（保证这一格分辨得出
 //      被修的实现，而不是恒等）；
 //   ③ 策略实际折叠轮数 = 「按选中集合」那一支，且 ≠ 「按前缀」那一支；`foldedPayload` 逐条
 //      等于选中集合的轮次消息；
 //   ④ 内容级：进消息的机械摘要覆盖的是**被选中**的轮（含只在选中集合里出现的那条 TTL 句柄），
-//      不含被保护那轮的锚点（估算与生产同源）。
+//      不含被跳过那轮的锚点（估算与生产同源）。
 //
 // 零真实 LLM、不写盘。
 import test from "node:test";
@@ -30,33 +36,50 @@ import {
   createFoldStatisticalStrategy,
   summarizeFoldedPayload,
 } from "../../src/compact/fold-statistical.js";
+import {
+  CONTINUITY_BLOCK_START,
+  isContinuityMessage,
+  renderContinuityBlock,
+} from "../../src/loop/continuity-block.js";
 
 // 8 组「user → tool_use → tool_result」⇒ 15 轮（`groupIntoRounds` 按消息边界切轮）。
-// 第 2 组（index 1）整组被保护，且它的 `tool_result` 带 20 条路径锚点（摘要里最贵的一层）；
-// 其余各组各带一条 TTL 句柄行。于是「把被保护那组算进摘要」与「把真被折的后续轮算进去」
-// 的估算差出一截，足以改变折叠轮数。
+// 第 2 组（index 1）带一份续接块（⇒ 整轮不可折），且它的 `tool_result` 带 20 条路径锚点
+//（摘要里最贵的一层）；其余各组各带一条 TTL 句柄行。于是「把被跳过那组算进摘要」与
+// 「把真被折的后续轮算进去」的估算差出一截，足以改变折叠轮数。
 const GROUPS = 8;
-const PROTECTED_GROUP = 1;
-// × `FOLD_TARGET_RATIO`(0.65) ⇒ 目标 2399：选中 6 轮、按前缀估会少折一轮（探针实测）。
-const BUDGET = 3692;
+const BLOCKED_GROUP = 1;
+// × `FOLD_TARGET_RATIO`(0.65) ⇒ 目标 2200：探针实测【按选中集合重建 = 4 轮】而
+//【按前缀重建 = 2 轮】——两支落点不同，这一格才分辨得出被修的实现（#898 换夹具后重标）。
+const BUDGET = 3385;
 const TARGET = Math.floor(BUDGET * 0.65);
+
+/** 第 2 组那一轮的续接块正文（三段骨架齐全，走的是渲染器，不是手搓 marker）。 */
+const BLOCKED_GROUP_BLOCK = renderContinuityBlock({
+  sections: {
+    contract: ["夹具目标：中间那一轮必须被跳过", "must: 不进 foldedPayload"],
+    unfinished: ["夹具未完成项"],
+    evidence: ["verified: keepRounds 0 已实测"],
+  },
+  version: 1,
+});
 
 function fixture() {
   const messages = [];
   for (let i = 0; i < GROUPS; i += 1) {
-    const protectedRound = i === PROTECTED_GROUP;
-    const resultText = protectedRound
-      ? `${Array.from({ length: 20 }, (_, j) => `src/prot/f${j}.js:${100 + j}`).join(" ")} ${"p".repeat(2000)}`
+    const blockedRound = i === BLOCKED_GROUP;
+    const resultText = blockedRound
+      ? `${Array.from({ length: 20 }, (_, j) => `src/blk/f${j}.js:${100 + j}`).join(" ")} ${"p".repeat(2000)}`
       : `【已折叠·TTL】read path=/p-${i}.js\nRES-${i} ${"r".repeat(400)}`;
-    messages.push({ role: "user", content: `R${i} ${"u".repeat(400)}`, protectedRound });
+    messages.push({
+      role: "user",
+      content: blockedRound ? BLOCKED_GROUP_BLOCK.text : `R${i} ${"u".repeat(400)}`,
+    });
     messages.push({
       role: "assistant",
-      protectedRound,
       content: [{ type: "tool_use", id: `t${i}`, name: "read", input: { path: `/p-${i}.js` } }],
     });
     messages.push({
       role: "user",
-      protectedRound,
       content: [{
         type: "tool_result",
         tool_use_id: `t${i}`,
@@ -66,8 +89,6 @@ function fixture() {
   }
   return messages;
 }
-
-const guard = (message) => message?.protectedRound === true;
 
 // 与策略内部同一套生产函数（`summarizeFoldedPayload` + stubs / navigation / anchors）。
 function estimateOf(rounds, indexes) {
@@ -88,7 +109,7 @@ function estimateOf(rounds, indexes) {
 
 function selectedBranch(view) {
   // 修复后：回调拿到第二参 ⇒ 按**实际选中**的轮索引重建。
-  return selectFoldedRounds(view.rounds, 0, guard, 0, {
+  return selectFoldedRounds(view.rounds, 0, 0, {
     targetTokens: TARGET,
     headMessages: view.head,
     summaryOverheadTokens: (foldedCount, foldedIndexes) => {
@@ -106,7 +127,7 @@ function selectedBranch(view) {
 
 function prefixBranch(view) {
   // 旧实现：只有轮数 ⇒ 按前缀重建。
-  return selectFoldedRounds(view.rounds, 0, guard, 0, {
+  return selectFoldedRounds(view.rounds, 0, 0, {
     targetTokens: TARGET,
     headMessages: view.head,
     summaryOverheadTokens: (foldedCount) =>
@@ -118,15 +139,18 @@ function messagesOf(result) {
   return result.foldedPayload.map((message) => JSON.stringify(message));
 }
 
-test("夹具：选中集合非前缀（被保护的轮夹在中间被跳过）", () => {
+test("夹具：选中集合非前缀（夹着续接块的那一轮被跳过）", () => {
   const view = groupIntoRounds(fixture());
   assert.equal(view.rounds.length, 15, "前置：夹具的轮数形状变了就要重算目标");
-  const direct = selectFoldedRounds(view.rounds, 0, guard, 0, {
+  const direct = selectFoldedRounds(view.rounds, 0, 0, {
     targetTokens: TARGET,
     headMessages: view.head,
     summaryOverheadTokens: 0,
   });
-  assert.ok(direct.foldedIndexes.length > 2, "前置：必须真选中多轮");
+  assert.ok(
+    direct.foldedIndexes.length > 1,
+    "前置：必须真选中多轮（≥ 2 轮才谈得上「前缀」与「非前缀」之别）",
+  );
   const last = Math.max(...direct.foldedIndexes);
   const holes = [];
   for (let index = 0; index <= last; index += 1) {
@@ -135,6 +159,11 @@ test("夹具：选中集合非前缀（被保护的轮夹在中间被跳过）",
   assert.ok(
     holes.length > 0,
     `选中集合必须是**非前缀**（实测 ${JSON.stringify(direct.foldedIndexes)}）`,
+  );
+  // 洞的来源必须是「夹在中间的那一轮带续接块」，而不是别的偶然（夹具本身也要钉住）。
+  assert.ok(
+    holes.every((index) => view.rounds[index].messages.some(isContinuityMessage)),
+    `每个洞都必须是带续接块的那一轮（实测洞=${JSON.stringify(holes)}）`,
   );
 });
 
@@ -154,7 +183,6 @@ test("策略按实际选中的轮次重建开销估算，foldedPayload 逐条等
     budgetTokens: BUDGET,
     keepRounds: 0,
     workingSetRecentRounds: 0,
-    protectedMessage: guard,
   });
   assert.ok(result.foldedRounds > 0, "前置：这一折必须真折了轮");
   assert.equal(result.foldedRounds, bySelected.folded.length, "策略必须与「按选中集合重建」一致");
@@ -166,7 +194,7 @@ test("策略按实际选中的轮次重建开销估算，foldedPayload 逐条等
   );
 });
 
-test("内容级：机械摘要覆盖被选中的轮，不含被保护那轮的锚点", async () => {
+test("内容级：机械摘要覆盖被选中的轮，不含被跳过那轮（带续接块那一轮）的锚点", async () => {
   const messages = fixture();
   const view = groupIntoRounds(messages);
   const bySelected = selectedBranch(view).foldedIndexes;
@@ -174,7 +202,6 @@ test("内容级：机械摘要覆盖被选中的轮，不含被保护那轮的�
     budgetTokens: BUDGET,
     keepRounds: 0,
     workingSetRecentRounds: 0,
-    protectedMessage: guard,
   });
   const summary = result.foldSummary?.text ?? "";
   assert.notEqual(summary, "", "前置：这一折必须产出机械摘要");
@@ -185,7 +212,15 @@ test("内容级：机械摘要覆盖被选中的轮，不含被保护那轮的�
   const extraStub = collectTtlFoldStubs(extraRounds.flatMap((index) => view.rounds[index].messages))[0];
   assert.ok(extraStub !== undefined, "前置：额外那一轮必须带 TTL 句柄行");
   assert.ok(summary.includes(extraStub), `摘要必须覆盖只在选中集合里出现的那轮（缺：${extraStub}）`);
-  // 被保护那一组的锚点一条都不许出现（它没被折）。
-  assert.ok(!summary.includes("src/prot/f0.js"), "被保护那轮的锚点不许进摘要");
-  assert.ok(!summary.includes(`RES-${PROTECTED_GROUP}`), "被保护那轮的正文不许进摘要");
+  // 被跳过那一轮（带续接块）的东西一条都不许进摘要——它没被折（这就是「覆盖 = 选中集合」
+  // 而不是「覆盖 = 前缀」的内容级证据）。
+  assert.ok(!summary.includes(CONTINUITY_BLOCK_START), "被跳过那轮的续接块不许进摘要");
+  assert.ok(
+    !summary.includes("夹具目标：中间那一轮必须被跳过"),
+    "被跳过那轮的正文不许进摘要",
+  );
+  // 反过来：它那一组的**下一轮**（带 20 条锚点的那轮）今天**是被折的** ⇒ 锚点必须在摘要里。
+  //（旧夹具里那两轮一起被 `protectedMessage` 保护，所以当时钉的是「锚点不许出现」；
+  // #898 之后只有带块那一轮不可折，锚点轮进了选中集合 ⇒ 同一意图的正反两面到这里。）
+  assert.ok(summary.includes("src/blk/f0.js"), "被折那轮的锚点必须进摘要（估算与生产同源）");
 });

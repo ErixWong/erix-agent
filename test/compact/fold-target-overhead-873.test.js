@@ -51,7 +51,7 @@ const TARGET = BUDGET * FOLD_TARGET_RATIO;
 
 // 用与策略完全相同的 rounds / head / 入参直接跑选择器，把「某个开销」对应的折叠轮数取出来。
 function foldedWithOverhead({ head, rounds }, overhead) {
-  return selectFoldedRounds(rounds, 0, undefined, 0, {
+  return selectFoldedRounds(rounds, 0, 0, {
     targetTokens: TARGET,
     headMessages: head,
     summaryOverheadTokens: overhead,
@@ -67,7 +67,7 @@ function placeholderOverhead(foldedCount) {
 test("阻断①（判据 7）：keepRounds=0 + 目标不可达 + 多轮 ⇒ 恰好留 5 轮（不是 1、不是全折）", () => {
   const { head, rounds } = groupIntoRounds(roundFixture(10)); // 19 轮，远大于下限 5
   assert.ok(rounds.length > MIN_KEEP_ROUNDS);
-  const { folded, retained } = selectFoldedRounds(rounds, 0, undefined, 0, {
+  const { folded, retained } = selectFoldedRounds(rounds, 0, 0, {
     targetTokens: 1,
     headMessages: head,
   });
@@ -81,7 +81,7 @@ test("下限：keepRounds 0/1–4 一律抬到 5；轮数 ≤ 有效下限 ⇒ �
   assert.equal(MIN_KEEP_ROUNDS, 5);
   const { head, rounds } = groupIntoRounds(roundFixture(10));
   for (const keepRounds of [0, 1, 4]) {
-    const { retained } = selectFoldedRounds(rounds, keepRounds, undefined, 0, {
+    const { retained } = selectFoldedRounds(rounds, keepRounds, 0, {
       targetTokens: 1, headMessages: head,
     });
     assert.equal(retained.length, MIN_KEEP_ROUNDS, `keepRounds=${keepRounds} 应被抬到 ${MIN_KEEP_ROUNDS}`);
@@ -89,7 +89,7 @@ test("下限：keepRounds 0/1–4 一律抬到 5；轮数 ≤ 有效下限 ⇒ �
   // roundFixture(3) ⇒ 5 轮，恰好等于有效下限 ⇒ 没有可折的 ⇒ 一轮不折。
   const small = groupIntoRounds(roundFixture(3));
   assert.equal(small.rounds.length, MIN_KEEP_ROUNDS);
-  const { folded } = selectFoldedRounds(small.rounds, 0, undefined, 0, {
+  const { folded } = selectFoldedRounds(small.rounds, 0, 0, {
     targetTokens: 1, headMessages: small.head,
   });
   assert.equal(folded.length, 0, "轮数 ≤ 有效下限时一轮都不折");
@@ -98,7 +98,7 @@ test("下限：keepRounds 0/1–4 一律抬到 5；轮数 ≤ 有效下限 ⇒ �
 test("阻断①：keepRounds=6 仍留 6 轮（不被这条改坏）", () => {
   const { head, rounds } = groupIntoRounds(roundFixture(10));
   assert.ok(rounds.length > 6);
-  const { folded, retained } = selectFoldedRounds(rounds, 6, undefined, 0, {
+  const { folded, retained } = selectFoldedRounds(rounds, 6, 0, {
     targetTokens: 1, // 目标不可达 ⇒ 折到硬下限为止
     headMessages: head,
   });
@@ -109,7 +109,7 @@ test("阻断①：keepRounds=6 仍留 6 轮（不被这条改坏）", () => {
 test("阻断①：rounds.length===1 ⇒ 一轮都不折", () => {
   const { head, rounds } = groupIntoRounds(roundFixture(1));
   assert.equal(rounds.length, 1);
-  const { folded } = selectFoldedRounds(rounds, 0, undefined, 0, {
+  const { folded } = selectFoldedRounds(rounds, 0, 0, {
     targetTokens: 1,
     headMessages: head,
   });
@@ -126,7 +126,7 @@ test("边界：折到第 N 轮后恰好 ≤ target ⇒ folded.length === N（不
   let total = estimateMessageTokens(head);
   for (const tokens of roundTokens) total += tokens;
   const target = total - roundTokens.slice(0, N).reduce((sum, tokens) => sum + tokens, 0);
-  const { folded } = selectFoldedRounds(rounds, 0, undefined, 0, {
+  const { folded } = selectFoldedRounds(rounds, 0, 0, {
     targetTokens: target,
     headMessages: head,
     summaryOverheadTokens: 0,

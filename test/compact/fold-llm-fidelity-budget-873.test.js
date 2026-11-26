@@ -109,7 +109,7 @@ test("夹具：旧顺序把保真层躲在预算外 ⇒ 落点高于目标（用
   });
   const fidelity = fidelityOf(result.foldedPayload);
   const { head, rounds } = groupIntoRounds(messages);
-  const direct = selectFoldedRounds(rounds, 0, undefined, 0, {
+  const direct = selectFoldedRounds(rounds, 0, 0, {
     targetTokens: TARGET,
     headMessages: head,
     summaryOverheadTokens: SUMMARY_BUDGET,
@@ -168,7 +168,7 @@ test("修复①：选择器落点仍在目标内，且折叠轮数 = 以 summary
   assert.ok(estimateMessageTokens(result.messages) <= TARGET);
   // 折叠轮数与「以 summaryBudget 为声明开销」直接跑选择器一致 ⇒ 声明的开销确实被选择器吃到。
   const { head, rounds } = groupIntoRounds(messages);
-  const direct = selectFoldedRounds(rounds, 0, undefined, 0, {
+  const direct = selectFoldedRounds(rounds, 0, 0, {
     targetTokens: TARGET,
     headMessages: head,
     summaryOverheadTokens: SUMMARY_BUDGET,

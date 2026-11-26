@@ -616,7 +616,6 @@ function mergeFoldedRoundRanges(first, second) {
  *       onReflection?: (info: {round: number, decision: object, extendedTo: number}) => void,
  *       onBeforeFold?: (payload: object) => void|Promise<void>, onAfterFold?: (payload: object) => void|Promise<void>,
  *       stubFor?: (message: object) => string|Promise<string|undefined>, // per-message fold stub text
- *       protectedMessage?: (message: object) => boolean, // function form of the polymorphic knob (string / string[] is the config-side data form)
  *       continuityProvider?: (payload: {runId?: string, state: object, previous?: object}) => {text: string, version?: number}|Promise<{text: string, version?: number}>, // issue #568: session continuity block content source (sectioned by [contract] / [unfinished] / [evidence]; nested-slot leaf, no flat alias)
  *       recoveryHint?: (context: object) => string|Promise<string>}, // function form of the polymorphic knob
  *     checks?: {deliverables?: {name: string, check: (facts: object) => any}[]},
@@ -727,18 +726,19 @@ function mergeFoldedRoundRanges(first, second) {
  *     `onPersistenceError` / `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` /
  *     `onToolCall` / `onUsage` / `onFoldSummary` / `finalGuard` / `onReflection` / `onBeforeFold` /
  *     `onAfterFold` / `stubFor`; see `CAPABILITY_HOOK_NAMES`
- *     (`src/loop/capabilities-namespace.js`)) **plus** the function form of the two polymorphic knobs
- *     (`protectedMessage` / `recoveryHint`, see `CAPABILITY_POLYMORPHIC_HOOK_NAMES`). Every `hooks`
- *     value must be a function (that is not relaxed for those two);
+ *     (`src/loop/capabilities-namespace.js`)) **plus** the function form of the one remaining
+ *     polymorphic knob (`recoveryHint`, see `CAPABILITY_POLYMORPHIC_HOOK_NAMES`; `protectedMessage`
+ *     was retired by #898). Every `hooks`
+ *     value must be a function (that is not relaxed for it);
  *   · `checks` — deliverables checks (`deliverables`, each entry `{name, check}`, `check` a function);
  *   · `ports` — infrastructure / strategy implementations the engine **dereferences or calls**
  *     (#498 S4c): `sleepImpl` / `judgeProvider` (a callable or a `{chat}` object) / `strategy` (a
  *     strategy object). The difference from `hooks`: a port slot may be an object, a hook must be
  *     callable.
  *   The flat top-level spellings of the 12 observer channels / `finalGuard` / `deliverables` **keep
- *   working** (the published 0.26 surface; this release removes none of them); the nine leaves added
+ *   working** (the published 0.26 surface; this release removes none of them); the eight leaves added
  *   by this slice (`ports.*` and
- *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`) have **no**
+ *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,recoveryHint}`) have **no**
  *   top-level flat alias (they never were top-level options) — which is why none of them ever entered the allowlist.
  *   Unknown sub-keys (`capabilities.hoks` / `capabilities.check` / `capabilities.ports.sleeplmp`) and
  *   "given but wrong shape" all throw at startup with the full path named. The `config.observers`
@@ -883,7 +883,7 @@ export async function runToolLoop(options) {
   // `CAPABILITY_SLOT_DESTINATIONS` in `src/loop/capabilities-namespace.js`). They are the canonical
   // home of behaviour carriers that used to live in a nested shell slot (`retry.sleepImpl`,
   // `reflection.judge.provider`, `context.strategy`, `reflection.onReflection`,
-  // `context.{onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`). Expansion hands them
+  // `context.{onBeforeFold,onAfterFold,stubFor,recoveryHint}`). Expansion hands them
   // over on this side channel instead of inventing flat keys, so the top-level allowlist stays at 67;
   // every consumption point below resolves `capabilityPorts.X ?? shell.X` (the container wins, the
   // same direction `config.*` wins over the flat key).
@@ -1885,7 +1885,7 @@ export async function runToolLoop(options) {
         // #498 S4c: the capability hooks that live in the `context` shell win over the nested slot
         // (container over legacy spelling, the same direction as everywhere else). They reach the
         // strategies exactly where the old slot did: `compactOptions` below copies
-        // `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` out of this object, and
+        // `onBeforeFold` / `onAfterFold` / `stubFor` out of this object, and
         // `resolveCompactionStrategy` reads `recoveryHint` / `stubFor` for the name-form strategies.
         ...capabilityFoldHooks,
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
@@ -4126,6 +4126,12 @@ export async function runToolLoop(options) {
       ? await configuredStrategy.shouldCompact(messages, budgetTokens)
       : false;
     let foldedPayload = [];
+    // issue #898（#894 的收尾）：安全层逐条删掉的消息**不再并进 `foldedPayload`**。那份只收
+    // 折叠层（策略那一发 + 预算兜底那一发）删掉的轮，而 `foldedRoundRange` / `foldedRounds`
+    // 也只由这两发写 ⇒ 到定稿点为止「素材 + 区间 + 轮数」天然同源同时刻，增量读者直接读它就
+    // 是自洽的（#894 的三元组快照因此不再需要，见下面定稿点那一段）。
+    /** 安全层（`safeTruncateMessages`）逐条删掉的消息：只喂读者 B（归档 + `foldId`）。 */
+    let safetyRemovedPayload = [];
     /** issue #460：写进轮记录的归档（差分 + 字节夹断后的那一份），与上面的内存全量分开。 */
     let foldedArchive;
     let foldedRoundRange;
@@ -4157,7 +4163,7 @@ export async function runToolLoop(options) {
     let strategyFoldSummary = undefined;
     /** @type {ReturnType<typeof buildFoldedFacts>} 投影到本轮轮记录的 `foldedFacts`（#470-B 已夹字节） */
     let pendingFoldedFacts = undefined;
-    let /** @type {number} */ protectedDowngraded = 0, /** @type {"protected_message_exceeds_budget"|"cannot_fit"|undefined} */ budgetUnreachable;
+    let /** @type {"protected_message_exceeds_budget"|"cannot_fit"|undefined} */ budgetUnreachable;
     // issue #608：**预算不足显式劣化**的现场（三个数 + `repeatStreak` + `foldLayersOverBudget`）。
     // 只在循环判据（工作集 > 预算 ∧ 模型在重读同一入参，连续 `WORKING_SET_LOOP_ATTEMPTS` 次）成立时
     // 赋值——那一格再折就是把模型马上要用的东西拿走，引擎停手并交主循环明确收尾
@@ -4279,7 +4285,6 @@ export async function runToolLoop(options) {
       });
       for (const key of [
         "summaryRole",
-        "protectedMessage",
         "stripHistoricalImages",
         "onBeforeFold",
         "onAfterFold",
@@ -4360,7 +4365,6 @@ export async function runToolLoop(options) {
         : 0;
       foldedRounds = strategyFoldedRounds;
       compacted = result.compacted === true;
-      protectedDowngraded = 0;
       let tokensAfter = estimateMessageTokens(compactedMessages);
       if (selectedLayer !== undefined && foldedRounds > 0) {
         observeCompactionLayer(layers, selectedLayer.id, {
@@ -4405,7 +4409,6 @@ export async function runToolLoop(options) {
         const fallback = await foldWithinBudget(budgetFallbackStrategy, compactedMessages, {
           budgetTokens,
           workingSetRecentRounds,
-          protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
           stubFor: compactionContext.stubFor,
           roundOffset: runLoopState.foldedThrough,
@@ -4578,48 +4581,22 @@ export async function runToolLoop(options) {
             + " until max_rounds_cap",
         });
       }
-      // ── issue #894（**过渡期**修法）：本折增量必须有自己那份「与区间同时刻」的素材 ──────
-      // 本刀的**全部目就是把两种读者分开**——共用一个变量就是病根：
-      //   · **读者 A（本折增量）**：正文素材必须与它自己写出的 `from/to/count` **同源同时刻**，
-      //     否则正文会盖过自己声明的区间（就是 #894）；
+      // ── issue #898（#894 的收尾）：增量素材与区间的同源现在是**结构保证**，不再是快照 ──────
+      // 两种读者的分工不变，只是不再需要拷贝：
+      //   · **读者 A（本折增量）**：⓪（`budgetFallbackFoldedRounds > 0` 那一支）与 ③
+      //     （`computeFactsFallbackText()`）直接读 `foldedPayload` + `foldedRoundRange` + `foldedRounds`；
       //   · **读者 B（落盘归档与折叠身份）**：`buildFoldedRecordArchive` 与 `foldSummaryFingerprint`
-      //     读下面的**全量** `foldedPayload`，与增量读者不是同一份，`record.foldedPayload` 的内容
-      //     与 `foldedFingerprint`（= `foldId`）逐字不变——这一条是刻意的：不拿契约面换内部自洽。
-      // 病根现场：下面安全层那一发（`safeTruncateMessages`）会把被降级的受保护消息追加进
-      // `foldedPayload`，但 `foldedRoundRange` / `foldedRounds` **不跟着涨**（安全层降级不是
-      // 「折了几轮」）⇒ 拿「此刻的全量 payload」现算正文、却用不涨的区间声明 from/to/count，
-      // 正文就盖到区间外（实测：声明 `from=1,to=6,rounds=6` 的增量正文里出现属第 7 轮的
-      // `PROCTOOL_R7`）。两个产生点形状相同，两处都得改：只切 ⓪ 会漏 ③。
-      // ⇒ 取点：**策略那一折 + 预算兜底那一折都已定稿（包括兜底摘要 prepend），而安全层与
-      //   user-turn 守卫都还没动手**的这一刻（与 #738 钉摘要块身份同一个时刻）。快照只喂读者 A：
-      //   ⓪ `budgetFallbackFoldedRounds > 0` 那一支、③ `computeFactsFallbackText()`。
-      // 累计体 `factsText` 也调 `computeFactsFallbackText()` ⇒ 它因此**不再含**安全层降级的那几条，
-      //   这是**有意**的：那几条不是这一折折掉的轮次，而它们的**原文仍在归档里**（读者 B 仍读
-      //   全量）⇒ 证据不丢，只是不再冒充「本折删掉的东西」。别以为这里漏了。
-      // ⚠ 不要写成「此处不可能读到安全层追加的内容」——那是假话：`bin/config.js` 里
-      //   `protectedMessage: isRealUser` 至今仍开着（实测探针 commit 2c5ad310），这条路径今天还活着。
-      // ⚠ 过渡期：`protectedMessage` 已**批准**退役（#898 已定，硬前置 `recall_read` 先落地，
-      //   **尚未实施**——今天 `bin/config.js` 仍设着 `protectedMessage: isRealUser`，见上一条）；
-      //   退役后这条触发路径不可达，本块与 `test/compact/fold-increment-safety-scope-894.test.js` 一起删。
-      // ⇒ 快照是**真拷贝**而不是别名：今天安全层那几处都是**重新赋值**
-      //   （`foldedPayload = [...foldedPayload, …]`，见下方安全层那一发），所以上面那个别名
-      //   **此刻**不会出错；但别名下那份「快照」只是一个约定：只要将来有人把某一发改成就地
-      //   `foldedPayload.push(...)`（别名之下 `incrementFoldedPayload` 与它是**同一个数组**），就地
-      //   追加的新内容就会**被增量正文一并读进去** ⇒ 正文重新盖过它自己声明的那段固定区间，
-      //   **#894 那个症状原样回来**（实测形状：声明 `from=1,to=6,rounds=6` 的正文里又出现属第 7 轮
-      //   的 `PROCTOOL_R7`）。就地 push **不会**改 `foldedRoundRange` 那个对象本身——区间不跟着涨
-      //   正是病根的形状。拷贝把这件事锁成一个不变量：本折的素材集合到这一刻就**封上**了。
-      //   （拷贝是**浅**的：元素对象仍与归档共用。这是故意的——如果将来有人就地改**元素内容**，
-      //   那是「归档与增量同时变」的另一种错，不在本刀要钉的形状里，钉它得拿每次折叠的深拷贝
-      //   开销去换，不划算。）
-      // `incrementFoldedRoundRange` 同理拷贝（它是个 `{from,to}` 小对象）：到上面的定稿点为止它只被
-      //   **重新赋值**（策略那一发与兜底 merge），定稿点之后无人再碰；拷贝一份不花钱，但把
-      //   「三元组同源同时刻」从约定抬成不变量。
-      const incrementFoldedPayload = [...foldedPayload];
-      const incrementFoldedRoundRange = foldedRoundRange === undefined
-        ? undefined
-        : { ...foldedRoundRange };
-      const incrementFoldedRounds = foldedRounds;
+      //     读下面现算的 `archivePayload`（= `foldedPayload` 再加安全层删掉的那几条），所以
+      //     `record.foldedPayload` 的内容与 `foldedFingerprint`（= 契约上的 `foldId`）逐字不变——
+      //     没有拿契约面去换内部自洽。
+      // 为什么这次可以删掉快照：`foldedPayload` 只有**两个写点**（策略那一发与预算兜底那一发），
+      // 而这两发**同时**写 `foldedRoundRange` / `foldedRounds` ⇒ 走到这一刻（兜底摘要已 prepend、
+      // 安全层与 user-turn 守卫都还没动手）三者已经定稿且互相对得上。安全层那一发被挪出去
+      // （改道 `safetyRemovedPayload`，见它自己的位置）：它「逐条删了几条」根本不是「折了几轮」，
+      // **区间涨不了、素材却会涨**正是 #894 的病根形状——把它移出增量的素材面，那个症状就
+      // 结构上不可表示，而不是靠一次浅拷贝兜着（旧快照连「将来有人改成就地 push」都要防，
+      // 现在那条路直接不存在：安全层的结果根本不进这个数组）。
+      // ⚠ 唯一前提：以后新增写 `foldedPayload` 的层必须**同时**写区间与轮数，否则读者 A 又会失配。
       // ── issue #738 第二步（评审必修）：**摘要块的对象身份要在安全层动手之前钉住** ──────────
       // 逐字承诺只能在**定稿后**的 `messages` 上证，但那时候「哪一块是摘要块」可能已经被后面的层
       // 搅浑：安全层把摘要截成 `SUMMARY\n[已修剪]`，而它**同一条消息里**保留下来的正文块恰好还是
@@ -4651,14 +4628,14 @@ export async function runToolLoop(options) {
         const fallback = await safeTruncateMessages(
           compactedMessages,
           apiAwareBudget,
-          compactionContext.protectedMessage,
           compactionContext.stubFor,
         );
         compactedMessages = fallback.messages;
-        foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
-        compacted = compacted || fallback.protectedDowngraded > 0;
+        // issue #898：安全层删掉的那些**不并进 `foldedPayload`**（并进就会重新造出 #894 那种
+        // 「素材涨、区间不涨」的失配），只喂读者 B：归档与 `foldId` 仍按全量算，内容逐字不变。
+        safetyRemovedPayload = fallback.foldedPayload ?? [];
         tokensAfter = fallback.tokensAfter;
-        ({ protectedDowngraded, budgetUnreachable } = fallback);
+        ({ budgetUnreachable } = fallback);
         observeCompactionLayer(layers, safetyFallbackLayer?.id, {
           tokensBefore: safetyTokensBefore,
           tokensAfter,
@@ -4679,8 +4656,8 @@ export async function runToolLoop(options) {
       runLoopState.latestApiInputTokens = undefined;
       runLoopState.latestApiEstimatedTokens = undefined;
       runLoopState.hadToolUse = runLoopState.hadToolUse || hasToolUseInMessages(messages);
-      // issue #460：落进轮记录的归档 ≠ 内存里的全量原文。内容源仍是策略给的 `foldedPayload`
-      //（「被折轮原文」的权威口径），但落盘前过两道：
+      // issue #460：落进轮记录的归档 ≠ 内存里的全量原文。内容源是上面现算的 `archivePayload`
+      //（折叠层给的「被折轮原文」+ 安全层逐条删掉的那几条，#898 起），但落盘前过两道：
       //   ① 去重 —— 真机那条放大链是 resume 把整段账本重灌回上下文 ⇒ 每次折叠从 round 1 重抄
       //      一遍（差分总量 O(n²)），这里把「会话里已经归档过的正文」按指纹剔掉；
       //   ② 字节上限 —— 默认 256 KiB，`context.maxFoldedPayloadBytes` /
@@ -4691,10 +4668,12 @@ export async function runToolLoop(options) {
         // 被 store 的去重判据报成 `dedup_payload_conflict`（#460 review）。
         await foldArchiveLedger.ensureSeeded(round);
       }
-      // issue #894：**另一种读者**——落盘归档读**全量** `foldedPayload`（含安全层追加的那几条），
-      // 与上面的增量读者不是同一份 ⇒ 增量不写它，归档仍留原文（不丢证据）。
+      // issue #894 / #898：**另一种读者**——落盘归档读**全量**（`foldedPayload` 再加安全层逐条删掉
+      // 的那几条），与增量读者不是同一份 ⇒ 增量不写它们，归档仍留原文（不丢证据：#896 的
+      // `recall_read` 就从这份归档逐字取回）。
+      const archivePayload = [...foldedPayload, ...safetyRemovedPayload];
       foldedArchive = buildFoldedRecordArchive({
-        foldedPayload,
+        foldedPayload: archivePayload,
         ledger: foldArchiveLedger,
         stripHistoricalImages: compactionContext.stripHistoricalImages,
         maxBytes: compactionContext.maxFoldedPayloadBytes,
@@ -4728,15 +4707,15 @@ export async function runToolLoop(options) {
       //   · 摘要器真跑过 ⇒ 用它的指纹（已被 #326 的复用账本用作键，含轮区间 / 恢复提示 / 续写基底）；
       //   · 零 LLM 的机械策略（`sliding-window` / `fold-statistical`）⇒ 就地按**同一口径**算：
       //     被折负载 + 轮区间 + 恢复提示（后两个是 #567 反向证的靶子：去掉区间 ⇒ 不同折叠会撞同一个 id）。
-      // issue #894：**另一种读者**——折叠身份（`foldedFingerprint` = 契约上的 `foldId`）**不读增量
-      // 快照**，但它本身是**两条路**（本刀只保证「不读快照」；缓存分支没动，也不在本刀判据覆盖内）：
-      //   · 零 LLM 的机械路径 ⇒ 就地按**全量** `foldedPayload` 现算；
+      // issue #894 / #898：**另一种读者**——折叠身份（`foldedFingerprint` = 契约上的 `foldId`）**不读
+      // 增量素材**，但它本身是**两条路**：
+      //   · 零 LLM 的机械路径 ⇒ 就地按**全量** `archivePayload`（折叠层素材 + 安全层逐条删掉的那几条）现算；
       //   · 摘要器真跑过 ⇒ 直接取 `lastFoldSummaryOutcome?.fingerprint` 这个**缓存分支**（在
       //     `reusableCompactionSummarizer` 里写入、每次 `compactBeforeRound` 开头清空），**根本不重算**。
-      // ⇒ 判据「反向证 A」钉的是：`foldId` 与轮记录那份**全量归档**就地重算相等——不是「与修复前逐字相同」。
+      // ⇒ 口径是「`foldId` 与轮记录那份**全量归档**同源」——不是「与某个历史版本逐字相同」。
       const foldedFingerprint = lastFoldSummaryOutcome?.fingerprint
         ?? foldSummaryFingerprint({
-          messages: foldedPayload,
+          messages: archivePayload,
           roundRange: foldedRoundRange ?? null,
           recoveryHint: compactionContext?.recoveryHint ?? null,
         });
@@ -4805,15 +4784,16 @@ export async function runToolLoop(options) {
       // 就地现算的机械替代物（定稿处）：**这一份天然就是「本折自己那份」**——它只描述本次
       // `foldedPayload` 的那些轮，不包含任何历史折叠文本。抽成闭包是为了让下面 #566 的增量
       // 与 `factsText` 的第三优先级**共用同一次计算**（不重跑、也不改变 `factsText` 的求值时机）。
-      // issue #894（过渡期，见上面快照那一段）：这一支同时喂 ③ 与累计体 `factsText`，必须读
-      // **三元组快照**（素材与区间同源同时刻），而不是安全层动完手之后的全量 `foldedPayload`。
-      // 归档与折叠身份不走这里（它们读全量，是另一种读者）。
-      const computeFactsFallbackText = () => (compacted && incrementFoldedRounds > 0
-        && incrementFoldedPayload.length > 0
-        ? summarizeFoldedPayload(incrementFoldedPayload, {
-          from: incrementFoldedRoundRange?.from ?? 1,
-          to: incrementFoldedRoundRange?.to ?? incrementFoldedRounds,
-          count: incrementFoldedRounds,
+      // issue #894 / #898：这一支同时喂 ③ 与累计体 `factsText`，读的是 `foldedPayload` 那份**折叠层
+      // 素材**——它与 `foldedRoundRange` / `foldedRounds` 由同两发射进、此刻已经定稿，所以素材与区间
+      // 天然同源（#894 早年靠一份三元组快照做到这件事；#898 把安全层的删除改道
+      // `safetyRemovedPayload` 之后快照不再需要，见上面定稿点那一段）。归档与折叠身份是另一种读者。
+      const computeFactsFallbackText = () => (compacted && foldedRounds > 0
+        && foldedPayload.length > 0
+        ? summarizeFoldedPayload(foldedPayload, {
+          from: foldedRoundRange?.from ?? 1,
+          to: foldedRoundRange?.to ?? foldedRounds,
+          count: foldedRounds,
           recoveryHint: compactionContext.recoveryHint,
         })
         : "");
@@ -4834,15 +4814,16 @@ export async function runToolLoop(options) {
       //   ③ 就地现算的机械替代物（同上）。
       // ⚠ 故意**不**用 `fedSummaryText`：那是「折叠后那条 user 消息的全文」= 累计体 + 原任务正文，
       // 拿它当增量就等于把「本折删掉了什么」重新变成「截至本折的历史长什么样」——本单要消灭的正是这个。
-      // issue #894（过渡期）：⓪ 与 ③ 是**两个产生点**，形状相同（读全量 payload + 不涨的区间），
-      // 两处都得读快照；只切其中一处会漏掉另一条路径（`test/compact/fold-increment-safety-scope-894.test.js`
-      // 的格子 1 / 格子 2 各自钉住一条）。
+      // issue #894 / #898：⓪ 与 ③ 是**两个产生点**，形状相同（都读折叠层素材 + 同一份区间与轮数），
+      // 两处必须读**同一份** `foldedPayload` / `foldedRoundRange` / `foldedRounds`。安全层逐条删掉的那
+      // 几条不在这份素材里（#898 起改道 `safetyRemovedPayload`，只喂归档与 `foldId`），所以增量正文
+      // 结构上盖不过自己声明的那段区间——旧版靠快照 + 一份专门判据钉这件事，现在是数据形状本身。
       const incrementText = budgetFallbackFoldedRounds > 0
-        ? ((incrementFoldedPayload.length > 0 && incrementFoldedRounds > 0
-          ? summarizeFoldedPayload(incrementFoldedPayload, {
-            from: incrementFoldedRoundRange?.from ?? 1,
-            to: incrementFoldedRoundRange?.to ?? incrementFoldedRounds,
-            count: incrementFoldedRounds,
+        ? ((foldedPayload.length > 0 && foldedRounds > 0
+          ? summarizeFoldedPayload(foldedPayload, {
+            from: foldedRoundRange?.from ?? 1,
+            to: foldedRoundRange?.to ?? foldedRounds,
+            count: foldedRounds,
             recoveryHint: compactionContext.recoveryHint,
             noteTools: noteToolSurface,
             ...(navigationRecord === undefined ? {} : { navigationRecord }),
@@ -4957,7 +4938,6 @@ export async function runToolLoop(options) {
       };
       recordCompactionStat({
         ...compactionStat,
-        protectedDowngraded,
         // issue #464 A：写实例上的名字（含库层兜底的 `"sliding-window"`），不是配置项原文。
         // issue #657：而「实例」必须是**真正干了这一折活的那个**——配置策略折 0 轮、预算兜底
         // 替它折了时写兜底实例名（`undefined` ⇒ 不写键，与「无事实 ⇒ 无键」同口径）。

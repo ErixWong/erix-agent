@@ -284,8 +284,7 @@ finalGuard({
     compacted,
     foldedRounds,
     tokensBefore,
-    tokensAfter,
-    protectedDowngraded?
+    tokensAfter
   }]
 }
 ```
@@ -365,7 +364,7 @@ Anthropic 的 `cache_control` 标记由**引擎自己**打，宿主不必自己�
  */
 ```
 
-`config.folding.context` 选项接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。循环转发的策略选项包括 `summaryRole`（默认 `"user"`）、`recoveryHint`、`protectedMessage`、`stripHistoricalImages`（默认 `false`）、`onBeforeFold`、`onAfterFold` 和 `stubFor`。`keepRounds` 默认为 `6`。如果未配置 `config.folding.context` 或预算，循环不会压缩。如果配置了预算但没有策略，超出预算时循环使用滑动窗口回退。
+`config.folding.context` 选项接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。循环转发的策略选项包括 `summaryRole`（默认 `"user"`）、`recoveryHint`、`stripHistoricalImages`（默认 `false`）、`onBeforeFold`、`onAfterFold` 和 `stubFor`（`protectedMessage` 已由 issue #898 退役）。`keepRounds` 默认为 `6`。如果未配置 `config.folding.context` 或预算，循环不会压缩。如果配置了预算但没有策略，超出预算时循环使用滑动窗口回退。
 
 ```js
 computeBudget({ contextWindowTokens, maxOutputTokens }) => number
@@ -387,7 +386,7 @@ createFoldLlmStrategy({
 
 三者都会分组并移除完整轮次。`fold-statistical` 会记录确定性的工具足迹、折叠存根和有界的产物导航记录。`fold-llm` 使用折叠载荷调用注入的 `summarizer`，并通过 `enforceSize` 确定性地强制摘要大小。两种折叠策略都会保留 `foldedPayload` 以便归档恢复。
 
-当配置的策略仍使请求超出预算时，循环首先回退到保留数为零的滑动窗口，然后使用确定性的安全截断。最终回退会按需裁剪未受保护的字段、移除图像、清空工具输入并降级受保护消息；`compactionStats[].protectedDowngraded` 会记录这类降级。无法容纳的单个受保护消息不再抛错：安全层会交出尽力而为的消息，并通过既有 `compaction` 事件与 CLI stderr 明示 `budgetUnreachable`。
+当配置的策略仍使请求超出预算时，循环首先回退到保留数为零的滑动窗口，然后使用确定性的安全截断。最终回退会按需裁剪字段、移除图像、清空工具输入并整条删除消息。issue #898 退役了 `protectedMessage` 旋钮与 `compactionStats[].protectedDowngraded`：不再有任何消息例外，而安全层逐条删掉的消息现在全部进 `foldedPayload`，所以它们的原文仍在归档里（也仍可用 `recall_read`（issue #896）逐字取回）。装不下时仍不抛错：安全层交出尽力而为的消息，并通过既有 `compaction` 事件与 CLI stderr 明示 `budgetUnreachable`。
 
 #### Tool-result TTL 折叠
 
@@ -479,7 +478,7 @@ registry 那节）。下面这些结构性事实稳定、不随单个文件的�
 
 1. 工具实现属于宿主。`executeTool` 是循环使用的唯一执行边界。
 2. 规范工具调用轮次按完整的 assistant/tool-result 组折叠，因此正常压缩不会产生孤立的工具消息。
-3. 整轮策略会将 system 消息和首个真实 user 消息保留在头部。如果请求仍超出预算，紧急安全截断回退可以减少或移除未受保护的内容。
+3. 整轮策略会将 system 消息和首个真实 user 消息保留在头部。如果请求仍超出预算，紧急安全截断回退可以减少或移除内容（issue #898：不再有例外）。
 4. LLM 生成的折叠摘要在插入上下文前会经过确定性的尺寸强制。
 5. 上下文压缩可以返回用于持久化的 `foldedPayload`；tool-result TTL 折叠只改变 provider request view，账本保留完整的工具结果文本。
 6. 库源码中不嵌入 secret。API key 可以直接提供，也可以通过 `apiKeyEnv` 和 `apiKeyFile` 间接解析。

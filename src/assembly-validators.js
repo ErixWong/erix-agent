@@ -261,7 +261,6 @@ export const CONTEXT_OPTION_NAMES = [
   "budgetTokens",
   "strategy",
   "keepRounds",
-  "protectedMessage",
   "stripHistoricalImages",
   "stubFor",
   "recoveryHint",
@@ -271,6 +270,9 @@ export const CONTEXT_OPTION_NAMES = [
   "onAfterFold",
   // `onFoldSummary` 不在这里：issue #499 退役（见函数头注释）。它只是**看起来**该在这里——
   // 引擎从不从 `context` 读这个键，留在白名单里等于给它发一张「合法」的假证明。
+  // `protectedMessage` 也不在这里：issue #898 退役整条「不可折叠」机制（遗忘是常态，
+  // 召回才是配套手段：`recall_read` 已从账本逐字取回被折原文）。传它 ⇒ 落宿主元数据分支
+  // （装配口一条 `context_unknown_option`、直连静默放行），不再有任何读取点。
   "maxFoldedPayloadBytes",
   "maxFoldedFactsBytes",
   // issue #493（下游 fde-station 反馈）：这五个键引擎自己在 `budget.js` 里读

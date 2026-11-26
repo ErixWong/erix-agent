@@ -52,6 +52,35 @@
   `foldedPayload` 被有界截断到远小于轮数，不手搓行；逐字/多轮/关键「payload ≪ 轮数」/「未折轮照样取回」四格在读
   `foldedPayload` 的旧实现下均红（旧实现给 `unmappable`/`not_folded`），「无校验字段」格防止有人把 `trust`/`foldId` 加回）。
 
+### Removed (BREAKING)
+
+- **The whole `protectedMessage` mechanism is retired (#898): "mark one message as un-foldable" was
+  bad design — forgetting is the norm, recall is the companion (#896's `recall_read` has landed on
+  main, so deleting the protection is no longer a pure loss of information).** Gone from the engine:
+  `isProtectedMessage`, the "skip the whole round when it holds a protected message" clause in
+  `selectFoldedRounds`, the `protectedMessage` parameter of `safeTruncateMessages`, and the entire
+  "downgrade instead of remove" machinery (the downgrade helper, its predicate, the `protected: true`
+  content marker, the per-round downgrade counter on the compaction stats, and the
+  `budgetUnreachable: "protected_message_exceeds_budget"` value), plus the host's three entry points:
+  the `runToolLoop({ protectedMessage })` option, `config.folding.context.protectedMessage`, and the
+  `foldContextMessage({ protectedMessage })` parameter (the option allowlist in
+  `src/loop/orchestrator.js` dropped that key ⇒ passing it now yields `invalid_option`); on the CLI,
+  `bin/config.js` no longer resolves `folding.protectedMessage` into a function, and the registry
+  entries in `src/assembly-validators.js` (OPTION_TYPES) and `src/loop/capabilities-namespace.js`
+  (OPTION_SURFACES) were deleted in step. **Behaviour change**: a "real user message" that used to be
+  protected now gets folded, truncated, or dropped — no message is exempt. **The collection surface of
+  `foldedPayload` changed too, so this is not a pure deletion**: it used to collect only when a
+  protected message was downgraded, and deleting that branch together with the downgrade would have
+  left it a permanently empty array — yet it is archival evidence (#894's two readers revolve around
+  it: `readLedgerRows` and `recall_read` both read verbatim from `rounds[].messages`). Now the safety
+  layer collects the un-trimmed originals of every round it deletes, before returning; trimmed fields
+  do not enter that array (that text is already in the ledger and `recall_read` gets it back), so the
+  evidence did not shrink — it actually gained the messages that used to be downgraded and never
+  archived. Suggested host landing spot: the upgrade guide needs one line (the 0.35.0 guide did not
+  exist at the time; which version carries it is the reviewer's call), you only delete the three entry
+  points, there is no replacement knob.
+- **`protectedMessage` 整条机制退役（#898）：「把一条消息标记为不可折叠」是坏设计——遗忘是常态，召回才是配套手段（#896 的 `recall_read` 已进 main，所以删保护不再是纯丢信息）。** 引擎侧删的是：`isProtectedMessage`、`selectFoldedRounds` 里「整轮含受保护消息就不折」那一句、`safeTruncateMessages` 的 `protectedMessage` 形参、「降级而不是删除」那一整套（`downgradeProtected` / `isCurrentlyProtected` / 内容上的 `protected: true` 标记 / `compactionStats[].protectedDowngraded` 计数 / `budgetUnreachable: "protected_message_exceeds_budget"` 这个值），以及宿主的三个入口：`runToolLoop({ protectedMessage })` 选项、`config.folding.context.protectedMessage`、`foldContextMessage({ protectedMessage })` 形参（`src/loop/orchestrator.js` 的 option 白名单删了这一项 ⇒ 现在传它得到 `invalid_option`）；CLI 侧 `bin/config.js` 不再把 `folding.protectedMessage` 解析成函数，`src/assembly-validators.js`（OPTION_TYPES）与 `src/loop/capabilities-namespace.js`（OPTION_SURFACES）的登记项同步删除。**行为改变**：以前被保护的「真实用户消息」现在会被折、被裁、被整条删，没有任何消息例外。**`foldedPayload` 的收集面同时改了，这一条不是纯删**：以前它只在「受保护消息被降级」时收集，跟着降级一起删就会变成永远空数组——而它是归档证据（#894 的两种读者就围绕它：`readLedgerRows` 与 `recall_read` 都从 `rounds[].messages` 逐字读）。现在安全层逐条删整轮时，被删轮次的原文（未被裁剪）在返回前收集进去；被裁的字段不进该数组（那些文本本就在账本里，可 `recall_read` 取回），所以证据没有变少、反而多出一批以前只被降级、从不进归档的消息。建议宿主落点：升级指南需要一行（`docs/host-upgrade-guide-0.35.0{,_cn}.md` 当时不存在，该放哪个版本由验收方定），你只需删掉三个入口，没有替代旋钮。
+
 ### Changed
 - **`check:inventory` 的 110 KB 台账删除、判据换成白名单（#907）**：删 `test/compat-pin-inventory.md`（110,946 字节 / 1,068 行；恢复坐标 `git show a0475d84:test/compat-pin-inventory.md`），以及 `scripts/flat-count-inventory.mjs` 的 `--sync`、`sync()`、整个 markdown 表解析层与「每文件点数必须相等」那一族对账。`--verify` 改读新文件 `scripts/compat-pin-allowlist.mjs`（只有 `file` + `surfaces`，无点数 / 合计 / 人格；条目从 `--files` 的 AST 现值现算：190 条 / 能力面 32 文件 / 数据面 183 文件）。判据保留两条真语义——清单外的 (文件, 面) 出现扁平写点 ⇒ exit 1 并点名文件 / 面 / 点数；清单条目指向已不存在的文件 ⇒ exit 1 并点名。**有意的行为改变**：清单内文件的点数怎么变都不再跑红（旧台账要求逐行等值）。`--files` / `--keys` / `--self-test`（夹具改清单形状）留着，`npm run check:inventory` 门禁与 CI 步一并保留。删除理由：#498 的 S7a/S7b/S7c 三片已全部迁完、表只剩历史；而「没登记过的文件不许写 0.28 退役的扁平拼写」这条活判据由白名单承接。
 - **The 110 KB `check:inventory` ledger is deleted; the criterion becomes a whitelist (issue #907)**: `test/compat-pin-inventory.md` (110,946 bytes / 1,068 lines; recover with `git show a0475d84:test/compat-pin-inventory.md`) is removed, along with `--sync`, `sync()`, the whole Markdown table-parsing layer and the "per-file point counts must be equal" reconciliation family in `scripts/flat-count-inventory.mjs`. `--verify` now reads the new file `scripts/compat-pin-allowlist.mjs` (`file` + `surfaces` only, no counts / totals / manual cells; entries generated live from the AST truth of `--files`: 190 entries / capability face 32 files / data face 183 files). Two live criteria are kept: a (file, face) that has write points but is absent from the list ⇒ exit 1 and name the file / face / count; a list entry pointing at a file that no longer exists ⇒ exit 1 and name it. **Intentional behavior change**: a listed file's point count may change without reddening (the old ledger required per-row equality). `--files` / `--keys` / `--self-test` (fixtures reworked to the list shape) stay, and so do the `npm run check:inventory` gate and its CI step. Rationale: #498's S7a/S7b/S7c slices are all migrated and the table only carried history, while the one live judgement — "an unregistered file may not write the retired 0.28 flat spelling" — is carried on by the whitelist.

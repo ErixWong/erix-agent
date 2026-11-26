@@ -1251,7 +1251,6 @@ export function createFoldStatisticalStrategy(options = {}) {
       const { folded, retained, foldedIndexes } = selectFoldedRounds(
         rounds,
         keep,
-        settings.protectedMessage,
         // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
         settings.workingSetRecentRounds,
         {
@@ -1261,8 +1260,9 @@ export function createFoldStatisticalStrategy(options = {}) {
           // `summarizeFoldedPayload`（内含 inventory / stubs / navigation record / recovery hint /
           // anchors），用 `estimateTokens` 估长度（issue #873 验收阻断②）。旧版只传 `{from,to,count}`
           // 的占位串。
-          // issue #873 修复②（copilot 拦下的第 ② 条）：选择器折的**不是连续前缀**——`protectedMessage`
-          // / 连续性块 / 工作集地板都会让中间轮被保留——所以重建必须按回调第二参 `foldedIndexes`
+          // issue #873 修复②（copilot 拦下的第 ② 条）：选择器折的**不是连续前缀**——
+          // 连续性块 / 工作集地板都会让中间轮被保留（#898 之前还多一条 `protectedMessage`）
+          // ——所以重建必须按回调第二参 `foldedIndexes`
           //（= 此刻真被选中的轮索引）；旧版 `rounds.slice(0, count)` 会把没被折的轮算进摘要、
           // 又把真被折的轮漏掉，估算对象与实际被折轮次不符（可能低估也可能高估）。
           summaryOverheadTokens: (foldedCount, foldedIndexes) => {

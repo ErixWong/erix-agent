@@ -52,7 +52,6 @@ export function createSlidingWindowStrategy(options = {}) {
       const { folded, retained, foldedIndexes } = selectFoldedRounds(
         rounds,
         keepRounds,
-        settings.protectedMessage,
         // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
         settings.workingSetRecentRounds,
         {

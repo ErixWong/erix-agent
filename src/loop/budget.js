@@ -16,13 +16,6 @@ export function cloneState(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-export function isProtectedMessage(message, guard) {
-  if (typeof guard === "function") return guard(message) === true;
-  if (typeof guard === "string") return message?.role === guard;
-  if (Array.isArray(guard)) return guard.includes(message?.role);
-  return false;
-}
-
 export function normalizeToolNameSet(value, fallback) {
   const names = Array.isArray(value) ? value : fallback;
   return new Set(names.filter((name) => (
@@ -336,22 +329,24 @@ export function truncateTextToBudget(text, budgetTokens) {
     : "";
 }
 
-export function dropOldestUnprotectedRound(messages, protectedMessage) {
+// issue #898：`protectedMessage` 机制退役——没有任何轮次是「不可整轮删」的，
+// 所以这一发就是「删最老的那一轮」（`head` 里尚未成轮的零头始终不动）。
+export function dropOldestUnprotectedRound(messages) {
   const { head, rounds } = groupIntoRounds(messages);
-  const index = rounds.findIndex((round) => !round.messages.some((message) => (
-    isProtectedMessage(message, protectedMessage)
-  )));
-  if (index < 0) return undefined;
-  const start = head.length + rounds
-    .slice(0, index)
-    .reduce((total, round) => total + round.messages.length, 0);
-  const count = rounds[index].messages.length;
+  if (rounds.length === 0) return undefined;
+  const start = head.length;
+  const count = rounds[0].messages.length;
   return messages.splice(start, count);
 }
 
-export async function safeTruncateMessages(messages, budgetTokens, protectedMessage, stubFor) {
+// issue #898：`protectedMessage` 形参与「降级而不是删除」那一整套已退役。
+// ⚠ `foldedPayload` 的收集面随之改动（**不是**静默改语义，见 CHANGELOG）：
+//   旧口径只把「曾被保护、后被降级再被删」的消息送进归档 ⇒ 机制没了之后它会恒为空数组
+//   （= 丢证据）。新口径收**逐条删除路径删掉的全部消息**：旧口径归档过的那些一条不少，
+//   以前没归档的普通删除现在也进归档。整轮删除那一段（上面的 while 循环）旧口径就不归档，
+//   本刀不动它。
+export async function safeTruncateMessages(messages, budgetTokens, stubFor) {
   const result = cloneState(messages);
-  const downgraded = new Set();
   const foldedPayload = [];
   const foldedStubs = [];
   const collectStubs = async (removed) => {
@@ -365,31 +360,14 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
       foldedStubs.push(Array.from(stub).slice(0, 200).join(""));
     }
   };
-  let protectedDowngraded = 0;
-  const isCurrentlyProtected = (message) => (
-    isProtectedMessage(message, protectedMessage) && !downgraded.has(message)
-  );
-  const downgradeProtected = (message) => {
-    if (!isCurrentlyProtected(message)) return false;
-    downgraded.add(message);
-    protectedDowngraded += 1;
-    return true;
-  };
   const removeMessages = async (start, count) => {
     const removed = result.slice(start, start + count);
-    foldedPayload.push(
-      ...removed
-        .filter((message) => downgraded.has(message))
-        .map((message) => cloneState(message)),
-    );
+    foldedPayload.push(...removed.map((message) => cloneState(message)));
     await collectStubs(removed);
     result.splice(start, count);
   };
   while (estimateMessageTokens(result) > budgetTokens) {
-    const removed = dropOldestUnprotectedRound(
-      result,
-      (message) => isCurrentlyProtected(message),
-    );
+    const removed = dropOldestUnprotectedRound(result);
     if (removed === undefined) break;
     await collectStubs(removed);
     // Remove complete rounds before reducing individual message content.
@@ -398,13 +376,11 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
   const fields = [];
   const references = [];
   result.forEach((message, messageIndex) => {
-    const protectedMessageValue = isCurrentlyProtected(message);
     if (typeof message.content === "string") {
       fields.push({
         key: `message-${messageIndex}`,
         text: message.content,
         priority: messageIndex,
-        protected: protectedMessageValue,
       });
       references.push({
         fieldIndex: fields.length - 1,
@@ -428,7 +404,6 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
         key: `message-${messageIndex}-block-${blockIndex}`,
         text: String(text),
         priority: messageIndex,
-        protected: protectedMessageValue,
       });
       references.push({
         fieldIndex: fields.length - 1,
@@ -438,9 +413,9 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
       });
     }
   });
+  // issue #898：`protected: true` 那个标记随机制一起退役 ⇒ 全部字段都可修剪。
   const trimmableFields = fields
-    .map((field, fieldIndex) => ({ ...field, fieldIndex }))
-    .filter((field) => field.protected !== true);
+    .map((field, fieldIndex) => ({ ...field, fieldIndex }));
   const enforced = enforceSize(trimmableFields, budgetTokens);
   const enforcedByIndex = new Map(
     enforced.fields.map((field) => [field.fieldIndex, field]),
@@ -477,7 +452,9 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
   });
 
   /**
-   * @param {"protected_message_exceeds_budget"|"cannot_fit"|undefined} budgetUnreachable
+   * @param {"cannot_fit"|undefined} budgetUnreachable
+   *   issue #898：`"protected_message_exceeds_budget"` 这个值随 `protectedMessage` 机制一起退役
+   *   （它描述的正是「单条受保护消息装不下」），现在只剩 `"cannot_fit"`。
    */
   const finish = (budgetUnreachable) => {
     const uniqueStubs = [...new Set(foldedStubs)];
@@ -503,47 +480,24 @@ export async function safeTruncateMessages(messages, budgetTokens, protectedMess
       enforced,
       foldedPayload,
       foldedStubs: uniqueStubs,
-      protectedDowngraded,
       budgetUnreachable,
     };
   };
 
-  for (const message of result) {
-    if (isCurrentlyProtected(message) && estimateMessageTokens([message]) > budgetTokens) {
-      return finish("protected_message_exceeds_budget");
-    }
-  }
-
+  // issue #898：没有受保护消息了 ⇒「单条受保护消息超预算」这一格不可达，
+  // 逐条删除从第一条开始删（`removableIndex` 以前找的就是第一个未受保护的下标）。
+  // 下面那条「`tool_result` 连着上一条 assistant」的配对分支以前只在
+  // `removableIndex > 0` 时可达，现在恒为 0 ⇒ 随机制一起删。
   while (estimateMessageTokens(result) > budgetTokens) {
-    const removableIndex = result.findIndex((message) => (
-      !isCurrentlyProtected(message)
-    ));
-    if (removableIndex < 0) {
-      const oldestProtected = result.find((message) => isCurrentlyProtected(message));
-      if (oldestProtected === undefined) {
-        return finish("cannot_fit");
-      }
-      downgradeProtected(oldestProtected);
-      continue;
+    if (result.length === 0) {
+      return finish("cannot_fit");
     }
-    const message = result[removableIndex];
+    const message = result[0];
     const uses = blocksFor(message.content).filter((block) => block?.type === "tool_use");
-    const results = blocksFor(message.content).filter((block) => block?.type === "tool_result");
-    if (uses.length > 0 && result[removableIndex + 1]?.role === "user") {
-      if (isCurrentlyProtected(result[removableIndex + 1])) {
-        downgradeProtected(result[removableIndex + 1]);
-        continue;
-      }
-      await removeMessages(removableIndex, 2);
-    } else if (results.length > 0 && removableIndex > 0
-      && result[removableIndex - 1]?.role === "assistant") {
-      if (isCurrentlyProtected(result[removableIndex - 1])) {
-        downgradeProtected(result[removableIndex - 1]);
-        continue;
-      }
-      await removeMessages(removableIndex - 1, 2);
+    if (uses.length > 0 && result[1]?.role === "user") {
+      await removeMessages(0, 2);
     } else {
-      await removeMessages(removableIndex, 1);
+      await removeMessages(0, 1);
     }
   }
   return finish(undefined);

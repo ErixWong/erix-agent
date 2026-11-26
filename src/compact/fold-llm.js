@@ -295,7 +295,6 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
  *   maxSummarizerInputTokens?: number,
  *   summaryRole?: "user"|"system",
  *   recoveryHint?: string,
- *   protectedMessage?: Function|string|string[],
  *   stripHistoricalImages?: boolean,
  *   onBeforeFold?: Function,
  *   onAfterFold?: Function,
@@ -342,7 +341,6 @@ export function createFoldLlmStrategy({
       const { folded, retained, foldedIndexes } = selectFoldedRounds(
         rounds,
         keep,
-        settings.protectedMessage,
         // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
         // #614 之后本策略是 CLI 默认 ⇒ 漏传就等于宿主显式开的地板在默认路径上被静默忽略。
         settings.workingSetRecentRounds,

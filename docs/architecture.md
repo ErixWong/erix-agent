@@ -382,8 +382,7 @@ The result shape is:
     compacted,
     foldedRounds,
     tokensBefore,
-    tokensAfter,
-    protectedDowngraded?
+    tokensAfter
   }]
 }
 ```
@@ -537,9 +536,9 @@ measurements of it.
 
 The `config.folding.context` option accepts `strategy`, `budgetTokens`,
 `keepRounds`, `toolContext`, and `task`. Strategy options forwarded by the loop
-include `summaryRole` (default `"user"`), `recoveryHint`, `protectedMessage`,
+include `summaryRole` (default `"user"`), `recoveryHint`,
 `stripHistoricalImages` (default `false`), `onBeforeFold`, `onAfterFold`, and
-`stubFor`. `keepRounds` defaults to `6`. If no `config.folding.context` or
+`stubFor` (`protectedMessage` was retired by issue #898). `keepRounds` defaults to `6`. If no `config.folding.context` or
 budget is configured, the loop does not compact. If a budget is configured
 without a strategy, the loop uses the sliding-window fallback when the budget
 is exceeded.
@@ -573,10 +572,13 @@ strategies retain `foldedPayload` for archival recovery.
 
 When a configured strategy still leaves the request over budget, the loop first
 falls back to a zero-keep sliding window and then uses deterministic safe
-truncation. That final fallback can trim unprotected fields, remove images,
-clear tool inputs, and downgrade protected messages as needed;
-`compactionStats[].protectedDowngraded` records such downgrades. A single
-protected message that cannot fit no longer throws: the safety layer returns
+truncation. That final fallback can trim fields, remove images, clear tool
+inputs and remove whole messages as needed. Issue #898 retired the
+`protectedMessage` knob together with `compactionStats[].protectedDowngraded`:
+no message is exempt any more, and every message the safety layer removes one
+by one now goes into `foldedPayload`, so its original text stays in the ledger
+archive (and stays reachable through `recall_read`, issue #896). A run whose
+best-effort copy still cannot fit does not throw: the safety layer returns
 the best-effort messages with `budgetUnreachable`, surfaced through the existing
 `compaction` event and CLI stderr.
 
@@ -836,7 +838,7 @@ intentionally has no `src/providers/index.js`, and `src/skills/` ships
    groups, so normal compaction does not create orphan tool messages.
 3. Whole-round strategies keep system messages and the first real user message
    in the head. The emergency safe-truncation fallback may reduce or remove
-   unprotected content if the request still exceeds its budget.
+   content if the request still exceeds its budget (issue #898: nothing is exempt).
 4. LLM-generated fold summaries pass deterministic size enforcement before they
    are inserted into the context.
 5. Context compaction may return `foldedPayload` for persistence, while

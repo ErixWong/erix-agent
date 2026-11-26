@@ -8,7 +8,6 @@ import {
   computeBudget,
   isBuiltinCompactionStrategyName,
 } from "../src/index.js";
-import { isRealUser } from "../src/compact/helpers.js";
 import {
   CONTINUITY_WRITE_DEFAULT,
   CONTINUITY_WRITE_MODES,
@@ -381,15 +380,19 @@ function withRecoveryHint(context, strategyName, recoveryHint, stubFor) {
  * issue #498 S5：把 `buildCompactionContext` 的那一块拆成**规位**的两半。
  *
  * 为什么必须拆（不是「整块搬」）：这一块里混着两类值——`budgetTokens` / `strategy` 是数据
- * （数字、内置策略名），`protectedMessage` / `recoveryHint` / `stubFor` 是函数。按母单 #495 的
+ * （数字、内置策略名），`recoveryHint` / `stubFor` 是函数。按母单 #495 的
  * 归属规则，数据进 `config.folding.context`，函数进 `capabilities.hooks.*`（S4c 的形态多态旋钮
  * 与折叠回调各归各位）。整块塞进 `config.folding.context` 会被 intake 当场拒绝——`config` 子树
  * 必须过 JSON round-trip，`collectFunctionPaths` 会点名 `config.folding.context.recoveryHint`
  * 并抛。
  *
  * 拆分口径是**值的形态**，不是键名白名单：函数 ⇒ 能力面，其余 ⇒ 配置面。这与 S4c 给
- * `protectedMessage` / `recoveryHint` 定的规则逐字同源（数据形态留 `config.folding.context`，
+ * `recoveryHint` 定的规则逐字同源（数据形态留 `config.folding.context`，
  * 函数形态进 `capabilities.hooks`），所以以后这一块多一个函数值也不会静默留在数据侧。
+ *
+ * issue #898：这里以前还设着 `protectedMessage: isRealUser`——「把真实用户消息标为不可折叠」
+ * 整条机制已退役（遗忘是常态，召回才是配套手段：`recall_read` 逐字取回被折原文），
+ * 所以 CLI 不再往折叠上下文里递这个钩子。
  *
  * ⚠ `strategy` 在本机 CLI 里**永远**是内置策略名（`resolveCompactionStrategyName` 返回字符串），
  * 所以它落数据侧；对象形态的策略对象属 `capabilities.ports.strategy`，CLI 不产生它——真出现时
@@ -428,6 +431,5 @@ export function buildCompactionContext(config, explicitBudget, recoveryHint, stu
     budgetTokens: resolved.budgetTokens,
     // issue #682：来源进 `config.folding.context`（数据面），子 run 记录因此带得走四态。
     budgetSource: resolved.source,
-    protectedMessage: isRealUser,
   }, strategyName, recoveryHint, stubFor);
 }

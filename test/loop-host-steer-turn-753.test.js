@@ -328,16 +328,19 @@ test("#753-C1 resume 之后注入的那条仍读得到，且不重复入账（�
   );
 });
 
-// ── T7：折叠之后仍在请求视图里（真用户轮的待遇，#292）──────────────────────────────
+// ── T7：折叠之后还在不在请求视图里（#292 的待遇 × #898 的退役）───────────────────────
 // 现测形状（本文件跑出来的）：`sliding-window` 把**当前最新的真用户轮**留在请求视图里，更早的那条
-// 会随窗口推走；宿主想钉住它是既有 `capabilities.hooks.protectedMessage` 的口径。两格都跑：
-//   T7a 折叠已发生、注入的那条就是最新真用户轮 ⇒ 必须在；
-//   T7b 同一句话改在早期轮注入（本会被窗口推走）+ 宿主用 `protectedMessage` 认领 ⇒ 也必须在。
-for (const [label, injectRound, protect] of [
-  ["最新轮注入", 4, false],
-  ["早期轮注入加宿主认领", 2, true],
+// 会随窗口推走。以前宿主可以用 `capabilities.hooks.protectedMessage` 把早期那条钉住（本格就是这个
+// 用法的仓内消费者）；issue #898 退役了整条「不可折叠」机制 ⇒ 现在**没有任何豁免**：
+//   T7a 折叠已发生、注入的那条就是最新真用户轮 ⇒ 必须在（守卫生效，与 #898 无关）；
+//   T7b 同一句话改在早期轮注入 ⇒ 今天会被窗口折走（**行为改变**，正是 #898 要的那件事），
+//       但它的**原文仍在轮记录归档里**，可以逐字取回（#896 的 `recall_read` 读的就是这一份）。
+// 两格都跑，一正一反，谁也别把「删了保护 = 丢了信息」说成是的。
+for (const [label, injectRound, survivesFolding] of [
+  ["最新轮注入", 4, true],
+  ["早期轮注入（#898 之后不再有豁免）", 2, false],
 ]) {
-  test(`#753-C1 折叠发生之后，注入的那条仍在请求视图里（${label}）`, async () => {
+  test(`#753-C1 折叠发生之后，注入的那条的待遇（${label}）`, async () => {
     const marker = `STEER_753_T7_${label}`;
     const filler = "很长的一段工具输出用于把请求顶过折叠预算。".repeat(40);
     /** @type {any[]} */
@@ -345,11 +348,13 @@ for (const [label, injectRound, protect] of [
     const provider = createFakeProvider([
       toolTurn("a"), toolTurn("b"), toolTurn("c"), endTurn("收尾终稿"),
     ]);
+    const store = createMemoryTranscriptStore();
+    const runId = `753-t7-${String(injectRound)}`;
     const result = await runDirect({
       ...baseOptions,
       maxRounds: 4,
-      store: createMemoryTranscriptStore(),
-      runId: `753-t7-${String(injectRound)}`,
+      store,
+      runId,
       initialUserMessage: "local task",
       provider,
       executeTool: async () => filler,
@@ -357,11 +362,6 @@ for (const [label, injectRound, protect] of [
       capabilities: {
         hooks: {
           nextUserTurn: (/** @type {any} */ payload) => (payload.round === injectRound ? marker : null),
-          ...(protect
-            ? {
-              protectedMessage: (/** @type {any} */ message) => message?.meta?.source === "host-steer",
-            }
-            : {}),
         },
       },
       onEvent: (/** @type {any} */ event) => events.push(event),
@@ -371,8 +371,17 @@ for (const [label, injectRound, protect] of [
     assert.equal(result.compactionStats.some((stat) => stat?.compacted === true), true,
       `必须真的发生折叠（实测 ${JSON.stringify(result.compactionStats.map((stat) => stat?.compacted))}）`);
     assert.equal(result.diagnostics.steer.injected, 1);
-    assert.equal(countIn(provider.requests.at(-1).messages, marker), 1,
-      "折叠之后的最后一发请求里必须还读得到注入的那条");
+    const inLastRequest = countIn(provider.requests.at(-1).messages, marker);
+    if (survivesFolding) {
+      assert.equal(inLastRequest, 1, "折叠之后的最后一发请求里必须还读得到注入的那条");
+    } else {
+      // #898 的行为改变：早期注入的那条**不再被豁免**，随窗口被折走。
+      assert.equal(inLastRequest, 0, `#898 之后早期注入的那条必须被折走（实测仍在 ${inLastRequest} 处）`);
+      // 但原文没丢：轮记录归档里逐字还在（宿主侧的召回路径读的就是这一份）。
+      const rows = await store.load(runId);
+      const inArchive = JSON.stringify(rows.map((row) => row?.rounds ?? row)).includes(marker);
+      assert.equal(inArchive, true, `#898 删保护不丢信息：那条注入的原文必须仍在账本里（实测不在）`);
+    }
     assert.equal(events.some((event) => event?.type === "user_turn_guard_unrecoverable"), false,
       "真用户轮不该触发不可恢复的用户轮守卫");
   });
