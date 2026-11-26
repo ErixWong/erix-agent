@@ -227,6 +227,10 @@ export function classify(rel) {
  * @type {Readonly<Record<string, number>>}
  */
 const HISTORY_BODY_PINS = Object.freeze({
+  // issue #929：新增 0.35.0 升级指南（两份），退役扁平键命中数现测各 4
+  "docs/host-upgrade-guide-0.35.0.md": 4,
+  "docs/host-upgrade-guide-0.35.0_cn.md": 4,
+
   "docs/decisions/001-config-adapters.md": 4,
   "docs/decisions/001-config-adapters_cn.md": 2,
   "docs/decisions/002-transcript-store.md": 2,

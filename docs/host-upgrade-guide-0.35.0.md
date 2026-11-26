@@ -101,7 +101,7 @@ section rather than import the table.
 
 - **Options —** no `runToolLoop` option, its key, type or default changes in this release; only the
   package-entry export list loses the five names above.
-- **Defaults —** unchanged: `maxRounds`, `stallDetection`, `compaction` (`fold-llm`),
+- **Defaults —** unchanged: `maxRounds`, `stallDetection`,
   `finalGuardTimeoutMs` and the summarizer knobs.
 - **Observer events —** no event renamed, removed or added.
 - **Diagnostic fields —** unchanged.

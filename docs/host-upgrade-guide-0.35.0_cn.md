@@ -94,7 +94,7 @@ function resolveApiKey(config, env = process.env) {
 ## 3. 不变的部分
 
 - **选项——** 本版没有任何 `runToolLoop` 选项、它的键、类型或默认值变化；包入口导出清单只是少了上面那五个名字。
-- **默认值——** 不变：`maxRounds`、`stallDetection`、`compaction`（`fold-llm`）、`finalGuardTimeoutMs`
+- **默认值——** 不变：`maxRounds`、`stallDetection`、`finalGuardTimeoutMs`
   以及 summarizer 那几个旋钮。
 - **观察者事件——** 没有事件被改名、删除或新增。
 - **诊断字段——** 不变。
