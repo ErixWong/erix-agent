@@ -364,6 +364,13 @@ export function boundRunState(state) {
       ...(deterministic.guardExtension === undefined
         ? {}
         : { guardExtension: deterministic.guardExtension }),
+      // issue #930：上下文超窗自恢复的**一次性配额**，与 `guardExtension` 同一条纪律——
+      // 「跑 → 崩 → resume 每次都能领一份 = 无界成本」。它不能靠 `compactionStats` 里那条
+      // `trigger` 记录来推：那份列表是 32 条滚动窗口，32 次折叠之后那条记录会被挤掉，
+      // 于是配额**静默重置**（copilot 验收点出来的）。
+      ...(deterministic.contextWindowRecovery === undefined
+        ? {}
+        : { contextWindowRecovery: deterministic.contextWindowRecovery }),
       termination: deterministic.termination ?? { reason: "running" },
       errors: deterministic.errors ?? {},
     },
@@ -498,6 +505,7 @@ function normalizeUnpersisted(value) {
  *   unpersisted?: any,
  *   compactionStats?: any,
  *   guardExtensionUsed?: boolean,
+ *   contextWindowRecoveryUsed?: boolean,
  * }} [options]
  */
 export function createDeterministicRunState({
@@ -524,6 +532,8 @@ export function createDeterministicRunState({
   // 全部复位，见 `resume-manager.js` 的 `lowBudgetPrompted = false`）——它是**跨 resume 不许重置**
   // 的成本闸：否则「跑 → 崩 → resume」每次都领一份新配额 = 无界成本。
   guardExtensionUsed = false,
+  // issue #930：上下文超窗自恢复的一次性配额（同上，跨 resume 不许重置）。
+  contextWindowRecoveryUsed = false,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   // 双计数器（issue #32 #8）：rounds = 会话累计身份轮号（跨 resume 单调递增）；
@@ -577,6 +587,8 @@ export function createDeterministicRunState({
       // issue #386 切片 3：**只在真的用过配额时才出现这个键**（未 opt-in / opt-in 但没补跑的 run
       // 的 state.json 与今天逐字一致，与 `compactionStatsWindow` 同一个「缺席不是歧义」口径）。
       ...(guardExtensionUsed === true ? { guardExtension: { used: true } } : {}),
+      // issue #930：同上，只在真的用过时才出现这个键（没用过的 run 的 state.json 逐字不变）。
+      ...(contextWindowRecoveryUsed === true ? { contextWindowRecovery: { used: true } } : {}),
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),
