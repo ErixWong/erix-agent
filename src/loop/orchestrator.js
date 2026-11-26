@@ -25,6 +25,7 @@ import {
   estimateMessageTokens,
   estimateTokens,
   estimateTokensFromCharacterCounts,
+  estimateToolDefinitionTokens,
 } from "../tokens.js";
 import { groupIntoRounds } from "../messages/rounds.js";
 // issue #394：结清尾部悬空 `tool_use` 的**共享实现**（判据 / 结果块 / 正文三件事实都在那一份里）。
@@ -185,6 +186,8 @@ import {
 } from "../compact/fold-summary-journal.js";
 import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { foldWithinBudget, prependFoldSummary } from "../compact/budget-fit.js";
+// issue #892：派生预算需要把工具定义这一项扣掉，`computeBudget` 仍是公式的唯一之家。
+import { computeBudget } from "../compact/budget.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
 import { callRoundJudge as callRoundJudgeImpl } from "./judge-runner.js";
 import { makeStateView } from "./state-view.js";
@@ -1647,6 +1650,11 @@ export async function runToolLoop(options) {
   // 避免两处口径漂移。
   const budgetMetadataComplete = metadata?.contextWindowTokens !== undefined
     && metadata?.maxOutputTokens !== undefined;
+  // issue #892：工具定义从来没被算进 token 估算——每个请求都带 `payload.tools`，而预算
+  // 与折叠判据只数 `messages` ⇒ 派生预算乐观（工具越多越乐观）。这里**一个 run 只算一次**
+  // （工具面在一轮内不变），同一个数喂给 `computeBudget`（派生预算）。默认无工具 ⇒ `0`
+  // ⇒ 下游逐字不变。折叠判据读的就是这个被扣后的 `budgetTokens`（同一口径，不重复加）。
+  const toolDefinitionTokens = estimateToolDefinitionTokens(tools);
   // issue #682：引擎侧叶子 `config.metadata.modelMetadata.budgetTokens`（显式预算）优先于
   // `computeBudget` 派生。裁决点只有一个（`resolveBudgetTokens`（`src/loop/budget.js`）），
   // 于是「显式值 / 派生 / 关闭」不会再在两处各答一次（#682 的原始缺陷形状）。
@@ -1656,11 +1664,22 @@ export async function runToolLoop(options) {
     contextBudgetSource: context?.budgetSource,
     metadata,
   });
+  // issue #892：`resolveBudgetTokens` 内部的 `computeBudget` 拿不到工具面（它的调用点在
+  // `src/loop/budget.js`，不属本单改动面），所以对「派生」这一支用同一个公式重算一次，把
+  // `toolDefinitionTokens` 从预算里扣掉（`computeBudget` 仍是唯一公式之家）。默认 `0` ⇒ 重算
+  // 结果与 `resolvedBudget.budgetTokens` 逐字相等；显式预算（宿主声明的总额）不在这里再动。
   // `any` 是**刻意**的（#417 的 strict 棘轮只减不增）：这一格以前由 `let budgetTokens = context?.budgetTokens`
   // 推断成 `any`，下游十来处使用点都按「已判非 undefined」写。收窄成 `number | undefined` 会在那些
   // 使用点新增 strict 错误（本轮不还这笔债），而这里也不该靠 `!` 掩盖——`validateBudget` 就在下一行
   // 做真正的运行期校验。
-  const budgetTokens = /** @type {any} */ (resolvedBudget.budgetTokens);
+  const resolvedBudgetTokens = resolvedBudget.budgetTokens;
+  const budgetTokens = /** @type {any} */ (resolvedBudget.source === "derived" && budgetMetadataComplete
+    ? computeBudget({
+      contextWindowTokens: metadata.contextWindowTokens,
+      maxOutputTokens: metadata.maxOutputTokens,
+      toolDefinitionTokens,
+    })
+    : resolvedBudgetTokens);
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
   // issue #182：预算推不出来且原因确实是元数据不齐（宿主自己给了 context.budgetTokens 时
   // 压缩仍然启用，不该告警）——发一次性诊断事件。
