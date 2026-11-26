@@ -4,6 +4,17 @@
 ## [Unreleased]
 
 ### Changed
+- **`repl` stops accepting `--compaction` (task 261126-51, issue #937).** The #926 ruling was "folding is LLM-only:
+  `--compaction` and `config.compaction` are retired", and `chat` landed it — `bin/cli.js` help says so explicitly.
+  `bin/repl.js` did not: it still listed the flag as value-taking, still parsed it, and still wrote it into
+  `config.compaction`, which `buildCompactionContext` reads. The flag was also absent from the repl help, so it was
+  an undocumented-but-working entry point. All three sites are gone; `erix repl --compaction fold-llm` now exits 1
+  with `未知参数：--compaction`, matching `chat`. `--compact-budget` (a budget, not a strategy) is untouched.
+- **`repl` 不再接受 `--compaction`（任务 261126-51，issue #937）。** #926 的裁决是「折叠只走 LLM：`--compaction`
+  与 `config.compaction` 退役」，`chat` 落地了（`bin/cli.js` 的帮助明写），`bin/repl.js` 没有：它仍把该旗标
+  列进取值清单、仍然解析它、仍然写进 `config.compaction`，而 `buildCompactionContext` 会读它。该旗标又不在 repl
+  帮助里 ⇒ 成了「未公开但有效」的入口。三处已删；`erix repl --compaction fold-llm` 现在与 `chat` 同款，
+  exit 1 并报 `未知参数：--compaction`。`--compact-budget`（预算，不是策略）未动。
 - **`truncateBody`'s 500-character cap gets its regression guard back (task 261126-50, issue #938 ①).** The
   only case that ever asserted the cap lived in `test/providers/anthropic.test.js`, which was deleted wholesale
   with the Anthropic protocol retirement (#926) — but `truncateBody` (`src/providers/http-shared.js`) is still

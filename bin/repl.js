@@ -31,7 +31,6 @@ import { safeRunId } from "../src/store/file.js";
 import {
   buildCompactionContext,
   loadCliConfig,
-  normalizeCompactionOption,
   resolveCompactionBudget,
   splitCompactionContext,
 } from "./config.js";
@@ -213,7 +212,6 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       || argument === "--config"
       || argument === "--skills-dir"
       || argument === "--compact-budget"
-      || argument === "--compaction"
       || argument === "--max-rounds"
       || argument === "--idle-timeout"
       || argument === "--tools"
@@ -243,13 +241,6 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
         options.skillsDir = rawValue;
       } else if (argument === "--compact-budget") {
         options.compactBudget = parseIntegerOption(argument, rawValue, 0);
-      } else if (argument === "--compaction") {
-        if (rawValue.trim() === "") usageError("--compaction 不能为空");
-        try {
-          options.compaction = normalizeCompactionOption(rawValue);
-        } catch (error) {
-          usageError(`--compaction：${error?.message ?? String(error)}`);
-        }
       } else if (argument === "--max-rounds") {
         options.maxRounds = parseIntegerOption(argument, rawValue, 1);
       } else if (argument === "--tools") {
@@ -567,10 +558,10 @@ export async function runRepl(argv, io = {}) {
     // issue #798：旗标是输入面的一部分，env 读不到它 ⇒ 一起交给配置面去裁决。
     effort: options.effort,
   });
-  // --compaction 覆盖 config.compaction（名字以字符串形态继续下传，实例化交给引擎）
-  const config = options.compaction === undefined
-    ? baseConfig
-    : { ...baseConfig, compaction: options.compaction };
+  // issue #926 / 任务 261126-51：`--compaction` 与 `config.compaction` 已退役（折叠只走 LLM）。
+  // `chat` 早就删了；repl 这一侧当时漏掉，成了「未公开但仍被接受」的入口（#937）。现在同款关闭：
+  // 旗标不在解析表里 ⇒ 落到未知旗标分支报 usage 错，配置叶子由 `option-normalization` 拒。
+  const config = baseConfig;
   // issue #798：与 `bin/cli.js` 同一个裁决（旗标 > env > slot）。`io.config` 是宿主直接注入的，
   // 那上面没有 `reasoningEffort` 这一格 ⇒ 入口处用同一个函数现算，两条路不会给出不一致的次序。
   const reasoningEffort = config.reasoningEffort
