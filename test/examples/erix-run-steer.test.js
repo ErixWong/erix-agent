@@ -17,7 +17,7 @@
 // 一律临时目录 —— 不碰真实 ~/.erix，不触网。
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -595,4 +595,214 @@ test("生产默认路径（不注入 runJob）：steer 经默认包装层到达�
   const settledJob = registry.get(runId);
   assert.ok(settledJob !== undefined, "已结算的 job 仍在注册表里（status 读得到）");
   assert.deepEqual(settledJob.steerInbox, [], "内存收件箱真的空了（不是只把计数器抹平）");
+});
+
+// ---------------------------------------------------------------------------
+// 8. issue #942：全量账 steerLog —— 未消费的正文要进 status.json（不再只留一个裸计数）
+//    每条用例都钉死不变式：steerPending === steerLog.filter(e => e.injected !== true).length
+// ---------------------------------------------------------------------------
+
+test("issue #942：投一条、内层 run 直接 end_turn 没赶上轮边界 ⇒ 终局 steerLog 带正文且 injected:false（引擎侧的账不在本用例取证面内）", async () => {
+  const home = await tempDir("erix-run-steer-home-");
+  const sessionDir = await tempDir("erix-run-steer-sess-");
+  const registry = createAsyncJobRegistry();
+  const STEER_TEXT = "转向：先只改 b.js，不要动 a.js";
+  const runtime = createAsyncRuntime({
+    home,
+    registry,
+    notify: () => true,
+    // 内层 run 一个轮边界都没走到 nextUserTurn（假 provider 不回工具 ⇒ 直接 end_turn）：
+    // 队首从没被取走，钩子一次都没被调用，故 steerLog 那条留在 injected:false。
+    runJob: async (params, deps) => {
+      await waitUntil(() => (registry.get(deps.runId)?.steerInbox?.length ?? 0) >= 1, { label: "steer 已入队" });
+      return {
+        ...P_OK,
+        termination: { reason: "end_turn" },
+        diagnostics: { model: "slot-model", steer: { offered: 0, injected: 0, rejected: 0, lastRound: 0 } },
+      };
+    },
+  });
+  const runId = runtime.start({ task: "t", cwd: repoRoot, sessionDir }, { sessionId: "s-1" }).handle.runId;
+
+  const queued = runtime.act({ action: "steer", runId, message: STEER_TEXT });
+  assert.equal(queued.steered, true);
+  assert.equal(queued.view.steerLog.length, 1, "入队即开账");
+  assert.equal(queued.view.steerLog[0].text, STEER_TEXT, "入队时正文原样进账（不截断）");
+  assert.equal(queued.view.steerLog[0].injected, false, "入队即 injected:false");
+  assert.notEqual(queued.view.steerLog[0].at, undefined, "账上带 at 时间戳");
+  assert.equal(queued.view.steerPending, queued.view.steerLog.filter((e) => e.injected !== true).length, "不变式（入队时）");
+
+  await waitUntil(() => registry.get(runId)?.status === "completed", { label: "settled" });
+  const status = runtime.act({ action: "status", runId });
+  assert.equal(status.view.steerPending, 1, "终局仍挂着 1 条没赶上轮边界的转向");
+  assert.equal(status.view.steerLog.length, 1);
+  assert.equal(status.view.steerLog[0].text, STEER_TEXT, "正文逐字等于投进去的那句");
+  assert.equal(status.view.steerLog[0].injected, false, "没被消费 ⇒ injected 留 false");
+  // issue #942 评审 B2：这里**不**再断言 `diagnostics.steer.injected===0`——本用例的 `runJob` 是假的，它直接返回一个字面量
+  // `diagnostics.steer`，拿它做断言是恒真的假断言（引擎一行代码都没跑，什么也没证）。引擎侧的账不在本用例的取证面内；
+  // 引擎**自产**的 `diagnostics.steer`（injected 与 `host_steer_injected` 事件同数）由本文件第 5 节「真 runToolLoop」用例钉住。
+  // 本用例只证我们自己的账：正文原样、injected:false、与 steerPending 同源、浅拷贝、落盘一致。
+  assert.equal(status.view.steerPending, status.view.steerLog.filter((e) => e.injected !== true).length, "不变式（终局面）");
+  assert.notEqual(status.view.steerLog[0], registry.get(runId).steerLog[0], "jobView 交的是浅拷贝，改不到内部账");
+
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+  assert.equal(disk.steerLog.length, 1, "未消费的正文落进 status.json，不再只留一个计数");
+  assert.equal(disk.steerLog[0].text, STEER_TEXT);
+  assert.equal(disk.steerLog[0].injected, false);
+  assert.equal(disk.steerPending, disk.steerLog.filter((e) => e.injected !== true).length, "不变式（status.json）");
+});
+
+test("issue #942：投两条、内层只消费一条就进终态 ⇒ steerLog 两条、顺序不变、第一条 injected:true 第二条 false", async () => {
+  const home = await tempDir("erix-run-steer-home-");
+  const sessionDir = await tempDir("erix-run-steer-sess-");
+  const registry = createAsyncJobRegistry();
+  const STEER_1 = "第一条转向：先跑测试";
+  const STEER_2 = "第二条转向：再动实现";
+  const runtime = createAsyncRuntime({
+    home,
+    registry,
+    notify: () => true,
+    runJob: async (params, deps) => {
+      await waitUntil(() => (registry.get(deps.runId)?.steerInbox?.length ?? 0) >= 2, { label: "两条 steer 已入队" });
+      const first = deps.nextUserTurn();
+      assert.equal(first, STEER_1, "队首就是第一条（FIFO）");
+      // 只消费到这一条就进终态：第二条永远等不到下一个轮边界。
+      return {
+        ...P_OK,
+        termination: { reason: "end_turn" },
+        diagnostics: { model: "slot-model", steer: { offered: 1, injected: 1, rejected: 0, lastRound: 2 } },
+      };
+    },
+  });
+  const runId = runtime.start({ task: "t", cwd: repoRoot, sessionDir }, { sessionId: "s-1" }).handle.runId;
+
+  runtime.act({ action: "steer", runId, message: STEER_1 });
+  const b = runtime.act({ action: "steer", runId, message: STEER_2 });
+  assert.equal(b.steerPending, 2);
+
+  await waitUntil(() => registry.get(runId)?.status === "completed", { label: "settled" });
+  const status = runtime.act({ action: "status", runId });
+  assert.equal(status.view.steerLog.length, 2, "全量账只追加：两条都在");
+  assert.deepEqual(status.view.steerLog.map((e) => e.text), [STEER_1, STEER_2], "顺序不变");
+  assert.equal(status.view.steerLog[0].injected, true, "被取走的那条标 injected:true（对应队首，不新建条目）");
+  assert.equal(status.view.steerLog[1].injected, false, "没赶上的那条留 injected:false");
+  assert.equal(status.view.steerPending, 1, "只剩第二条没被消费");
+  assert.equal(status.view.steerPending, status.view.steerLog.filter((e) => e.injected !== true).length, "不变式");
+});
+
+test("issue #942：从没 steer 的 job ⇒ steerLog 是 []（恒在场，不是缺键），且与 steerPending 同满足不变式", async () => {
+  // 直接面：对一个连 steerLog 字段都没有的老形状 job，jobView 也产出 []（不是缺键）。
+  const bare = jobView({ runId: "r-bare", status: "running" });
+  assert.ok("steerLog" in bare, "steerLog 恒在场");
+  assert.deepEqual(bare.steerLog, []);
+  assert.equal(bare.steerPending, bare.steerLog.filter((e) => e.injected !== true).length, "不变式（0 === 0）");
+
+  // 异步面：真起一个从没被 steer 的 job，终局面与 status.json 都是 []。
+  const home = await tempDir("erix-run-steer-home-");
+  const sessionDir = await tempDir("erix-run-steer-sess-");
+  const registry = createAsyncJobRegistry();
+  const runtime = createAsyncRuntime({
+    home,
+    registry,
+    notify: () => true,
+    runJob: async () => ({ ...P_OK, termination: { reason: "end_turn" } }),
+  });
+  const runId = runtime.start({ task: "t", cwd: repoRoot, sessionDir }, { sessionId: "s-1" }).handle.runId;
+  await waitUntil(() => registry.get(runId)?.status === "completed", { label: "settled" });
+  const status = runtime.act({ action: "status", runId });
+  assert.deepEqual(status.view.steerLog, [], "没 steer 过 ⇒ 空数组，不是缺键");
+  assert.equal(status.view.steerPending, 0);
+  assert.equal(status.view.steerPending, status.view.steerLog.filter((e) => e.injected !== true).length, "不变式");
+
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+  assert.ok(Array.isArray(disk.steerLog) && disk.steerLog.length === 0, "status.json 里也是 []");
+});
+
+// ---------------------------------------------------------------------------
+// 11. issue #942 评审修复：跨 `/reload` 复用的旧 job（只有裸字符串收件箱、没有 steerLog）的
+//     账本迁移 + 交接按**对象身份**标注；以及旧 `status.json`（无 `steerLog` 键）的盘上拒绝视图。
+// ---------------------------------------------------------------------------
+
+test("issue #942 评审 B1：旧 job（裸字符串收件箱、无 steerLog）迁移 + 交接按对象身份——被标 injected:true 的必须是旧话那条（专打误标新话）", async () => {
+  const home = await tempDir("erix-run-steer-home-");
+  const sessionDir = await tempDir("erix-run-steer-sess-");
+  const registry = createAsyncJobRegistry();
+  const OLD_TEXT = "旧话：升级前投的，只存在于裸字符串收件箱";
+  const NEW_TEXT = "新话：升级后投的"
+  // 门：假 `runJob` 卡在闸门上不结算，好把内存里的 job 摆成「升级前的旧形状」、投新话、再手动消费一次。
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const runtime = createAsyncRuntime({
+    home,
+    registry,
+    notify: () => true,
+    runJob: async () => {
+      await gate;
+      return { ...P_OK, termination: { reason: "end_turn" } };
+    },
+  });
+  const runId = runtime.start({ task: "t", cwd: repoRoot, sessionDir }, { sessionId: "s-1" }).handle.runId;
+  const job = registry.get(runId);
+  assert.equal(job.status, "running", "start 同步把 job 置 running（真实入口）");
+
+  // 摆成升级前的旧形状：只有裸字符串收件箱、**没有** steerLog（模拟 `/reload` 后复用的旧 job）。
+  job.steerInbox = [OLD_TEXT];
+  delete job.steerLog;
+  assert.ok(!("steerLog" in job), "已摆成没有 steerLog 的旧形状");
+
+  // 走真实的 act steer 入队入口：它先 `ensureSteerLedger` 迁移旧账，再把**同一个对象**同时入两账。
+  const steer = runtime.act({ action: "steer", runId, message: NEW_TEXT });
+  assert.equal(steer.steered, true, "active job 的新话被接受入队");
+
+  // 迁移后两条账都在：旧条由裸字符串重建（at===null不伪造时间、injected:false），新条 at 是真实时间戳。
+  assert.equal(job.steerLog.length, 2, "旧话被重建 + 新话开账 ⇒ 两条");
+  assert.equal(job.steerLog[0].text, OLD_TEXT, "重建项正文 = 旧时收件箱里那句");
+  assert.equal(job.steerLog[0].at, null, "一次性重建的 at 是 null（未知时间不伪造）");
+  assert.equal(job.steerLog[0].injected, false, "旧条未消费 ⇒ injected:false");
+  assert.equal(job.steerLog[1].text, NEW_TEXT, "新话正文原样");
+  assert.equal(job.steerLog[1].injected, false);
+  assert.notEqual(job.steerLog[1].at, null, "新话有真实 at（区别于重建项）");
+  // 同源等式对迁移后的旧 job 也成立；收件箱里放的是与 steerLog 同一个对象（身份绑定）。
+  assert.equal(steer.view.steerPending, 2, "迁移 + 新话后队列 2 条");
+  assert.equal(steer.view.steerPending, steer.view.steerLog.filter((e) => e.injected !== true).length, "不变式：等式对迁移后的旧 job 成立");
+  assert.equal(job.steerInbox[0], job.steerLog[0], "收件箱队首与 steerLog 旧条是**同一个对象**");
+  assert.equal(job.steerInbox[1], job.steerLog[1], "收件箱第二条与 steerLog 新条是**同一个对象**");
+
+  // 让内层消费一次（走本文件既有真实装配入口 steerHookDeps）⇒ 被标 injected:true 的必须是**旧话**（队首），
+  // 而不是按 FIFO 猜「第一条未注入」误标到新话（新话也是未注入，旧逻辑会标错）。
+  const hook = steerHookDeps(job).nextUserTurn;
+  assert.equal(typeof hook, "function", "有收件箱就装钩子");
+  const handed = hook({ round: 1 });
+  assert.equal(handed, OLD_TEXT, "钩子交出的是队首旧话");
+  assert.equal(job.steerLog[0].injected, true, "被标 injected:true 的是旧话，不是新话");
+  assert.equal(job.steerLog[1].injected, false, "新话仍未被消费");
+
+  release();
+  await waitUntil(() => registry.get(runId)?.status === "completed", { label: "settled" });
+  // 消费掉旧话后：steerPending 只剩新话一条未注入，等式仍成立。
+  const status = runtime.act({ action: "status", runId });
+  assert.equal(status.view.steerPending, 1, "旧话被取走，只剩新话未注入");
+  assert.equal(status.view.steerLog[0].text, OLD_TEXT);
+  assert.equal(status.view.steerLog[0].injected, true, "旧话终局仍是已注入");
+  assert.equal(status.view.steerLog[1].injected, false);
+  assert.equal(status.view.steerPending, status.view.steerLog.filter((e) => e.injected !== true).length, "不变式（消费后）");
+});
+
+test("issue #942 评审 B1：旧版写的 status.json（无 steerLog 键）走「只在盘上的 job」⇒ 视图里 steerLog 是 []（不缺键不崩）", async () => {
+  const home = await tempDir("erix-run-steer-home-");
+  const sessionDir = await tempDir("erix-run-steer-sess-");
+  const runId = "r-legacy-disk-no-steerlog";
+  // 手写一份**不带 steerLog 键**的 status.json（旧版本写的），内存注册表里没有这个 job。
+  const statusPath = statusFilePath({ sessionDir, runId });
+  mkdirSync(path.dirname(statusPath), { recursive: true }); // statusFilePath 落在 <sessionDir>/outputs/<runId>/ 下，先建父目录
+  writeFileSync(statusPath, JSON.stringify({ runId, status: "completed", steerPending: 2, cwd: repoRoot }));
+  const registry = createAsyncJobRegistry();
+  registry.noteDir(sessionDir); // 把目录登记为已知，lookup 才会去盘上找
+  const runtime = createAsyncRuntime({ home, registry, notify: () => true, runJob: async () => ({ ...P_OK }) });
+
+  const status = runtime.act({ action: "status", runId });
+  assert.equal(status.source, "disk", "内存 miss → 走盘上那条路");
+  assert.equal(status.view.steerPending, 2, "旧 status.json 的 steerPending 原样读出");
+  assert.ok("steerLog" in status.view, "视图里 steerLog 恒在场，不缺键");
+  assert.deepEqual(status.view.steerLog, [], "旧 status.json 无 steerLog 键 ⇒ 规范化成 []");
 });

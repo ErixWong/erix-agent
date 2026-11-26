@@ -620,6 +620,7 @@ function projectTerminalFacts(job) {
  * `resolveArtifacts`（**同一份 `existsSync` 口径**，不在这里另写一遍「宁给 null 不猜路径」）。
  */
 export function jobView(job, { now = () => Date.now() } = {}) {
+  ensureSteerLedger(job); // issue #942 B1：视图入口先幂等迁移跨 /reload 复用的旧 job，保证 `steerPending === steerLog.filter(injected!==true).length` 对旧 job 也诚实成立
   return {
     // —— job 自己的运行时事实（异步面独有，同步返回里没有）
     runId: job.runId,
@@ -680,6 +681,10 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     // （入队 +1、被内层 run 取走一条 -1），不是「注入成功了几条」——后者是引擎的账，
     // 在 `diagnostics.steer.injected`（只在终局之后才有）。
     steerPending: Number.isSafeInteger(job.steerInbox?.length) ? job.steerInbox.length : 0,
+    // issue #942：**转向全量账**，与 `steerPending` 同源（同一份事实，不另记第二个数）。恒在场（没 steer 过是 `[]`，
+    // 不是缺键）；每条是 { text, at, injected } 的**浅拷贝**（`text` 原样不截断，拷贝避免调用方改到内部对象）。
+    // 判据：steerPending === steerLog.filter(e => e.injected !== true).length 恒成立。
+    steerLog: Array.isArray(job.steerLog) ? job.steerLog.map((e) => ({ ...e })) : [],
     // —— 异步面独有：**续跑坐标**（issue #659 第 6 格）。与 `delivery` 同族：只读 `status.json` 的
     //    别的会话不必从 `diagnostics.resume` 里挖，也不必自己去拼 `<sessionDir>/<runId>.jsonl`。
     //    取值与 `resumable` **同源**（都是 core 的 `resumeFactsOf` 经 `buildSuccessPayload` 落到
@@ -708,16 +713,51 @@ export function jobView(job, { now = () => Date.now() } = {}) {
  * @param {object} job 带 `steerInbox` 的 job
  * @returns {() => string|null} 引擎的 `capabilities.hooks.nextUserTurn`
  */
+/**
+ * 跨 `/reload` 复用的旧 job 的**一次性账本迁移**（issue #942 评审 B1）。
+ *
+ * 升级前创建的 job 可能只有 `steerInbox`（裸字符串队列）而**没有** `steerLog`；注册表挂在
+ * `Symbol.for` 上 ⇒ `/reload` 后同一个进程里的旧 job 会被**复用**。交接改成按**对象身份**标注后，
+ * 这种 job 的收件箱里必须放**与 `steerLog` 同一个对象**，否则钩子 `shift()` 走的是旧话、却按 FIFO
+ * 标到新话那条 ⇒ 账本说谎。这里把它补齐（就地改同一个 job，返回它本身）：
+ * - `steerLog` **已是数组** ⇒ 已经迁移过（或本就是新版 job，收件箱里已是同源对象）⇒ **幂等**直接返回。
+ * - 否则把 `steerInbox` 里现存的裸字符串重建为账项 `{ text, at: null, injected: false }`——
+ *   `at` 一律 `null`：这是跨版本升级的一次性重建，**未知时间不伪造**（旧 job 的入队时刻已丢失）。
+ *   再把 `steerInbox` 换成「未注入的那些账项对象」，迁移后
+ *   `steerPending === steerLog.filter(e => e.injected !== true).length` 对旧 job 也重新成立。
+ *
+ * @param {object} job 可能只有裸字符串 `steerInbox`、没有 `steerLog` 的旧 job
+ * @returns {object} 同一个 `job`（就地迁移）
+ */
+export function ensureSteerLedger(job) {
+  if (job === undefined || job === null) return job;
+  if (Array.isArray(job.steerLog)) return job; // 幂等：已是数组 = 已迁移 / 新版 job（收件箱里已是同源对象）
+  const legacy = Array.isArray(job.steerInbox) ? job.steerInbox : [];
+  const rebuilt = legacy.map((item) => ({
+    text: typeof item === "string" ? item : item?.text,
+    at: null, // 一次性重建：旧 job 的入队时刻已丢失，未知时间不伪造
+    injected: false,
+  }));
+  job.steerLog = rebuilt;
+  job.steerInbox = rebuilt.filter((entry) => entry.injected !== true);
+  return job;
+}
+
 export function createSteerHook(job) {
+  ensureSteerLedger(job); // 装配处先迁移旧 job（跨 /reload 复用），保证收件箱里是同源账项对象
   return function nextUserTurn() {
     const inbox = job?.steerInbox;
-    const text = Array.isArray(inbox) && inbox.length > 0 ? inbox.shift() : undefined;
+    const item = Array.isArray(inbox) && inbox.length > 0 ? inbox.shift() : undefined;
+    const text = typeof item === "string" ? item : item?.text;
     if (typeof text !== "string" || text === "") {
       // 队列空：回 `null` 而不是 `undefined` —— 两者引擎都当「本轮无事」，但显式的 `null` 让
       // 「钩子装了、这次没东西」在测试与阅读时是一个**说得出的决定**。
       return null;
     }
     job.steerInjected = (job.steerInjected ?? 0) + 1;
+    // issue #942 评审 B1：交出队首的同时**按对象身份**标注——`shift()` 出的 `item` 若与 `steerLog` 同源（对象），就直接标它 `injected:true`；
+    // 不靠 FIFO 猜「第一条未注入」。裸字符串 = 旧 job 遗留（未经 `ensureSteerLedger` 迁移），没有对应账项可标。不新建条目。
+    if (item !== null && typeof item === "object") item.injected = true;
     // 进度通道只是**旁证**，别把它当账：`jobView` 只把最后 10 行放进 `progressTail`（见上面的 `slice(-10)`），
     // 真上游实测一个 7 轮、`injected=1` 的 run 里这句已被挤出窗口 ⇒ 权威账只有队面 `steerPending` 与终局 `diagnostics.steer`。
     if (Array.isArray(job.progress)) {
@@ -1123,7 +1163,11 @@ export function createAsyncRuntime(options = {}) {
       // 边界经 `createSteerHook` 取走队首一条。与 `controller` / `progress` 同族：**只在内存里**，
       // 不跨进程重启（所以「只在盘上的 job」不接受 steer），也不进 `handleOf` 的句柄形状。
       // 队列长度是 `jobView.steerPending` 的来源（同一份事实，不另记第二个数）。
+      // issue #942：`steerInbox` 是**待消费队列**（入队 +1、内层取走 -1，消费即少）；`steerLog` 是**全量账**
+      // （只追加，每条 { text, at, injected }，交接时把对应那条标 injected:true）。前者是「现在还剩几条」，
+      // 后者是「一共 steer 过什么、哪些没被读」。判据：steerPending === steerLog.filter(e => e.injected !== true).length。
       steerInbox: [],
+      steerLog: [],
       steerCount: 0,
     };
     job.statusPath = statusFilePath({ sessionDir: job.sessionDir, runId });
@@ -1219,7 +1263,9 @@ export function createAsyncRuntime(options = {}) {
     if (job !== undefined) return { source: "memory", job, view: jobView(job, { now }) };
     for (const dir of registry.knownDirs()) {
       const disk = readStatusFile({ sessionDir: dir, runId });
-      if (disk !== undefined) return { source: "disk", job: undefined, view: disk };
+      // issue #942 B1：旧 `status.json` 可能是没有 `steerLog` 键的旧版写的⇒ 账本**不完整**；这里只把它规范化成「有则原样、无则 `[]`」
+      // （防读盘方缺键/崩），**不**在这里宣称 `steerPending === steerLog.filter(injected!==true)` 的同源等式成立（盘上没有活的收件箱可同源）。
+      if (disk !== undefined) return { source: "disk", job: undefined, view: { ...disk, steerLog: Array.isArray(disk.steerLog) ? disk.steerLog : [] } };
     }
     return { source: "missing", job: undefined, view: undefined };
   };
@@ -1293,10 +1339,15 @@ export function createAsyncRuntime(options = {}) {
             + "引擎再也不会问一次 nextUserTurn ⇒ 这句话不会被注入（不是「已投递」）。",
         };
       }
+      ensureSteerLedger(job); // issue #942 B1：先迁移旧 job（裸字符串→同源账项对象），再按对象身份交接（之后 steerLog / steerInbox 必为数组）
       if (job.steerInbox === undefined) job.steerInbox = [];
-      job.steerInbox.push(steerMessage);
       job.steerCount = (job.steerCount ?? 0) + 1;
       job.lastSteerAt = now();
+      // issue #942：入队那一刻就知道是哪条，同步开一条全量账（injected:false）；at 复用上面同一 now() 值。
+      // 评审 B1：收件箱里放的是**与 steerLog 同一个对象**——交接按对象身份标注，钩子 shift 到的就是这一条，不再靠 FIFO 猜「第一条未注入」。
+      const entry = { text: steerMessage, at: job.lastSteerAt, injected: false };
+      job.steerLog.push(entry);
+      job.steerInbox.push(entry);
       job.progress.push(`steer 入队（队列 ${job.steerInbox.length} 条）：${steerMessage.slice(0, STEER_PROGRESS_PREVIEW_CHARS)}`);
       // 队列长度是**当下事实**：立刻落盘，否则只读 status.json 的会话看到的还是旧值。
       persistStatus(job);
@@ -1309,7 +1360,8 @@ export function createAsyncRuntime(options = {}) {
         view: jobView(job, { now }),
         message: `已进 run ${runId} 的内存收件箱（当前队列 ${job.steerInbox.length} 条）：内层 run 会在`
           + "下一个轮边界取走队首那一条，作为一条真的 role:\"user\" 轮读进去，其余的等下一个边界。"
-          + "注入账目看终局的 diagnostics.steer（offered/injected/rejected/lastRound）。",
+          + "注入账目看终局的 diagnostics.steer（offered/injected/rejected/lastRound）。"
+          + "注意边界：run 若在下一个轮边界之前进终态（自然结束 / 撞轮数上限 / 看门狗 abort / 被取消），这句不会被注入——它会留在 steerLog 里 injected:false，diagnostics.steer.injected 也不涨（投进收件箱 ≠ 被消费）。",
       };
     }
     if (action === "cancel") {
