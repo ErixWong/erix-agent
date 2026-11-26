@@ -392,7 +392,9 @@ test("erix_run 真机 e2e：真 run 的终局四件套 + transcript 新形状 + 
         task: RUN_TASK,
         cwd: dir,
         maxRounds: 6,
-        strategy: "sliding-window",
+        // issue #925/#926：内置策略名只剩 `fold-llm`（机械策略只剩对象形态）。这一格验的是
+        // 「真 run 的终局四件套 / transcript 形状 / 进度行」，不验折叠策略，所以用默认那一个。
+        strategy: "fold-llm",
         timeoutMs: 5 * 60 * 1000,
         sessionDir,
       },
