@@ -504,8 +504,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 `steerPending` 只是一个**当下计数**。投成之后，若 run 在下一个轮边界之前进终态（自然 `end_turn` / 撞轮数上限 / 看门狗 abort / 被取消），那句话**静默不被注入**——模型压根没读过它，终局面上却只留一个裸计数 `steerPending=1`，读者分不清「没投成」与「没消费」。所以 `jobView` 与 `status.json` 另带一份**全量账** `steerLog`：
 
 - **形状**：`steerLog = [{ text, at, injected }]`，**恒在场**（从没 steer 过的 job 是 `[]`，不是缺键），键序紧跟 `steerPending`。`text` 是投进去的原话（**不截断**），`at` 是入队时刻，`injected` 记这条有没有被内层 run 在轮边界取走。`jobView` 交出的是每条的**浅拷贝**（改不动内部账）。
-- **账目规则**：`action:"steer"` 入队时追加一条 `injected:false`；`createSteerHook` 交出队首那条时，把 `steerLog` 里**第一个未注入项**标成 `injected:true`（FIFO，与 `Array.shift` 的队首一一对应，不新建条目）。`steerInbox` 是**待消费队列**（消费即少），`steerLog` 是**全量账**（只追加）——同一份事实不另记第二个数。
+- **账目规则**：`action:"steer"` 入队时追加一条 `injected:false`，并把**同一个对象**同时放进 `steerInbox` 与 `steerLog`；`createSteerHook` 交出队首那条时，直接把 `shift()` 出的**那个对象**标成 `injected:true`——交接按**对象身份**标注，**不**按「`steerLog` 里第一条未注入项」猜（旧 job 里「第一条未注入」未必是 `Array.shift` 真正取走的那条，靠 FIFO 会标错；不新建条目）。`steerInbox` 是**待消费队列**（消费即少），`steerLog` 是**全量账**（只追加）——同一份事实不另记第二个数。
 - **同源不变式**（写死在 `test/examples/erix-run-steer.test.js`）：`steerPending === steerLog.filter(e => e.injected !== true).length` **恒成立**。两个数分叉比只有一个数更坑，所以这条等式被用例逐格钉住。
+- **跨 `/reload` 复用的旧 job 一次性重建账本**：作业注册表挂在 `Symbol.for` 上，`/reload` 后同一进程里的旧 job 会被**复用**。升级前创建、只有裸字符串 `steerInbox` 而**没有** `steerLog` 的旧 job，会在首次碰到收件箱的入口（`action:"steer"` 入队 / `createSteerHook` 装配 / `jobView`）被 `ensureSteerLedger` **幂等地一次性**把裸字符串重建为账项——重建项的 `at` 是 `null`（跨版本升级的一次性重建，**未知时间不伪造**），`injected:false`；迁移后上面的同源不变式对旧 job 也重新成立。只存在于盘上的旧 `status.json` 可能没有 `steerLog` 键，读盘视图把它规范化成 `[]`（旧账本**不完整**，不在此宣称同源等式成立）。
 - **「投进收件箱 ≠ 被消费」的判据**：看 `steerLog[i].injected`，**不是**看有没有报错（投成本身永远不回错）。`injected:false` 且 `diagnostics.steer.injected` 不涨 ⇒ 那句模型没读过。投成时 `action:"steer"` 的成功文案、以及终局状态行（`steerPending>0` 时）都已把这条边界写成一句人话。
 - **代价（正文落盘）**：`text` 进 `status.json` = **用户原文落盘**。它落在调用方自己给的 `sessionDir` 里、与 transcript 同级——**不新增暴露面**（同一个目录、同一批读权限），但内容从「一个计数」变成了「用户原话」。给敏感会话用 `erix_run` 时，请按「transcript 会留原文」的同一标准对待 `status.json`。
 
