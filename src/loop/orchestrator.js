@@ -2645,21 +2645,13 @@ export async function runToolLoop(options) {
   };
 
   const recordCompactionStat = (stat, round) => {
+    // issue #930：静默自愈不允许——把「这一发是被上游打回来才压的」写进账本。
+    // `trigger` 是 `createCompactionStat` 的**一等**可选字段（与 `strategyName` / `userTurnGuard`
+    // 同口径：非空才出现），并且 `normalizeCompactionStats` 会把它透传重建 ⇒ 内存态
+    // `result.compactionStats` 与 `state.json` 重读**都**看得见它。
+    // 早期原型还把它镜像进 `foldSummary.degradeReason`，那是在 `trigger` 还不是一等字段时的绕道；
+    // 现在它是一等字段，镜像就成了多余的第二份真相，已删（`degradeReason` 仍归机械降级原因）。
     const normalized = createCompactionStat(stat);
-    // issue #930：静默自愈不允许——把“这一发是被上游打回来才压的”写进账本。
-    // 两处同写（同一值）：
-    //   1) 顶层 `trigger`——`result.compactionStats` 内存态直读（`createCompactionStat` 不认未知
-    //      顶层字段，故在归一化后手动补，而不是改 `pipeline.js`）；
-    //   2) `foldSummary.degradeReason`——`createCompactionStat`/`normalizeCompactionStats` 都保留
-    //      这个自由字符串（`pipeline.js` 的既有白名单），因此 `state.json` 重读后仍可见。
-    //      只在这一格本来没有 degradeReason 时写（不覆盖已有的机械降级原因）。
-    if (typeof stat?.trigger === "string" && stat.trigger !== "") {
-      normalized.trigger = stat.trigger;
-      if (typeof normalized.foldSummary?.degradeReason !== "string"
-        || normalized.foldSummary.degradeReason === "") {
-        normalized.foldSummary = { ...(normalized.foldSummary ?? {}), degradeReason: stat.trigger };
-      }
-    }
     compactionStats.push(normalized);
     emitEvent({
       type: "compaction",
@@ -4185,8 +4177,11 @@ export async function runToolLoop(options) {
    * @param {{ targetBudgetTokens?: number, trigger?: string }|undefined} [recovery]
    *   issue #930：上游超窗自恢复那一发的强制参数。给了 `targetBudgetTokens` 就把本次折叠的预算
    *   换成它（必须降到此值以下）；`trigger` 是写进 `compactionStats` 的留痕值（静默自愈不允许）。
-   * @returns {Promise<void>}
    */
+  // 返回类型**不写** `@returns {Promise<void>}`：它实际返回折叠结果对象（`folded` / `foldedPayload`
+  // / `foldedRoundRange` / `navigationRecord` / `requestStateBlock` / `budgetBelowWorkingSet` …），
+  // 下游十几处都在读这些字段。写错成 `void` 会让 TS 把它们全判成不存在（实测一次多出 17 条
+  // `Property '…' does not exist on type 'void'`）——宁可不写，让它按实现推断。
   const compactBeforeRound = async (round = runLoopState.rounds + 1, recovery = undefined) => {
     // issue #930：用同名局部量 shadow run 作用域的 `budgetTokens`——不传 recovery 时逐字等于它
     // （默认路径行为不变），传了就使本函数体内每一处预算判断都改用那个强制目标。

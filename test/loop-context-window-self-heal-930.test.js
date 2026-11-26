@@ -22,6 +22,7 @@ import {
   CONTEXT_WINDOW_EXCEEDED_RECOVERY_ATTEMPTS,
   CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER,
 } from "../src/loop/orchestrator.js";
+import { normalizeCompactionStats } from "../src/compact/pipeline.js";
 
 // —— 上游真机字样的样本（本地 relay / OpenAI / Anthropic 一族），逐条应判成超窗 ——
 const CONTEXT_WINDOW_BODIES = [
@@ -246,8 +247,21 @@ test("⑤ 账本留痕：compactionStats 里有 trigger=context_window_exceeded 
   // 不是只发事件：账本那份与事件那份都在。
   assert.ok(events.some((e) => e.type === "compaction" && e.compaction?.trigger === "context_window_exceeded"),
     "compaction 事件也应带 trigger");
-  // 过 `normalizeCompactionStats`（state.json 重读）仍可见：degradeReason 那份。
-  assert.equal(stat.foldSummary?.degradeReason, "context_window_exceeded");
+  // 过 `normalizeCompactionStats`（state.json 重读）仍可见：**同一个 trigger 键**自己就留得住
+  // ——它是 `createCompactionStat` 的一等可选字段，`normalizeCompactionStats` 会把它透传重建。
+  // （早期原型靠镜像进 `foldSummary.degradeReason` 绕道，那是在 trigger 还不是一等字段时的事；
+  // 现在镜像已删，`degradeReason` 仍归机械降级原因，两件事不再混在一个键里。）
+  const rebuilt = normalizeCompactionStats(result.compactionStats ?? []);
+  assert.equal(
+    rebuilt.find((s) => s?.trigger === "context_window_exceeded")?.trigger,
+    "context_window_exceeded",
+    "state.json 重建后 trigger 必须还在",
+  );
+  assert.equal(
+    stat.foldSummary?.degradeReason,
+    undefined,
+    "degradeReason 只归机械降级原因，不再被超窗留痕借用",
+  );
 });
 
 // —— 同源不变量：errors.js 与 fold-llm.js 的超窗清单逐字一致（改一处要同步另一处）——

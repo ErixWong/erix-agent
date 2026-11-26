@@ -143,6 +143,9 @@ export function observeCompactionLayer(
  *   userTurnGuard?: string,
  *   userTurnGuardChannel?: string,
  *   layers?: Record<string, { triggered: number, tokensSaved: number }>,
+ *   strategyName?: string,
+ *   trigger?: string,
+ *   foldSummary?: Record<string, any>,
  *   foldArchive?: { droppedMessages?: number, droppedBytes?: number, capBytes?: number, dedupedMessages?: number }
  * }} [input]
  * @returns {{
@@ -155,6 +158,7 @@ export function observeCompactionLayer(
  *   userTurnGuard?: string,
  *   userTurnGuardChannel?: string,
  *   strategyName?: string,
+ *   trigger?: string,
  *   foldSummary?: {
  *     source?: string,
  *     degradeKind?: string,
@@ -195,6 +199,12 @@ export function createCompactionStat({
   // issue #464 A（additive）：本次折叠**实际执行**的策略名。调用方从策略实例取，
   // 因此写的是「真做了折叠的那个」（含引擎库层兜底），不是宿主配置项原文。
   strategyName,
+  // issue #930（additive）：本次折叠是**被什么触发**的自由字符串。目前唯一的写入值是
+  // `"context_window_exceeded"`（上游把上下文超窗回成 400、引擎强制压一发才有的），
+  // 缺席 = 正常预算折叠。它是**留痕**字段：宿主必须能区分「被上游打回来才压」与
+  // 「预算到了自己折」——静默自愈是不允许的。
+  // 与 `strategyName` / `userTurnGuard` 同口径：**只在真取得到时才出现这个键**。
+  trigger,
   // issue #469-④（additive）：
   // 折叠摘要这一发的**结果状态**——「为什么没拿到摘要」与
   // 「被裁过多少」。只存小字段：摘要正文本身走轮记录 
@@ -232,6 +242,9 @@ export function createCompactionStat({
   }
   // issue #464 A（additive）：与 userTurnGuard 同口径——**只在真取得到时才出现这个键**，
   // 未配置/取不到名字时 compactionStats 的读取形状与从前逐字一致（既有宿主零改动）。
+  if (typeof trigger === "string" && trigger !== "") {
+    stat.trigger = trigger;
+  }
   if (typeof strategyName === "string" && strategyName !== "") {
     stat.strategyName = strategyName;
   }
@@ -337,6 +350,9 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
     // issue #464 A：`strategyName` 同样要过这道重建——runState / `state.json` 里那份是从上一份
     // 归一化副本再推导的，不在此列就会丢键，于是「事件里有、state 里没」与契约声称相反。
     strategyName: entry?.strategyName,
+    // issue #930：`trigger` 也要过这道重建，否则 `state.json` 重读后留痕就丢了
+    // （与 #464 A 对 `strategyName` 的理由同一条）。
+    trigger: entry?.trigger,
     // issue #741：`foldArchive` 同样要过这道重建，否则「`compaction` 事件里有、`state.json` 里没」。
     foldArchive: entry?.foldArchive,
     // issue #469-④：同样要过这道重建，否则「`compaction` 事件里有、
