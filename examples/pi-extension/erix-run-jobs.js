@@ -680,6 +680,10 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     // （入队 +1、被内层 run 取走一条 -1），不是「注入成功了几条」——后者是引擎的账，
     // 在 `diagnostics.steer.injected`（只在终局之后才有）。
     steerPending: Number.isSafeInteger(job.steerInbox?.length) ? job.steerInbox.length : 0,
+    // issue #942：**转向全量账**，与 `steerPending` 同源（同一份事实，不另记第二个数）。恒在场（没 steer 过是 `[]`，
+    // 不是缺键）；每条是 { text, at, injected } 的**浅拷贝**（`text` 原样不截断，拷贝避免调用方改到内部对象）。
+    // 判据：steerPending === steerLog.filter(e => e.injected !== true).length 恒成立。
+    steerLog: Array.isArray(job.steerLog) ? job.steerLog.map((e) => ({ ...e })) : [],
     // —— 异步面独有：**续跑坐标**（issue #659 第 6 格）。与 `delivery` 同族：只读 `status.json` 的
     //    别的会话不必从 `diagnostics.resume` 里挖，也不必自己去拼 `<sessionDir>/<runId>.jsonl`。
     //    取值与 `resumable` **同源**（都是 core 的 `resumeFactsOf` 经 `buildSuccessPayload` 落到
@@ -718,6 +722,11 @@ export function createSteerHook(job) {
       return null;
     }
     job.steerInjected = (job.steerInjected ?? 0) + 1;
+    // issue #942：交出队首的同时把 steerLog 里第一个未注入项标 injected:true（FIFO：Array.shift 取走的正是它）。不新建条目。
+    if (Array.isArray(job.steerLog)) {
+      const entry = job.steerLog.find((e) => e && e.injected !== true);
+      if (entry) entry.injected = true;
+    }
     // 进度通道只是**旁证**，别把它当账：`jobView` 只把最后 10 行放进 `progressTail`（见上面的 `slice(-10)`），
     // 真上游实测一个 7 轮、`injected=1` 的 run 里这句已被挤出窗口 ⇒ 权威账只有队面 `steerPending` 与终局 `diagnostics.steer`。
     if (Array.isArray(job.progress)) {
@@ -1123,7 +1132,11 @@ export function createAsyncRuntime(options = {}) {
       // 边界经 `createSteerHook` 取走队首一条。与 `controller` / `progress` 同族：**只在内存里**，
       // 不跨进程重启（所以「只在盘上的 job」不接受 steer），也不进 `handleOf` 的句柄形状。
       // 队列长度是 `jobView.steerPending` 的来源（同一份事实，不另记第二个数）。
+      // issue #942：`steerInbox` 是**待消费队列**（入队 +1、内层取走 -1，消费即少）；`steerLog` 是**全量账**
+      // （只追加，每条 { text, at, injected }，交接时把对应那条标 injected:true）。前者是「现在还剩几条」，
+      // 后者是「一共 steer 过什么、哪些没被读」。判据：steerPending === steerLog.filter(e => e.injected !== true).length。
       steerInbox: [],
+      steerLog: [],
       steerCount: 0,
     };
     job.statusPath = statusFilePath({ sessionDir: job.sessionDir, runId });
@@ -1297,6 +1310,9 @@ export function createAsyncRuntime(options = {}) {
       job.steerInbox.push(steerMessage);
       job.steerCount = (job.steerCount ?? 0) + 1;
       job.lastSteerAt = now();
+      // issue #942：入队那一刻就知道是哪条，同步开一条全量账（injected:false）；at 复用上面同一 now() 值。
+      if (!Array.isArray(job.steerLog)) job.steerLog = [];
+      job.steerLog.push({ text: steerMessage, at: job.lastSteerAt, injected: false });
       job.progress.push(`steer 入队（队列 ${job.steerInbox.length} 条）：${steerMessage.slice(0, STEER_PROGRESS_PREVIEW_CHARS)}`);
       // 队列长度是**当下事实**：立刻落盘，否则只读 status.json 的会话看到的还是旧值。
       persistStatus(job);
@@ -1309,7 +1325,8 @@ export function createAsyncRuntime(options = {}) {
         view: jobView(job, { now }),
         message: `已进 run ${runId} 的内存收件箱（当前队列 ${job.steerInbox.length} 条）：内层 run 会在`
           + "下一个轮边界取走队首那一条，作为一条真的 role:\"user\" 轮读进去，其余的等下一个边界。"
-          + "注入账目看终局的 diagnostics.steer（offered/injected/rejected/lastRound）。",
+          + "注入账目看终局的 diagnostics.steer（offered/injected/rejected/lastRound）。"
+          + "注意边界：run 若在下一个轮边界之前进终态（自然结束 / 撞轮数上限 / 看门狗 abort / 被取消），这句不会被注入——它会留在 steerLog 里 injected:false，diagnostics.steer.injected 也不涨（投进收件箱 ≠ 被消费）。",
       };
     }
     if (action === "cancel") {
