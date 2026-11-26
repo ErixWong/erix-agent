@@ -268,14 +268,6 @@ export const BUDGET_BELOW_WORKING_SET_REASON = "budget_below_working_set";
 export const CONTEXT_WINDOW_EXCEEDED_RECOVERY_ATTEMPTS = 1;
 
 /**
- * issue #930：自恢复那一发强制压缩的目标预算 = 上游窗口（`contextWindowTokens`）的
- * 这个比例。意思是「必须降到窗口的 X% 以下再重发」：留足安全边（窗口本身、请求开销与摘要
- * 本身的输出都可能把刚好卡到 100% 的请求再次顶爆）。窗口元数据缺时退回用现有预算乘这个比
- * 例（见 `compactBeforeRound` 的 `recovery.targetBudgetTokens`）。
- */
-export const CONTEXT_WINDOW_RECOVERY_BUDGET_RATIO = 0.7;
-
-/**
  * issue #930：自恢复那一发在账本（`compactionStats`）上的留痕值。**静默自愈是不允许的**：
  * 宿主必须能从账本上区分「本轮是被上游打回来才压的」与「本轮是预算到了自己折的」。
  * 同时写两处（同一值）：顶层 `trigger`（内存态 `result.compactionStats` 直读）与
@@ -4168,24 +4160,23 @@ export async function runToolLoop(options) {
   // issue #464 A：库层兜底诊断事件的去重标记（每 run 恰好一条，口径同 #182 的
   // `modelMetadataNoticeSent`）。声明在 run 作用域、折叠入口之前，故跨该 run 内所有折叠调用共享。
   let compactionFallbackNoticeSent = false;
-  // issue #930：`compactBeforeRound` 需要一个“强制降到窗口 X%”的临时预算覆盖，而 run 作用域的
-  // `budgetTokens` 是 `const`。这里留一个只读别名，供折叠入口在自恢复那一发里用同名局部量
-  // shadow 它（不传 recovery 时局部量逐字等于它 ⇒ 默认行为不变）。
-  const runScopeBudgetTokens = budgetTokens;
   /**
    * @param {number} [round]
-   * @param {{ targetBudgetTokens?: number, trigger?: string }|undefined} [recovery]
-   *   issue #930：上游超窗自恢复那一发的强制参数。给了 `targetBudgetTokens` 就把本次折叠的预算
-   *   换成它（必须降到此值以下）；`trigger` 是写进 `compactionStats` 的留痕值（静默自愈不允许）。
+   * @param {{ trigger?: string }|undefined} [recovery]
+   *   issue #930：上游超窗自恢复那一发的强制参数。**只有 `trigger`**——写进 `compactionStats`
+   *   的留痕值（静默自愈不允许）。这一发**复用既有折叠入口自己的预算**（run 作用域 `budgetTokens`），
+   *   不另设「窗口 × X%」之类的强制目标：上游超窗后本就该按既有预算折；发明一个更小的目标反而
+   *   可能比刚被上游拒掉的预算还大（等于没压）。`recovery` 存在**这件事本身**就是「强制折一发、
+   *   走已装配 LLM 策略」的开关（见下方 `overBudget` / `strategyRequestsCompaction`）。
    */
   // 返回类型**不写** `@returns {Promise<void>}`：它实际返回折叠结果对象（`folded` / `foldedPayload`
   // / `foldedRoundRange` / `navigationRecord` / `requestStateBlock` / `budgetBelowWorkingSet` …），
   // 下游十几处都在读这些字段。写错成 `void` 会让 TS 把它们全判成不存在（实测一次多出 17 条
   // `Property '…' does not exist on type 'void'`）——宁可不写，让它按实现推断。
   const compactBeforeRound = async (round = runLoopState.rounds + 1, recovery = undefined) => {
-    // issue #930：用同名局部量 shadow run 作用域的 `budgetTokens`——不传 recovery 时逐字等于它
-    // （默认路径行为不变），传了就使本函数体内每一处预算判断都改用那个强制目标。
-    const budgetTokens = recovery?.targetBudgetTokens ?? runScopeBudgetTokens;
+    // issue #930：本函数体内的 `budgetTokens` 即 run 作用域那个 `const`——自恢复那一发不再发明
+    // 预算覆盖，直接复用既有折叠预算。（旧写法在此 shadow 一个 `recovery.targetBudgetTokens`，
+    // 已删：那个「窗口 × 0.7」没有实测依据，还可能大于刚被上游拒掉的预算。）
     normalizeMessages(messages);
     // 每次折叠前清空「引擎自产摘要现场」：只有本次 compact 真的调了摘要器才会重新赋值（#326 wo-C）。
     lastFoldSummaryOutcome = undefined;
@@ -5724,7 +5715,7 @@ export async function runToolLoop(options) {
     // tool_use 均已配平 tool_result（结果总在下一轮请求前追加），无 tools 请求安全。
     const isFinalBudgetRound = budgetRounds >= governorState.effectiveMaxRounds;
     // issue #930：一次有界自恢复。上游把上下文超窗回成 400（`context_window_exceeded`）时，
-    // 强制一发有界压缩（预算“必须降到窗口的 X%”）后重试一次。**只给一次**：第二次还超窗
+    // 强制一发有界压缩（**复用既有折叠入口的预算**，不发明目标）后重试一次。**只给一次**：第二次还超窗
     // （`contextWindowExceededRecoveries` 已达配额）就直接抛出，交给外层 catch 以 `failed` 收尾。
     const providerRequestArgs = {
       round,
@@ -5743,18 +5734,10 @@ export async function runToolLoop(options) {
         throw error;
       }
       contextWindowExceededRecoveries += 1;
-      // 强制压缩的目标预算：“必须降到上游窗口的 X%”。窗口元数据缺时退回用现有预算乘同一比例。
-      const recoveryWindow = Number.isFinite(metadata?.contextWindowTokens)
-        && metadata.contextWindowTokens > 0
-        ? metadata.contextWindowTokens
-        : budgetTokens;
-      const targetBudgetTokens = recoveryWindow === undefined
-        ? undefined
-        : Math.max(1, Math.floor(recoveryWindow * CONTEXT_WINDOW_RECOVERY_BUDGET_RATIO));
-      await compactBeforeRound(round, {
-        ...(targetBudgetTokens === undefined ? {} : { targetBudgetTokens }),
-        trigger: CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER,
-      });
+      // 强制一发压缩——**复用既有折叠入口**：不传任何预算覆盖，让它按 run 作用域 `budgetTokens`
+      // 自己折。`trigger` 只是账本留痕（静默自愈不允许）。（旧写法这里传一个「窗口 × 0.7」的
+      // `targetBudgetTokens`，已删：没有实测依据，还可能比刚被上游拒掉的预算更大 ⇒ 压了等于没压。）
+      await compactBeforeRound(round, { trigger: CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER });
       // 重试恰好一次。若重试又抛超窗，下一圈不会进这里（配额已用），直接冒泡到外层 catch。
       providerResult = await callProvider(providerRequestArgs);
     }

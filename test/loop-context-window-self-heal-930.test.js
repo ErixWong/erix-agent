@@ -83,7 +83,9 @@ test("②/③ 前置：自恢复配额常量 = 1（写进常量而非散落魔�
 // 它真的干活：`compact` 折走最老一轮，形状同 sliding-window / 参考
 // test/compaction-strategy-fallback.test.js#createHostStrategy。#898：不许退回机械摘要 ⇒ 断言用的是这个策略。
 function createCountingStrategy() {
-  const tally = { shouldCompact: 0, compact: 0, compactedRounds: 0, lastBudgetTokens: null };
+  // `compactBudget` 单独记 `compact` 那一发拿到的 `options.budgetTokens`（与 `shouldCompact` 写的
+  // `lastBudgetTokens` 分开），供 P3 格断言「自恢复那一发用的是既有折叠预算，不是被改过的」。
+  const tally = { shouldCompact: 0, compact: 0, compactedRounds: 0, lastBudgetTokens: null, compactBudget: null };
   return {
     name: "counting-llm-strategy",
     tally,
@@ -95,6 +97,7 @@ function createCountingStrategy() {
     async compact(messages, options = {}) {
       tally.compact += 1;
       tally.lastBudgetTokens = options.budgetTokens ?? null;
+      tally.compactBudget = options.budgetTokens ?? null;
       const tokensBefore = estimateMessageTokens(messages);
       const offset = Number.isSafeInteger(options.roundOffset) ? options.roundOffset : 0;
       const { head, rounds } = groupIntoRounds(messages);
@@ -190,6 +193,29 @@ test("② 超窗自恢复：一发 400 ⇒ 恰好一次压缩 ⇒ 重试成功 �
   assert.ok(result, "自恢复成功 ⇒ run 应正常返回（不抛错）");
   assert.notEqual(result?.termination?.reason, "failed", "收尾不得是 failed");
   assert.equal(compactions[0].compacted, true);
+});
+
+// —— P3：自恢复那一发压缩用的是**既有折叠入口的预算**，不是被改小的目标 ——
+// 旧写法发明了一个「窗口 × 0.7」的 targetBudgetTokens（夹具：4096×0.7 = 2867），它比夹具的
+// 实际折叠预算（`config.folding.context.budgetTokens` = 1200）**还大** ⇒ 压了等于没压。
+// 新设计不传任何预算覆盖 ⇒ 折叠策略拿到的就是 run 作用域预算（1200）。反向证：恢复旧覆盖
+// ⇒ 策略会看到 2867 ⇒ 本格红。
+test("P3 自恢复那一发压缩复用既有折叠预算（不是「窗口×0.7」那个被发明的目标）", async () => {
+  const strategy = createCountingStrategy();
+  const provider = createFakeProvider([
+    { throw: cwError(400) },
+    { content: [{ type: "text", text: "收尾完成" }], stopReason: "end_turn" },
+  ]);
+  const options = baseOptions(strategy);
+  options.provider = provider;
+
+  await runDirect(options);
+
+  assert.equal(strategy.tally.compact, 1, "恰好一次自恢复压缩");
+  // 压缩拿到的预算 = 夹具配置的折叠预算（run 作用域 budgetTokens），而非窗口×旧发明比例。
+  assert.equal(strategy.tally.compactBudget, 1200, "自恢复压缩必须用既有折叠预算（config.folding.context.budgetTokens=1200）");
+  // 钉住它**不是**那个被发明的「窗口×0.7」目标（4096×0.7=2867）——那会大于被拒的预算。
+  assert.notEqual(strategy.tally.compactBudget, Math.floor(4096 * 0.7), "不得是旧发明的窗口×0.7 目标（2867）");
 });
 
 // —— ③ 连续两次 400 超窗 ⇒ 不再尝试第三次 ⇒ run failed 并点名超窗 ——
