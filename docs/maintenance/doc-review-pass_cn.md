@@ -21,8 +21,9 @@
 npm run docs:pass
 ```
 
-它依次跑：`check:docs`（漂移 + 中英骨架 + 版本声称 + 引用路径）、`check:docs:strict`、`check:docs:spelling`、
-`check:docs:examples`、`check:agents-directives`。
+它依次跑：`check:docs`（漂移 + 中英骨架 + 版本声称 + 引用路径）、`check:docs:strict`、`check:docs-examples`、
+`check:agents-directives`。（`check:docs-spelling` 从前夹在那两条 strict 步之间，已由 issue #961 删除——代价写在
+`.github/workflows/ci.yml` 的注记里。）
 **它的退出码是关于脚本的证据，不是关于文档的证据**——脚本看不见「看起来对但其实错了」的句子。
 
 自 issue #908 R2（261126）起 **CI 里一条文档闸都没有**——`check:changelog` 与文档向自测都不再是流水线步骤。

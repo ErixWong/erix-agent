@@ -25,7 +25,8 @@ npm run docs:pass
 ```
 
 That runs, in order: `check:docs` (drift + EN/CN skeleton + version claims + referenced paths), `check:docs:strict`,
-`check:docs:spelling`, `check:docs:examples`, `check:agents-directives`.
+`check:docs-examples`, `check:agents-directives`. (`check:docs-spelling` used to sit between the two strict steps; it was
+deleted by issue #961 — see the note in `.github/workflows/ci.yml` for what that costs.)
 **Its exit code is evidence about the scripts, not about the documents** — the scripts cannot see a sentence that
 is true-looking and wrong.
 

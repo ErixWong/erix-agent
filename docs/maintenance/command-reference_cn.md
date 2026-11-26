@@ -269,7 +269,7 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
     步骤爬回 `ci.yml`」。
   - 纯重复的直接删：`guide-removal-gate --self-test`、`release-day --self-test` 早就分别被
     `test/guide-removal-gate.test.js`、`test/release-day.test.js` spawn 了。
-  - 文档族（`check:docs`、`check:docs:strict`、`check:docs-exampleses`、
+  - 文档族（`check:docs`、`check:docs:strict`、`check:docs-examples`、
     `check:agents-directives`、`check:changelog`）住在**已经接线的那道版本边界**上——`check:changelog` 作为
     `PREFLIGHT_STEPS[0]` 阻塞、`check:docs` 在 `release:day --stage writeback` 里重跑——其余时候由周期性 agent
     检查承担（`doc-review-pass_cn.md`，入口 `npm run docs:pass`）。背后的用户裁决是 #802：脚本只能判措辞，
