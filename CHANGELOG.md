@@ -33,19 +33,6 @@
   `test/fixtures/inner-tool-list-golden.json` 一并删除——记录文案的夹具只能说出"你改了文案"，而真不变量
   （提示词名字 ⊆ 注册面、`note_*` 可见、任一方向漏项在 build 期抛错）仍由该文件剩下的 8 条用例与
   `assertPromptPhraseTableMatches` 钉住。
-- **计划句现在要求同轮批量发工具调用（task 261126-44）。** 追在 CLI 系统提示后面那句原本写
-  `每轮开始先用一句话（≤30字）说明当前计划，再调用工具`——「调用工具」是单数，把循环框成了每轮只做一个动作。
-  实测一个被调度的 run：**120 轮里有 112 轮只带恰好一个 `tool_use` 块**，于是五个独立的 grep 变成五个往返，
-  43 分钟总时长里**模型往返占了 35 分钟，而工具执行总共只 4.3 分钟**（工具时长中位数 7 ms）。引擎本来就会在
-  一条 assistant 消息里执行全部 `tool_use` 块（`src/loop/orchestrator.js`）并按 `tool_use_id` 配对结果，
-  缺的只是措辞。计划句现在是**单一真相源**：`PLAN_DIRECTIVE` 从 `bin/system-prompt.js` 导出，
-  `bin/delegation.js` 改为 import 它而不再自留一份拷贝，`examples/pi-extension/erix-run-core.js` 带同一句话
-  并留一个指向注释（那一层只通过 `lib.binTools` 拿到 `bin/tools.js`）。**行为改变：提示现在要求把无依赖的
-  调用放在同一轮。** 同时删掉两处散文钉：`--no-agents` 测试不再拿手写旧提示字面量对比（改为钉三段结构
-  段与 `endsWith(PLAN_DIRECTIVE)`），`R4 兜底文案 golden` 快照测试连同 `test/fixtures/inner-tool-list-golden.json`
-  一并删除（一个录了散文的样本只能告诉你「散文被改了」，而真正的不变量——提示名 ⊆ 已注册面、`note_*` 可见、
-  任一方向都 build-time 抛错——仍由 `test/examples/erix-run-tool-list.test.js` 剩下的八个用例与
-  `assertPromptPhraseTableMatches` 钉住）。
 - **CI keeps only clean-environment truth; the documentation-claims subsystem is deleted (issue #908 R2,
   261126 operator ruling).** Two rulings land together. ① *Doc family out of CI*: `check:changelog` and the
   remaining doc-oriented self-tests are no longer pipeline steps; they run where they were already wired
