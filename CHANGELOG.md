@@ -4,6 +4,17 @@
 ## [Unreleased]
 
 ### Changed
+- **The contribution rule now says "always by PR", because that is what the live ruleset enforces (issue #933, task 261126-57).**
+  `AGENTS.md` §5 said "small fixes and documentation may skip the PR, but never land directly on `main`" — self-contradictory,
+  and wrong in practice: the active `main-require-pr` ruleset rejects a direct push with `GH013`, while `origin`'s two push
+  URLs run **independently**, so the Gitea mirror accepts what GitHub refused and the two sides fork silently. The rule now
+  states the workflow the gate actually allows (branch → PR → merge → read `refs/heads/main` back on both URLs) and names
+  the failure it avoids. **Behaviour change: none in code; the documented process now matches the enforced one.**
+- **贡献流程改成「一律走 PR」，因为活的 ruleset 就是这么拦的（issue #933，任务 261126-57）。** `AGENTS.md` §5 原文是
+  「小修复与文档可免 PR，但**永远不要直接落在 `main` 上**」——自相矛盾，而且与实际不符：活的 `main-require-pr` ruleset
+  会用 `GH013` 拒绝直推，而 `origin` 的两个 push URL 是**独立执行**的，于是 GitHub 拒掉的那次仍会落到 Gitea 镜像上，
+  两侧静默分叉。现在规则写的是闸真正允许的流程（开分支 → PR → 合并 → 回读两个 URL 的 `refs/heads/main`），并点名它
+  避免的事故。**行为变化：代码零变化；文档流程与被执行的那条对齐了。**
 - **Symbol anchors split across two lines are back on the check face, and the first one was wrong (issue #922, task 261126-55).**
   `SYMBOL_ANCHOR_FORMS` matched line by line, so the markdown layout `` `SYMBOL` `` followed by `` (`path`) `` on the
   *next* line was never extracted — **120 anchors (15% of the 816-anchor face) had never been looked at**. A whole-text

@@ -123,8 +123,10 @@ npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → �
   各跑各的，被拒的推送可能让镜像跑在 GitHub 前面——决定下一步前先把两侧都回读一遍。
 - **GitHub 是工作流的真值**：issue、PR、评审都在那里。Gitea 只是代码镜像（没有 Actions 流水线；它的 issue/PR 区
   是一份冻结的历史归档——不要在那边开单或回帖）。
-- 贡献流程：动到公共面的东西从 `feat-YYMMDD-NN-<描述>` / `fix-YYMMDD-NN-<描述>` 开分支 → PR 进 `main`；小修复与
-  文档可免 PR，但**永远不要直接落在 `main` 上**——先建分支。提交信息：conventional commits + 中文摘要。
+- 贡献流程：从 `feat-YYMMDD-NN-<描述>` / `fix-YYMMDD-NN-<描述>` 开分支 → **一律 PR 进 `main`**——活的 ruleset
+  （`main-require-pr`）会用 `GH013` 拒绝直推，而 `origin` 的两个 push URL 是**独立执行**的，于是被 GitHub 拒的那次
+  仍可能落到 Gitea 镜像上，两侧就此分叉。所以：推分支 → 开 PR → 合并 → 回读两个 URL 的 `refs/heads/main`。
+  提交信息：conventional commits + 中文摘要。
 
 ## 6. 运行时数据与本机环境
 
