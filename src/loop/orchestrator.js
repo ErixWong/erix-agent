@@ -270,9 +270,10 @@ export const CONTEXT_WINDOW_EXCEEDED_RECOVERY_ATTEMPTS = 1;
 /**
  * issue #930：自恢复那一发在账本（`compactionStats`）上的留痕值。**静默自愈是不允许的**：
  * 宿主必须能从账本上区分「本轮是被上游打回来才压的」与「本轮是预算到了自己折的」。
- * 同时写两处（同一值）：顶层 `trigger`（内存态 `result.compactionStats` 直读）与
- * `foldSummary.degradeReason`（过 `createCompactionStat`/`normalizeCompactionStats` 两道重建
- * 仍保留、能进 `state.json`），因为 `pipeline.js` 不在本单可改范围、不能新增顶层白名单字段。
+ * 它写在**顶层 `trigger`** 上——那是 `createCompactionStat` 的一等可选字段（与 `strategyName`
+ * 同口径），`normalizeCompactionStats` 也透传，所以内存态 `result.compactionStats` 与
+ * `state.json` 重读都看得见。（早期原型把它镜像进 `foldSummary.degradeReason` 绕道，那是在
+ * `trigger` 还不是一等字段时的权宜；现在已删，`degradeReason` 仍归机械降级原因。）
  */
 export const CONTEXT_WINDOW_EXCEEDED_COMPACTION_TRIGGER = "context_window_exceeded";
 
@@ -5733,11 +5734,8 @@ export async function runToolLoop(options) {
     try {
       providerResult = await callProvider(providerRequestArgs);
     } catch (error) {
-      // issue #930 P1（copilot 验收）：配额**不能只看局部计数器**——它是 run 循环里的变量，
-      // resume 之后从 0 重来，同一个 run 就能再领一次自恢复。判据改为**同时看账本**：
-      // `compactionStats` 里已经有一条带这个 `trigger` 的记录 ⇒ 配额已用完。
-      // 账本本来就过 `state.json` 重建（`normalizeCompactionStats` 透传 `trigger`），
-      // 所以 resume 后天然看得见，且**不需要新增任何持久化键**。
+      // issue #930 P1（copilot 两轮验收）：配额**不能只看局部计数器**——它是 run 循环里的变量，
+      // resume 之后从 0 重来，同一个 run 就能再领一次自恢复。
       // 配额判据**两条腿**，任一为真即算用完：
       //   ① 持久化的一次性配额（`contextWindowRecoveryUsed`，随 run-state 落盘、跨 resume 不重置）
       //      ——这是**主判据**，与 `guardExtensionUsed` 同一条纪律；
