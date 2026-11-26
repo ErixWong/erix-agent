@@ -91,11 +91,16 @@ export const RESUME_REASON_NO_TRANSCRIPT = "没有可续跑的账本：transcrip
 export const PROVIDER_TIMEOUT_MS = 300_000;
 /**
  * 可选压缩策略名（与引擎 `context.strategy` 的内置名字同一集合，
- * src/compact/strategy-resolution.js；引擎自己会在启动期再校验一次）。
+ * `src/compact/strategy-resolution.js`；引擎自己会在启动期再校验一次）。
+ *
+ * issue #925/#926：内置名字收口到**唯一一项** `fold-llm`——`sliding-window` / `fold-statistical`
+ * 两个机械策略仍以**对象**形态可达（引擎的预算兜底还在用其中一个），但不再是可选的**名字**。
+ * 这个常量必须跟着源码走：本层把它抄成一份字面量，抄宽了就会**放行一个引擎必拒的值**
+ * （`erix_run` 传 `strategy: "sliding-window"` 会在 run 启动期以
+ * `context.strategy must be a strategy object or one of the built-in names (fold-llm)` 失败，
+ * 而本层先放行、事后再报——真机 e2e 就是这么抓到的）。
  */
 export const STRATEGY_NAMES = Object.freeze([
-  "sliding-window",
-  "fold-statistical",
   "fold-llm",
 ]);
 /** diagnostics 里各类样本的保留条数。 */

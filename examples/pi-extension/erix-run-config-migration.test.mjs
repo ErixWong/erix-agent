@@ -69,7 +69,8 @@ function richInput() {
       cwd: "/work/proj",
       maxRounds: 9,
       timeoutMs: 60_000,
-      strategy: "fold-statistical",
+      // issue #925/#926：内置策略名只剩 `fold-llm`
+      strategy: "fold-llm",
       finalGuardTimeoutMs: 12_345,
     },
     slot: { contextWindowTokens: 200_000, maxOutputTokens: 4_096 },

@@ -392,7 +392,9 @@ test("erix_run 真机 e2e：真 run 的终局四件套 + transcript 新形状 + 
         task: RUN_TASK,
         cwd: dir,
         maxRounds: 6,
-        strategy: "sliding-window",
+        // issue #925/#926：内置策略名只剩 `fold-llm`（机械策略只剩对象形态）。这一格验的是
+        // 「真 run 的终局四件套 / transcript 形状 / 进度行」，不验折叠策略，所以用默认那一个。
+        strategy: "fold-llm",
         timeoutMs: 5 * 60 * 1000,
         sessionDir,
       },
@@ -947,4 +949,21 @@ test("erix_run 真机 e2e（#654 多会话）：两个会话先注册完（A 先
     }
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// 抄件与真值的一致性（copilot 验收 nit）：`STRATEGY_NAMES` 是**手抄的一份字面量**，
+// 抄宽了就会放行一个引擎必拒的值（#956：`strategy: "sliding-window"` ⇒ run 以
+// `termination: failed` 收尾、usage 全 0、artifacts 全 null，而本层先放行、事后再报）。
+// 这一格钉「抄件 == 引擎真值」，让下一次引擎收口名字时**本文件当场红**，不必等真机 e2e。
+// ---------------------------------------------------------------------------
+test("STRATEGY_NAMES 与引擎的内置策略名集合逐字相等（抄件不许漂）", async () => {
+  const core = await import("./erix-run-core.js");
+  const { BUILTIN_COMPACTION_STRATEGY_NAMES } = await import("../../src/compact/strategy-resolution.js");
+  assert.deepEqual(
+    [...core.STRATEGY_NAMES].sort(),
+    [...BUILTIN_COMPACTION_STRATEGY_NAMES].sort(),
+    "erix_run 的 STRATEGY_NAMES 必须与 src/compact/strategy-resolution.js 的内置名字集合相等"
+      + "（抄宽了会放行引擎必拒的值；抄窄了会拒掉引擎认的值）",
+  );
 });

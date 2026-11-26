@@ -500,7 +500,13 @@ async function main() {
   // 下面这一句只是文档口径的那次摊平（`records.flatMap(record => record.messages ?? [])`），
   // 不排序、不去重、不改写：折叠之后每一行要么是载体行（正文已折回），要么是无载体的消息行。
   const installedEntry = await import(pathToFileURL(join(installedRoot, "src", "index.js")).href);
-  const { projectTranscriptForDisplay, createFileTranscriptStore } = installedEntry;
+  const { createFileTranscriptStore } = installedEntry;
+  // issue #928：`projectTranscriptForDisplay` 已从**包入口**摘除（BREAKING）——它是一个具体宿主的渲染
+  // 口味，搬去了 `bin/display/projection.js`，CLI 用 `erix transcript` 消费它。这里仍要投影，
+  // 所以从**装好的同一份代码**的 bin 侧取：本用例验的正是「装后的包里这份投影还能用」。
+  const { projectTranscriptForDisplay } = await import(
+    pathToFileURL(join(installedRoot, "bin", "display", "projection.js")).href
+  );
   // `safeRunId` 没走公共入口（`src/index.js` 只导出 `createFileTranscriptStore`）：从**同一份装好的
   // 代码**里直接取，用它把「文件名」映回「runId」（不安全 id 的文件名是 `run-h-<hash>`，不可逆）。
   const { safeRunId } = await import(pathToFileURL(join(installedRoot, "src", "store", "file.js")).href);

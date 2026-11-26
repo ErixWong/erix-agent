@@ -87,7 +87,7 @@ import { test } from "node:test";
 import { createOpenAIProvider, runToolLoop } from "../src/index.js";
 import { ANCHOR_SECTION_HEADING, extractAnchors } from "../src/compact/anchors.js";
 import { SUMMARIZER_PROMPT_GUIDE } from "../src/compact/fold-llm.js";
-import { FOLD_SUMMARY_MARKER } from "../src/compact/fold-statistical.js";
+import { FOLD_SUMMARY_MARKER, createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { DEFAULT_COMPACTION_STRATEGY, resolveCompactionStrategyName } from "../bin/config.js";
 import { estimateMessageTokens } from "../src/tokens.js";
 import { assertGateNotRetired, formatSkip, printableEndpoint, resolveRealUpstream } from "./e2e-real-gate.mjs";
@@ -319,12 +319,16 @@ async function runArm({ runId, gate, strategy, summarizerTimeoutMs }) {
         folding: {
           context: {
             budgetTokens: BUDGET_TOKENS,
-            ...(strategy === undefined ? {} : { strategy }),
+            // 名字是**数据** ⇒ 住 config；策略**对象**带函数，config 子树必须过 JSON round-trip，
+            // 所以对象只能走 `capabilities.ports.strategy`（否则 `config.folding.context.strategy.
+            // shouldCompact is not accepted` 当场抛）。
+            ...(strategy === undefined || typeof strategy === "object" ? {} : { strategy }),
             ...(summarizerTimeoutMs === undefined ? {} : { summarizerTimeoutMs }),
           },
         },
       },
       capabilities: {
+        ...(typeof strategy === "object" ? { ports: { strategy } } : {}),
         hooks: {
           onBeforeFold: ({ messages }) => { beforeFold.push(messages); },
           onAfterFold: ({ messages, foldedRoundRange }) => { afterFold.push({ messages, foldedRoundRange }); },
@@ -521,7 +525,15 @@ test("真模型端点 e2e（统计臂反向证）：显式 fold-statistical ⇒ 
   const gate = await gateOrSkip(t);
   if (gate === undefined) return;
 
-  const arm = await runArm({ runId: "fold-statistical-real-619", gate, strategy: "fold-statistical" });
+  // issue #925/#926：内置策略名收口到唯一一项 `fold-llm`，`fold-statistical` 不再是可选**名字**
+  // （传名字会在 run 启动期抛 `context.strategy must be a strategy object or one of the built-in
+  // names (fold-llm)`）。机械策略仍以**对象**形态可达，而这一臂要验的正是「统计折叠产出块、
+  // 摘要器 0 次」这条引擎能力，所以这里传对象，不传名字。
+  const arm = await runArm({
+    runId: "fold-statistical-real-619",
+    gate,
+    strategy: createFoldStatisticalStrategy(),
+  });
   reportArm("统计臂", arm, "fold-statistical");
 
   assertBlockPresent(arm, "统计臂");
@@ -531,6 +543,12 @@ test("真模型端点 e2e（统计臂反向证）：显式 fold-statistical ⇒ 
     `统计臂的块里没有统计摘要标记：${arm.block.slice(0, 400)}`);
   assert.equal(arm.counts.summarizer, 0,
     `显式 fold-statistical 竟然调了摘要器 ${arm.counts.summarizer} 次 ⇒ 判据 ② 的计数口径不可信`);
+  // copilot 验收 nit：原来这条只过滤「不是 fold-statistical 的」，空数组也能过 ⇒ 不能正面证明
+  // 「统计臂的折叠记录里真的有一条 fold-statistical」。先正面钉一条，再钉「没有别的策略」。
+  assert.ok(
+    arm.stats.some((stat) => stat.strategy === "fold-statistical"),
+    `统计臂的 compactionStats 里必须真有一条 strategy="fold-statistical"：${JSON.stringify(arm.stats)}`,
+  );
   assert.deepEqual(
     arm.stats.map((stat) => stat.strategy).filter((name) => name !== undefined && name !== "fold-statistical"),
     [],
