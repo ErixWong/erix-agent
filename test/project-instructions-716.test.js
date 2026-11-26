@@ -24,6 +24,7 @@ import {
   buildCliSystemPrompt,
   buildProjectInstructionsSection,
   formatProjectInstructionsNotice,
+  PLAN_DIRECTIVE,
 } from "../bin/system-prompt.js";
 import { buildCliToolsSystemPrompt } from "../bin/tools.js";
 import {
@@ -215,9 +216,12 @@ test("#716 装配器：--no-agents（agents: false）⇒ 零注入、零留痕�
     assert.equal(off.discovery, null, "关闭时连发现都不做（null 与「发现了 0 个」区分开）");
     assert.equal(off.notice, null);
     assert.ok(!off.systemPrompt.includes(SENTINEL));
-    const legacy = `你是 erix 编码助手，工作目录 ${dir}。${buildCliToolsSystemPrompt({ todo: true, delegate: false })}`
-      + "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
-    assert.equal(off.systemPrompt, legacy, "关掉注入后必须逐字节回到旧装配");
+    // 不再手拄一份逐字节的 legacy 字面量（任务 261126-44）：那句计划指令的正文一旦改写，
+    // 手拄的副本就会把「改提示词」变成「还得同步测试」。这里只钉真正的不变量：
+    // 旧装配的三段（头 / 工具清单 / 计划句）都在，且没多出注入段。
+    assert.ok(off.systemPrompt.startsWith(`你是 erix 编码助手，工作目录 ${dir}。`));
+    assert.ok(off.systemPrompt.includes(buildCliToolsSystemPrompt({ todo: true, delegate: false })));
+    assert.ok(off.systemPrompt.endsWith(PLAN_DIRECTIVE), "计划句仍是提示词末尾那一段");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -229,7 +233,7 @@ test("#716 装配器：repl 形态（无计划句）与 chat 形态只差那一�
     writeAgents(dir, `# 项目约定\n${SENTINEL}\n`);
     const chat = buildCliSystemPrompt({ cwd: dir, planDirective: true }).systemPrompt;
     const repl = buildCliSystemPrompt({ cwd: dir, planDirective: false }).systemPrompt;
-    const directive = "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
+    const directive = PLAN_DIRECTIVE;
     assert.equal((chat.match(/每轮开始先用一句话/gu) ?? []).length, 1);
     assert.equal((repl.match(/每轮开始先用一句话/gu) ?? []).length, 0);
     assert.ok(repl.includes(SENTINEL), "repl 边也必须见到同一份注入内容");

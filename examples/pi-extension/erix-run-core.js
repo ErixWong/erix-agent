@@ -1422,7 +1422,10 @@ export function buildSystemPrompt({ lib, cwd, todo = false, tools, finalDraft = 
     // 一个字节不变（C6 的默认路径零行为变化），也不让模型去满足一个没人校验的格式。
     // 文案与 guard 的段名常量同源：`FINAL_DRAFT_SECTIONS` / `FINAL_DRAFT_PROMPT`。
     + (finalDraft === true ? FINAL_DRAFT_PROMPT : "")
-    + "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
+    // 与 `bin/system-prompt.js` 的 `PLAN_DIRECTIVE` **逐字一致**（本层拿不到 bin/ 的静态 import：
+    // `lib.binTools` 只注入 `bin/tools.js` 的导出）。改一处必须同步另一处，否则两种宿主给出两种节奏。
+    + "\n\n每轮开始先用一句话（≤30字）说明当前计划。互不依赖的工具调用放在同一轮一起发出"
+    + "（一次往返只换回一次工具结果，拆成多轮等于每轮重付整段上下文）；有依赖的才分轮。";
   // 装配期断言（R3 第三条）。作用域只到**本层自己写进清单的名字**：
   //   · 引擎给了 base ⇒ 引擎清单已由 `bin/tools.js` 在 build 期钉过「提示词 ⊆ 注册面」，而宿主这一层
   //     拿到的可能是 `deps.createAssembly` 的自定义工具面（#266 允许它长得什么都不像），

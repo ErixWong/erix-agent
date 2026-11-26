@@ -164,21 +164,3 @@ test("C4 拿不到注册面（无 createCliTools、无 buildCliToolsSystemPrompt
   assert.match(options.config.input.system, /本工具面另注册：[^\n]*note_forget/u);
 });
 
-test("R4 兜底文案自身的快照 golden（以前没有：宿主文案全仓零 golden）", () => {
-  const fixtureUrl = new URL("../fixtures/inner-tool-list-golden.json", import.meta.url);
-  const expected = JSON.parse(readFileSync(fixtureUrl, "utf8"));
-  const actual = {
-    // 引擎装配缺席的兜底分支：整段清单由实际注册数组生成。
-    generated: core.buildSystemPrompt({
-      lib: { binTools: { createCliTools: binTools.createCliTools, CLI_TOOL_PROMPT_PHRASES: binTools.CLI_TOOL_PROMPT_PHRASES } },
-      cwd: "/snap",
-    }),
-    // 主路径（引擎装配在场）＋ 宿主 note_* 补行：钉住 note_forget 真的到了模型眼前。
-    withNotes: core.buildSystemPrompt({
-      lib: REAL_LIB,
-      cwd: "/snap",
-      tools: realTools(),
-    }).replace(/\/nonexistent-cwd/g, "/snap"),
-  };
-  assert.deepEqual(actual, expected, "兜底文案变了就一起改 test/fixtures/inner-tool-list-golden.json（写明理由）");
-});

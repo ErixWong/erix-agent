@@ -58,7 +58,7 @@ import { buildCaptureRecoveryHint, buildCaptureStub } from "./final-guard.js";
 // 真值都在 `src/loop/note-prompt-hint.js` 的 `hasNoteToolSurface`（整族全有或全无）。
 // ⚠ 这一行本来就是**漏掉的**：`noteToolSurface` 在本文件被调用却从未 import，子 run 一折叠就
 // `ReferenceError`（守卫与用例见 `test/prompt-note-delegate-ledger-746.test.js`）。
-import { noteToolSurface, notesOnToolNames } from "./system-prompt.js";
+import { noteToolSurface, notesOnToolNames, PLAN_DIRECTIVE } from "./system-prompt.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
@@ -163,7 +163,7 @@ export function buildChildSystemPrompt({ cwd, todo = true, archiveDir, toolNames
       ...(listNames === undefined ? {} : { names: listNames, fullNames: CLI_TOOL_NAMES_FULL }),
     })
     + buildArchiveNotice(archiveDir, { notes: hasNotes })
-    + "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
+    + PLAN_DIRECTIVE;
 }
 
 /**
