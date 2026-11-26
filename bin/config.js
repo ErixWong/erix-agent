@@ -106,29 +106,11 @@ function warnCompactionDisabledOnce() {
 // 统计摘要（fold-statistical）的位置是**零 LLM 的替代选择**，不是 fold-llm 的自动兜底：
 // issue #661 起摘要器失败（含默认 30s 上限的超时）是**终局错误** `summarizer_failed`，
 // 引擎不再退回统计摘要（那条 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]` 路径已删）。
-// 想要「一次 LLM 都不调、永不失败」的折叠就显式选它：`--compaction fold-statistical`
-// / `config.compaction`。
-//
-// 显式选择**仍然生效**：`--compaction fold-statistical` / `config.compaction` 优先于本默认值
-// （见 `resolveCompactionStrategyName`：`--compaction` > config.compaction > 这里）。
+// issue #926 / 任务 261126-51：`--compaction` 旗标与 `config.compaction` 叶子**都已退役**
+// （chat 与 repl 都不再接受），所以「显式选择优先于默认值」那条链已经没有了——只剩这一个常量。
 // 库层边界不动：引擎 `resolveCompactionStrategy(undefined) → undefined`（不折），
 // 「默认用哪个策略」始终是**宿主/CLI 的选择**。
 export const DEFAULT_COMPACTION_STRATEGY = "fold-llm";
-
-/**
- * CLI 旗标形态的校验：不合法名字直接报错（带合法值列表），而非默默回到默认值。
- * @param {string} rawValue
- * @returns {string} 规范化后的策略名
- */
-export function normalizeCompactionOption(rawValue) {
-  const value = typeof rawValue === "string" ? rawValue.trim() : "";
-  if (value === "" || !isBuiltinCompactionStrategyName(value)) {
-    throw new Error(
-      `未知的压缩策略：${JSON.stringify(rawValue)}；可选值：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}`,
-    );
-  }
-  return value;
-}
 
 /**
  * CLI/config 的压缩策略名解析（#167）：`--compaction` > config.compaction > 默认值。
