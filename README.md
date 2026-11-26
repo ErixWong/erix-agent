@@ -3,7 +3,7 @@
 > Chinese version: [README_cn.md](README_cn.md)
 
 **erix-agent** is a zero-dependency, pure ESM LLM runtime for headless coding
-agents. It provides dual-protocol streaming providers, a tool-calling loop,
+agents. It provides a streaming provider for OpenAI-compatible endpoints, a tool-calling loop,
 context compaction, resume, note-first
 retrieval, and an optional reflection/judge layer for unattended work.
 
@@ -133,7 +133,7 @@ instead of re-solving the engineering underneath it.
 
 | Requirement | Provided by this runtime | Owned by the host |
 |---|---|---|
-| Lower the barrier to LLM use | `runToolLoop` as the single entry point; dual-protocol providers; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
+| Lower the barrier to LLM use | `runToolLoop` as the single entry point; one OpenAI-compatible provider; canonical message model; compaction; checkpoint/resume; classified errors | product-level prompt and workflow design |
 | Centralised model configuration and run policy | duck-typed `ModelConfigProvider.resolve(slot)` with `static` / `env` / `json-file` adapters, per-slot models, `apiKey`/`apiKeyEnv`/`apiKeyFile` indirection, budget derivation | the configuration store itself (database or config centre), project and tenant quotas, fallback policy, prompt and agent versions |
 | Traceable calls, cost analysis and audit | event stream (`onRound` / `onDelta` / `onToolCall` / `onUsage` / `onJudge` / `onEvent`), token accounting, `TranscriptStore` persistence, and stable run ids | log and cost storage, dashboards, retention, audit process |
 | One tool, permission and safety boundary | a single execution entry (`executeTool`), an executor registry that data cannot extend, schema intersection, and note-first retrieval through `note_list` → `note_read` | the policy itself: which project may run which agent, which tools, which operations need confirmation, network and write access, rate and time limits |
@@ -218,14 +218,12 @@ src/
   normalization/
     parse-model-json.js            Model-output normalization: normalizeModelJson — L1 byte-preserving repair, gate on the original bytes, optional L2 LLM fallback (issue #406)
   providers/
-    anthropic.js                   Anthropic provider and streaming
     errors.js                      Provider errors and classification
     http-shared.js                 Shared HTTP/injection helpers (header + extraBody guards)
     openai.js                      OpenAI-compatible provider and streaming
     payload.js                     Provider payload and timeout options
     timeout.js                     Provider timeout handling
   messages/
-    anthropic.js                   Anthropic protocol conversion and stream assembly
     canonical.js                   Canonical message/tool conversion
     openai-normalization.js        OpenAI-compatible normalization primitives
     tool-arguments.js              Tool-argument parsing: L0 then L1 repair, plus the parser's own verdict (issue #409)

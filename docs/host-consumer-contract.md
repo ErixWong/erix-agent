@@ -543,10 +543,9 @@ rulings have landed. The keys are pinned in `test/loop-input-keys-slice-498s3a6.
   function inside `inputSchema`. Every one of those shapes is **accepted** through the flat `tools`
   and would be **rejected** at `config.input.tools`, because `config` holds data only (the subtree
   must survive a JSON round-trip, so a function value is refused at intake with its full path). At
-  the same time the engine never calls those members, so `tools` is not a capability either — the two
-  protocol adapters project each entry down to `{name, description, inputSchema}` (the OpenAI
-  projection in `src/messages/canonical.js`, the Anthropic payload builder in
-  `src/messages/anthropic.js`). The #527 ruling therefore **removed the leaf**: `tools` lives only at
+  the same time the engine never calls those members, so `tools` is not a capability either — the
+  adapter projects each entry down to `{name, description, inputSchema}` (the OpenAI projection in
+  `src/messages/canonical.js`). The #527 ruling therefore **removed the leaf**: `tools` lives only at
   the top level, and writing `config.input.tools` is rejected on the spot as an **unknown leaf**
   whose message points at the third station, at the top level:
 
@@ -1794,8 +1793,7 @@ the value byte-identical to the source and still makes the text parseable.
 
 `parseJsonWithRepair`（`src/text/repair-json.js`）is the L0-then-L1 entry the tool path uses, and
 `parseToolArguments`（`src/messages/tool-arguments.js`）is what the OpenAI non-streaming
-conversion, the OpenAI stream accumulator, and the Anthropic stream assembler all call, so the
-two protocols cannot drift apart here. The strict entry point is untouched: `parseModelJson`
+conversion and the OpenAI stream accumulator both call, so the two paths cannot drift apart here. The strict entry point is untouched: `parseModelJson`
 still repairs nothing (see its own section) — repair exists only on the tool-argument path.
 
 When the arguments still do not parse, the default (`invalidArguments: "reject"`, whose canonical home is `config.run.invalidArguments`（`src/loop/config-namespace.js`）after the A11 slice retired the flat top-level spelling) is to **not execute the tool at
@@ -1906,11 +1904,9 @@ sections. Do not extrapolate observer isolation to those callbacks.
 
 ## Provider request injection (issue #181)
 
-`createOpenAIProvider` — the only provider factory this package publishes — accepts
+`createOpenAIProvider` — the only provider this package publishes — accepts
 two additional, fully optional option keys, so a host can tag outgoing requests with
 its own attribution identifiers (per-run / per-session) without wrapping `fetchImpl`.
-The internal Anthropic adapter (`src/providers/anthropic.js`) takes the same two keys
-for hosts that build their provider object on top of it:
 
 ```js
 const provider = createOpenAIProvider({
@@ -1923,9 +1919,8 @@ await provider.chat({ messages });
 
 - `defaultHeaders` is **appended** to the engine-owned request headers, which keep
   their existing values and ordering. Engine headers are immutable: a host key
-  that collides — case-insensitively — with OpenAI's `Authorization` /
-  `Content-Type` or Anthropic's `x-api-key` / `anthropic-version` / `content-type`
-  throws `TypeError` at construction rather than being silently ignored.
+  that collides — case-insensitively — with the engine-owned `Authorization` /
+  `Content-Type` throws `TypeError` at construction rather than being silently ignored.
   `undefined` / `null` values are skipped (conditional injection); any other value
   must be a string, number, or boolean without CR, LF, or NUL.
 - **Header values never enter error text or log output.** Every message added by
@@ -2746,7 +2741,7 @@ one stderr line, see "Budget derivation").
 | Slot field | Unit | Reaches the provider request | Drives budget / compaction | Behavior when absent |
 |---|---|---|---|---|
 | `contextWindowTokens` | tokens (safe integer > 0) | no | **yes** — budget input, and it sizes the output-truncation limit | no budget derivable → compaction and aggregate output budget off; limit falls back to `4096` |
-| `maxOutputTokens` | tokens (safe integer ≥ 0) | yes, as the default `max_tokens` when `maxTokens` is absent | **yes** — second required budget input | OpenAI omits `max_tokens`; Anthropic uses `4096`; no budget derivable |
+| `maxOutputTokens` | tokens (safe integer ≥ 0) | yes, as the default `max_tokens` when `maxTokens` is absent | **yes** — second required budget input | the provider omits `max_tokens`; no budget derivable |
 | `budgetTokens` | tokens (safe integer > 0) | no | **yes** — the **explicit** compaction budget (issue #682). It is used verbatim and **wins over** the `computeBudget` derivation | no explicit budget: derive from the window pair; when that pair is incomplete, compaction stays off |
 | `maxTokens` | tokens | yes — request `max_tokens`, wins over `maxOutputTokens` | **no**, never a budget input | field omitted |
 | `temperature` | number | yes — `temperature` | no | field omitted |
@@ -2771,8 +2766,8 @@ different plane and are untouched.
 
 **Unknown slot fields are inert and safe — except the budget keys, which are known now.** The
 built-in providers copy the slot verbatim (`createJsonFileModelConfigProvider` (`src/config/json-file.js`), `createStaticModelConfigProvider` (`src/config/static.js`)), and the
-provider factory reads a fixed parameter list (`createOpenAIProvider` (`src/providers/openai.js`),
-as does the internal Anthropic adapter in `src/providers/anthropic.js`), so an unrecognized key cannot reach the wire
+provider factory reads a fixed parameter list (`createOpenAIProvider` (`src/providers/openai.js`)),
+so an unrecognized key cannot reach the wire
 and cannot throw. That safety statement is about **slot
 objects** only: an unknown *top-level* `runToolLoop` option still throws
 `TypeError` (see "`runToolLoop` options"). **Issue #682 narrows it for one key:** `budgetTokens`
@@ -3685,9 +3680,8 @@ from, `request` > `slotDefault` > `providerOptions` > `extraBody` (the same prec
 uses, so the cell cannot disagree with the body). **No fact, no key**: with no reasoning-related key
 anywhere the whole cell is absent — never `{}`, never `hostValue: undefined` written on purpose.
 **Boundary (contractual): only this package's own OpenAI provider produces the cell** (both `chat` and
-`chatStream`; the observation point sits where the payload is assembled). Neither the Anthropic provider
-(its payload is assembled by `canonicalToAnthropicRequest` (`src/messages/anthropic.js`), which this slice did
-not wire) nor a host-authored provider emits it, so the cell is **absent** in both cases — and absence means
+`chatStream`; the observation point sits where the payload is assembled). A host-authored provider does not
+emit it, so the cell is **absent** there — and absence means
 **"not observed"**, never "no reasoning parameter was sent".
 
 **(3) `reasoningTokens`, and why absence is not zero.** The canonical usage keeps its three keys
@@ -3696,10 +3690,8 @@ byte-for-byte (`input_tokens` / `output_tokens` / `cacheRead`) and adds one opti
 `completion_tokens_details.reasoning_tokens`**. A reported `0` is a measurement and stays a `0`
 (the 2026-11-08 probe measured exactly that on a `reasoning_effort: "none"` request); an **unreported**
 value produces **no key**, and no layer may substitute `0` for "not measured" — the two facts answer
-different questions and merging them is the silent-0 failure this cell exists to make visible. The Anthropic
-usage surface has no reasoning-token field at all (`usageFromResponse` (`src/messages/anthropic.js`) maps
-`input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` and nothing
-else), so the Anthropic path does **not** grow the key: it is absent there by fact, not by omission.
+different questions and merging them is the silent-0 failure this cell exists to make visible. An upstream
+that reports no reasoning-token field simply does not grow the key: it is absent there by fact, not by omission.
 `record.usage` (the round ledger, issue #438) is unchanged: `reasoningTokens` rides on
 `record.response.usage` (the last response of the round), never into the ledger's four summed fields.
 
@@ -3721,7 +3713,6 @@ boundary as layer 4 above, now with raw-body evidence rather than an assertion.
 |---|---|---|
 | OpenAI-compatible | **scalar** `reasoning_effort` | an unrecognized scalar is answered with **HTTP 400**, and the error body lists that backend's accepted values (2026-11-08 probe, `"hight"` on `qwen3.8-flash-next`); `"none"` really takes effect there |
 | GLM (OpenAI family) | scalar, but a **subset with no `off`** | `none` is translated to `low` by layer 2 (ADR-017); the on-site model is currently unavailable — see that ADR's status note |
-| Anthropic | **object** shape (`thinking` / `reasoning`), not a scalar | its probe leg is **retired** (no endpoint available locally): documented, not acceptance-gated |
 
 Two phrasing rules, both of which were wrong in the wild once:
 
@@ -4653,9 +4644,8 @@ Cost and observability:
   and only then injects the control text (issue #393). The injected user message must never
   split a `tool_use` from its result, or the library's own message validator throws locally
   with `invalid_messages` **before a single request leaves the process** (measured 2026-10-22:
-  zero HTTP; the rule is the stricter of the two protocols this library speaks — an
-  Anthropic-shaped upstream answers 400 for this shape, while an OpenAI-compatible relay answers
-  200 and lets the model invent the outcome), and the host receives `termination: failed`. That `tool_result` reports a
+  zero HTTP; a stricter upstream answers 400 for this shape, while a lenient OpenAI-compatible
+  relay answers 200 and lets the model invent the outcome), and the host receives `termination: failed`. That `tool_result` reports a
   fact ("this call never ran"), so the call itself is **not** executed; a tail whose `tool_use`
   ids cannot be read is not repairable and is **not** extended — the run degrades exactly as
   without the bridge.
@@ -6448,8 +6438,7 @@ Three hard rules:
    again to overwrite an engine fact;
 2. engine facts may only be written into `erix`; the constructor writes that namespace
    last, so a host key flattened onto the top level cannot overwrite it;
-3. `is_error` stays at the top level — it is a wire field (the Anthropic request builder
-   emits it), not a namespace member.
+3. `is_error` stays at the top level — it is a wire field, not a namespace member.
 
 `metadata` and `erix` are **reserved top-level key names**, registered as
 `TOOL_RESULT_CONTRACT.reserved.topLevelKeys`. Since the retirement below there is no
@@ -6983,7 +6972,7 @@ records must remain unchanged.
 | `messages` | model | The exact model-context slice, including `tool_use`/`tool_result` blocks and fold placeholders. Do not render it raw; the projection extracts displayable text and tool-call summaries from it. Since issue #335 this is also the **canonical source of the projected assistant body** (a message is persisted the moment it forms); `response.content` is only the legacy/host-written fallback. |
 | `messages[].meta` | model / engine | Preserve this object, including unknown keys. `meta.source` is an engine-reserved marker used by projection classification and judge visibility; do not reuse it for host-owned source information. |
 | `response` | model | Full provider response content (`text`, `reasoning`, `tool_use` blocks), `stopReason`, `usage`. Projected display text/blocks come from `messages`, not from here; only `stopReason`/`usage` are copied into the projection's `meta`. Its block shape is model-facing and may change. **Its `usage` is the last response of the round only** — the round's complete ledger is the sibling key `record.usage` (see "Usage accounting: the round ledger vs engine overhead (issue #438)"). |
-| `sentRequestParams` | model / forensics | **Additive (issue #785 P1).** What the engine actually wrote into the request body for the reasoning parameters of this round: `{ reasoningEffort: { hostValue, sentValue, source, translated? } }` — `hostValue` is what the host supplied **before** payload translation, `sentValue` the value that left the process (GLM `none → low`, ADR-017; the two differ and neither replaces the other), `source` the channel that supplied it (`request` / `slotDefault` / `providerOptions` / `extraBody`). Safe to render as a diagnostic caption; never render it as model content. **No fact, no key**: a round with no reasoning-related key carries no such cell, and neither the Anthropic provider (not wired in this slice) nor a **host-authored provider** produces one (the engine cannot see the latter's wire body) — read absence as *not observed*, not as *not sent*. See "`reasoning_effort` is a provider string, and the four layers around it are separate (issue #785 P1)". |
+| `sentRequestParams` | model / forensics | **Additive (issue #785 P1).** What the engine actually wrote into the request body for the reasoning parameters of this round: `{ reasoningEffort: { hostValue, sentValue, source, translated? } }` — `hostValue` is what the host supplied **before** payload translation, `sentValue` the value that left the process (GLM `none → low`, ADR-017; the two differ and neither replaces the other), `source` the channel that supplied it (`request` / `slotDefault` / `providerOptions` / `extraBody`). Safe to render as a diagnostic caption; never render it as model content. **No fact, no key**: a round with no reasoning-related key carries no such cell, and a **host-authored provider** does not produce one (the engine cannot see the latter's wire body) — read absence as *not observed*, not as *not sent*. See "`reasoning_effort` is a provider string, and the four layers around it are separate (issue #785 P1)". |
 | `l0facts`, `runState`, `runStateMeta`, `compactionStats`, `judge`, `wrapup`, `toolOutputs`, `dedupKey`, `roundKey` | model / engine internals | Facts for the governor, resume, and diagnostics. Only `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` are copied into the projection's `meta` for optional labelling; the rest is not part of the display surface. **`runState` is a conditional recovery carrier (#843):** it is written to a round record unless both `saveRunState` and `loadRunState` are callable; only then does the independent run-state channel close its write/read loop and omit the per-round copy. Stores missing either method retain the copy for fallback when independent state is absent; a paired store relies on its independent state path, has no new round-copy fallback when that load is absent, and does not fall back from a present-but-invalid state. **`runStateMeta`** `{ bytes, capBytes, truncated }` is an observation of this round's refreshed run-state snapshot, regardless of its storage route; it is not the byte size of the containing record or of the independent state file. On a paired store, it may appear on a record with no sibling `runState`; per-round size growth has moved to the independent state channel. `bytes` uses the clamp's `Buffer.byteLength(JSON.stringify(copy), "utf8")` ruler, `capBytes` is `RUN_STATE_MAX_SERIALIZED_BYTES`, and `truncated` is true when the snapshot is over cap or carries `bounds.truncated` (including a clamped snapshot below the cap; measured 64,893 B / 65,536 B). No measurable state means no key; absence means unknown, never `truncated: false`. The metadata has no in-engine reader and does not affect resume or stop gates; transcript savings come from omitting the duplicate `runState` copy. |
 
 ### Stability promise

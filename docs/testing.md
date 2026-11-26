@@ -149,7 +149,7 @@ The original MVP coverage is still represented by these tests:
 
 | Area | Files | Coverage |
 |---|---|---|
-| Providers and errors | `test/providers/openai.test.js`, `test/app-container-p0.test.js` | OpenAI request/response mapping, tool calls, endpoint normalization, configuration validation, error classification, abort behavior, and the basic Anthropic/loop path |
+| Providers and errors | `test/providers/openai.test.js`, `test/app-container-p0.test.js` | OpenAI request/response mapping, tool calls, endpoint normalization, configuration validation, error classification, abort behavior, and the basic provider/loop path |
 | Canonical messages | `test/messages/canonical.test.js` | Canonical conversion, tool-result ordering, tool schemas, legacy function calls, invalid response diagnostics, and raw protocol fields |
 | Token estimates | `test/tokens.test.js` | CJK and non-CJK estimates, safety margins, configurable coefficients, message/block costs, and tool identifiers |
 | Tool loop | `test/loop.test.js` | Text completion, tool-result feedback, `config.run.maxRounds`, stall nudges and termination, tool errors, `onToolResult`, round snapshots, and usage accumulation |
@@ -161,7 +161,7 @@ The example E2E coverage is no longer a single `node examples/exec-demo.test.mjs
 
 | Area | Files | Coverage |
 |---|---|---|
-| Anthropic and OpenAI protocol paths | `test/providers/anthropic.test.js`, `test/providers/openai-stream.test.js`, `test/messages/anthropic.test.js`, `test/messages/rounds.test.js` | Non-streaming and SSE conversion, streamed text and tool-call assembly, usage, malformed streamed input, error classification, protected message heads, tool pairing, and validation errors |
+| OpenAI protocol paths | `test/providers/openai-stream.test.js`, `test/messages/rounds.test.js` | Non-streaming and SSE conversion, streamed text and tool-call assembly, usage, malformed streamed input, error classification, tool pairing, and validation errors. (The Anthropic cells were deleted with the adapter, issue #926.) |
 | Loop retries and completion | `test/loop-fr2.test.js`, `test/loop-stream.test.js`, `test/loop-termination.test.js` | Retryable versus non-retryable errors, original-message retries, capped backoff, completion signals, no-tool completion, `max_tokens` continuation, adjacent-assistant merging, streaming observers, streaming retries, fallback to `chat`, and termination reasons |
 | Budget and compaction | `test/compact/budget.test.js`, `test/compact/sliding-window.test.js`, `test/compact/fold-statistical.test.js`, `test/compact/enforce-size.test.js` | Budget calculation, whole-round sliding windows, deterministic statistical folding, bounded navigation and recovery stubs, protected heads, and deterministic field-priority size enforcement |
 | Model configuration | `test/config/static.test.js`, `test/config/env.test.js`, `test/config/api-key.test.js` | Static and environment-backed providers, numeric and boolean parsing, invalid configuration errors, and direct/environment/file API-key precedence |

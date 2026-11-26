@@ -15,7 +15,7 @@
 > 这个宿主已与 `erix-station` 一起合并进后继项目 `fde-workshop`。`app_container` 检出仍在盘上、仍导入本包，
 > 所以下面这些路径今天仍然可读；变的是这份工作归哪个项目，不是旧代码还在不在。
 
-- 已有能力：双协议归一化（OpenAI/Anthropic → 统一的 `tool_use`/`tool_result` 块）、基于签名窗口比对的停滞检测、固定十轮硬窗口、`max_tokens` 续写，以及 idea 对话的骨架折叠（`chat_summary_json` 加 `foldedUpTo` 水位线）。
+- 已有能力：wire 格式归一化（OpenAI 兼容响应 → 统一的 `tool_use`/`tool_result` 块；Anthropic 适配器已由 issue #926 撤回）、基于签名窗口比对的停滞检测、固定十轮硬窗口、`max_tokens` 续写，以及 idea 对话的骨架折叠（`chat_summary_json` 加 `foldedUpTo` 水位线）。
 - 痛点：（1）硬窗口会静默丢弃早期轮次，因此一个 24 轮的开发任务可能丢失一半历史，模型可能重复已完成的工作；（2）provider 错误会使整个任务失败，导致 reaper 从头开始，浪费已经支付的 LLM 调用；（3）`pi_models.context_window_tokens` 已存储，却没有接入循环（`llm-context-budget.md` §7，“本周期不改”）；（4）骨架折叠输出没有确定性的大小约束，依赖 LLM 遵守预算，而不是将最终大小保持为代码不变量。
 
 ### touwaka（`touwaka:lib/agent/` + `touwaka:lib/context-organizer/`）
@@ -27,7 +27,7 @@
 
 ### 目标
 
-1. 提供 OpenAI 兼容（`chat/completions`）和 Anthropic（`messages`）适配器，支持流式与非流式调用、统一的规范内部块格式，以及通用错误分类。
+1. 提供 OpenAI 兼容（`chat/completions`）适配器，支持流式与非流式调用、统一的规范内部块格式，以及通用错误分类。
 2. 提供 `runToolLoop` 单任务生命周期：注入工具与执行器、`config.run.maxRounds`、可选的轮内 provider 重试、停滞检测、完成与无工具策略、`max_tokens` 续写、检查点/恢复、可选的反思/裁决治理，以及可观测事件。
 3. 提供可插拔的上下文预算压缩：`sliding-window`、`fold-statistical` 和 `fold-llm`；checkpoint 保留完整折叠载荷，而请求视图可以使用 TTL 折叠。
 4. 让配置与持久化处于适配器契约之后。包内包含 static、environment、JSON-file、memory 和 JSONL-file 实现；数据库适配器仍保留在消费方项目中。
@@ -51,8 +51,8 @@
 
 | # | 需求 | 状态与实现 |
 |---|---|---|
-| FR-1.1 | OpenAI 兼容（`chat/completions`）和 Anthropic（`messages`）协议，均支持流式与非流式 | **已交付。** `createOpenAIProvider` 暴露 `chat` 与 `chatStream`；Anthropic 适配器是内部件，走 Anthropic 的宿主自己提供 provider 对象（协议助手仍然公开）。 |
-| FR-1.2 | 将两种协议归一为一种内部块格式（`text` / `tool_use` / `tool_result`） | **已交付。** `src/messages/canonical.js` 和 `src/messages/anthropic.js` 还会在需要时保留 `raw`、图片和 reasoning 块。 |
+| FR-1.1 | OpenAI 兼容（`chat/completions`）协议，支持流式与非流式 | **已交付。** `createOpenAIProvider` 暴露 `chat` 与 `chatStream`。**已撤回：Anthropic（`messages`）适配器与其协议助手**——issue #926 退役；走 Anthropic 的宿主自带 provider 对象。 |
+| FR-1.2 | 将 wire 格式归一为一种内部块格式（`text` / `tool_use` / `tool_result`） | **已交付。** `src/messages/canonical.js` 还会在需要时保留 `raw`、图片和 reasoning 块。 |
 | FR-1.3 | 通用错误类别：`timeout` / `rate_limited` / `auth` / `network` / `server`，并带有可重试标记 | **已交付。** `src/providers/errors.js` 提供 `KitError`、HTTP 分类、fetch 异常分类和 `retryable`；它还暴露显式的 `aborted`、`provider_config`、`invalid_messages` 及相关不可重试错误。 |
 | FR-1.4 | 对于包含错误正文的 HTTP 2xx 响应，保留上游返回的错误正文，而不是报告误导性的 missing-choice 错误 | **已交付。** 两个 provider 都会检查成功响应正文中的 provider 错误并保留上游消息；缺少 `choices` 的 OpenAI 响应会包含有界的响应预览。 |
 | FR-1.5 | 将模型元数据（`contextWindowTokens` / `maxOutputTokens`）传入循环，使其能够推导压缩预算 | **已交付，并带有明确的输入契约。** Provider 工厂会返回这些元数据字段，`runToolLoop` 可从 `modelConfig`、`config.metadata.modelMetadata`、`config.metadata.model`、`provider` 或 `config.folding.context` 接收它们，并在两个值都可用时调用 `computeBudget`。任一值缺失时都不会推断预算。 |
@@ -90,7 +90,7 @@
 
 | # | 需求 | 状态与实现 |
 |---|---|---|
-| FR-5.1 | 定义标准工具 schema；由适配器负责协议序列化；执行保留在宿主 | **已交付。** `ToolSchema` 使用 `inputSchema`；`canonicalToolsToOpenAI` 和 `canonicalToAnthropicRequest` 分别为各 provider 序列化它，而 `executeTool` 仍是循环注入的执行边界。 |
+| FR-5.1 | 定义标准工具 schema；由适配器负责协议序列化；执行保留在宿主 | **已交付。** `ToolSchema` 使用 `inputSchema`；`canonicalToolsToOpenAI` 为 provider 序列化它，而 `executeTool` 仍是循环注入的执行边界。 |
 | FR-5.2 | 提供可选的 `erix-agent/tools` 子路径，其中包含工具注册表和工具 provider | **已交付。** `package.json` 将 `./tools` 导出到 `src/tools/index.js`，后者导出工具注册表（以及文件工具、notes、技能 loader 与 `delegation/*` 那一组）。这些功能均为可选，不会自动安装为循环工具；不再包含路径牢笼或文件工具助手。 |
 | FR-5.3 | 让工具定义可插拔（`static` / `json-file` / `composite`，DB 在消费方项目中）；让执行器注册表归代码所有，并在不匹配时 fail closed | **注册表已交付；可插拔 provider 工厂已退役。** `src/tools/registry.js` 将执行器保存在代码所有的 map 中，校验输入，合并 provider schema 覆盖项，并在 provider 指定不可用执行器时抛出 `tool_unknown_executor`。三个 provider 工厂（`static` / `json-file` / `composite`）随 0.31 bundle 退役：`ToolProvider` 现在是一个由宿主自建的 duck-typed `{ listTools(sel) }` 对象（见 `docs/architecture.md` §3.6）。`src/tools/providers.js` 文件仍在树里，但已不在发布面上——`src/tools/index.js` 与包根都不重新导出它（只有 `test/tools/providers.test.js` 导入它），所以宿主不得依赖它。未包含 DB provider。 |
 
