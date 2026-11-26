@@ -63,15 +63,12 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   no silent pass when ground truth cannot be read). Named string *values* — termination reasons, provider error
   codes — are the one weaker tier and are accepted only in the five files listed with a reason in
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs` (the fifth, `bin/final-guard.js`, was
-  added for issue #743 so the CLI guard's two skip reasons are actually checked). Because the bare-line ratchet keys on
-  (document, target file, line range) — **never on the doc's own line number** — rewriting
-  `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 249`:
-  dropping below it is red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
-  Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
-  The measurement log that used to sit in this parenthetical — every past reading, merge by merge, with the tree
-  it came from — now lives in `docs/maintenance/symbol-anchor-ledger.md`. That file is history, not current state;
-  nothing on this page restates it.
+  added for issue #743 so the CLI guard's two skip reasons are actually checked). A symbol anchor is judged by the
+  symbol it names: rewriting `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` never changes whether
+  that symbol exists in the target file, and `symbols` checks that ground truth directly — a named symbol that is
+  absent is red. #908 removed the old **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE` and the measurement log
+  `docs/maintenance/symbol-anchor-ledger*.md` it used to point at (both deleted); the existence and span-intersection
+  checks themselves are unchanged.
   *`symbol-shape`* (issue #755) covers the two **other** ways a document writes a symbol coordinate, both of
   which used to be invisible to `symbol-anchor`: **S2** `` `path`: `sym` and `sym` `` (file first, colon, one or more
   backticked symbols — the #755 field shape was `src/loop/tool-result-ttl.js`: `stubFor` and `placeholderFor`,
@@ -94,20 +91,12 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   before resolving. Two legal fixes: **drop the range** (`` `symbol` (`path`) ``, preferred: numbers drift and
   `symbols` never needed them) or move it onto the declaration. Anchors *without* a range are outside this rule,
   which is also why dropping ranges makes the ratchet below go down legitimately.
-  *`bare-lines`* is a *ratchet (only down)*: `src/**.js:N` / `:N-M` references, counted as unique
-  (document, target file, line range), may never exceed `BARE_LINE_REF_BASELINE = 6` in that same script (lowered from 80:
-  issue #286 T-c turned the remaining 76 bare line keys of the orchestrator / providers / skills-loader /
-  run-snapshot-executor / config / compact / notes / display / reflection families into symbol anchors in both
-  contract languages and the 0.17.0 guide; the 6 keys left are the span fixtures the `--self-test` mutations
-  rewrite verbatim (`terminationReasonForAction` / `max_rounds_cap` / `defaultSleep`), not range facts;
-  before that 80 came from issue #286 T-b2 turning the remaining bare line numbers of the `src/loop/provider-runner.js`,
-  `src/loop/termination.js` and `src/reflection/governor.js` families into symbol anchors in both contract languages,
-  50 unique keys in total; before that 130 came from PR #451 turning the contract's two bare ranges pointing at the
-  end-turn wrap-up block into a symbol anchor).
-  The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`, which prints the whole breakdown (occurrences /
-  unique ranges / declaratively exempted / **marked-region exempted** ⇒ effective measured); as of issue #772 that
-  line reads 97 occurrences, 82 unique ranges, 4 declaratively exempted
+  *`bare-lines`* counts `src/**.js:N` / `:N-M` references as unique (document, target file, line range). Since #908
+  it is an **advisory, not a blocker**: `check:docs` still counts them and prints a one-line
+  `BARE-LINES-ADVISORY 现存 N 处（提示，不阻塞）` note, but never turns red over the count — the old **only-down**
+  `BARE_LINE_REF_BASELINE` ratchet (and its measurement log `docs/maintenance/symbol-anchor-ledger*.md`) were removed by #908.
+  The number is reproducible with `node scripts/docs-drift-check.mjs --verbose`, which prints the whole breakdown
+  (occurrences / unique ranges / declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
@@ -189,15 +178,14 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   would only raise it.
   Scope is the document set a host actually reads: the two READMEs, both AGENTS files, both
   contract files, both architecture docs, both chart docs, both requirements docs, `examples/pi-extension/README.md`,
-  the maintenance ledger pair (`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`),
   plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
-  agree: `REF_SCAN_DOCS_MINIMUM = 53` is the floor, and the count it stands for (pinned documents + the guides the
+  agree: the count it stands for (pinned documents + the guides the
   directory scan finds) is **reported, not judged** (261122): `check:docs` prints the measured numbers as a
   `ref-scan-claims` note every run, and a document that restates a different number is a **note**, not a red —
   restating a measurement nobody acts on was a self-referential gate (it taxed every new guide with four edits).
-  The floor itself is still enforced: shrinking the anchor face below `REF_SCAN_DOCS_MINIMUM` stays red.
+  Since #908 there is no numeric coverage floor: a guide renamed away from that pattern is caught by the pinned list below, not a count threshold.
   `test/docs-anchor-ratchet.test.js` keeps its own pinned list of the same documents. **Renaming or removing** a
   pinned guide is red (that is the coverage silently shrinking); **adding** one is not — it joins the anchor face
   automatically, because demanding that the pinned list match the discovered set exactly taxed every new guide with
@@ -441,25 +429,59 @@ of which self-calibrate. Deleting an entry **on both sides** belongs to the peri
 Run the CLI locally (no installation required)
 
 ## ci
-- **Three jobs by judgement class (issue #802)** — the layering exists because the measured red rate was 25%
-  (138 pass / 49 fail / 13 cancelled over the last 200 runs) and 9 of 12 sampled failures were *registry drift*
-  ("a committed table no longer matches the tree"), not behaviour. The layers:
-  - **`real`** (matrix node 22 + 24, **blocking on every event**): syntax → `npm test` (TAP reporter
-    pinned in `package.json`) → `check:changelog` →
-    `check:tests` + `--self-test` → the four `tsc` ratchet steps in order → `check:types-build` → `check:cli:model-e2e`
-    → `check:release` (node 22 only) → `check:mutation:run` (last: it rewrites tracked sources).
-  - **`registries`** (node 22, `continue-on-error` **on `pull_request` only**): `check:inventory`,
-    `check:config-leaf-values`, `mutation-sample-check --self-test`, `check:pack-links` + `--self-test`,
-    `check:exports:deprecated` + `--self-test`, `guide-removal-gate --self-test`, `release-day --self-test`.
-  - **~~`docs`~~ — removed from CI entirely (261109, operator ruling).** A script can only judge wording, and that
-    class of judgement produced the 25% red rate while catching almost no real defect. The two classes that matter
-    (reference integrity, derived-value copies) are found by **an agent running a documentation pass on a
-    schedule** — the checklist is `doc-review-pass.md`. The commands still exist and still run on demand
-    (`npm run docs:pass`), but no CI event reds because of them. `docs-drift-check --self-test` measured ~7 min
-    alone on the 261109 machine; it is part of that manual pass now, not of CI.
-  - **The layering changes when a PR stops, never how strict a release is**: `npm run release:day -- --stage
-    preflight` still runs all three families as blocking steps (`PREFLIGHT_STEPS`).
-- CI (issue #187): `.github/workflows/ci.yml` **runs on no event since 2026-11-25** — the `pull_request` and `push` triggers were retired by user ruling (6 of its 9 reds over the preceding fortnight were derived-table bookkeeping, none was a `src/` behaviour regression), so only `workflow_dispatch` remains and the `main` gate is the ruleset `main-require-pr` (a PR is required, no status check is). What follows describes the steps a manual run still executes, on `workflow_dispatch` (the manual re-run entry point; note that `POST …/dispatches` answers **404** until GitHub has seen this workflow once — a branch push plus any run registers it, then dispatch returns 204), on **node 22 and node 24** with `fail-fast: false` — 22 is the declared `engines` floor **and** what the hosts actually run, so the gate verifies the runtime users are on rather than a newer one nobody deploys, and 24 is the runner agents and newer hosts actually land on. Issue #774 added the second entry because **a judgment that only holds on one runner is not a judgment**: the mutation case in `scripts/mutation-sample-check.mjs` spawned its child without naming a reporter, Node 24's default reporter is spec, so the `not ok …③…` line it asserts on could never appear — and a single-entry matrix can never see the other entry's red. Install is `npm install --include=dev`, **never** `npm ci` — this repository gitignores `package-lock.json` on purpose (see the `npm lockfile` comment in `.gitignore`), and the two dev packages (`typescript`, `@types/node`, issue #213) are exactly what `check:types` / `check:types-build` / `check:pack-links` / `check:release` need to run at all. **Blocking** steps, in order: `check:syntax` → `test` (the full suite — its exit code is the gate; issue #905 deleted the summary reconciliation that used to tee this step's output into `$RUNNER_TEMP` and compare it against a registry, so there is no tee, no `set -o pipefail` and no `NOT_TAP_LOG` verdict anymore; `npm test` still pins `--test-reporter=tap` in `package.json`, issue #774: the reporter a run emits must be named in argv, never inherited from whatever the runner defaults to) → `check:docs` → `check:docs:strict` (it is green today, so it blocks — the `continue-on-error` proposed in issue #187 was retired before landing) → `check:agents-directives` (issue #642: the instruction-face scanner — status claims, expiring measurement copies, bare source coordinates) → `node scripts/agents-directive-scan.mjs --self-test` → `check:docs-spelling` (issue #560: the retired flat-spelling gate, `scripts/retired-spelling-scan.mjs --strict`) → `node scripts/retired-spelling-scan.mjs --self-test` → `check:docs-examples` → `check:pack-links` → `node scripts/pack-link-check.mjs --self-test` → `check:inventory` (issue #534 / #907: re-derives the flat write points from the AST and matches them against the whitelist `scripts/compat-pin-allowlist.mjs` — an out-of-list write point or a stale entry goes red; it prints its own elapsed time and blocks) → `check:config-leaf-values` (issue #586: re-runs the config-leaf value probe over every schema leaf and compares the regenerated EN/CN status tables with the committed ones; it prints its own elapsed time and blocks) → `mutation-sample-check --self-test` (the same criteria over an in-memory fixture: dead anchor / duplicate anchor / missing catcher / empty mutation / weakened signature red, a dropped sample red on the count floor, a mutation that does not apply red — the #210 R2 convention; since issue #774 the same self-test also reads this script's own source, requiring the spawn of a catcher to pin `--test-reporter=tap` and going red when that literal is swapped to `spec` — on Node 24 an unpinned `node --test` prints spec, and every sample then misreads as "red, but not on the assertion that should have red") → `check:exports:deprecated` (issue #429: the zero-consumer candidate list `check:exports` computes live is reconciled with the `@deprecated` registry in the definitions — a candidate with no registration, a name that *has* consumers carrying the 0.31 marker, a removal version other than the single legal one (`NEXT_BREAKING_VERSION`, currently 0.31), a ledger entry carrying any other version number, a ledger `hostFacts` entry missing from its marker, a marker claiming a known host-visible breakage with no ledger entry, a missing migration clause, or a marker block that is not the doc block directly above its declaration are all red, naming `symbol @ file:line`) → `deprecated-export-check --self-test` (reverse proofs on an in-memory copy of the real tree, including the one this ticket asked for: marking a symbol that has a consumer ⇒ red and named, a consumer-carrying name marked with the later version ⇒ still red, an idle ledger entry ⇒ red, a ledger entry carrying 0.30 ⇒ red and named while the legal 0.31 stays green, and deleting the host-fact sentence from a marker while the ledger keeps it ⇒ red naming the missing fact) → `guide-removal-gate --self-test` (issue #687: the reverse proof of the gate `check:release` runs over the installed package's runtime export surface — clearing the ledger reds every still-exported name, an empty `why`, an idle entry and an unparsable name table each have their own case, and a mutation that does not apply fails; the case count is printed by the command) → `check:tests` → `test-hygiene-check --self-test` → `check:types` → `check:types -- --with-tools` (the tools-entry tier is a separate blocking step: until issue #653 nothing gated this tier, so a stale constant there stayed invisible) → `check:types:strict` (issue #417: the strict ratchet — same graph plus `--strict`, two tier baselines owned by `scripts/type-check-ratchet.mjs`) → `check:types:strict -- --with-tools` → `check:types-build` → `check:cli:model-e2e` (the `ERIX_E2E_MODEL` gate is closed in CI ⇒ it exits 0 with a categorized reason: it self-checks that harness, it is not a real model endpoint signal) → `check:release` under `if: matrix.node == 22` (offline and self-cleaning; that guard is doing real work since issue #774 added node 24 to the matrix, so this one still runs once, on the version the package declares) → `docs-drift-check --self-test` → `check:mutation:run` (issue #257 T7: mutate → the catcher must go red on the named assertion → restore → green, per row; **last** because it is the only step that writes tracked sources and because it runs individual test files, so the suite above must already be green for the red to be attributable; the elapsed time is printed by the command). `node scripts/test-hygiene-check.mjs --self-test` is the hygiene guard's own reverse proof, **blocking** since issue #374: the same rule table runs over an **in-memory fake file set** (nothing is written, `test/` is not touched) — `mkdtempSync(...)`, `mkdtemp(...)` and `fs.mkdtemp(...)` must each come back red, `makeTmp(...)` green, the `test-hygiene-exempt: <reason>` comment green while the reason-less form is red and names the line, `test/helpers/tmp.js` itself uncounted, and a mutation that stops applying also fails (the #210 R2 convention). It is a separate CI step from `check:tests` on purpose: `check:tests` proves today's `test/` is clean, this one proves the rule table still bites — breaking the table leaves the former green while this step's own `--self-test` goes red on exactly the cases that mutation stops catching (the case count is printed by the command). `npm run soak` needs a real relay configuration and key ⇒ **never** in the default CI. `node scripts/docs-drift-check.mjs --self-test` is a **blocking** step since issue #302: its expectation set is decoupled from whether the gitignored `docs/tasks/` directory exists — the two `#280` tree-shape cases now run on a **synthetic tree fixture** (no archive directory / empty archive directory / filled archive directory, each of the three shapes run separately), and the landing check compares the fixture's declared archive inventory with the index instead of counting this machine's real files. The three shapes are each run on a `git archive HEAD | tar -x` tree and the command prints its own case count and red count (neither number is copied here) — the clean-clone reds tracked by issue #281 (3 expected reds, 5 with an empty `docs/tasks/` in the tree) are **gone**, so the `continue-on-error: true` of that era was retired. Two shapes still red without any regression, and both are meant to: **adding a `.gitignore` directory rule without classifying it in `IGNORED_DIR_CLASSES`** (the checker names the rule itself: `.gitignore:N 的目录规则 … 没在 IGNORED_DIR_CLASSES 里分类`), and — since #302 — the **reverse** direction, a class in `IGNORED_DIR_CLASSES` whose rule no longer exists in `.gitignore` (an idle entry; `test/static-guards.test.js` guards the pair in both directions, and that is how the dead `build-output` entry (the dist directory: no `.gitignore` rule for it ever existed) was found and removed). `docs/delivery/` is classified like `docs/tasks/` **and** left untracked, so **the durable delivery evidence lives in the PR/issue comments, not in the repository tree**. Gitea is a code mirror only: **no** Actions pipeline is set up there, GitHub stays the single runner.
+- **`.github/workflows/ci.yml` runs on no event since 2026-11-25** — the `pull_request` and `push` triggers were
+  retired by operator ruling (over the preceding fortnight 6 of its 9 reds were derived-table bookkeeping, 0 were
+  `src/` behaviour regressions). Only `workflow_dispatch` remains, and the `main` gate is the ruleset
+  `main-require-pr` (a PR is required, no status check is). **The consequence is the organising fact of this
+  section: a step that no event triggers is a dashboard, not a gate** (issue #908 R2). "It runs in CI" in this
+  repository means "it runs when somebody clicks".
+- **One job, three kinds of truth** (261126, issue #908 R2). The workflow keeps only what a clean checkout or a
+  second node major version can prove:
+  - the full suite on **node 22 and node 24** with `fail-fast: false`. 22 is the declared `engines` floor *and*
+    what the hosts actually run, so the pipeline verifies the runtime users are on; 24 is where agents and newer
+    hosts land. Issue #774 added the second entry because **a judgment that only holds on one runner is not a
+    judgment**: the mutation case in `scripts/mutation-sample-check.mjs` spawned its child without naming a
+    reporter, Node 24's default reporter is spec, so the `not ok …③…` line it asserts on could never appear — and
+    a single-entry matrix can never see the other entry's red. `npm test` pins `--test-reporter=tap` in
+    `package.json` for the same reason (issue #301): the reporter a run emits must be named in argv.
+  - the four `tsc --checkJs` ratchet tiers as **four separate blocking steps** with no `continue-on-error`;
+    `test/type-check-strict-ratchet.test.js` pins that all four are present, none is advisory, and each tools-tier
+    step follows its own root-tier step. `check:types-build` runs after them: it writes `src/**/*.d.ts`, and a
+    declaration sitting next to its source makes `tsc --checkJs` measure declarations instead of implementations.
+  - the clean-environment trio, each under `if: matrix.node == 22`: `check:release` (real tarball → real install
+    → contract suites → CLI smoke), `check:pack-links` (the shipped surface is read out of a real pack) and
+    `check:mutation:run` (it temporarily rewrites tracked sources, so it goes last, after the suite is green, so a
+    red is attributable). **This trio is the irreducible reason the file exists**: "green in the development tree,
+    red in a clean checkout" (issue #914's class) cannot be seen any other way.
+- **What left, and where each piece went** (issue #908 R2). `ci.yml` is the step list; this page does not copy it.
+  - Second-scale code gates moved **into the suite**, because that is the only place that runs every time:
+    `test/gate-self-tests.test.js` spawns `syntax-check`, `test-hygiene-check` (verify and `--self-test`),
+    `mutation-sample-check --self-test`, `pack-link-check --self-test` and `config-leaf-value-probe --verify`, and
+    one of its cases pins that none of those commands creeps back into `ci.yml` as a duplicate step.
+  - Duplicates deleted outright: `check:inventory`, `guide-removal-gate --self-test` and `release-day --self-test`
+    were already spawned by `test/flat-count-inventory.test.js`, `test/guide-removal-gate.test.js` and
+    `test/release-day.test.js`.
+  - The doc family (`check:docs`, `check:docs:strict`, `check:docs-spelling`, `check:docs-examples`,
+    `check:agents-directives`, `check:changelog`) lives at the version boundary where it is wired —
+    `check:changelog` blocks as `PREFLIGHT_STEPS[0]`, `check:docs` re-runs inside `release:day --stage writeback` —
+    and otherwise on the scheduled agent pass (`doc-review-pass.md`, entry `npm run docs:pass`). The operator
+    ruling behind this is #802: a script can only judge wording, and that class produced the 25% red rate
+    (138 pass / 49 fail / 13 cancelled over 200 runs; 9 of 12 sampled failures were registry drift, not
+    behaviour) while catching almost no defect. `docs-drift-check --self-test` is minutes-slow and belongs to that
+    pass, not to a per-commit gate (one-off timings: ≈7 min on 261109, ≈8.5 min on 261126 over 219 cases).
+  - `check:cli:model-e2e` left CI: with `ERIX_E2E_MODEL` unset it exits 0 with a categorized reason, so as a CI
+    step it only spun; the real endpoint run is preflight step 3.
+- **Invariants that are not about steps**: install is `npm install --include=dev`, **never** `npm ci` —
+  `package-lock.json` is gitignored on purpose and the two dev packages (`typescript`, `@types/node`, issue #213)
+  are exactly what `check:types*` / `check:types-build` / `check:pack-links` / `check:release` need.
+  `fetch-depth: 0` stays even though no step needs full history now (it used to be `check:changelog`'s hard
+  precondition, issue #691): on a shallow clone a future tag-reading judgement comes back vacuous and green
+  instead of red. `npm run soak` needs a real relay configuration and key ⇒ **never** in CI. Gitea is a code
+  mirror: **no** Actions pipeline there, GitHub stays the single runner. `POST …/dispatches` answers **404** until
+  GitHub has seen this workflow once — a branch push plus any run registers it, then dispatch returns 204.
+- **`continue-on-error` is gone with the `registries` job**: "visible on a PR but not blocking" had nothing left
+  to stratify once no event triggered the file. `npm run release:day -- --stage preflight` remains the place where
+  the behaviour, changelog and packaging families are all blocking at once (`PREFLIGHT_STEPS`).
 
 ## gate-reproducibility
 - Gate reproducibility (issue #280): `npm run check:docs` and `npm run check:docs:strict` must exit 0 both in a development worktree and on a **fresh clone** (`git archive HEAD | tar -x -C <empty dir>`). The “local archive” class — files under `docs/tasks/`, a directory that is gitignored on purpose and therefore absent in any clone — is adjudicated by its **declaration** (an entry in `LOCAL_ARCHIVE_REFS`, or an in-line statement next to the reference); the physical file is verified only as a bonus when that directory happens to exist, and its absence never turns the gate red. The gates that genuinely have a local prerequisite are the ones that need `node_modules` — the two dev packages `typescript` + `@types/node` (issue #213): `npm run check:inventory` (it parses every scanned test file with the TypeScript AST), `npm run check:types`, `npm run check:types:strict` and `npm run check:types-build` (all three drive `tsc`), and `npm run check:pack-links` / `npm run check:release` (they shell out to `npm pack`, whose `prepack` hook regenerates the declarations, plus `tsc`). In a checkout without `node_modules` those exit non-zero with `Cannot find module 'typescript'` — that is “the gate could not run”, never a regression; `npm install --include=dev` first. No other gate reads the toolchain.

@@ -1317,9 +1317,7 @@ Not every Markdown file in this repository claims the same thing, and the gate k
   (discovered from the directory; the live count is printed by `check:docs` as a `ref-scan-claims` note), plus — since 工单 261021-03 B1 — the architecture pair
   (`docs/architecture.md` / `docs/architecture_cn.md`), the chart pair (`docs/charts.md` / `docs/charts_cn.md`),
   the requirements pair (`docs/requirements.md` / `docs/requirements_cn.md`), the `erix_run` README
-  (`examples/pi-extension/README.md`) and the maintenance ledger pair
-  (`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md` — its body is a
-  *history* ledger, so the gate pins that body instead of asking it to describe today). That is the anchor face (`REF_SCAN_DOCS_MINIMUM = 53` is its floor; the live count is printed by `check:docs`): a renamed file, a moved
+  (`examples/pi-extension/README.md`). That is the anchor face: a renamed file, a moved
   line or a symbol that no longer exists in `src/` turns `npm run check:docs` red.
 - **Snapshot archives — true at the date in their own header.** `docs/v0.0-contracts*.md` /
   `docs/v0.1-contracts*.md` / `docs/v0.2-contracts*.md`, `docs/design/`, `docs/research/`, `docs/harness-comparison/`

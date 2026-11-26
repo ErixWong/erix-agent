@@ -3,6 +3,54 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Changed
+- **CI keeps only clean-environment truth; the documentation-claims subsystem is deleted (issue #908 R2,
+  261126 operator ruling).** Two rulings land together. ① *Doc family out of CI*: `check:changelog` and the
+  remaining doc-oriented self-tests are no longer pipeline steps; they run where they were already wired
+  (`PREFLIGHT_STEPS[0]`, `release:day --stage writeback`) and on the scheduled `npm run docs:pass`. ② *Code family
+  re-audited by "who actually spawns it"*: since auto-triggers were switched off (261125) a CI step runs only when a
+  human dispatches the workflow, so every second-scale judgement that needed no clean environment moved into
+  `npm test` — new `test/gate-self-tests.test.js` spawns `syntax-check`, `test-hygiene-check` (verify +
+  `--self-test`), `mutation-sample-check --self-test`, `pack-link-check --self-test` and
+  `config-leaf-value-probe --verify` and pins that none of them returns to `ci.yml` as a duplicate. Deleted from the
+  workflow: `check:syntax`, `check:tests` + its self-test, `check:changelog`, `check:inventory`,
+  `check:config-leaf-values`, `check:cli:model-e2e` (it only exits 0 in CI), the `pack-link-check` /
+  `guide-removal-gate` / `release-day` self-tests (the suite already spawns the last two), and the whole
+  `registries` job with its `continue-on-error`. `check:release`, `check:pack-links` and `check:mutation:run` stay
+  under `if: matrix.node == 22`; the four `tsc` ratchet steps stay separate. **Behaviour change: a gate that used to
+  be reachable only through CI now runs on every `npm test`; a doc gate that used to red a pipeline now reds only
+  the release preflight or the manual pass.** Alongside that, the self-referential "documentation must restate the
+  gate's own constants" subsystem is gone: `BASELINE_CLAIM_RULES` and `ratchetBaselines` in
+  `scripts/docs-drift-check.mjs`, `DOC_FILE_COUNT_CLAIMS` / `reconcileDocFileCounts` / `runDocClaimSelfTest` in
+  `scripts/type-check-ratchet.mjs` (that script's `--self-test` is now an explicit no-op instead of a silently
+  ignored flag), rule 4 and its four cases in `test/static-guards.test.js`, and the CI-wiring case ⑧ of
+  `scripts/changelog-coverage-check.mjs` (`checkWiring` deleted). A document that copies a constant is a copy, not a
+  check: it goes red when prose is reworded and stays green when the behaviour breaks.
+  `docs-drift-check --self-test` is green again (219 cases, exit 0; the branch inherited 9 red cases at 239 and the
+  family that caused them is deleted), and `npm run check:types -- --self-test` prints its own retirement instead
+  of pretending to have run something.
+- **CI 只留干净环境才证得动的东西，「文档复述闸自己的常数」子系统整体删除（issue #908 R2，261126 用户裁决）。**
+  同批落两条裁决。① **文档族整族撤出 CI**：`check:changelog` 与剩下的文档向自测不再是流水线步骤，它们住在已经接线的
+  版本边界（`PREFLIGHT_STEPS[0]`、`release:day --stage writeback`）与周期性的 `npm run docs:pass` 上。
+  ② **代码族按「谁真的 spawn 谁」重审**：自 261125 关掉自动触发以后，CI 步骤只有人手 dispatch 才跑，所以凡是不需要
+  干净环境的秒级判据一律进 `npm test` —— 新增 `test/gate-self-tests.test.js` 逐条 spawn `syntax-check`、
+  `test-hygiene-check`（验证态 + `--self-test`）、`mutation-sample-check --self-test`、`pack-link-check --self-test`、
+  `config-leaf-value-probe --verify`，并钉住这些命令不许作为重复步骤回到 `ci.yml`。工作流里删掉：`check:syntax`、
+  `check:tests` 与它的自测、`check:changelog`、`check:inventory`、`check:config-leaf-values`、`check:cli:model-e2e`
+  （在 CI 里它只 exit 0）、`pack-link-check` / `guide-removal-gate` / `release-day` 三条自测（后两条套件本来就在
+  spawn），以及带 `continue-on-error` 的整个 `registries` job。`check:release`、`check:pack-links`、
+  `check:mutation:run` 留在 `if: matrix.node == 22` 下；四档 `tsc` 步骤仍分开跑。**行为变化：原先只能经 CI 触达的
+  判据现在每次 `npm test` 都跑；原先会让流水线红的文档闸现在只在发版前置或手动检查里红。**
+  同批删除的还有那条自指子系统——「文档必须复述闸自己的常数」：`scripts/docs-drift-check.mjs` 的
+  `BASELINE_CLAIM_RULES` 与 `ratchetBaselines`、`scripts/type-check-ratchet.mjs` 的 `DOC_FILE_COUNT_CLAIMS` /
+  `reconcileDocFileCounts` / `runDocClaimSelfTest`（该脚本的 `--self-test` 从此是**显式空操作**，不再是被静默忽略的
+  旗标）、`test/static-guards.test.js` 的规则 4 与其四例，以及 `scripts/changelog-coverage-check.mjs` 的接线例⑧
+  （`checkWiring` 一并删）。文档抄一个常数只是抄件，不是判据：措辞一改就红，行为坏了反而绿。
+  `docs-drift-check --self-test` 恢复绿（219 例 exit 0；本分支接手时是 239 例红 9 例，造红的那一族已删），
+  `npm run check:types -- --self-test` 现在打印自己的退役，而不是假装跑过了什么。
+- **`check:docs` loses its three anchor ratchets; bare line-number references become an advisory (issue #908).** The documentation gate dropped the **only-down** `BARE_LINE_REF_BASELINE`, the **only-up** `SYMBOL_ANCHOR_MIN_UNIQUE` and the coverage floor `REF_SCAN_DOCS_MINIMUM`, together with the two measurement ledgers `docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md` (deleted). **Two intended behaviour changes:** (1) those three floors are gone; (2) a bare `path:123` reference is **no longer a blocker** — `check:docs` still counts them and prints a `BARE-LINES-ADVISORY … （提示，不阻塞）` note instead of turning red. The truth checks are unchanged and still red: a symbol that no longer exists in `src/`, a line number pointing past the end of a file (`src/loop/orchestrator.js:99999`), a symbol anchor whose range does not intersect its declaration, and the EN/CN heading-skeleton mismatch.
+- **`check:docs` 拆掉三只锚点棘轮，裸行号引用降级为提示（issue #908）。** 文档门禁去掉了**只降不升**的 `BARE_LINE_REF_BASELINE`、**只升不降**的 `SYMBOL_ANCHOR_MIN_UNIQUE` 与覆盖面地板 `REF_SCAN_DOCS_MINIMUM`，并删除两份测量日志 `docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`。**两处有意的行为改变：**（1）这三只地板拆了；（2）裸 `path:123` 引用**不再是阻塞项**——`check:docs` 照旧统计并打一行 `BARE-LINES-ADVISORY …（提示，不阻塞）`，不再因此压红。真值检查一条不减、照旧压红：在 `src/` 里已不存在的符号、指到文件末尾之外的行号（`src/loop/orchestrator.js:99999`）、区间不与声明处相交的符号锚点、以及中英标题骨架不齐。
+
 ### Added
 - **Deterministic recall tool `recall_read` (issue #896 C1).** A new built-in tool factory
   `createBuiltinRecallTools({ readLedgerRows })` in `src/tools/recall.js` produces the

@@ -225,13 +225,12 @@ test("AGENTS §4 的 preflight 清单与 PREFLIGHT_STEPS 逐格对账（中英�
   }
 });
 
-test("npm script 与 CI 两处接线（指令面的措辞不再由测试钉住）", () => {
+test("npm script 接线（指令面的措辞不再由测试钉住）", () => {
   // issue #802：原来还要求两份 AGENTS 的表格行里必须出现 `scripts/release-day.mjs` / `--stage` / `--sync`
   // 且不许出现「N 条判据」。那是措辞警察（文档一改写就红，抓不到行为）。承重的两处 wiring 留着：
   // npm script 真的指向这个脚本，CI 里真的有那一步阻塞自测。
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   assert.equal(pkg.scripts["release:day"], "node scripts/release-day.mjs", "npm script 必须指向这个脚本");
-  const ci = readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf8");
-  assert.match(ci, /name: Release-day command self-test\n\s+run: node scripts\/release-day\.mjs --self-test/u,
-    "CI 要有这一步阻塞自测（issue #689 的接线要求）");
+  // CI 那一步（`node scripts/release-day.mjs --self-test`）随 #908 R2 撤出流水线：它判的东西与本文件
+  // 上面那格（直接 spawn `--self-test` 并断言 OK）完全重叠，而套件每次都跑、CI 只人手点按钮才跑。
 });

@@ -1,5 +1,7 @@
 # ADR-021：符号锚点声称链该住在哪一页——评估与搬家方案（issue #644 ③）
 
+> **状态注（#908，后续）：** 本 ADR 所护的三块地板 `SYMBOL_ANCHOR_MIN_UNIQUE`、`REF_SCAN_DOCS_MINIMUM`、`BARE_LINE_REF_BASELINE` 已随 #908 拆除，两份测量日志 `docs/maintenance/symbol-anchor-ledger*.md` 已删除；本文其余部分作为决策史保留，不改写。
+
 > **状态：提案（2026-10-31）；已落地（2026-11-01）。** 本文做评估并钉下了搬家清单，搬家本身在它要求的
 > 那张单里完成了。落地时选的目的地是 `docs/maintenance/symbol-anchor-ledger.md` / `_cn.md`——下面的清单
 > 里仍写着 `docs/symbol-anchor-claim-chain.md`，那是当时的方案、不是结果。声称链是逐字搬的，这对文件
