@@ -307,7 +307,7 @@ test("buildLoopOptions：参数 → runToolLoop 选项装配（策略名/预算�
 
   const options = core.buildLoopOptions({
     params: {
-      task: "修 bug", cwd: "/work/proj", maxRounds: 9, timeoutMs: 60_000, strategy: "fold-statistical",
+      task: "修 bug", cwd: "/work/proj", maxRounds: 9, timeoutMs: 60_000, strategy: "fold-llm",
     },
     slot: fakeSlot().slot,
     provider,
@@ -336,7 +336,7 @@ test("buildLoopOptions：参数 → runToolLoop 选项装配（策略名/预算�
   assert.equal(at(options, "config.input.wrapup"), false, "对话型宿主不收 JSON 信封");
   assert.equal(at(options, "config.run.stream"), false);
   assert.equal(at(options, "config.run.reflection"), false);
-  assert.equal(at(options, "config.folding.context.strategy"), "fold-statistical", "#167：内置名字交给引擎实例化");
+  assert.equal(at(options, "config.folding.context.strategy"), "fold-llm", "#898-2：内置名只剩 fold-llm，宿主原样转交引擎实例化");
   assert.deepEqual(at(options, "config.metadata.modelMetadata"), { contextWindowTokens: 200_000, maxOutputTokens: 4_096 });
   assert.equal(typeof at(options, "capabilities.hooks.onEvent"), "function");
   assert.equal(typeof at(options, "capabilities.hooks.onObserverError"), "function");
@@ -375,7 +375,7 @@ test("runErixRun：正常路径产出结构化载荷（finalText/rounds/usage/te
   const captured = {};
   const progressLines = [];
   const payload = await core.runErixRun(
-    { task: "修 bug", cwd: repoRoot, maxRounds: 6, strategy: "sliding-window" },
+    { task: "修 bug", cwd: repoRoot, maxRounds: 6, strategy: "fold-llm" },
     makeDeps({
       provider,
       captured,
@@ -396,14 +396,14 @@ test("runErixRun：正常路径产出结构化载荷（finalText/rounds/usage/te
   assert.equal(payload.diagnostics.observerErrors.count, 0);
   assert.equal(payload.diagnostics.modelMetadataMissing, null);
   assert.equal(payload.diagnostics.model, "slot-model");
-  assert.equal(payload.diagnostics.strategy, "sliding-window");
+  assert.equal(payload.diagnostics.strategy, "fold-llm");
   assert.equal(payload.diagnostics.libSource, "fake://lib");
   assert.equal(payload.diagnostics.timeoutMs, core.DEFAULT_TIMEOUT_MS);
   assert.equal(payload.diagnostics.compaction.events, 0);
 
   // 装配确实落到 runToolLoop 手上
   assert.equal(at(captured.options, "config.run.maxRounds"), 6);
-  assert.equal(at(captured.options, "config.folding.context.strategy"), "sliding-window");
+  assert.equal(at(captured.options, "config.folding.context.strategy"), "fold-llm");
   assert.deepEqual(at(captured.options, "config.metadata.modelMetadata"), { contextWindowTokens: 200_000, maxOutputTokens: 4_096 });
   assert.match(at(captured.options, "config.input.system"), /TOOLS\(todo=off\)/u);
   assert.match(at(captured.options, "config.input.system"), /工作目录 /u);

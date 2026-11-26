@@ -29,6 +29,7 @@ import {
 } from "../src/assembly-validators.js";
 import { estimateMessageTokens } from "../src/tokens.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { runDirect } from "./helpers/run-direct.js";
 
@@ -119,7 +120,9 @@ async function run({ estimatedTokens, messages, budgetTokens = BUDGET, foldAtRat
     wrapup: false,
     executeTool: async () => "ok",
     store: createMemoryTranscriptStore(),
-    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+    // #898-2：折叠需策略对象才能执行（机械工厂 == 被删名解析到的同一对象，strategyRequestsCompaction 仍为 false，
+    // overBudget 依旧是唯一触发器）。策略对象的 canonical 家是 capabilities.ports.strategy。
+    capabilities: { ports: { strategy: createSlidingWindowStrategy() }, hooks: { onEvent: (event) => events.push(event) } },
   });
   return {
     result,

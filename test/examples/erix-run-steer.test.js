@@ -350,7 +350,7 @@ async function offlineRun({ nextUserTurn, sessionDir, runId = `steer-753-c2-${Ma
     },
   };
   const payload = await core.runErixRun(
-    { task: "修 bug", cwd: repoRoot, maxRounds: 4, strategy: "sliding-window", ...(sessionDir === undefined ? {} : { sessionDir }) },
+    { task: "修 bug", cwd: repoRoot, maxRounds: 4, strategy: "fold-llm", ...(sessionDir === undefined ? {} : { sessionDir }) },
     nextUserTurn === undefined ? deps : { ...deps, nextUserTurn },
   );
   const rows = store === null ? [] : await store.load(runId);

@@ -242,6 +242,8 @@ test("#643-③ 没配策略 ⇒ 不折叠（模型请求里不出现折叠摘要
     executeTool: async ({ input }) => roundContent(Number(input?.path?.match(/mod(\d+)/u)?.[1] ?? 0), 12000),
     store,
     runId: "643-unconfigured",
+    // #898-2 修订设计：这格刻意验「没配策略 ⇒ 不折叠」⇒ 关掉夹具隐式注入。
+    implicitStrategy: false,
     config: {
       folding: { context: { budgetTokens: BUDGET, keepRounds: 6 } },
       run: { maxRounds: 7, completion: false, outputHygiene: { limit: 100_000 } },

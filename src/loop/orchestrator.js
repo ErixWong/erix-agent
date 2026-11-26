@@ -1862,17 +1862,17 @@ export async function runToolLoop(options) {
             ? runLoopState.foldedThrough
             : ledgerWatermark(resumedLedgerRecords),
         )?.fact?.text,
-        ...(context.summarizerBudgetMs === undefined
+        ...(context?.summarizerBudgetMs === undefined
           ? {}
           : { summarizerBudgetMs: context.summarizerBudgetMs }),
-        ...(context.maxSummarizerInputBytes === undefined
+        ...(context?.maxSummarizerInputBytes === undefined
           ? {}
           : { maxSummarizerInputBytes: context.maxSummarizerInputBytes }),
-        ...(context.maxPriorSummaryBytes === undefined
+        ...(context?.maxPriorSummaryBytes === undefined
           ? {}
           : { maxPriorSummaryBytes: context.maxPriorSummaryBytes }),
         // issue #493：它以前是唯一没开的那个（直连路径静默无效、装配口反倒报错）。
-        ...(context.maxSummaryTokens === undefined
+        ...(context?.maxSummaryTokens === undefined
           ? {}
           : { maxSummaryTokens: context.maxSummaryTokens }),
       },

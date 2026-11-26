@@ -72,6 +72,8 @@ async function runFold(options) {
     ),
     store,
     runId,
+    // #898-2：本文件自己逐格控策略（①无策略⇒不折、②③自带 fold-llm）⇒ 关掉夹具的隐式注入。
+    implicitStrategy: false,
     config: {
       folding: {
         context: {
