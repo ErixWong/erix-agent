@@ -1,5 +1,7 @@
 // Conservative, dependency-free token estimates for canonical messages.
 
+import { canonicalToolsToOpenAI } from "./messages/canonical.js";
+
 /**
  * @typedef {Object} EstimateTokenOptions
  * @property {number} [cjkTokensPerChar=1.5]
@@ -240,4 +242,21 @@ export function estimateMessageTokens(messages, opts = {}) {
  */
 export function estimateMessagesTokens(messages, opts = {}) {
   return estimateMessageTokens(messages, opts);
+}
+
+/**
+ * Estimate the token cost of a tool surface (issue #892).
+ *
+ * 每次请求都会把 `payload.tools = canonicalToolsToOpenAI(tools)` 发给 provider，而这份
+ * 定义开销以前从没进过 token 估算。这里用仓库现成的口径：序列化（`canonicalToolsToOpenAI`）
+ * 后的 JSON 长度过 `estimateTokens`。**一个 run 内工具面不变 ⇒ 只需算一次**；默认无工具
+ * （`undefined` / `[]`）时返回 `0`，消费方（`computeBudget` / 折叠判据）拿到 0 时逐字不变。
+ *
+ * @param {Array<object>|undefined} tools
+ * @param {EstimateTokenOptions} [opts]
+ * @returns {number}
+ */
+export function estimateToolDefinitionTokens(tools, opts = {}) {
+  if (!Array.isArray(tools) || tools.length === 0) return 0;
+  return estimateTokens(JSON.stringify(canonicalToolsToOpenAI(tools)), opts);
 }

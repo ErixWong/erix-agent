@@ -102,6 +102,30 @@
   `truncateBody`（`src/providers/http-shared.js`）**仍在活路径上**：`src/providers/openai.js` 有五个地方用它
   构造错误体。删完之后没有任何测试断言这个上限，把它改宽（或删掉 `slice`）会全绿。新用例让 OpenAI provider
   吃一份 700 字符的非 JSON 正文，同时钉住长度（500）与形状（取前缀）。
+- **Tool definitions are now counted into the token estimate (issue #892, branch
+  `fix-261126-48-tool-def-tokens`, base `65cb6ff3`).** Every request ships `payload.tools`, but the budget
+  derivation and the fold criteria only ever counted `messages` — so the derived budget was optimistic by
+  roughly the tool-definition cost (11 builtin tools ≈ 4,714 tok ⇒ ~7% optimistic on a 65k budget, worse
+  the more tools a host adds), and compaction fired too late. Fix follows the agreed shape (plan C): a
+  pure `estimateToolDefinitionTokens(tools)` helper in `src/tokens.js` reuses the existing estimator
+  (`estimateTokens(JSON.stringify(canonicalToolsToOpenAI(tools)))`, **0** when there are no tools);
+  `computeBudget` (`src/compact/budget.js`) gains an optional `toolDefinitionTokens` term (default **0** ⇒
+  byte-identical with no tools); and `runToolLoop` computes the number **once** and feeds it to the derived
+  budget via `computeBudget` (`src/loop/orchestrator.js`) — the fold criteria then read that same reduced
+  `budgetTokens`, so budget and folding share a single 口径 (no double count). Explicit budgets
+  (host-declared totals) are left untouched. Pinned by `test/loop-tool-definition-tokens-892.test.js`
+  (4 cells: estimate equals the serialized value, budget and folding use the same number, default-0 is
+  byte-identical, and the reverse — the budget is smaller by exactly `toolDefinitionTokens`).
+- **工具定义现在被算进 token 估算（issue #892，分支 `fix-261126-48-tool-def-tokens`，基点 `65cb6ff3`）。**
+  每个请求都会把 `payload.tools` 发给 provider，而预算推导与折叠判定以前只数 `messages` ⇒ 派生预算
+  乐观掉约一份工具定义的开销（11 个内置工具 ≈ 4,714 tok ⇒ 65k 预算乐观 ~7%，宿主工具越多越乐观），
+  折叠也触发偏晚。修法按已定形状（判据 C）：`src/tokens.js` 新增纯函数 `estimateToolDefinitionTokens(tools)`，
+  复用现成估算口径（`estimateTokens(JSON.stringify(canonicalToolsToOpenAI(tools)))`，无工具 ⇒ `0`）；
+  `computeBudget`（`src/compact/budget.js`）新增可选 `toolDefinitionTokens` 项（默认 **0** ⇒ 无工具时逐字不变）；
+  `runToolLoop` 把这个数**只算一次**并通过 `computeBudget` 喂给派生预算（`src/loop/orchestrator.js`）——折叠判据
+  读的就是同一个被扣后的 `budgetTokens`，预算与折叠共用单一口径（不重复加）。显式预算（宿主声明的总额）不动。
+  由 `test/loop-tool-definition-tokens-892.test.js` 钉住（4 格：估算等于序列化值、预算与折叠用同一个数、
+  默认 0 逐字不变、反向——预算比无工具时恰好少一个 `toolDefinitionTokens`）。
 - **The plan directive now asks for batched tool calls (task 261126-44).** The sentence appended to the CLI
   system prompt read `每轮开始先用一句话（≤30字）说明当前计划，再调用工具` — singular "调用工具", which framed the
   loop as one action per round. Measured on one dispatched run: **112 of 120 rounds carried exactly one
