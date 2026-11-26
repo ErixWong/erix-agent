@@ -234,13 +234,16 @@ export function createBuiltinRecallTools(options = {}) {
     //   正常轮的正文已被 store.load() 折进轮载体、消息行被吸走，所以这里只剩崩溃轮（无载体）。
     const fromMessageRows = rows
       .map((/** @type {any} */ row, /** @type {number} */ index) => ({ row, index }))
-      .filter(({ row }) => isMessageRow(row) && row.round === round && Array.isArray(row.messages))
+      // `row?.` 不是洁癖：访问器是**宿主注入**的（`readLedgerRows`），返回 `null` / 非对象行时
+      // `row.round` 会抛 `Cannot read properties of null`——工具里抛异常等于整轮 run 死掉，
+      // 而「账本里有一行是 null」这种事不该有这种代价（#896 C1 的 null 安全洞，fuzz 实测到）。
+      .filter(({ row }) => isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
       .sort((/** @type {any} */ a, /** @type {any} */ b) => (a.row.seq - b.row.seq) || (a.index - b.index))
       .flatMap(({ row }) => row.messages);
 
     // 口径②：轮载体行（非消息行、自带 messages 的旧/正常格式）里 round===N 的，直接取其 messages。
     const fromCarrierRows = rows
-      .filter((/** @type {any} */ row) => !isMessageRow(row) && row.round === round && Array.isArray(row.messages))
+      .filter((/** @type {any} */ row) => !isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
       .flatMap((/** @type {any} */ row) => row.messages);
 
     const messages = [...fromMessageRows, ...fromCarrierRows];

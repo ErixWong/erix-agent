@@ -320,3 +320,15 @@ test("#896B-9 整包硬顶：控制字符把 JSON 转义撑大时，丢段而不
   assert.equal(parsed.truncated, true, "丢过段就必须报 truncated");
   assert.ok(parsed.segmentsOmitted > 0, "丢过段就必须报 segmentsOmitted");
 });
+
+test("#896B-10 账本行是 null / 非对象时不许抛（访问器是宿主注入的）", async () => {
+  // fuzz 实测到的洞：`rows` 里混一行 `null`，逐字模式取 `row.round` 直接抛
+  // `Cannot read properties of null`——工具里抛异常等于整轮 run 死掉。
+  const rows = [null, undefined, 3, "x", { round: 1, messages: [{ role: "user", content: "正文" }] }];
+  const t = tool(rows);
+  const verbatim = JSON.parse(await t.executeTool({ name: "recall_read", input: { round: 1 } }));
+  assert.equal(verbatim.status, "found");
+  assert.equal(verbatim.messageCount, 1);
+  const grep = JSON.parse(await t.executeTool({ name: "recall_read", input: { pattern: "正文" } }));
+  assert.equal(grep.status, "found");
+});
