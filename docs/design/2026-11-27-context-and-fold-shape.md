@@ -72,11 +72,12 @@
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` | text | **PK** | 跨 resume 不变 |
-| `status` | text | | 终态字符串 |
+| `status` | text | | **生命周期标记**：`running` / `succeeded` / `unverified_error` / `guard_error` / `aborted` / `failed`。`running` 且没有 `termination_detail` = **崩溃**——这是"这行从没被收口"的唯一证据，不可派生。终局值里混进了验证结论（见 `verification`），因为清理判据按单值读它 |
 | `state` | jsonb | | run-state 载荷（预算 / 工具统计 / 折叠计数 / 终止原因） |
 | `state_schema_version` | int | not null | 格式代次 |
 | `state_epoch` | int | not null | **「状态块注入过几次」的计数**，用来判派生缓存（`semantic` 小抄目录）是否过期。不是版本号：只在注入轮 +1，失败收尾那次会用同一个号重写 |
-| `termination_detail` | jsonb | | 为什么死、差多少：`{reason, budget_tokens, measured_tokens, over_by, layers_tried}`。每次 run 只死一次 ⇒ 一列，不是一张表 |
+| `termination_detail` | jsonb | | **为什么停**：`{reason, detail, errorCode?}`。`reason` 是终止原因（`end_turn` / `judge_done` / `no_tool` / `stall` / `max_rounds_cap` / `aborted` / `failed` / `persistence_failed`），`detail` 是一句人可读说明，`failed` 时才有 `errorCode`（`timeout` / `rate_limited` / `auth` / …）。每次 run 只死一次 ⇒ 一列，不是一张表 |
+| `verification` | jsonb | | **验证结论**：`{status, reason?, guardVerdict?, metrics}`。`status` = `verified` / `unverified` / `skipped` / `error`。**这是 `status` 那一列丢失的事实**：`verified` 与 `skipped` 在 `status` 上都压成 `succeeded`，`verification.reason`（`deliverables_failed` / `machine_only`）在 `status` 上没有位置 |
 | `board` | text | | **白板：一整块现状文本**（≤1500 token），整块覆盖写。不是表——渲染时整块拼进上下文，没有按条目查询的读者（§1.7） |
 | `created_at` / `updated_at` | timestamptz | not null | |
 
@@ -569,7 +570,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 5. **永远不出现"零历史"**：至少一条分组行。
 6. **机械填的节不许模型写**：`## 意图` 逐字等于 `intent` 的渲染结果；`## 提交` 的 sha 来自工具结果。
 7. **每一折可单独编码**：拎出 `title` + `description` + `(run_id, seq)` 就够，不依赖同一会话的其它行。
-8. **装不下要说清**：失败时 `runs.termination_detail` 给出 budget / measured / over_by / layers_tried。
+8. **停要说清**：终局必须写 `termination_detail.reason` + `detail`，不许静默降级；验证跑没跑、为什么没跑写 `verification`。（预算/实测/超出多少这几个数今天**不存在**，它们是落地要求，不是形状已承诺的字段。）
 9. **一条信息只住一处**：现状→白板，历史→日志，细节→账本，常量→项目指令；**机械内容各自成列**，不混进 `description`。
 10. **轮行先建后收口**：`open` → 消息落盘 → `closed`。消息的外键永远有主，崩溃形状是 `status='open'`，不是行缺失。
 11. **顺序靠自然键**：轮内 `msg_seq`，跨轮 `round_no`，折叠 `folds.seq`。没有全局序号，`ts` 不作顺序依据。
