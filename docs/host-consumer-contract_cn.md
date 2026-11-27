@@ -5242,6 +5242,7 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 | `continuity_injection_skipped` | `fact` | 不可删 | 这一次为什么没把接力注进去。 |
 | `model_metadata_missing` | `fact` | 不可删 | 一次性诊断事件；事件本身就是唯一 durable 记录。 |
 | `persistence_capability_degraded` | `fact` | 不可删 | 同上。 |
+| `store_folds_channel_absent` | `fact` | 不可删 | 同上（ADR-022：store 没有折叠通道时的一次性降级诊断）。 |
 | `budget_below_working_set` | `fact` | 不可删 | 同上。 |
 | `config_override_conflict` | `fact` | 不可删 | 同上。 |
 | `context_unknown_option` | `fact` | 不可删 | 同上。 |

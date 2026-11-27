@@ -537,7 +537,9 @@ export async function restoreResume(ctx) {
       if (records.length === 0) throw new Error("resume: 无可恢复记录");
       // issue #326（wo-C）：**恢复不得重算折叠摘要**——把已入账的那份灌回引擎的复用账本，
       // 于是本次进程里同一折叠输入直接命中，不再调摘要器，也不会重复落账。
-      ctx.seedFoldSummaries?.(records);
+      // ADR-022 §4：`seedFoldSummaries` 现在是异步的（resume 要合并读 `folds` 通道），必须 await
+      // ——否则 `foldRecordLedger` 要等到事件循环后一拍才就绪，后面的 `foldedThrough` / 复用都会读到空。
+      await ctx.seedFoldSummaries?.(records);
       if (resolveRunStateSource(persistedRunStateResult) === "record") {
         const latestStateRecord = [...records].reverse().find((record) => (
           record?.runState && typeof record.runState === "object"

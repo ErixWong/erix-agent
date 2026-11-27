@@ -184,6 +184,7 @@ import {
   pinFedSummaryBlock,
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
+import { foldIdentityKey, sortFoldsBySeq } from "../store/folds.js";
 import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { foldWithinBudget, prependFoldSummary } from "../compact/budget-fit.js";
 // issue #892：派生预算需要把工具定义这一项扣掉，`computeBudget` 仍是公式的唯一之家。
@@ -493,7 +494,7 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -1487,6 +1488,31 @@ export async function runToolLoop(options) {
       });
     }
   };
+  // ADR-022 §4（可选端口）：宿主 store 没有 `appendFold` ⇒ 折叠只写轮记录（今天的旧行为），
+  // 但**必须可检测**：一次性 `store_folds_channel_absent` 诊断（不许静默）。去重与直调
+  // `onEvent` 的风格照抄上方 `notifyModelMetadataMissing`（同样绕开定义在下方的 `emitEvent`，
+  // 避免踩 TDZ）；每 run 最多一条。
+  let foldsChannelAbsentNotified = false;
+  const notifyFoldsChannelAbsent = () => {
+    if (foldsChannelAbsentNotified) return;
+    foldsChannelAbsentNotified = true;
+    try {
+      onEvent?.({
+        type: "store_folds_channel_absent",
+        runId,
+        ...(parentRunId === undefined ? {} : { parentRunId }),
+        method: "appendFold",
+        detail: "store does not implement appendFold/loadFolds; folds are written into the round"
+          + " record only (legacy behavior) and the dedicated folds channel is skipped for this run",
+      });
+    } catch (hostError) {
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        type: "store_folds_channel_absent",
+        method: "appendFold",
+      });
+    }
+  };
   /**
    * @param {string} method store 方法名
    * @param {...any} args 交给 store 的原样参数
@@ -2336,16 +2362,26 @@ export async function runToolLoop(options) {
     notifyCapabilitySkipped,
     // issue #326（wo-C）：恢复时把**已入账的折叠摘要**灌回引擎的复用账本 ⇒ 同一折叠输入不再调摘要器。
     // 写成「属性 + 箭头函数」（`test/loop-callback-this.test.js` 钉住的口径），不是方法简写。
-    seedFoldSummaries: (records) => {
+    seedFoldSummaries: async (records) => {
       foldSummaryLedger.seedFromRecords(records);
-      // issue #601：resume 的账本列表 = store 里全部轮记录的 `foldedFacts`（一折一条，旧 → 新）。
-      // 拿不到记录列表时保持空数组 ⇒ 策略侧闸门判「账本覆盖不到块」⇒ 退回解析块（不静默丢折）。
-      foldRecordLedger = Array.isArray(records)
+      // issue #601：resume 的折叠账本 = **合并读**（ADR-022 §4）：`folds` 通道 ∪ 轮记录里的
+      // `foldedFacts`，按身份去重（`foldId ?? fingerprint ?? sha256(from,to,text)`）、**通道行优先**。
+      // **不许**「通道空才回退扫旧记录」：迁移中途失败时两处各有一半，回退式读会漏。
+      // 拿不到通道（无 `loadFolds`）时 channelRows=[] ⇒ 退回与旧代码等价的「只读轮记录」（不静默丢折）。
+      const channelRows = typeof store?.loadFolds === "function"
+        ? await store.loadFolds(runId)
+        : [];
+      const roundFacts = Array.isArray(records)
         ? records
           .map((record) => record?.[FOLDED_FACTS_RECORD_FIELD])
           .filter((facts) => facts !== null && typeof facts === "object")
-          .map((facts) => cloneState(facts))
         : [];
+      /** 身份去重：轮记录先占位，通道行后入覆盖 ⇒ 同身份取通道那份。 */
+      const byIdentity = new Map();
+      for (const facts of roundFacts) byIdentity.set(foldIdentityKey(facts), cloneState(facts));
+      for (const row of channelRows) byIdentity.set(foldIdentityKey(row), cloneState(row));
+      // 合并后按 `seq` 升序（两侧共用 `sortFoldsBySeq`），保证下面 `foldIdentity.seed` 按「旧 → 新」灌号。
+      foldRecordLedger = sortFoldsBySeq([...byIdentity.values()]);
       // issue #567：把已入账的折叠身份（`foldId`/`seq`）灌回分配器 ⇒ resume 之后
       // ① 重放同一次折叠拿回**同一个** `seq`（宿主去重不会被 resume 打穿）；
       // ② 新折叠的 `seq` 接在账本最大值之后（严格递增不断档）。#567 之前写的记录没有 `seq`，
@@ -6445,8 +6481,18 @@ export async function runToolLoop(options) {
       // `record.summary`（本轮自身摘要）一字不动 ⇒ 既有的横幅语义、`#326` 守卫、归档都不受影响。
       if (compaction.foldedFacts !== undefined) {
         roundRecord[FOLDED_FACTS_RECORD_FIELD] = cloneState(compaction.foldedFacts);
-        // issue #601：同一份事实进 run 作用域的折叠记录账本（与落盘同一条件 ⇒ 列表与账本同源）。
-        foldRecordLedger.push(cloneState(compaction.foldedFacts));
+        // ADR-022 §1.3/§4：折叠升为**独立通道**，同时轮记录里的 `foldedFacts` 是**兼容期双写**
+        //（下一刀才撤）。账本（`foldRecordLedger`）的来源改成**通道返回的那一条**（带通道
+        // 分配的 `seq`）；store 没有 `appendFold` ⇒ 保持今天行为（只写轮记录 + 推账本）并发一次
+        // 可检测的降级诊断（不静默）。
+        if (typeof store?.appendFold === "function") {
+          const persistedFold = await store.appendFold(runId, cloneState(compaction.foldedFacts));
+          foldRecordLedger.push(cloneState(persistedFold ?? compaction.foldedFacts));
+        } else {
+          // issue #601：同一份事实进 run 作用域的折叠记录账本（与落盘同一条件 ⇒ 列表与账本同源）。
+          foldRecordLedger.push(cloneState(compaction.foldedFacts));
+          notifyFoldsChannelAbsent();
+        }
       }
     }
     // issue #460：宿主有权对**单条记录**定界（本站 1 MB）。归档是咨询性字段 —— 正文早已按轮
