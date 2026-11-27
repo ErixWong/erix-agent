@@ -494,8 +494,11 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"compaction_strategy_fallback"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"compaction_strategy_fallback"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"resume_input_dropped"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
  * @property {number} [round]
+ * @property {string[]} [fields] issue #261127-17（additive）：`resume_input_dropped` 专用——这次续跑
+ *   被丢掉的调用方输入字段名（`initialUserMessage` / `initialMessages`）。续跑只认账本，这些字段本来
+ *   就不进上下文；本事件只是把「一声不响地丢」变成可观测。其它事件不带这个键。
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
  * @property {object} [usage] Provider usage reported after a successful call.
@@ -2383,6 +2386,18 @@ export async function runToolLoop(options) {
   // 因此失败必须走 `fail()`：那才是造 `termination` 的那条路（`reason: "persistence_failed"` +
   // `operation: "clearRecoveryRows"` + `phase: "recovery_rows_clear"` + `sideEffect: "not_started"`）。
   // 修前这一行在那个 `try`/`fail()` 之外：错误对象自己带着 `code`/`phase`，**termination 却缺失**。
+  // 续跑只认账本（`ctx.messages = ledgerMessages`），所以调用方这次递进来的 `initialUserMessage` /
+  // `initialMessages` **不会**进上下文。这是**设计**（`test/run-state.test.js` 那格的用例名就叫
+  // 「ignored on resume」），但修前它是**一声不响**的：宿主把新问题塞进 `initialUserMessage` 再续跑，
+  // 模型只会回应「【恢复运行】」告示、完全看不到那个问题（真机评测 `scripts/recall-eval.mjs` 就踩了
+  // 这一格，最后靠 `appendUserTurn` 才把问题写进账本）。
+  // 这里只**记下**要丢的字段，事件在 `emitEvent` 定义之后发（那是 `const`，此处调用会撞 TDZ）。
+  const droppedResumeInput = resume === true
+    ? [
+      ...(typeof initialUserMessage === "string" && initialUserMessage !== "" ? ["initialUserMessage"] : []),
+      ...(Array.isArray(initialMessages) && initialMessages.length > 0 ? ["initialMessages"] : []),
+    ]
+    : [];
   if (resume !== true) {
     try {
       await persist("clearRecoveryRows", runId);
@@ -2721,6 +2736,17 @@ export async function runToolLoop(options) {
       });
     }
   };
+
+  // issue #261127-17：把「续跑丢掉了调用方这次递进来的输入」变成可观测事实（修前完全静默）。
+  // 发在 `emitEvent` 之后是刻意的：它是 `const` 箭头函数，提前调用会撞 TDZ。
+  if (droppedResumeInput.length > 0) {
+    emitEvent({
+      type: "resume_input_dropped",
+      runId,
+      round: 0,
+      fields: droppedResumeInput,
+    });
+  }
 
   const recordCompactionStat = (stat, round) => {
     // issue #930：静默自愈不允许——把「这一发是被上游打回来才压的」写进账本。

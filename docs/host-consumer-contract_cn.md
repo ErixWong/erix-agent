@@ -1385,7 +1385,9 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 | `call` | 这一次调用的数据：这次发什么、这次的身份与上下文、这次要不要续跑 / 流式 | `agent.run({ <叶>: … })` |
 
 `call` 叶是 `messages` 与 `initialUserMessage`（`config.input.*`）、`runId` / `resume` / `stream`
-（`config.run.*`）以及 `metadata.*` 全部七个；其余每个叶子都是 `init`。机器答案在
+（`config.run.*`）以及 `metadata.*` 全部七个；**`input.*` 只在非续跑调用里被读**——`resume: true`
+的调用从账本重建对话、两个都不看，所以这种调用会报一条 `resume_input_dropped` 事件点名它丢掉了
+哪些字段（issue #261127-17）。要给已有会话加一轮，请在续跑**之前**调 `appendUserTurn`；其余每个叶子都是 `init`。机器答案在
 `configLeafNamesForBinding`（`src/loop/config-namespace.js`）——请读它，而不是信这句话。其中三处是
 灰色，逐个给过理由：`run.stream` 属 `call`，因为它只回答「**这一次**请求怎么走传输」（引擎不跨调用
 留状态）；`run.cwd` 属 `init`，因为它是 agent 的**环境**——工具上下文与 `finalGuard` 载荷都读它，
@@ -5237,6 +5239,7 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 | `run_outcome` | `fact` | 不可删 | 终局的 run 级汇总记录（`runOutcomeRecord()`，append-only，跟在 `markRunState` **之后**），宿主按 `runId` 把它与 judge 记录 join。 |
 | `judge` | `fact` | 不可删 | `onJudge` 通道的那条决策记录。它**不是** `LoopEvent` 的一格 —— 那条记录里根本没有 `type` 字段（`emitJudge` 铺的是 `{ ...correlation, ...info }`）—— 所以档位按「宿主拿它入库时用的通道名」登记。 |
 | `resume_journal_skipped` | `fact` | 不可删 | 一个持久化决定：日志被跳过了。事件本身就是记录。 |
+| `resume_input_dropped` | `fact` | 不可删 | 续跑调用递了 `initialUserMessage` / `initialMessages`，而续跑**不读**它们（对话只认账本）。事件用 `fields[]` 点名被丢掉的字段；那段文本别处没有任何副本，这是唯一一条。要喂新一轮请用 `appendUserTurn`。 |
 | `continuity_written` | `fact` | 不可删 | 接力写盘落了 —— 哪一条接力可回读，只这里有记录。 |
 | `continuity_write_failed` | `fact` | 不可删 | 接力写盘失败了而 run 仍然成功 —— 除了它没有别的东西能说明这件事。 |
 | `continuity_injection_skipped` | `fact` | 不可删 | 这一次为什么没把接力注进去。 |
