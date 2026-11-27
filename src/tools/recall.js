@@ -1,5 +1,5 @@
 // @ts-check
-import { isMessageRow } from "../store/message-rows.js";
+import { isMessageRow, messageRowPosition } from "../store/message-rows.js";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { estimateTokens } from "../tokens.js";
@@ -38,25 +38,24 @@ function isPositiveInt(v) {
 }
 
 /**
- * evidenceRef 形状校验（§3-C + PR #973 复审：内容寻址）：合法返回 null，否则返回报错原因（上层据此报 invalid）。
- * 只校结构（round/textSha256/occurrence/charRange/sha256 都在且形对），不对内容做真假判断。
- * 身份口径是**内容寻址**：`round` 定轮（定位必需）、`textSha256` 定那条消息的整段正文、
- * `occurrence` 区分同轮内同正文的重复（0 基）。旧的位置寻址（`round`+`messageIndex`）和上一版的行寻址
- * （带 `rowSeq`）一律 invalid——**不迁移**（该能力尚未发布，明确不兼容）：行身份在真实路径上根本不存在
- * （轮载体行没有 `seq`，消息行又被 `store.load()` 折进载体），拿它当身份会让校验在真机上恒 invalid。
+ * evidenceRef 形状校验（§3-C + issue #261127-15：**行主键**）：合法返回 null，否则返回报错原因（上层据此报 invalid）。
+ * 只校结构（round_no/msg_seq/charRange/sha256 都在且形对），不对内容做真假判断。
+ * 身份口径是**行主键**：`round_no` + `msg_seq` 合起来是本轮内**稳定**的消息地址（口径在
+ * `src/store/message-rows.js` 的 `messageRowPosition`：消息行取行上的 `seq`、轮载体行取该消息在
+ * **该行自己的** `messages` 里的下标——两者都是行上的不可变位置，消息行被 `store.load()` 折进载体
+ * 也不变，同轮再落一条消息行也不改既有消息的地址）。
+ * 上一版的内容寻址（`round` + `textSha256` + `occurrence`）与更早的位置寻址（`round`+`messageIndex`）
+ * 一律 invalid——**不迁移**（该能力尚未发布，明确不兼容）：旧 ref 里没有 `msg_seq`，这里直接判 invalid。
  * @param {any} ref
  * @returns {string|null}
  */
 function evidenceRefShapeError(ref) {
   if (ref === null || typeof ref !== "object" || Array.isArray(ref)) {
-    return "evidenceRef 必须是指纹对象（round/textSha256/occurrence/charRange/sha256）";
+    return "evidenceRef 必须是指纹对象（round_no/msg_seq/charRange/sha256）";
   }
-  if (!isPositiveInt(ref.round)) return "evidenceRef.round 必须是 ≥1 的正整数（内容寻址下定位必需）";
-  if (typeof ref.textSha256 !== "string" || ref.textSha256.length === 0) {
-    return "evidenceRef.textSha256 必须是非空字符串（那条消息整段正文的 sha256）：缺失 ⇒ invalid（旧的位置/行格式不迁移）";
-  }
-  if (!(Number.isSafeInteger(ref.occurrence) && ref.occurrence >= 0)) {
-    return "evidenceRef.occurrence 必须是 ≥0 的整数（同轮内同正文的第几次出现，0 基）";
+  if (!isPositiveInt(ref.round_no)) return "evidenceRef.round_no 必须是 ≥1 的正整数（行主键下定位必需）";
+  if (!(Number.isSafeInteger(ref.msg_seq) && ref.msg_seq >= 0)) {
+    return "evidenceRef.msg_seq 必须是 ≥0 的整数（本轮内的稳定消息位置）：缺失 ⇒ invalid（旧的内容寻址格式不迁移）";
   }
   const cr = ref.charRange;
   if (!Array.isArray(cr) || cr.length !== 2 || !cr.every((/** @type {any} */ n) => Number.isSafeInteger(n) && n >= 0)) {
@@ -214,11 +213,10 @@ export function createBuiltinRecallTools(options = {}) {
         // issue #896 §3-C：第三种模式——按引擎落下的指纹切片逐字取回并验影子。
         evidenceRef: {
           type: "object",
-          description: "引擎落进 record.recallEvidence 的切片指纹；给了它就进 evidence 模式（优先级高于 round/pattern）。定位口径是内容寻址：round 定轮、textSha256 定那条消息整段正文、occurrence 区分同轮同正文的重复（0 基）；round 定位必需",
+          description: "引擎落进 record.recallEvidence 的切片指纹；给了它就进 evidence 模式（优先级高于 round/pattern）。定位口径是**行主键**：round_no + msg_seq 合起来是本轮内稳定的消息地址（消息行取行上 seq、轮载体行取该行自己 messages 的下标，折进载体也不变）；两者定位必需",
           properties: {
-            round: { type: "integer", minimum: 1, description: "定位必需的轮号（1 起）" },
-            textSha256: { type: "string", minLength: 1, description: "那条消息整段正文（messageTextUnits().join(\"\")）的 sha256：内容寻址的正文身份" },
-            occurrence: { type: "integer", minimum: 0, description: "该轮内同正文的第几次出现（0 基）：区分同轮重复的同一段文本" },
+            round_no: { type: "integer", minimum: 1, description: "定位必需的轮号（1 起）" },
+            msg_seq: { type: "integer", minimum: 0, description: "本轮内的稳定消息位置：消息行是行上的 seq，轮载体行是该消息在该行 messages 里的下标" },
             charRange: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 2, maxItems: 2 },
             sha256: { type: "string", minLength: 1 },
             bytes: { type: "integer", minimum: 0 },
@@ -318,35 +316,31 @@ export function createBuiltinRecallTools(options = {}) {
   }
 
   /**
-   * 按**内容寻址** `(round, textSha256, occurrence)` 在账本里取回那条消息的整段正文；取不到返回 null。
-   * 为什么不按行身份 `(rowSeq, 行内下标)`（copilot #973 拒 PR #973 的根因）：真实写侧的**轮载体行根本没有
-   * `seq`**（`orchestrator.js` 的轮 record 只有 round/roundKey/dedupKey/ts…，只有消息行带 `seq`，且是
-   * **每轮**一个计数器），而 `store.load()` 又把消息行**折进**轮载体（`message-rows.js`）⇒ 同一条消息的
-   * 容器行会变、rowSeq 在真实路径上恒为 null ⇒ 按行身份校验必 invalid、功能整体不可用。
-   * 于是改用内容：`round` 定轮（定位必需），正文按 `messageTextUnits(message).join("")` 取（与 recall_read
-   * 逐字模式、生成侧同口径），按正文 sha256 分组后取第 `occurrence` 条（0 基）；同轮出现两条一模一样的
-   * 消息时用它区分，正文相同则 sha 相同、取哪条都等价。轮内顺序口径与 collectRoundMessagesInRange 一致
-   * （消息行按 seq 升序在前、轮载体行在后）。
+   * 按**行主键** `(round_no, msg_seq)` 在账本里取回那条消息的整段正文；取不到返回 null。
+   * 地址口径不另造一套：直接走 `collectRoundMessagesInRange`，它逐条问 `messageRowPosition`
+   * （`src/store/message-rows.js`，与折叠侧 `stampRowPosition` 同一份定义）——生成侧与校验侧因此
+   * 对同一条消息算出的地址逐字相同，这是「折行不变性」的实现前提（上一版内容寻址的理由——
+   * 「行身份在 `store.load()` 后会漂」——已经被折行时 stamp 上去的**不可变行位置**替掉）。
+   * 轮内顺序口径与生成侧一致（消息行按 seq 升序在前、轮载体行在后）。
    * @param {any[]} rows
-   * @param {number} round 轮号（定位必需）
-   * @param {string} textSha256 那条消息整段正文的 sha256
-   * @param {number} occurrence 同轮内同正文的第几次出现（0 基）
+   * @param {number} round_no 轮号（定位必需）
+   * @param {number} msg_seq 本轮内的稳定消息位置
    * @returns {string|null}
    */
-  function ledgerTextAtContent(rows, round, textSha256, occurrence) {
-    const bound = Number.isSafeInteger(round) ? round : -1;
+  function ledgerTextAtRowKey(rows, round_no, msg_seq) {
+    const bound = Number.isSafeInteger(round_no) ? round_no : -1;
     const entries = collectRoundMessagesInRange(Array.isArray(rows) ? rows : [], bound, bound);
     const hit = entries.find(
-      (/** @type {any} */ e) => e.textSha256 === textSha256 && e.occurrence === occurrence,
+      (/** @type {any} */ e) => e.round_no === round_no && e.msg_seq === msg_seq,
     );
     return hit === undefined ? null : hit.text;
   }
 
   /**
-   * evidence 模式（§3-C + PR #973 内容寻址）：拿引擎落下的指纹回账本逐字取回并**重算 sha256** 验影子。
-   * 定位口径：内容寻址 (round, textSha256, occurrence)（见 `ledgerTextAtContent`——行身份在真实路径上
-   * 不存在，故不再用 rowSeq）。三态：重算一致⇒found + 逐字原文；定位到正文但 sha256 不一致⇒stale
-   * （影子对不上原文，绝不回一份“差不多的”）；正文定位不到（round 没有该正文 / occurrence 越界）⇒invalid。
+   * evidence 模式（§3-C + issue #261127-15 行主键）：拿引擎落下的指纹回账本逐字取回并**重算 sha256** 验影子。
+   * 定位口径：行主键 (round_no, msg_seq)（见 `ledgerTextAtRowKey`）。三态：重算一致⇒found + 逐字原文；
+   * 定位到了但 sha256 不一致⇒stale（影子对不上原文，绝不回一份“差不多的”）；
+   * `(round_no, msg_seq)` 指不到任何消息⇒invalid。
    * 四既有校验（空切片 / 越界 / bytes 不符 / >2 KiB）全部保留，且全在 sha 比较之前判。
    * @param {any} ref
    * @returns {Promise<string>}
@@ -356,7 +350,7 @@ export function createBuiltinRecallTools(options = {}) {
     if (shapeReason !== null) {
       return JSON.stringify({ status: "invalid", reason: shapeReason, evidenceRef: ref });
     }
-    const { round, textSha256, occurrence, charRange, sha256 } = ref;
+    const { round_no, msg_seq, charRange, sha256 } = ref;
 
     let rows;
     try {
@@ -366,11 +360,11 @@ export function createBuiltinRecallTools(options = {}) {
     }
     if (!Array.isArray(rows)) rows = [];
 
-    const text = ledgerTextAtContent(rows, round, textSha256, occurrence);
+    const text = ledgerTextAtRowKey(rows, round_no, msg_seq);
     if (text === null) {
       return JSON.stringify({
         status: "invalid",
-        reason: `台账里没有这个 ref（第 ${round} 轮里没有正文 sha256=${textSha256} 的第 ${occurrence} 条）`,
+        reason: `台账里没有这个 ref（第 ${round_no} 轮里没有 msg_seq=${msg_seq} 那条可寻址的消息）`,
         evidenceRef: ref,
       });
     }
@@ -658,21 +652,25 @@ export function createBuiltinRecallTools(options = {}) {
 }
 
 /**
- * 取 [fromRound, toRound]（含端点）轮区间内的账本原文，逐条返回 {round, textSha256, occurrence, text}（PR #973 内容寻址）。
+ * 取 [fromRound, toRound]（含端点）轮区间内的账本原文，逐条返回 {round_no, msg_seq, text}（issue #261127-15 行主键）。
  * 与 createBuiltinRecallTools 里 evidenceRead/逐字模式同一套账本行口径：口径①消息行（isMessageRow
  * && round 命中 && 带 messages）按 seq 升序（seq 相同按落盘先后），口径②轮载体行（非消息行 &&
  * round 命中）接在其后；text = messageTextUnits(message).join("")——与 recall_read 逐字模式取回的原文逐字一致，
- * 因此按同一 (round, textSha256, occurrence) 与同一 charRange 算的 sha256 能被 recall_read({evidenceRef}) 重算对上
+ * 因此按同一 (round_no, msg_seq) 与同一 charRange 算的 sha256 能被 recall_read({evidenceRef}) 重算对上
  * （PR #969 复审②：指纹必须落在账本原文切片上，不是摘要）。
- * **身份口径（PR #973：内容寻址）**：真实写侧的轮载体行没有 `seq`（只有消息行带、且是每轮一个计数器），
- * 而 `store.load()` 又把消息行折进载体 ⇒ 行身份会变、rowSeq 在真实路径上恒 null ⇒ 旧的位置/行寻址
- * 整体不可用。改用内容：`textSha256` = 那条消息整段正文的 sha256；`occurrence` = 该轮内**同正文第几次
- * 出现**（0 基，按本函数排定的轮内顺序数）——同轮两条一模一样的消息用它区分，正文相同则 sha 相同、
- * 取哪条都等价；`round` 定位必需。
+ * **地址口径（issue #261127-15：行主键）**：`round_no` + `msg_seq` 直接问 `messageRowPosition`
+ * （`src/store/message-rows.js`，与折叠侧 `stampRowPosition` 同一份定义）：消息行取行上的 `seq`，
+ * 轮载体行取该消息在**该行自己的** `messages` 里的下标——两者都是行上的**不可变位置**，消息行被
+ * `store.load()` 折进载体后地址不变（位戳已随消息走），同轮再落一条消息行也不改既有消息的地址。
+ * 取不到稳定位置的消息（行无轮号 / 消息行缺整数 `seq`）**跳过**：不可寻址就不交出去，宁可少一片
+ * 也不发一个会漂的地址。
+ * （旧口径已整块删除：上一版用**内容寻址**——那条消息整段正文的 sha256 `textSha256` + 同轮内
+ * 同正文第几次出现 `occurrence`——它的唯一理由是「折进载体后行位置会变」，那个前提在折行 stamp 之后
+ * 不再成立，重复正文怎么区分的那套计数也一起删了。）
  * @param {any[]} rows 账本行（store.load(runId) 的输出）
  * @param {number} fromRound 区间下界（含）
  * @param {number} toRound 区间上界（含）
- * @returns {Array<{round:number, textSha256:string, occurrence:number, text:string}>}
+ * @returns {Array<{round_no:number, msg_seq:number, text:string}>}
  */
 export function collectRoundMessagesInRange(rows, fromRound, toRound) {
   const safeRows = Array.isArray(rows) ? rows : [];
@@ -685,7 +683,7 @@ export function collectRoundMessagesInRange(rows, fromRound, toRound) {
     }
   }
   rounds.sort((a, b) => a - b);
-  /** @type {Array<{round:number, textSha256:string, occurrence:number, text:string}>} */
+  /** @type {Array<{round_no:number, msg_seq:number, text:string}>} */
   const out = [];
   for (const round of rounds) {
     const numbered = safeRows
@@ -695,16 +693,13 @@ export function collectRoundMessagesInRange(rows, fromRound, toRound) {
       .sort((/** @type {any} */ a, /** @type {any} */ b) => (a.row.seq - b.row.seq) || (a.index - b.index));
     const fromCarrierRows = numbered
       .filter(({ row }) => !isMessageRow(row) && row?.round === round && Array.isArray(row?.messages));
-    // 轮内顺序照旧（消息行在前、轮载体行在后）；occurrence 按这个排定的顺序、对同正文累加计数（0 基）。
-    /** @type {Map<string, number>} */
-    const seen = new Map();
+    // 轮内顺序照旧（消息行在前、轮载体行在后）；地址不再自己算，逐条问 `messageRowPosition`。
     for (const { row } of [...fromMessageRows, ...fromCarrierRows]) {
-      row.messages.forEach((/** @type {any} */ message) => {
+      row.messages.forEach((/** @type {any} */ message, /** @type {number} */ index) => {
+        const position = messageRowPosition(message, row, index);
+        if (position === null) return; // 取不到稳定位置 ⇒ 这条消息不可寻址，不交出去
         const text = messageTextUnits(message).join("");
-        const textSha256 = createHash("sha256").update(text, "utf8").digest("hex");
-        const occurrence = seen.has(textSha256) ? seen.get(textSha256) : 0;
-        seen.set(textSha256, occurrence + 1);
-        out.push({ round, textSha256, occurrence, text });
+        out.push({ round_no: position.round_no, msg_seq: position.msg_seq, text });
       });
     }
   }

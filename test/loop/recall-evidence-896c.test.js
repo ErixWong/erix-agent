@@ -17,6 +17,7 @@ import {
   RECALL_MAX_EVIDENCE_BYTES,
 } from "../../src/loop/recall-runner.js";
 import { createBuiltinRecallTools } from "../../src/tools/recall.js";
+import { MSG_SEQ_CARRIER_BASE } from "../../src/store/message-rows.js";
 
 const awaitWithAbort = (/** @type {Promise<any>} */ p) => p;
 
@@ -143,33 +144,34 @@ test("#896C-6 用量只进 engine 桶、不进模型轮账（trackLatest:false +
 });
 
 // ─── 格 7：recallEvidence 形状 + 每条 ≤2KiB + sha256 与原文一致 ────────────────
-test("#896C-7 recallEvidence 形状（内容寻址）、≤2KiB、切片 sha256 与原文一致", async () => {
+test("#896C-7 recallEvidence 形状（行主键 round_no+msg_seq）、≤2KiB、切片 sha256 与原文一致", async () => {
   const longText = "字".repeat(3000); // 3000×3 字节 > 2KiB，触发夹断
   const { provider } = makeFakeProvider({ answer: "A", pointers: [], uncertain: false });
   const r = await recallOnce(baseDeps({ recallProviderPort: provider }), {
     question: "q",
     folds: [
-      { round: 4, occurrence: 1, text: "短正文 ABC" },
-      { round: 5, occurrence: 0, text: longText },
+      { round_no: 4, msg_seq: 1, text: "短正文 ABC" },
+      { round_no: 5, msg_seq: 0, text: longText },
     ],
   });
   assert.ok(Array.isArray(r.evidence) && r.evidence.length === 2);
   for (const ev of r.evidence) {
-    // 内容寻址形状（PR #973）：不再有 rowSeq / messageIndex，改为 textSha256 + occurrence。
-    assert.deepEqual(Object.keys(ev).sort(), ["bytes", "charRange", "occurrence", "round", "sha256", "textSha256"]);
+    // 行主键形状（#261127-15）：地址就两个键 `round_no` + `msg_seq`；旧的内容寻址两键已删
+    //（既无 textSha256 / occurrence，也不再有 rowSeq / messageIndex）。
+    assert.deepEqual(Object.keys(ev).sort(), ["bytes", "charRange", "msg_seq", "round_no", "sha256"]);
     assert.ok(Array.isArray(ev.charRange) && ev.charRange.length === 2);
     assert.ok(ev.bytes <= RECALL_MAX_EVIDENCE_BYTES, `bytes=${ev.bytes} 必须 ≤2048`);
     assert.equal(ev.bytes, Buffer.byteLength(
       // 切片 sha256 必须落在实际取到的切片上
-      (ev.round === 4 ? "短正文 ABC" : longText).slice(ev.charRange[0], ev.charRange[1]),
+      (ev.round_no === 4 ? "短正文 ABC" : longText).slice(ev.charRange[0], ev.charRange[1]),
       "utf8",
     ));
   }
-  // textSha256 = **整段正文**（不是切片）的 sha256；occurrence 必须原样透传。
-  assert.equal(r.evidence[0].textSha256, sha256Hex("短正文 ABC"));
-  assert.equal(r.evidence[0].occurrence, 1, "occurrence 必须由调用方透传");
-  assert.equal(r.evidence[1].textSha256, sha256Hex(longText), "长正文的 textSha256 是整段（未夹断）的 sha");
-  assert.equal(r.evidence[1].occurrence, 0);
+  // 地址由调用方算好透传，必须逐字回到 ref 上（引擎自己不再算身份）。
+  assert.equal(r.evidence[0].round_no, 4);
+  assert.equal(r.evidence[0].msg_seq, 1, "msg_seq 必须由调用方透传");
+  assert.equal(r.evidence[1].round_no, 5);
+  assert.equal(r.evidence[1].msg_seq, 0);
   // 切片 sha256 逐字与原文切片一致。
   assert.equal(r.evidence[0].sha256, sha256Hex("短正文 ABC"));
   assert.equal(r.evidence[1].charRange[1] < longText.length, true, "长正文必须被夹断到 <全长");
@@ -214,9 +216,12 @@ function makeLedger() {
   };
 }
 
-/** 用 recall-runner 对同一份文本算一个合法 evidenceRef（轮 3、同正文第 0 次出现，全文）。 */
+/**
+ * 用 recall-runner 对同一份文本算一个合法 evidenceRef（行主键：第 3 轮 + 载体行下标 0，全文）。
+ * 下面的账本都是**轮载体行**（无 `kind:"message"`）⇒ msg_seq 走载体命名空间 `BASE + 下标`。
+ */
 function refForText(text) {
-  const { evidence } = buildRecallRequest("q", [{ round: 3, occurrence: 0, text }]);
+  const { evidence } = buildRecallRequest("q", [{ round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, text }]);
   return evidence[0];
 }
 
@@ -236,36 +241,47 @@ test("#896C-8b 把账本原文改一个字 ⇒ stale（影子对不上，绝不�
   const ref = refForText(LEDGER_TEXT); // 指纹按原文算
   const NEW = LEDGER_TEXT.replace("验证", "检定"); // 账本改一个字
   rows[0].messages[0].content = NEW;
-  // 内容寻址下这条消息仍能被认出（拿改后正文的 sha256），但它当初记录的切片 sha256 是旧正文的
-  // ⇒ 重算不一致 ⇒ stale（影子对不上原文）。
-  const staleRef = { ...ref, textSha256: sha256Hex(NEW) };
-  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: staleRef } }));
+  // 行主键下位置不变（仍是第 3 轮下标 0 那条），但它当初记录的切片 sha256 是旧正文的
+  // ⇒ 重算不一致 ⇒ stale（影子对不上原文）。ref 逐字不动——不许为了“仍然 stale”去改 ref。
+  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: ref } }));
   assert.equal(out.status, "stale");
-  assert.notEqual(out.actualSha, staleRef.sha256, "actual 与 expected sha 必须不同");
+  assert.notEqual(out.actualSha, ref.sha256, "actual 与 expected sha 必须不同");
   assert.ok(!("text" in out) || out.text === undefined || out.status === "stale", "stale 时不许冒充 found 的逐字原文");
 });
 
-test("#896C-8c occurrence 越界（该轮没有第 N 次同正文）⇒ invalid", async () => {
+test("#896C-8c (round_no, msg_seq) 指不到任何消息（该轮没有第 42 号位置）⇒ invalid", async () => {
   const { readLedgerRows } = makeLedger();
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows });
   const ref = refForText(LEDGER_TEXT);
-  const missing = { ...ref, occurrence: 42 }; // round 3 只有一条正文，第 42 次出现不存在
+  const missing = { ...ref, msg_seq: 42 }; // round 3 只有一条可寻址消息，第 42 号位置不存在
   const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: missing } }));
   assert.equal(out.status, "invalid");
+  assert.ok(/第 3 轮里没有 msg_seq=42/.test(out.reason ?? ""), `reason 必须点明指不到哪（实得 ${out.reason}）`);
 });
 
-test("#896C-8d textSha256 对不上任何消息 / 形状非法 ⇒ invalid", async () => {
+test("#896C-8d 地址形状非法（缺 msg_seq / 轮号非正整数 / msg_seq 负数）⇒ invalid", async () => {
   const { readLedgerRows } = makeLedger();
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows });
   const ref = refForText(LEDGER_TEXT);
-  const noBody = JSON.parse(await executeTool({
+  // 只改地址、不改切片 ⇒ 定位不到任何消息 = 台账里没有这个 ref。
+  const noSuchRow = JSON.parse(await executeTool({
     name: "recall_read",
-    input: { evidenceRef: { ...ref, textSha256: sha256Hex("账本里根本没有的正文 X") } },
+    input: { evidenceRef: { ...ref, round_no: 9, msg_seq: 9 } },
   }));
-  assert.equal(noBody.status, "invalid", "textSha256 对不上任何消息 = 台账里没有这个 ref");
+  assert.equal(noSuchRow.status, "invalid", "(round_no, msg_seq) 对不上任何消息 = 台账里没有这个 ref");
 
-  const badShape = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { round: 3 } } }));
-  assert.equal(badShape.status, "invalid", "缺 textSha256/occurrence = 形状非法 = invalid");
+  const badShape = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { round_no: 3 } } }));
+  assert.equal(badShape.status, "invalid", "缺 msg_seq（或轮号非法）= 形状非法 = invalid");
+  const badRound = JSON.parse(await executeTool({
+    name: "recall_read",
+    input: { evidenceRef: { ...ref, round_no: 0 } },
+  }));
+  assert.equal(badRound.status, "invalid", "round_no 必须是 ≥1 的正整数");
+  const negSeq = JSON.parse(await executeTool({
+    name: "recall_read",
+    input: { evidenceRef: { ...ref, msg_seq: -1 } },
+  }));
+  assert.equal(negSeq.status, "invalid", "msg_seq 必须是 ≥0 的整数");
 });
 
 test("#896C-8e evidence 模式优先级高于 round/pattern（既有两模式不被触发）", async () => {
@@ -332,11 +348,11 @@ test("#896C-11d 2 KiB 上限在验证侧也拦（切片字节 > 2048 ⇒ invalid
   /** @type {any[]} */
   const rows = [{ round: 3, messages: [{ role: "user", content: long }] }];
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
-  const fullRef = buildRecallRequest("q", [{ round: 3, occurrence: 0, text: long }]).evidence[0];
-  // 用全长 charRange（未夹断）+ 与实际字节一致的 bytes（内容寻址必须带 textSha256）：此时字节数超 2048 ⇒ 必须 invalid。
+  const fullRef = buildRecallRequest("q", [{ round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, text: long }]).evidence[0];
+  // 用全长 charRange（未夹断）+ 与实际字节一致的 bytes（行主键地址照带）：此时字节数超 2048 ⇒ 必须 invalid。
   const out = JSON.parse(await executeTool({
     name: "recall_read",
-    input: { evidenceRef: { round: 3, textSha256: fullRef.textSha256, occurrence: 0, charRange: [0, long.length], sha256: fullRef.sha256, bytes: Buffer.byteLength(long, "utf8") } },
+    input: { evidenceRef: { round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, charRange: [0, long.length], sha256: fullRef.sha256, bytes: Buffer.byteLength(long, "utf8") } },
   }));
   assert.equal(out.status, "invalid", "验证侧必须拦 >2KiB 的切片");
   assert.ok(/2048|字节超过|上限/.test(out.reason ?? ""));
@@ -345,23 +361,24 @@ test("#896C-11d 2 KiB 上限在验证侧也拦（切片字节 > 2048 ⇒ invalid
 
 // ─── 格 12（PR #969 合并后终验的真缺陷）：身份口径的四格 ───────────────────────
 // 旧形状把证据按「轮 + 轮内位置下标」寻址，而位置会同轮追加消息行 / 把消息行折进轮载体而漂
-// ⇒ 未改的原文也会被重算成不同的指纹 ⇒ 假 stale。上一版改按行 seq 寻址，但真实写侧轮载体行没 seq、
-// 消息行又被 store.load() 折进载体 ⇒ rowSeq 恒 null ⇒ 真机上必 invalid；现改内容寻址 (round, textSha256, occurrence)。
-// 下面四格钉住四件事：round 指到没有该正文的轮⇒invalid、旧格式（无 textSha256）⇒invalid 不迁移、
-// occurrence 区分同轮同正文的重复、文本真改了仍 stale。
-test("#896D-3 round 定位必需：ref 的 round 指到没有该正文的轮 ⇒ invalid（reason 点明哪一轮）", async () => {
+// ⇒ 未改的原文也会被重算成不同的指纹 ⇒ 假 stale。上一版改按行 seq 寻址，但真实写侧轮载体行没 seq ⇒ rowSeq 恒 null
+// ⇒ 真机上必 invalid；再上一版改内容寻址 (round, textSha256, occurrence)，而它的唯一理由（折行后位置会变）
+// 在折行 stamp 上不成立——现按行主键 (round_no, msg_seq)（#261127-15）。
+// 下面四格钉住四件事：地址指不到⇒invalid、旧格式（无 msg_seq）⇒invalid 不迁移、
+// 同轮重复正文靠 msg_seq 区分（不再需要 occurrence 计数）、文本真改了仍 stale。
+test("#896D-3 round_no 定位必需：ref 的 round_no 指到没有那个位置的轮 ⇒ invalid（reason 点明哪一轮）", async () => {
   const { readLedgerRows } = makeLedger();
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows });
   const ref = refForText(LEDGER_TEXT);
-  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { ...ref, round: 77 } } }));
+  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { ...ref, round_no: 77 } } }));
   assert.equal(out.status, "invalid");
-  assert.ok(/第 77 轮里没有正文/.test(out.reason ?? ""), `reason 必须点明在哪一轮定位不到（实得 ${out.reason}）`);
+  assert.ok(/第 77 轮里没有/.test(out.reason ?? ""), `reason 必须点明在哪一轮定位不到（实得 ${out.reason}）`);
 });
 
-test("#896D-4 旧格式 ref（无 textSha256）⇒ invalid（明确不迁移，该能力尚未发布）", async () => {
+test("#896D-4 旧格式 ref（无 msg_seq）⇒ invalid（明确不迁移，该能力尚未发布）", async () => {
   const { readLedgerRows } = makeLedger();
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows });
-  // 逐字照旧位置格式手造：round/messageIndex/charRange/sha256/bytes 全对得上（修前会 found），只缺 textSha256。
+  // 逐字照旧位置格式手造：round/messageIndex/charRange/sha256/bytes 全对得上（修前会 found），只缺 msg_seq。
   const legacy = {
     round: 3,
     messageIndex: 0,
@@ -371,44 +388,82 @@ test("#896D-4 旧格式 ref（无 textSha256）⇒ invalid（明确不迁移，�
   };
   const out1 = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: legacy } }));
   assert.equal(out1.status, "invalid", "旧位置格式一律 invalid（不迁移）");
-  assert.ok(/textSha256/.test(out1.reason ?? ""), `reason 必须点明缺的是 textSha256（实得 ${out1.reason}）`);
-  // 上一版的行格式（带 rowSeq、无 textSha256）同样 invalid。
-  const out2 = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { ...legacy, rowSeq: 1 } } }));
-  assert.equal(out2.status, "invalid", "上一版 rowSeq 格式也一律 invalid（不迁移）");
+  assert.ok(/round_no|msg_seq/.test(out1.reason ?? ""), `reason 必须点明缺的是行主键（实得 ${out1.reason}）`);
+  // 上一版的内容寻址格式（round + textSha256 + occurrence，同样无 msg_seq）也一律 invalid。
+  const contentAddressed = {
+    round: 3,
+    textSha256: sha256Hex(LEDGER_TEXT),
+    occurrence: 0,
+    charRange: [0, LEDGER_TEXT.length],
+    sha256: sha256Hex(LEDGER_TEXT),
+    bytes: Buffer.byteLength(LEDGER_TEXT, "utf8"),
+  };
+  const out2 = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: contentAddressed } }));
+  assert.equal(out2.status, "invalid", "上一版内容寻址格式也一律 invalid（不迁移）");
+  // 只缺 `msg_seq`（其余全按新形状）⇒ invalid，且 reason 必须点名 msg_seq：这钉的是「无 msg_seq 就 invalid」
+  // 本身，而不是顺带被 round_no 拦住。
+  const onlyMsgSeqMissing = {
+    round_no: 3,
+    charRange: [0, LEDGER_TEXT.length],
+    sha256: sha256Hex(LEDGER_TEXT),
+    bytes: Buffer.byteLength(LEDGER_TEXT, "utf8"),
+  };
+  const out3 = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: onlyMsgSeqMissing } }));
+  assert.equal(out3.status, "invalid", "缺 msg_seq = 旧格式 = invalid（不迁移）");
+  assert.ok(/msg_seq/.test(out3.reason ?? ""), `reason 必须点明缺的是 msg_seq（实得 ${out3.reason}）`);
 });
 
-test("#896D-5 occurrence 区分同轮同正文的重复；round 指到没有该正文的轮 ⇒ invalid", async () => {
-  // 同一轮两条一模一样的正文：occurrence 0/1 都 found（正文相同、取哪条都等价）；occurrence 2 越界 ⇒ invalid。
+test("#896D-5 同轮重复正文靠 msg_seq 区分（不再靠 occurrence）；地址指不到 ⇒ invalid", async () => {
+  // 同一轮两条一模一样的正文：旧口径靠 occurrence 数「第几次出现」；行主键下两条各有自己的
+  // msg_seq（载体行：在该行 messages 里的下标 0/1），所以能**分别**钉到那一条——下面用改第一条证明。
   const DUP = "同轮重复的正文 DUP_MARK";
   /** @type {any[]} */
   const rows = [{ round: 3, messages: [{ role: "user", content: DUP }, { role: "user", content: DUP }] }];
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
-  const base = buildRecallRequest("q", [{ round: 3, occurrence: 0, text: DUP }]).evidence[0];
-  for (const occ of [0, 1]) {
-    const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { ...base, occurrence: occ } } }));
-    assert.equal(out.status, "found", `occurrence ${occ} 必须 found`);
+  const base = buildRecallRequest("q", [{ round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, text: DUP }]).evidence[0];
+  for (const seq of [0, 1]) {
+    const out = JSON.parse(await executeTool({
+      name: "recall_read",
+      input: { evidenceRef: { ...base, msg_seq: MSG_SEQ_CARRIER_BASE + seq } },
+    }));
+    assert.equal(out.status, "found", `载体行下标 ${seq} 必须 found`);
     assert.equal(out.text, DUP);
   }
-  const beyond = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { ...base, occurrence: 2 } } }));
-  assert.equal(beyond.status, "invalid", "同正文只有两条，occurrence 2 越界 ⇒ invalid");
-  // round 定位必需：正文对、轮号指到没有它的轮 ⇒ invalid。
-  const wrongRound = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { ...base, round: 9 } } }));
-  assert.equal(wrongRound.status, "invalid", "round 现在定位必需，写错轮号不许 found");
+  const beyond = JSON.parse(await executeTool({
+    name: "recall_read",
+    input: { evidenceRef: { ...base, msg_seq: MSG_SEQ_CARRIER_BASE + 2 } },
+  }));
+  assert.equal(beyond.status, "invalid", "该轮只有两个位置，msg_seq=2 指不到任何消息 ⇒ invalid");
+  // 真区分：把**第一条**改一个字 ⇒ msg_seq=0 的 ref ⇒ stale（定位到改后那条），msg_seq=1 的 ref ⇒ 仍 found。
+  // 旧内容寻址做不到这一点（两条正文同 sha，只能靠 occurrence 计数）。
+  rows[0].messages[0].content = DUP.replace("重复", "冗重");
+  const first = JSON.parse(await executeTool({
+    name: "recall_read",
+    input: { evidenceRef: { ...base, msg_seq: MSG_SEQ_CARRIER_BASE } },
+  }));
+  assert.equal(first.status, "stale", "改的是第一条 ⇒ 第一条的 ref 必须 stale");
+  const second = JSON.parse(await executeTool({
+    name: "recall_read",
+    input: { evidenceRef: { ...base, msg_seq: MSG_SEQ_CARRIER_BASE + 1 } },
+  }));
+  assert.equal(second.status, "found", "第二条未动 ⇒ 它的 ref 仍 found（地址真的钉到了那一条）");
+  // round_no 定位必需：轮号指到没有它的轮 ⇒ invalid。
+  const wrongRound = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { ...base, round_no: 9 } } }));
+  assert.equal(wrongRound.status, "invalid", "round_no 现在定位必需，写错轮号不许 found");
 });
 
 test("#896D-6 文本真的改了 ⇒ 仍 stale（仍能定位，但记录的切片 sha 对不上）", async () => {
   /** @type {any[]} */
   const rows = [{ round: 3, messages: [{ role: "user", content: LEDGER_TEXT }] }];
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
-  const ref = buildRecallRequest("q", [{ round: 3, occurrence: 0, text: LEDGER_TEXT }]).evidence[0];
+  const ref = buildRecallRequest("q", [{ round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, text: LEDGER_TEXT }]).evidence[0];
   // 行尾追加一条（append 本身不许改判）+ 把第一条正文改一个字。
   rows[0].messages.push({ role: "user", content: "同一行尾部追加的一条 APPEND_MARK" });
   const NEW = LEDGER_TEXT.replace("验证", "检定");
   rows[0].messages[0].content = NEW;
-  // 仍能定位到改后的正文（拿新正文的 sha256），但记录的切片 sha256 是旧正文的 ⇒ stale。
-  const staleRef = { ...ref, textSha256: sha256Hex(NEW) };
-  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: staleRef } }));
+  // 仍能定位到改后的正文（行主键 (3,0) 不动），但记录的切片 sha256 是旧正文的 ⇒ stale。
+  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: ref } }));
   assert.equal(out.status, "stale", "改的是文本 ⇒ 必须仍 stale（缺陷不能修成「永不 stale」）");
-  assert.equal(out.expectedSha, staleRef.sha256);
-  assert.notEqual(out.actualSha, staleRef.sha256, "改字后 sha 必须对不上");
+  assert.equal(out.expectedSha, ref.sha256);
+  assert.notEqual(out.actualSha, ref.sha256, "改字后 sha 必须对不上");
 });

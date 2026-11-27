@@ -126,6 +126,19 @@ function stampRowTs(message, row) {
 }
 
 /**
+ * 轮载体行（非 `kind:"message"` 的行）的 `msg_seq` **基址**：载体行的地址是 `基址 + 行内下标`。
+ *
+ * 为何要基址（命名空间）：同一条轮的 `load()` 输出里可以**同时**有轮载体行（引擎控制正文）与
+ * 消息行（#969 那轮真缺陷的现场就是这个）。若两边都用小整数（`row.seq` vs 行内下标），它们会在
+ * 同一轮里撞车：消息行 `seq=0` 与载体行 `messages[0]` 都是 `(round, 0)` ⇒ 两个 ref 指向同一条消息，
+ * 另一个只能 invalid/stale（实测：载体那条长 23 字的 ref 被消息行里 22 字的正文抢走 ⇒ 「越界」）。
+ * 消息行用 `row.seq`（账本上报出来的数，不改），所以把命名空间开在载体侧：`[0, BASE)` 属于消息行的
+ * `seq`，`[BASE, BASE + messages.length)` 属于载体行的下标 ⇒ 同轮内两区间不相交，地址天然唯一。
+ * 基址不依赖同轮里还有哪些行 ⇒ 不破坏稳定性（同轮追加行、消息行折进载体都不改既有地址）。
+ */
+export const MSG_SEQ_CARRIER_BASE = 2 ** 31;
+
+/**
  * 一行里的第 `index` 条消息的**稳定位置**（`round_no` + `msg_seq`）——stamp 侧（`stampRowPosition`）
  * 与读侧（`messageRowPosition`，`recall_ask` / `recall_read` 的生成与回验都走它）共用的**单一定义**，
  * 两侧地址不可能对不上。取不到稳定位置 ⇒ `null`（不猜值）。
@@ -133,11 +146,12 @@ function stampRowTs(message, row) {
  * `round_no` + `msg_seq` 合起来是**本轮内稳定**的消息地址（issue #261127-15：`recallEvidence`
  * 的行主键），两个分量都只取**行上的不可变位置**：
  *  - `round_no` = 该行所属的轮（`row.round`）；
- *  - `msg_seq` 按行种类取：
+ *  - `msg_seq` 按行种类取（两套区间不相交，见 `MSG_SEQ_CARRIER_BASE`）：
  *    · 消息行（`kind === "message"`）⇒ `row.seq`：每轮计数器（`nextMessageSeqByRound`）落一次就
  *      不再变，`appendRound` / 消息行的同键异 payload 还会抛 ⇒ 位置不可变；
- *    · 轮载体行（以及老账本自带正文的轮行）⇒ 该消息在**该行自己的** `row.messages` 里的下标：
- *      载体行一次写入（`appendRound` 同键异 payload 会抛）⇒ 行不可变 ⇒ 下标稳定。
+ *    · 轮载体行（以及老账本自带正文的轮行）⇒ `MSG_SEQ_CARRIER_BASE + 该消息在**该行自己的**
+ *      `row.messages` 里的下标：载体行一次写入（`appendRound` 同键异 payload 会抛）⇒ 行不可变
+ *      ⇒ 下标稳定（基址只是个命名空间标签，稳定性的载体仍是那个不可变下标）。
  *
  * ⚠ 两者都**不是**「折完之后在 `messages[]` 里的下标」——那个下标会随同轮再落消息行、随消息行被
  * 折进载体而漂（#973 当初正是为躲它才改用内容寻址）；这里取的是**行上的**位置，折进载体仍是同一个值。
@@ -154,7 +168,9 @@ function positionOfRowMessage(row, index) {
   if (row?.kind === MESSAGE_ROW_KIND) {
     return Number.isSafeInteger(row.seq) ? { round_no: roundNo, msg_seq: row.seq } : null;
   }
-  return Number.isSafeInteger(index) ? { round_no: roundNo, msg_seq: index } : null;
+  return Number.isSafeInteger(index)
+    ? { round_no: roundNo, msg_seq: MSG_SEQ_CARRIER_BASE + index }
+    : null;
 }
 
 /**

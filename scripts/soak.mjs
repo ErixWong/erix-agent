@@ -815,13 +815,33 @@ function independentStampRowTs(message, row) {
   return ts === "" ? message : { ...message, ts };
 }
 
+/**
+ * 剥掉**档案信封**字段（`ts` 与 issue #261127-15 的稳定位置 `round_no` + `msg_seq`）。
+ *
+ * 为什么必须剥：本函数比的是**正文**（「少一条 = 折叠吞了正文」），而信封是 `load()` 现 stamp 上去的
+ * （宿主时间线 / 行主键），本脚本独立复刻的那一侧按设计不带它 ⇒ 不剥就条条不等（`ts` 那一轮实测
+ * 3 处 mismatch，#439 已剥过一次；位置戳是同一件事的第二次）。剥的时候**逐键 delete**，不是白名单
+ * 整对象重建——信封以外多一个键仍然要红。
+ *
+ * @param {any} message
+ * @returns {any}
+ */
+function withoutJournalEnvelope(message) {
+  if (message === null || typeof message !== "object" || Array.isArray(message)) return message;
+  const copy = { ...message };
+  delete copy.ts;
+  delete copy.round_no;
+  delete copy.msg_seq;
+  return copy;
+}
+
 // 逐条比对两条正文序列（JSON 文本口径，与 `resume-history-bytes-unchanged` 同一个比较口径）。
 function compareMessageSequences(left, right) {
   const mismatches = [];
   const total = Math.max(left.length, right.length);
   for (let index = 0; index < total; index += 1) {
-    const a = JSON.stringify(left[index]);
-    const b = JSON.stringify(right[index]);
+    const a = JSON.stringify(withoutJournalEnvelope(left[index]));
+    const b = JSON.stringify(withoutJournalEnvelope(right[index]));
     if (a !== b) {
       mismatches.push({
         index,
