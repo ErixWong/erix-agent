@@ -1516,6 +1516,34 @@ export async function runToolLoop(options) {
       });
     }
   };
+
+  // PR #971 终验：`appendFold` 存在但**这次写不成**（fail-closed）——与「宿主没实现」是两件事，
+  // 所以走独立诊断码 `store_folds_channel_write_failed`；同样先落 run state 再发事件。
+  let foldsChannelWriteFailedNotified = false;
+  /** @param {unknown} error */
+  const notifyFoldsChannelWriteFailed = (error) => {
+    if (foldsChannelWriteFailedNotified) return;
+    foldsChannelWriteFailedNotified = true;
+    governorState.storeFoldsChannelWriteFailed = true;
+    try {
+      onEvent?.({
+        // 事件 `type` 必须是 `LoopEvent.type` 联合里已有的那个（新增 type 要同步联合与分级表）；
+        // 所以这里复用 `store_folds_channel_absent` 这一族，靠 `code` 区分「没实现」与「这次写不成」。
+        type: "store_folds_channel_absent",
+        code: "store_folds_channel_write_failed",
+        method: "appendFold",
+        detail: "appendFold failed closed (could not seed folds.seq from the round ledger); "
+          + "the fold was written into the round record only for this round",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch (hostError) {
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        hook: "persistence_degraded",
+        detail: "host onEvent threw while reporting a folds-channel write failure",
+      });
+    }
+  };
   /**
    * @param {string} method store 方法名
    * @param {...any} args 交给 store 的原样参数
@@ -2129,6 +2157,7 @@ export async function runToolLoop(options) {
     // `contextWindowRecoveryUsed` 同一类「事后要能查」的一次性事实：诊断除 `onEvent` 外还落进
     // run state 的 `deterministic` 层，使「没有 listener 时诊断仍不静默」。
     storeFoldsChannelAbsent: false,
+    storeFoldsChannelWriteFailed: false,
     // issue #473：`judge_done` 的「无交付物正文」降级配额（见 `JUDGE_DONE_GAP_NUDGE_LIMIT`）。
     judgeDoneGapNudges: 0,
     noToolStreak: 0,
@@ -3564,6 +3593,7 @@ export async function runToolLoop(options) {
       contextWindowRecoveryUsed: governorState.contextWindowRecoveryUsed,
       // issue #971 ④：折叠通道缺失的降级事实随 run-state 落盘（无 listener 时仍可事后查，不静默）。
       storeFoldsChannelAbsent: governorState.storeFoldsChannelAbsent,
+      storeFoldsChannelWriteFailed: governorState.storeFoldsChannelWriteFailed,
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {
@@ -6490,8 +6520,15 @@ export async function runToolLoop(options) {
         // 分配的 `seq`）；store 没有 `appendFold` ⇒ 保持今天行为（只写轮记录 + 推账本）并发一次
         // 可检测的降级诊断（不静默）。
         if (typeof store?.appendFold === "function") {
-          const persistedFold = await store.appendFold(runId, cloneState(compaction.foldedFacts));
-          foldRecordLedger.push(cloneState(persistedFold ?? compaction.foldedFacts));
+          try {
+            const persistedFold = await store.appendFold(runId, cloneState(compaction.foldedFacts));
+            foldRecordLedger.push(cloneState(persistedFold ?? compaction.foldedFacts));
+          } catch (foldChannelError) {
+            // PR #971 终验：`appendFold` 的 fail-closed（播种读不动轮记录 ⇒ 拒绝发出可能被占用的 seq）
+            // 落到这里。**折叠本身不失败**——事实仍写轮记录，账本仍推进；只是这次不落通道，并留痕。
+            foldRecordLedger.push(cloneState(compaction.foldedFacts));
+            notifyFoldsChannelWriteFailed(foldChannelError);
+          }
         } else {
           // issue #601：同一份事实进 run 作用域的折叠记录账本（与落盘同一条件 ⇒ 列表与账本同源）。
           foldRecordLedger.push(cloneState(compaction.foldedFacts));

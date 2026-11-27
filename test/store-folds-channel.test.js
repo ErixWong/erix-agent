@@ -5,13 +5,13 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFile } from "node:fs/promises";
+import { appendFile, mkdir } from "node:fs/promises";
 
 import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
-import { createFileTranscriptStore, foldsPath } from "../src/store/file.js";
+import { createFileTranscriptStore, foldsPath, transcriptPath } from "../src/store/file.js";
 import { buildFoldedFacts } from "../src/compact/fold-summary-journal.js";
 import { FOLD_RECORD_COLUMNS } from "../src/store/folds.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
@@ -410,4 +410,30 @@ test("判据14（④无 listener）：不给 onEvent ⇒ run state 的 determini
   assert.ok(saved, "前提：run state 已落盘");
   assert.equal(saved?.deterministic?.storeFoldsChannelAbsent, true,
     "无 onEvent 时 run state 里仍要能查到 storeFoldsChannelAbsent（非静默降级）");
+});
+
+// ─── 判据15（PR #971 终验）：播种读不动轮记录 ⇒ **fail-closed**，不许发一个可能被占用的 seq ──────
+test("判据15：轮记录读不动 ⇒ appendFold 抛 FOLD_SEED_UNAVAILABLE，且 run 记录仍写 foldedFacts + 留痕", async () => {
+  const dir = await makeTmp("folds-seed-fail-");
+  try {
+    const runId = "run-seed-fail";
+    // 先正常落一条通道行（seq=1），再**把轮记录文件写坏**（尾部半行 JSON），制造「读不动轮记录」。
+    const store = createFileTranscriptStore({ dir });
+    await store.appendFold(runId, { foldId: "f1", from: 1, to: 2, text: "第一折", title: "t1", origin: "semantic", bytes: 6 });
+    // 制造「轮记录读不动」：把 transcript 路径做成**目录** ⇒ 读它必抛 EISDIR（不依赖残行口径，
+    // 因为读侧对尾部残行是跳过、不抛的——那正是 copilot 指出「吞掉读错误」之所以危险的地方）。
+    const transcript = transcriptPath(dir, runId);
+    await mkdir(transcript, { recursive: true });
+    // 读侧会把尾部残行当损坏：这里断言 appendFold **拒绝**而不是猜一个 seq。
+    await assert.rejects(
+      () => store.appendFold(runId, { foldId: "f2", from: 3, to: 4, text: "第二折", title: "t2", origin: "semantic", bytes: 6 }),
+      (error) => error?.code === "FOLD_SEED_UNAVAILABLE",
+      "播种读不动轮记录时必须 fail-closed（不许只播通道就发号）",
+    );
+    // 通道里仍然只有第一条（没有被发出一个错的号）。
+    const rows = await store.loadFolds(runId);
+    assert.equal(rows.length, 1, `不许新增行（实得 ${JSON.stringify(rows.map((r) => r.seq))}）`);
+  } finally {
+    // makeTmp 的目录由 helpers/tmp.js 负责（与其它用例同口径）
+  }
 });

@@ -113,6 +113,23 @@ export function foldsPath(dir, runId) {
 const RECOVERY_CACHE_SUFFIX_EVENTS = ":events";
 const RECOVERY_CACHE_SUFFIX_PARTIAL = ":partial";
 
+/**
+ * 播种读不动轮记录（PR #971 终验）：`appendFold` 宁可失败也不许发出**可能已被占用**的 `seq`。
+ * 调用方（orchestrator）按**可检测的降级**处理：折叠事实仍写轮记录，通道这次不落，并留痕。
+ */
+export class FoldSeedUnavailableError extends Error {
+  /**
+   * @param {string} runId
+   * @param {unknown} cause
+   */
+  constructor(runId, cause) {
+    super(`appendFold(${String(runId)}): 读不动轮记录的 foldedFacts，无法安全分配 folds.seq（fail-closed）`);
+    this.name = "FoldSeedUnavailableError";
+    this.code = "FOLD_SEED_UNAVAILABLE";
+    this.cause = cause;
+  }
+}
+
 function statePath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.state.json`);
 }
@@ -780,8 +797,12 @@ export function createFileTranscriptStore({ dir }) {
           const roundRecords = [];
           for await (const rec of readRecords(transcriptPath(dir, runId))) roundRecords.push(rec);
           roundFacts.push(...foldRecordsFromRoundRecords(roundRecords));
-        } catch {
-          // 轮记录读不动（如中途损坏）：播种退回只播通道，不阻断本次折叠落账。
+        } catch (error) {
+          // **fail-closed**（PR #971 终验）：轮记录读不动（如中途损坏）时**不许**退回「只播通道」。
+          // 兼容期同一批折叠也在轮记录里；只播通道会发出一个**可能已被占用**的 `seq`，
+          // 于是「同一折叠拿回同一个号」这条幂等判据在崩溃/损坏的账本上静默失效。
+          // 折叠事实宁可这次不落通道（由调用方按降级处理并留痕），也不许写出一个错的号。
+          throw new FoldSeedUnavailableError(runId, error);
         }
         const merged = mergeFoldRecords({ channelRows: rows, roundFacts });
         /** @type {ReturnType<typeof createFoldChannelBookkeeping>} */
