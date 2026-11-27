@@ -280,21 +280,21 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `tokens_before` / `tokens_after` | int | not null | 折叠前后的上下文 token。**每折省了多少就挂在折上**——不需要另立一张压缩统计表 |
 | `intent` | jsonb | not null | **折叠前的白板全文**（机械抄）——渲染成 `## 意图`。**今天不存在**：没有白板可抄，这是新能力（`runs.board` 是它的来源） |
 | `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空。**今天不存在**：折叠时不抓 commit，这是新能力 |
-| `source` | text | not null | **这段折叠文本是谁写的**：`llm` / `host`。见下——代码里这是**两个正交字段**，本形状里它们塌成了一个 |
-| `trigger` | text | not null | `budget` / `context_window_recovery` / `manual`。**今天零对应**（代码里只有 `strategy` 和 `degradeReason`）。读者是**调参的人**：「我们为什么一直在折——预算还是超窗恢复？」记的是当时的决定，不从 `tokens_before` 反推 |
+| `trigger` | text | not null | `budget` / `context_window_recovery` / `manual`。**今天零对应**（代码里只有 `strategy` 和 `degradeReason`）。读者是**调参的人**：「我们为什么一直在折——预算还是超窗恢复？」记的是当时的决定，不从 `tokens_before` 反推。`manual` 是宿主唯一能介入折叠的地方——**触发可以，写正文不行** |
 | `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行**。读者是**渲染**：被取代的折不渲染——否则恢复后重折的那一段会出现两次（旧折描述半段、新折描述整段） |
 | `created_at` | timestamptz | not null | 信封时刻 |
 
-**`source` 为什么只有一个（代码里是两个正交字段）**：
+**没有 `source`（折叠文本的作者）**：今天代码里它有两个来源值 `llm` / `host`，但**宿主那条零生产者**——
+引擎的摘要器恒为本 run 的主力 provider（`createProviderSummarizer(provider)`，注释：「宿主不再需要自己写
+调模型的胶水」）；`host` 只是 `resolveFactsOrigin` 在**来源不明**时的兜底默认值
+（「引擎只对自己产出的文本自报 mechanical/semantic，来源不明时不得冒充引擎产物」）。
 
-| 代码字段 | 答什么 | 值 | 本形状里 |
-|---|---|---|---|
-| `source` | 文本来自**策略**还是**摘要器** | `statistical` / `strategy` / `llm` / `host` | 只剩 `llm` / `host`——统计策略与滑窗都删了 |
-| `origin` | **写者**是机械、语义还是宿主 | `mechanical` / `semantic` / `host` | 只剩 `semantic` / `host`——降级路径删了（解析不出即折叠失败） |
+所以折叠文本的作者只有一种 ⇒ 单值列，删。**宿主能触发折叠（`trigger='manual'`），不能写折叠文本**——
+折叠的正文是五节固定格式（意图/行动/遗留/提交/关键词），宿主给的文本不保证有这些节，渲染会塌。
 
-两个维度**恰好塌成同一对值**（`llm`↔`semantic`、`host`↔`host`），所以合成一个字段。
-**这个合并只在「没有统计策略、没有降级」成立时才成立**——哪天补回机械摘要，两列必须重新分开。
-（迁移旧账本时 `origin=mechanical` 的行要按 `llm→semantic` 之外的映射归到 `host`，因为引擎不能冒充它没写过的东西。）
+（代码里还有两个字段在这条路上被一并丢掉：`origin`（mechanical/semantic/host，写者）与 `source`
+（statistical/strategy/llm/host，文本来自策略还是摘要器）。它们本来正交；本形状里统计策略与降级都删了，
+两者各自只剩一个真实值，所以都不需要。）
 
 **代码里有、形状里故意没有的四样**（不写清楚就会被当成遗漏，下次有人补回来）：
 
