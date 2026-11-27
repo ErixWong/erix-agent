@@ -140,3 +140,5 @@ export { extractL0Facts, parseL1Summary } from "./reflection/l0.js";
 export { DEFAULT_REFLECTION_MIN_ROUNDS } from "./loop/reflection.js";
 // issue #896 C1：确定性召回工具工厂（opt-in，默认不挂进任何既有工具列表）。
 export { createBuiltinRecallTools } from "./tools/recall.js";
+// issue #896 §3-C（PR #969 复审①）：单发回忆检索工具 `recall_ask`（opt-in，同由宿主显式挂载）。
+export { createRecallAskTool } from "./tools/recall-ask.js";

@@ -1,0 +1,248 @@
+// @ts-check
+// issue #896 §3-C（PR #969 复审①）：`recall_ask` 工具的可达性与端到端判据。
+//
+// 核心判据（复审①「断线即不通过」）：**用一条真的经过 orchestrator 的测试**证明 recall_ask 能从
+// `createRecallAskTool` 工厂拿得到、且 orchestrator 把 `recallProvider` 端口透传进了工具上下文——
+// 假 provider、不联网。其余：端到端只装指定轮区间原文（诱饵轮排除）、evidenceRefs 经 recall_read
+// 回账本 found 且逐字、改一个字⇒stale、端口不提供⇒unavailable 且不降级到主 provider。
+//
+// 既有 15 格（evidence 三态 / maxTokens / 单发 / engine 桶 / uncertain）在
+// `test/loop/recall-evidence-896c.test.js` 兜，本文件只补复审①③新增的格子。
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { createRecallAskTool } from "../../src/tools/recall-ask.js";
+import { createBuiltinRecallTools } from "../../src/tools/recall.js";
+import { RECALL_MAX_EVIDENCE_BYTES } from "../../src/loop/recall-runner.js";
+import { runDirect } from "../helpers/run-direct.js";
+
+/** 区间内两轮的账本原文（一条消息行 + 一条轮载体行，覆盖 recall_read 的两条口径）。 */
+const R1_TEXT = "第1轮原文 R1_MARK 折叠前落盘的内容";
+const R2_TEXT = "第2轮原文 R2_MARK 也是被折叠的那几轮";
+const BAIT_TEXT = "第9轮诱饵 BAIT_MARK 区间外绝不该出现在请求里";
+
+/** 造账本：round 1（消息行）、round 2（轮载体行）、round 9（区间外诱饵）。 */
+function makeLedger() {
+  /** @type {any[]} */
+  const rows = [
+    { kind: "message", round: 1, seq: 0, messages: [{ role: "user", content: R1_TEXT }] },
+    { round: 2, messages: [{ role: "user", content: R2_TEXT }] },
+    { round: 9, messages: [{ role: "assistant", content: BAIT_TEXT }] },
+  ];
+  return { rows, readLedgerRows: () => rows };
+}
+
+/** 假回忆 provider：记调用次数、抓最后一次请求、返回可解析 JSON。 */
+function makeRecallProvider(payload) {
+  /** @type {{calls:number, lastRequest:any}} */
+  const state = { calls: 0, lastRequest: null };
+  const provider = (/** @type {any} */ request) => {
+    state.calls += 1;
+    state.lastRequest = request;
+    const text = typeof payload === "string"
+      ? payload
+      : JSON.stringify(payload ?? { answer: "RECALL_ANSWER", pointers: [], uncertain: false });
+    return Promise.resolve({
+      content: [{ type: "text", text }],
+      usage: { input_tokens: 9, output_tokens: 3 },
+    });
+  };
+  return { provider, state };
+}
+
+/**
+ * 自定义主 provider（记请求、不耗尽）：第 1 次发 recall_ask 的 tool_use，之后发 end_turn 正文。
+ * 引擎会对纯文本 end_turn 发「请继续完成任务」的 nudge、多跑几轮才以 no_tool 收尾，故不用有限脚本。
+ * @param {{name?: string, question?: string, fromRound?: number, toRound?: number}} toolUseInput
+ */
+function makeModelProvider(toolUseInput) {
+  /** @type {any[]} */
+  const requests = [];
+  const state = { calls: 0, requests };
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    async chat(/** @type {any} */ request) {
+      state.calls += 1;
+      requests.push(request);
+      const content = state.calls === 1
+        ? [{ type: "tool_use", id: "tu1", name: toolUseInput.name ?? "recall_ask", input: toolUseInput }]
+        : [{ type: "text", text: "收尾" + state.calls }];
+      return { content, stopReason: state.calls === 1 ? "tool_use" : "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
+    },
+  };
+  return { provider, state };
+}
+
+// ─── 格 1（工厂）：recall_ask 从工厂拿得到、定义形状对 ─────────────────────────
+test("#896A-1 createRecallAskTool 可拿到；定义 name=recall_ask、required=question/fromRound/toRound", () => {
+  assert.equal(typeof createRecallAskTool, "function");
+  const { definitions } = createRecallAskTool({ readLedgerRows: () => [] });
+  assert.equal(definitions.length, 1);
+  const tool = definitions[0];
+  assert.equal(tool.name, "recall_ask");
+  assert.deepEqual(tool.inputSchema.required, ["question", "fromRound", "toRound"]);
+  assert.equal(tool.inputSchema.additionalProperties, false);
+  assert.throws(() => createRecallAskTool({}), TypeError, "缺 readLedgerRows ⇒ TypeError");
+});
+
+// ─── 格 2（可达性·经过 orchestrator）：recall_ask 能在工具上下文拿到 recallProvider ──
+test("#896A-2 可达性：真经 orchestrator，recall_ask 从工具上下文拿到 recallProvider（假 provider，不联网）", async () => {
+  const { readLedgerRows } = makeLedger();
+  const evidenceSink = [];
+  const { definitions, executeTool: recallAskExecute } = createRecallAskTool({
+    readLedgerRows,
+    recordEvidence: (/** @type {any} */ e) => evidenceSink.push(e),
+  });
+  const recall = makeRecallProvider({ answer: "RECALL_ANSWER", pointers: [], uncertain: false });
+  const main = makeModelProvider({ name: "recall_ask", question: "折叠里写过什么", fromRound: 1, toRound: 2 });
+
+  /** @type {string[]} */
+  const toolResults = [];
+  const executeTool = async (/** @type {any} */ opts) => {
+    if (opts.name === "recall_ask") {
+      // 把引擎给的整包（含 context）转给工厂的 executeTool——context.recallProvider 由 orchestrator 注入。
+      const out = await recallAskExecute(opts);
+      toolResults.push(out);
+      return out;
+    }
+    return "ok";
+  };
+
+  await runDirect({
+    provider: main.provider,
+    tools: definitions,
+    executeTool,
+    capabilities: { ports: { recallProvider: recall.provider } },
+    initialUserMessage: "开始",
+    maxRounds: 8,
+    maxTokenContinuations: 0,
+  });
+
+  // 端口被 recall_ask 真调用了一次 ⇒ orchestrator 把 recallProvider 送进了工具上下文（断线即不通过）。
+  assert.equal(recall.state.calls, 1, "recall_ask 必须经 orchestrator 注入的端口真调了一次回忆 provider");
+  assert.equal(toolResults.length, 1, "recall_ask 必须被真执行了一次");
+  const parsed = JSON.parse(toolResults[0]);
+  assert.equal(parsed.status, "found");
+  assert.equal(parsed.answer, "RECALL_ANSWER");
+  assert.equal(parsed.uncertain, false);
+  assert.ok(Array.isArray(parsed.evidenceRefs) && parsed.evidenceRefs.length === 2, "区间内两轮各一片证据");
+  assert.equal(evidenceSink.length, 2, "每片经 recordEvidence 落 record.recallEvidence");
+  // 请求里只含区间内原文（诱饵轮 9 不出现）。
+  const sent = JSON.stringify(recall.state.lastRequest);
+  assert.ok(sent.includes("R1_MARK") && sent.includes("R2_MARK"), "区间内两轮原文必须在请求里");
+  assert.ok(!sent.includes("BAIT_MARK"), "区间外诱饵轮（round 9）不许出现在请求里");
+  // maxTokens 硬顶 / temperature:0（单发纪律）也随请求下去。
+  assert.equal(recall.state.lastRequest.maxTokens, 1024);
+  assert.equal(recall.state.lastRequest.temperature, 0);
+});
+
+// ─── 格 3（不降级）：端口不提供 ⇒ unavailable，且一条 provider 都不调（含主 provider 不降级）──
+test("#896A-3 端口不提供 ⇒ unavailable；不降级到主 provider（经 orchestrator）", async () => {
+  const { readLedgerRows } = makeLedger();
+  const { definitions, executeTool: recallAskExecute } = createRecallAskTool({ readLedgerRows });
+  const main = makeModelProvider({ name: "recall_ask", question: "q", fromRound: 1, toRound: 2 });
+  /** @type {string[]} */
+  const toolResults = [];
+  const executeTool = async (/** @type {any} */ opts) => {
+    if (opts.name === "recall_ask") {
+      const out = await recallAskExecute(opts);
+      toolResults.push(out);
+      return out;
+    }
+    return "ok";
+  };
+  // 关键：capabilities 里**不给** ports.recallProvider。
+  await runDirect({
+    provider: main.provider,
+    tools: definitions,
+    executeTool,
+    initialUserMessage: "开始",
+    maxRounds: 8,
+    maxTokenContinuations: 0,
+  });
+  const parsed = JSON.parse(toolResults[0]);
+  assert.equal(parsed.status, "unavailable", "端口缺失 ⇒ unavailable");
+  assert.ok(/不可用|未提供/.test(parsed.reason ?? ""), "话术含「不可用/未提供」");
+  // 不降级：recall_ask 没拿主 provider 凑数——主 provider 的所有请求里都没有回忆请求（系统提示「回忆检索器」）。
+  assert.ok(!main.state.requests.some((/** @type {any} */ r) => JSON.stringify(r).includes("回忆检索器")),
+    "recall_ask 不许把回忆请求发给主 provider（不降级）");
+});
+
+// ─── 格 4（e2e 单元）：请求只含指定轮区间原文，诱饵轮排除 ─────────────────────
+test("#896A-4 e2e：recall_ask 请求里只有指定轮区间的原文（区间外诱饵不出现）", async () => {
+  const { readLedgerRows } = makeLedger();
+  const recall = makeRecallProvider();
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "REAL_Q", fromRound: 1, toRound: 2 },
+    context: { recallProvider: recall.provider },
+  }));
+  assert.equal(out.status, "found");
+  const sent = JSON.stringify(recall.state.lastRequest);
+  assert.ok(sent.includes("REAL_Q") && sent.includes("R1_MARK") && sent.includes("R2_MARK"));
+  assert.ok(!sent.includes("BAIT_MARK"), "只装 [1,2]，round 9 诱饵不出现");
+});
+
+// ─── 格 5（e2e 回账本）：evidenceRefs 拿去 recall_read ⇒ found 且逐字等于账本原文 ──
+test("#896A-5 e2e：recall_ask 的 evidenceRefs 经 recall_read({evidenceRef}) ⇒ found 且逐字等于账本原文", async () => {
+  const { rows, readLedgerRows } = makeLedger();
+  const recall = makeRecallProvider();
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 2 },
+    context: { recallProvider: recall.provider },
+  }));
+  assert.equal(out.evidenceRefs.length, 2);
+  const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
+  const expectByRound = { 1: R1_TEXT, 2: R2_TEXT };
+  for (const ref of out.evidenceRefs) {
+    const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
+    assert.equal(back.status, "found", `ref round=${ref.round} 必须回账本 found`);
+    assert.equal(back.text, expectByRound[ref.round], "回验文本必须逐字等于账本原文");
+    assert.ok(rows.some((/** @type {any} */ r) => JSON.stringify(r.messages).includes(back.text)), "回验文本必须能在账本里找到");
+  }
+});
+
+// ─── 格 6（回账本改字⇒stale）：把账本原文改一个字 ⇒ 同一 ref ⇒ stale ────────────
+test("#896A-6 把账本原文改一个字 ⇒ 同一 evidenceRef ⇒ stale（绝不回一份差不多的）", async () => {
+  const { rows, readLedgerRows } = makeLedger();
+  const recall = makeRecallProvider();
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 2 },
+    context: { recallProvider: recall.provider },
+  }));
+  const ref = out.evidenceRefs.find((/** @type {any} */ r) => r.round === 1);
+  assert.ok(ref, "应有 round 1 的 ref");
+  // 账本改一个字（等长替换：原文→原纹，字节数不变 ⇒ 走 stale 而非「bytes 对不上」）。
+  rows[0].messages[0].content = R1_TEXT.replace("原文", "原纹");
+  const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
+  const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
+  assert.equal(back.status, "stale");
+  assert.notEqual(back.actualSha, ref.sha256, "改字后 sha 必须对不上");
+});
+
+// ─── 格 7（invalid）：question 空 / 轮区间非法 ⇒ invalid（不调 provider）──────────
+test("#896A-7 invalid：question 空 / fromRound>toRound / 非正整数 ⇒ invalid（不调 provider）", async () => {
+  const { readLedgerRows } = makeLedger();
+  let calls = 0;
+  const provider = () => { calls += 1; return Promise.resolve({ content: [{ type: "text", text: "{}" }] }); };
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const emptyQ = JSON.parse(await executeTool({ name: "recall_ask", input: { question: "", fromRound: 1, toRound: 2 }, context: { recallProvider: provider } }));
+  assert.equal(emptyQ.status, "invalid");
+  const reversed = JSON.parse(await executeTool({ name: "recall_ask", input: { question: "q", fromRound: 5, toRound: 2 }, context: { recallProvider: provider } }));
+  assert.equal(reversed.status, "invalid");
+  const nonInt = JSON.parse(await executeTool({ name: "recall_ask", input: { question: "q", fromRound: 0, toRound: 2 }, context: { recallProvider: provider } }));
+  assert.equal(nonInt.status, "invalid");
+  assert.equal(calls, 0, "invalid 输入一条 provider 都不调");
+});
+
+// ─── 格 8（单一真相）：验证侧 2 KiB 常量与生成侧同值 ─────────────────────────
+test("#896A-8 验证侧 2 KiB 上限与 recall-runner 生成侧同值（单一真相 2048）", () => {
+  assert.equal(RECALL_MAX_EVIDENCE_BYTES, 2048);
+});

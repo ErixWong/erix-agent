@@ -194,6 +194,11 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "resume",
     "stream",
     "reflection",
+    // issue #896 §3-C：回忆评测端口 `capabilities.ports.recallProvider` 的 legacy home
+    // 是 `recall.provider`（与 `reflection.judge.provider` 同构），故 `recall` 必须是一个**已登记的
+    // shell leaf**（同 `reflection`）——能力槽 self-check 要求 slot destination 的 `path[0]` 是个
+    // 引擎仍读得到的 shell。注册方式逐字仿 `reflection`：一个 shell leaf，不是新的顶层扁平选项。
+    "recall",
     // 身份与环境：两个**字符串标量**。它们以前按「身份/环境注入」留在能力面，现在按判据
     // （字符串标量 = 被原样带走的数据，不是被调用的行为载体）归配置面；0.28 的「`config` 子树
     // 必须过 JSON round-trip 等值」也要求它们是数据（见文件头约束 3 的两条理由）。
@@ -706,6 +711,7 @@ export const CONFIG_LEAF_BINDING = Object.freeze({
   "run.resume": "call",
   "run.stream": "call",
   "run.reflection": "init",
+  "run.recall": "init",
   "run.runId": "call",
   "run.cwd": "init",
   // issue #617（P0）：与 `run.runId` 同构——「这一次的身份是什么」属 call（逐调用可不同）。

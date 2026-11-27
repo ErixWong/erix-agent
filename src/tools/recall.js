@@ -1,7 +1,10 @@
 // @ts-check
 import { isMessageRow } from "../store/message-rows.js";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { estimateTokens } from "../tokens.js";
+// issue #896 §3-C（PR #969 复审③）：2 KiB 上限验证侧也要拦，与 recall-runner 生成侧共用同一常量。recall-runner 不 import 本文件，无循环。
+import { RECALL_MAX_EVIDENCE_BYTES } from "../loop/recall-runner.js";
 
 /** 硬顶（issue #896 §3-B 写死的数，照抄）：单段摘录 300 tok、最多 5 段、单次返回总 1500 tok、概览 500 tok。 */
 const MAX_SEGMENT_TOKENS = 300;
@@ -32,6 +35,29 @@ function byteLength(value) {
 /** @param {any} v @returns {boolean} */
 function isPositiveInt(v) {
   return Number.isSafeInteger(v) && v >= 1;
+}
+
+/**
+ * evidenceRef 形状校验（§3-C）：合法返回 null，否则返回报错原因（上层据此报 invalid）。
+ * 只校结构（round/messageIndex/charRange/sha256 都在且形对），不对内容做真假判断。
+ * @param {any} ref
+ * @returns {string|null}
+ */
+function evidenceRefShapeError(ref) {
+  if (ref === null || typeof ref !== "object" || Array.isArray(ref)) {
+    return "evidenceRef 必须是指纹对象（round/messageIndex/charRange/sha256）";
+  }
+  if (!isPositiveInt(ref.round)) return "evidenceRef.round 必须是 ≥1 的正整数";
+  if (!(Number.isSafeInteger(ref.messageIndex) && ref.messageIndex >= 0)) {
+    return "evidenceRef.messageIndex 必须是 ≥0 的整数";
+  }
+  const cr = ref.charRange;
+  if (!Array.isArray(cr) || cr.length !== 2 || !cr.every((/** @type {any} */ n) => Number.isSafeInteger(n) && n >= 0)) {
+    return "evidenceRef.charRange 必须是两个 ≥0 整数的数组 [start, end]";
+  }
+  if (cr[0] > cr[1]) return "evidenceRef.charRange 的 start 不得大于 end";
+  if (typeof ref.sha256 !== "string" || ref.sha256.length === 0) return "evidenceRef.sha256 必须是非空字符串";
+  return null;
 }
 
 /**
@@ -178,6 +204,19 @@ export function createBuiltinRecallTools(options = {}) {
         fromRound: { type: "integer", minimum: 1, description: "检索轮区间下界（含端点）" },
         toRound: { type: "integer", minimum: 1, description: "检索轮区间上界（含端点）" },
         scope: { type: "string", enum: ["run"], default: "run" },
+        // issue #896 §3-C：第三种模式——按引擎落下的指纹切片逐字取回并验影子。
+        evidenceRef: {
+          type: "object",
+          description: "引擎落进 record.recallEvidence 的切片指纹；给了它就进 evidence 模式（优先级高于 round/pattern）",
+          properties: {
+            round: { type: "integer", minimum: 1 },
+            messageIndex: { type: "integer", minimum: 0 },
+            charRange: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 2, maxItems: 2 },
+            sha256: { type: "string", minLength: 1 },
+            bytes: { type: "integer", minimum: 0 },
+          },
+          additionalProperties: true,
+        },
       },
       // ①（copilot #964 P0）：不再 required:["round"]——本功能的全部价值就是「记不得第几轮」时
       // 用 pattern 检索，硬 required 会让合规调用方没法只给 pattern。“至少给一个”在入口处校。
@@ -193,6 +232,11 @@ export function createBuiltinRecallTools(options = {}) {
   }
 
   async function recallRead(/** @type {any} */ input) {
+    // issue #896 §3-C：第三模式——给了 `evidenceRef` 就进 evidence 校验（优先级最高）。
+    // 放在最前面，既有的 round / pattern 输入从不带 `evidenceRef`，两条既有路径逐字不变。
+    if (input?.evidenceRef !== undefined && input?.evidenceRef !== null) {
+      return evidenceRead(input.evidenceRef);
+    }
     // ①（copilot #964 P0）：round 与 pattern 至少给一个——schema 已不再 required round，
     // 两个都没给才在这里判 invalid（只给 round 的逐字模式行为逐字不变）。
     const hasPattern = input.pattern !== undefined && input.pattern !== null;
@@ -262,6 +306,99 @@ export function createBuiltinRecallTools(options = {}) {
       messageCount: messages.length,
       byteLength: byteLength(messages),
       messages,
+    });
+  }
+
+  /**
+   * 按地址 `(round, messageIndex)` 在账本里取回该条消息的逐字原文（与逐字模式同口径：
+   * 消息行按 seq 升序、后接轮载体行）。取不到时返回 null。
+   * @param {any[]} rows
+   * @param {number} round
+   * @param {number} messageIndex
+   * @returns {string|null}
+   */
+  function ledgerTextAt(rows, round, messageIndex) {
+    const fromMessageRows = rows
+      .map((/** @type {any} */ row, /** @type {number} */ index) => ({ row, index }))
+      .filter(({ row }) => isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
+      .sort((/** @type {any} */ a, /** @type {any} */ b) => (a.row.seq - b.row.seq) || (a.index - b.index))
+      .flatMap(({ row }) => row.messages);
+    const fromCarrierRows = rows
+      .filter((/** @type {any} */ row) => !isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
+      .flatMap((/** @type {any} */ row) => row.messages);
+    const messages = [...fromMessageRows, ...fromCarrierRows];
+    if (messageIndex < 0 || messageIndex >= messages.length) return null;
+    return messageTextUnits(messages[messageIndex]).join("");
+  }
+
+  /**
+   * evidence 模式（§3-C）：拿引擎落下的指纹回账本逐字取回并**重算 sha256** 验影子。
+   * 三态：重算一致⇒found + 逐字原文；在账本但 sha256 不一致⇒stale（影子对不上原文，
+   * 绝不回一份“差不多的”）；地址取不到 ⇒invalid。sha256 在**取回的原文切片**上重算再与 ref 比。
+   * @param {any} ref
+   * @returns {Promise<string>}
+   */
+  async function evidenceRead(ref) {
+    const shapeReason = evidenceRefShapeError(ref);
+    if (shapeReason !== null) {
+      return JSON.stringify({ status: "invalid", reason: shapeReason, evidenceRef: ref });
+    }
+    const { round, messageIndex, charRange, sha256 } = ref;
+
+    let rows;
+    try {
+      rows = await accessor();
+    } catch {
+      return JSON.stringify({ status: "error", reason: "无法读取账本", evidenceRef: ref });
+    }
+    if (!Array.isArray(rows)) rows = [];
+
+    const text = ledgerTextAt(rows, round, messageIndex);
+    if (text === null) {
+      return JSON.stringify({
+        status: "invalid",
+        reason: `台账里没有这个 ref（第 ${round} 轮第 ${messageIndex} 条取不到）`,
+        evidenceRef: ref,
+      });
+    }
+
+    const rangeStart = charRange[0];
+    const rangeEnd = charRange[1];
+    // PR #969 复审③：三条校验缺一不可，全在 sha 比较之前判（否则空/越界会先被判成 stale）。
+    // 校验 1：空切片一律 invalid（旧 bug：[0,0] + 空串 sha256 恒 found，账本怎么改都对得上）。
+    if (!(rangeEnd > rangeStart)) {
+      return JSON.stringify({ status: "invalid", reason: `空切片：charRange [${rangeStart}, ${rangeEnd}] 的 end 必须严格大于 start（空区间一律 invalid）`, evidenceRef: ref });
+    }
+    // 校验 2：越界 invalid（JS 的 slice 会把越界夹成整段，不先拦就误判 stale/found）。
+    if (rangeEnd > text.length) {
+      return JSON.stringify({ status: "invalid", reason: `越界：charRange end=${rangeEnd} 超出原文长度 ${text.length}`, evidenceRef: ref, textLength: text.length });
+    }
+    const slice = text.slice(rangeStart, rangeEnd);
+    const bytes = Buffer.byteLength(slice, "utf8");
+    // 校验 3a：2 KiB 上限在验证侧同样拦（不能只在生成侧夹断）。
+    if (bytes > RECALL_MAX_EVIDENCE_BYTES) {
+      return JSON.stringify({ status: "invalid", reason: `切片 ${bytes} 字节超过 ${RECALL_MAX_EVIDENCE_BYTES} 字节上限（验证侧也拦）`, evidenceRef: ref, actualBytes: bytes });
+    }
+    // 校验 3b：bytes 对不上 invalid（ref 声明字节数 ≠ 账本原文切片实际字节数）。
+    if (ref.bytes !== undefined && ref.bytes !== bytes) {
+      return JSON.stringify({ status: "invalid", reason: `bytes 对不上：ref.bytes=${ref.bytes} 不等于账本原文切片实际字节 ${bytes}`, evidenceRef: ref, actualBytes: bytes });
+    }
+    const actualSha = createHash("sha256").update(slice, "utf8").digest("hex");
+    if (actualSha === sha256) {
+      return JSON.stringify({
+        status: "found",
+        evidenceRef: ref,
+        text: slice,
+        bytes,
+      });
+    }
+    return JSON.stringify({
+      status: "stale",
+      reason: "影子对不上原文：台账里的切片与指纹的 sha256 不一致（绝不回一份差不多的）",
+      evidenceRef: ref,
+      expectedSha: sha256,
+      actualSha,
+      actualBytes: bytes,
     });
   }
 
@@ -505,4 +642,46 @@ export function createBuiltinRecallTools(options = {}) {
     definitions: [TOOL_DEFINITION],
     executeTool,
   };
+}
+
+/**
+ * 取 [fromRound, toRound]（含端点）轮区间内的账本原文，逐条返回 {round, messageIndex, text}。
+ * 与 createBuiltinRecallTools 里 evidenceRead / 逐字模式同一套账本行口径：口径①消息行（isMessageRow
+ * && round 命中 && 带 messages）按 seq 升序（seq 相同按落盘先后）拼接，口径②轮载体行（非消息行 &&
+ * round 命中）接在其后；text = messageTextUnits(message).join("")——与 ledgerTextAt 取回的原文逐字一致，
+ * 因此按同一 (round, messageIndex) 与同一 charRange 算的 sha256 能被 recall_read({evidenceRef}) 重算对上
+ * （PR #969 复审②：指纹必须落在账本原文切片上，不是摘要）。messageIndex 是轮内下标（从 0 起）。
+ * @param {any[]} rows 账本行（store.load(runId) 的输出）
+ * @param {number} fromRound 区间下界（含）
+ * @param {number} toRound 区间上界（含）
+ * @returns {Array<{round:number, messageIndex:number, text:string}>}
+ */
+export function collectRoundMessagesInRange(rows, fromRound, toRound) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  /** @type {number[]} */
+  const rounds = [];
+  for (const /** @type {any} */ row of safeRows) {
+    const r = row?.round;
+    if (Number.isSafeInteger(r) && r >= fromRound && r <= toRound && Array.isArray(row?.messages)) {
+      if (!rounds.includes(r)) rounds.push(r);
+    }
+  }
+  rounds.sort((a, b) => a - b);
+  /** @type {Array<{round:number, messageIndex:number, text:string}>} */
+  const out = [];
+  for (const round of rounds) {
+    const fromMessageRows = safeRows
+      .map((/** @type {any} */ row, /** @type {number} */ index) => ({ row, index }))
+      .filter(({ row }) => isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
+      .sort((/** @type {any} */ a, /** @type {any} */ b) => (a.row.seq - b.row.seq) || (a.index - b.index))
+      .flatMap(({ row }) => row.messages);
+    const fromCarrierRows = safeRows
+      .filter((/** @type {any} */ row) => !isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
+      .flatMap((/** @type {any} */ row) => row.messages);
+    const messages = [...fromMessageRows, ...fromCarrierRows];
+    messages.forEach((/** @type {any} */ message, /** @type {number} */ messageIndex) => {
+      out.push({ round, messageIndex, text: messageTextUnits(message).join("") });
+    });
+  }
+  return out;
 }

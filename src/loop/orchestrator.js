@@ -1108,6 +1108,10 @@ export async function runToolLoop(options) {
   // `?? defaultSleep` fallback is load-bearing: without it a run that retries with no injected
   // timer would call `undefined` (pinned by `test/loop-option-gate-496.test.js` D③).
   const sleepImpl = capabilityPorts.sleepImpl ?? defaultSleep;
+  // issue #896 §3-C（PR #969 复审①）：把 `capabilities.ports.recallProvider` 端口透传进**工具上下文**
+  // （下方 `baseToolContext`），让显式挂载的 `recall_ask` 工具能在调用点拿到它——本轮接线的核心
+  // （断线即不通过：`recall_ask` 从 `request.context.recallProvider` 读端口）。口径同 `judgeProvider` 端口。
+  const recallProviderPort = capabilityPorts.recallProvider;
   // issue #177 刀5：runToolLoop 可变状态收口对象（闭包 `let` → 显式状态对象，分组迁入）。
   // 初值与语义与原 `let` 逐字一致（`foldedThrough` 原初值就是数字 `0`，不是 `false`）：
   // 【A 轮次记账 + 一次性去重标记】`rounds` / `foldedThrough`（原 :1235 / :1237，双计数器口径
@@ -1957,6 +1961,9 @@ export async function runToolLoop(options) {
     }),
     // #109 第2步：宿主侧端口（notes 等）持久化失败的通用报告桥
     reportPersistenceFailure: reportHostPersistenceFailure,
+    // issue #896 §3-C（PR #969 复审①）：回忆端口透传进工具上下文——`recall_ask` 从这里取 `recallProvider`
+    // （端口不给就不注入该键 ⇒ `recall_ask` 报 unavailable、不降级）。仿 `noteTools` / 宿主端口的注入先例。
+    ...(recallProviderPort === undefined ? {} : { recallProvider: recallProviderPort }),
   };
   const toolSignal = signal ?? new AbortController().signal;
   // reflection 未显式配置时，长任务（>=16 轮）默认开启基础 judge——无头宿主零配置获得保护

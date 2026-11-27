@@ -236,9 +236,9 @@ test("C1 账目：白名单被四个面恰好切一遍，10 个新叶子一律�
   assert.deepEqual([...CAPABILITIES_NAMESPACE_GROUPS], ["hooks", "checks", "ports"]);
   assert.equal(CAPABILITY_HOOK_NAMES.length, 18, "hooks 的回调 12 → 16 → 17（#568 的 continuityProvider）→ 18（#753 C1 的 nextUserTurn）");
   assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["recoveryHint"]);
-  assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "strategy"]);
+  assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "recallProvider", "strategy"]);
   assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 19, "hooks 接受 18 + 1 = 19 个叶子（#898 退役了 `protectedMessage`）");
-  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 10, "10 个嵌套槽叶子（#498 S4c 的 8 个 + #568 的 continuityProvider + #753 C1 的 nextUserTurn；#898 从 9 降到 8）");
+  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 11, "11 个嵌套槽叶子（#498 S4c 的 8 个 + #568 的 continuityProvider + #753 C1 的 nextUserTurn + #896 §3-C 的 recallProvider；#898 从 9 降到 8）");
   assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "扁平叶子仍是 13（别名表 13 条）");
   assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13);
 
@@ -253,8 +253,8 @@ test("C1 账目：白名单被四个面恰好切一遍，10 个新叶子一律�
       `${CAPABILITIES_NAMESPACE_GROUPS.find((group) => CAPABILITIES_NAMESPACE_SCHEMA[group].includes(leaf))}.${leaf}`
     ]?.conflictPath, "string", `${leaf} 必须登记去向（含冲突事件的 path）`);
   }
-  // 去向表就是那 10 条，不多不少（多一条就是死条目，`capabilitiesSchemaSelfCheck` 也核这一条；
-  // issue #898 退役 `protectedMessage` ⇒ 它的去向条目必须跟着消失，残留即死条目）。
+  // 去向表就是那 11 条，不多不少（多一条就是死条目，`capabilitiesSchemaSelfCheck` 也核这一条；
+  // issue #898 退役 `protectedMessage` ⇒ 它的去向条目必须跟着消失，残留即死条目；#896 §3-C 加 `ports.recallProvider` ⇒ 10 → 11）。
   assert.deepEqual(
     Object.keys(CAPABILITY_SLOT_DESTINATIONS).sort(),
     [
@@ -266,6 +266,7 @@ test("C1 账目：白名单被四个面恰好切一遍，10 个新叶子一律�
       "hooks.recoveryHint",
       "hooks.stubFor",
       "ports.judgeProvider",
+      "ports.recallProvider",
       "ports.sleepImpl",
       "ports.strategy",
     ],
@@ -314,7 +315,7 @@ test("C2 capabilities.ports 的形状闸口：拼错子键列可接受值，三�
   // ① 拼错子键（反向证 ①）：抛并列出可接受值。
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ ports: { sleeplmp: () => {} } }),
-    ["unknown capabilities.ports option: \"sleeplmp\" (accepted: sleepImpl, judgeProvider, strategy)"],
+    ["unknown capabilities.ports option: \"sleeplmp\" (accepted: sleepImpl, judgeProvider, recallProvider, strategy)"],
   );
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ ports: { sleepImpl: "nope" } }),
@@ -326,6 +327,14 @@ test("C2 capabilities.ports 的形状闸口：拼错子键列可接受值，三�
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ ports: { judgeProvider: { chat: "nope" } } }),
     ["capabilities.ports.judgeProvider must be a function (request) => Promise<response>"
+      + " or an object with a chat(request) method (or omitted)"],
+  );
+  // #896 §3-C：`recallProvider` 与 `judgeProvider` **同构**（callable 或 `{chat}`）。
+  assert.deepEqual(collectCapabilitiesNamespaceProblems({ ports: { recallProvider: async () => ({}) } }), []);
+  assert.deepEqual(collectCapabilitiesNamespaceProblems({ ports: { recallProvider: { chat: async () => ({}) } } }), []);
+  assert.deepEqual(
+    collectCapabilitiesNamespaceProblems({ ports: { recallProvider: { chat: "nope" } } }),
+    ["capabilities.ports.recallProvider must be a function (request) => Promise<response>"
       + " or an object with a chat(request) method (or omitted)"],
   );
   // `strategy`：策略对象（`shouldCompact` + `compact`）。内置名字是**数据**，不住端口位。

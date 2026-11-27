@@ -75,3 +75,7 @@ export {
 export {
   createBuiltinRecallTools,
 } from "./recall.js";
+// issue #896 §3-C（PR #969 复审①）：单发回忆检索工具 `recall_ask`（opt-in，同由宿主显式挂载）。
+export {
+  createRecallAskTool,
+} from "./recall-ask.js";

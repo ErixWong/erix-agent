@@ -645,6 +645,10 @@ const RETIRED_FLAT_VALUES = {
   // 展开相仍逐字写回 `effectiveOptions.reflection`（读侧一行未改：`orchestrator.js` 的
   // `resolvedReflectionOption` 与那一串 `effectiveReflection?.…`）。
   reflection: { enabled: true, maxExtensions: 1 },
+  // issue #896 §3-C：`recall` 是回忆端口的 legacy home 壳（同 `reflection`）：行为半边
+  // （`recall.provider`）去 `capabilities.ports.recallProvider`，壳本身在扁平侧给一个纯数据
+  // 代表值；展开相逐字写回 `effectiveOptions.recall`（与 `reflection` 同一机制）。
+  recall: false,
   // issue #598（`continuity` 组）：`handoff` 是**新增的配置叶子**，从来没有顶层扁平别名（S3 之后的
   // 形状）。展开相仍逐字写回 `effectiveOptions.handoff`（`orchestrator.js` 的
   // `normalizeContinuityWriteMode(effectiveOptions.handoff)` 读的就是它）。值取默认的 `"off"`。

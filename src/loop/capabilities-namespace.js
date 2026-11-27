@@ -195,6 +195,7 @@ export const CAPABILITY_CONTEXT_HOOK_NAMES = Object.freeze([
 export const CAPABILITY_PORT_SLOT_NAMES = Object.freeze([
   "sleepImpl",
   "judgeProvider",
+  "recallProvider",
   "strategy",
 ]);
 
@@ -288,6 +289,13 @@ export const CAPABILITY_SLOT_DESTINATIONS = Object.freeze({
   "ports.judgeProvider": Object.freeze({
     path: Object.freeze(["reflection", "judge", "provider"]),
     conflictPath: "ports.judgeProvider",
+  }),
+  // Recall-only evaluator (issue #896 §3-C): callable or `{chat}`; the same value shape as
+  // `judgeProvider`. Legacy home mirrors the judge's three-segment shape one level shallower
+  // (`recall.provider`, consumed as `capabilityPorts.recallProvider`).
+  "ports.recallProvider": Object.freeze({
+    path: Object.freeze(["recall", "provider"]),
+    conflictPath: "ports.recallProvider",
   }),
   // Compaction strategy object: legacy home `context.strategy` (`resolveCompactionStrategy` passes an
   // object through verbatim).
@@ -413,7 +421,7 @@ const CAPABILITIES_GROUP_VALIDATORS = Object.freeze({
         ? []
         : [`${path} must be a function (ms, signal) => Promise<void> (or omitted)`];
     }
-    if (leaf === "judgeProvider") {
+    if (leaf === "judgeProvider" || leaf === "recallProvider") {
       if (typeof value === "function") return [];
       if (isPlainObject(value) && typeof (/** @type {any} */ (value)).chat === "function") return [];
       return [
