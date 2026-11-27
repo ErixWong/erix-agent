@@ -138,15 +138,15 @@
 | `response_usage` | jsonb | | **最后一发的原始 provider usage**。实测 25 轮里 13 轮与 `usage` 完全相等、12 轮只差 `reasoningTokens`——它不是「另一个事实」，是 `usage` 的桶里没有的 provider 特有字段（`bin/reasoning-effort.js` 读它做推理强度校准） |
 | `engine_usage` | jsonb | 可空 | **本轮引擎自发起的调用**（round judge / 收尾归一化 / 折叠摘要）的用量。缺键 = 本轮没有这类调用。`usage` 只装主模型桶——只留 `usage` 会把引擎用量藏进主账 |
 | `wrapup` | jsonb | | 收尾那一次的结构化产物（**真状态**：模型输出的规范化结果，不可重算）。只有最后一轮有值 |
-| `ts` | timestamptz | not null | **信封**：这一轮什么时候收口。删除 `started_at` / `closed_at` 的论证靠它（上一轮的 `ts` 就是本轮的 start）。实测 906/906 轮都有 |
+| `created_at` | timestamptz | not null | **轮行写成的那一刻** = 这一轮收口。上一轮的 `created_at` 就是本轮的 start（所以 `started_at` 不需要）。实测 906/906 轮都有 |
 
 **没有 `status` / `started_at` / `closed_at`**：它们是 append-only 文件的补丁，不是业务事实。
 
 | 字段 | JSONL 里为什么需要 | 关系模型里为什么不需要 |
 |---|---|---|
 | `status` | 先追加轮行再追加消息行，崩溃可能只写半行 | 轮行与消息**同一事务**提交，不存在半行 |
-| `started_at` | 记「什么时候开的」 | 上一轮的 `ts` 就是本轮的 start |
-| `closed_at` | 记「什么时候收的口」 | 就是本轮的 `ts` |
+| `started_at` | 记「什么时候开的」 | 上一轮的 `created_at` 就是本轮的 start |
+| `closed_at` | 记「什么时候收的口」 | 就是本轮的 `created_at` |
 
 而「崩溃在轮中」这个业务事实，**消息层已经看得见**：有 `tool_use` 没有对应 `tool_result` = 那一轮没跑完。
 §3.9 的折叠闸门判的就是它。`status='open'` 不提供任何消息层拿不到的信息。
@@ -197,7 +197,7 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 | `dedup_key` | `<runId>:msg:<round>:<seq>` 这类字符串 | **就是复合主键的字符串编码**——主键已经承担幂等身份 |
 | `payload_fingerprint` | 整行 payload 的 `sha256[:24]` | 一行是不透明 blob 时才需要哈希比内容；关系模型里「同一份 payload」就是**非主键列全相等**，精确比较。存成列还会自指（行里存着这一行的摘要），任何字段变了都要重算 |
 
-**没有 `ts`（消息级）**：写入时刻落在这一轮的窗口内，`rounds.ts` 加下一轮的 `ts` 就是区间；
+**没有 `ts`（消息级）**：写入时刻落在这一轮的窗口内，`rounds.created_at` 加下一轮的 `created_at` 就是区间；
 单个工具的耗时由 `tool_result.erix.durationMs` 记。消息级时间戳今天**没有读者**——唯一的读点
 `stampRowTs` 只是把它从行拷到 message 对象上，之后再没人读。
 
@@ -230,7 +230,7 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 | 折叠之间 | `folds.seq`（§1.4） |
 
 全局 `seq` 是**单文件 JSONL 的产物**（一个文件里没有类型，只有行序）。拆成表之后，行序由自然键承担，
-`ts` 只作记录、不作顺序依据（墙钟会回拨，同一毫秒还可能有多条）。
+`created_at` 只作记录、不作顺序依据（墙钟会回拨，同一毫秒还可能有多条）。
 
 **序号由写入方分配，不是存储自增**——这条是形状级的，不是实现细节：
 
