@@ -116,7 +116,7 @@
 | 轮内消息 | `msg_seq` |
 | 跨轮 | `round_no` |
 | 折叠之间 | `folds.seq`（§1.4） |
-| 恢复事件之间 | `recovery_rows.seq`（§1.9） |
+| 执行证据之间 | 不需要排序（PK 就是 `tool_use_id`） |
 
 全局 `seq` 是**单文件 JSONL 的产物**（一个文件里没有类型，只有行序）。拆成表之后，行序由自然键承担，
 `ts` 只作记录、不作顺序依据（墙钟会回拨，同一毫秒还可能有多条）。
@@ -276,17 +276,31 @@ SELECT seq, title FROM folds
 | `outcome` | text | `ok` / `degraded` / `failed` |
 | `ts` | timestamptz | |
 
-### 1.9 `recovery_rows` —— 恢复行（两族语义不同）
+### 1.9 `tool_executions` —— 执行证据（写点在执行**之前**）
 
-| 列 | 类型 | 说明 |
+| 列 | 约束 | 说明 |
 |---|---|---|
-| `run_id` / `seq` | text / bigint | **PK** |
-| `event` | text | `tool-executed` / `tool-result-unledgered` / `partial-text` |
-| `round` | int | 槽事件按轮定界 |
-| `dedup_key` / `payload_fingerprint` / `payload` / `created_at` | | 同 §1.3 的冲突判定 |
+| `run_id`, `tool_use_id` | **PK** | 一个 `tool_use` 最多一行（重放幂等） |
+| `round_no` | FK→rounds | |
+| `started_at` | timestamptz not null | **开始执行**的时刻 |
 
-- `event = 'partial-text'`：**槽**——同 `(run_id, round)` 只留一条、原子替换、跨轮自剪枝；
-- 其余事件：**只追加、永不替换、一行不丢**。
+**写点必须在执行之前**，这是这张表全部的价值所在：
+
+| 写点 | 覆盖什么 | 覆盖不到什么 |
+|---|---|---|
+| **执行前**（本形状） | 执行到一半崩溃（副作用可能已部分发生）+ 执行完但结果没写成 | — |
+| 执行后（今天的代码） | 只覆盖“执行完、结果没写成” | **执行期间崩溃**——而长跑工具（`npm test` / `deploy.sh`）的崩溃窗口就是整段执行时长 |
+
+为什么宁可早写——**代价不对称**：
+
+- 误判“跑过”（其实没跑）⇒ 跳过这次调用、补一条“结果未知”的桩 ⇒ 任务停住，**看得见**；
+- 误判“没跑”（其实跑了）⇒ 重跑 ⇒ 副作用重复（又发一次请求 / 又改一次数据库），**可能静默损坏**。
+
+**它只回答“开始了没有”，不回答“结果是什么”**：结果在 `messages` 的 `tool_result` 里。
+两处都有 ⇒ 正常；只有证据没有结果 ⇒ 执行过但结果丢了，补桩（`caller='settle'`）。
+
+**它是唯一允许裁剪的表**：`tool_result` 落账之后，这条记录的事实可从消息推出 ⇒ 裁掉的是可推导的行，
+不是账。
 
 ### 1.10 关系总图
 
@@ -294,7 +308,7 @@ SELECT seq, title FROM folds
 runs 1─┬─N rounds ──── N messages（消息是最小单位，每轮内按 msg_seq 排）
        ├─N folds ───────────┐
        │                    └─ fold_exclusions（区间内的例外，成员可推导）
-       ├─N recovery_rows
+       ├─N tool_executions
        ├─N budget_verdict
        └─N notes 1─N note_history
                 └─N note_ops
