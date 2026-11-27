@@ -475,15 +475,16 @@ runs 1─┬─N rounds ──── N messages（最小单位，轮内按 msg_s
 | 东西 | 真实身份 | 归属 |
 |---|---|---|
 | `folds.title` / `folds.description` | **折叠事实**（本折日志） | `folds` |
-| 实际喂给模型的那串字节 | **请求事实**。今天字段名有两个，别混：`foldedSummary.text` 是折叠后**整条消息**的投影（含原任务正文与安全层插的 `[已修剪]`）；`foldedSummary.fedSummaryText` 才是「写侧当场证得的那一块」逐字副本 | 留在**该轮的记录**上，不从 `folds` 派生 |
+| 实际喂给模型的那串字节 | **派生**：`folds` + `runs.board` + `messages` + 预算，按 §3.2 的算法现拼 | **不落盘**。§4.3 的渲染确定性保证了「重算 = 当时发出去的那串」；旧形状要存它，是因为旧渲染不确定（累计体每折重写、`enforceSize` 按体积裁剪、`[已修剪]` 位置取决于哪层先触发） |
 | `requestStateBlock` | 会话状态块的渲染 | **派生**（从 `rounds` + `folds` + `notes` 现拼），不落正文 |
 | 白板（`runs.board`）vs `notes` | **现状 vs 可查存档**：白板每轮整块注入、整块替换；`notes` 一条一条，按需 `note_read` | `runs.board` / `notes`，不互相派生 |
 | **judge 决策**（done / confidence / reason / evidence / direction） | **控制流证据**，不进上下文、不参与渲染 | **外部账**：`judge.log`，按 `runId` join。形状只收它**注入的那条消息**（`caller='judge'`） |
 | `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的切点查询），不落正文 |
 | `folds.tokens_before` / `tokens_after` / `anchors_dropped` | **本折的指标** | `folds` 行上，不另立诊断表 |
 
-**写点后移**：喂给模型的那串字节要在**请求组装处**（所有压缩层定稿之后）写。于是它记的就是"模型真正
-看到的那一串"，不再需要「钉住块对象身份 + 自证」。
+**为什么不再需要「钉住块对象身份 + 自证」**：那套机制存在的前提是「渲染结果不确定，所以必须当场记下
+发出去的是哪一串」。新形状的渲染是纯函数（§3.2 + §4.3），输入全部在表里 ⇒ 事后重算即可，不需要
+在请求组装处写一份快照。
 
 ---
 
