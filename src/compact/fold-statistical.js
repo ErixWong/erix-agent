@@ -2,12 +2,6 @@ import { groupIntoRounds } from "../messages/rounds.js";
 import { summarizeToolCall } from "../loop/tool-result-ttl.js";
 import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import {
-  ANCHOR_SECTION_HEADING,
-  clampAnchorSection,
-  extractAnchors,
-  splitAnchorValues,
-} from "./anchors.js";
-import {
   cloneFoldPayload,
   collectTtlFoldStubs,
   DEFAULT_RECOVERY_HINT,
@@ -380,43 +374,6 @@ function parseMarkedFoldSummary(text) {
   return parseFoldSummaryMatch(value, markedMatch, false);
 }
 
-// 锚点节解析：按 kind 分桶为结构化数据（values 用 splitAnchorValues 还原转义后的渲染格式），
-// 参与 mergedFoldSummaryContent 的并集合并——不靠切原文保锚点。
-const ANCHOR_KIND_PATTERN = /^(paths|shas|issues|urls|errors): (.*)$/u;
-
-function parseAnchorSection(value) {
-  const lines = String(value).split("\n");
-  const headingIndex = lines.findIndex((line) => line.includes("## 锚点索引"));
-  if (headingIndex < 0) return undefined;
-  const byKind = {};
-  let found = false;
-  for (const line of lines.slice(headingIndex + 1)) {
-    const kindMatch = line.match(ANCHOR_KIND_PATTERN);
-    if (!kindMatch) continue;
-    byKind[kindMatch[1]] = splitAnchorValues(kindMatch[2]).filter((item) => item !== "");
-    found = true;
-  }
-  return found ? byKind : undefined;
-}
-
-// 锚点节剥离（fold-llm prependSummary 复用，避免复制实现）：截掉锚点节标题行到节尾
-// （下一个 `## ` 标题或文本结束），并收敛残留空行。无锚点节时原样返回。
-export function stripAnchorSection(text) {
-  const lines = String(text ?? "").split("\n");
-  const headingIndex = lines.findIndex((line) => line.includes(ANCHOR_SECTION_HEADING));
-  if (headingIndex < 0) return text;
-  let end = lines.length;
-  for (let index = headingIndex + 1; index < lines.length; index += 1) {
-    if (lines[index].startsWith("## ")) {
-      end = index;
-      break;
-    }
-  }
-  const kept = lines.slice(0, headingIndex);
-  while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
-  return [...kept, ...lines.slice(end)].join("\n");
-}
-
 function parseNavigationRecord(value) {
   const navigationMatch = String(value).match(/^导航记录：(\{.*\})$/mu);
   if (!navigationMatch) return undefined;
@@ -448,7 +405,6 @@ function parseFoldSummaryMatch(value, match, legacy) {
       .map((stub) => stub[0]),
     inventory: parseInventorySection(value),
     navigationRecord: parseNavigationRecord(value),
-    anchors: parseAnchorSection(value),
     legacy,
   };
 }
@@ -494,14 +450,12 @@ function parseSegmentedFoldSummary(value) {
       stubs: [...body.matchAll(FOLD_STUB_LINE_PATTERN)].map((stub) => stub[0]),
       inventory: parseInventorySection(body),
       navigationRecord: undefined,
-      anchors: undefined,
       legacy: false,
     };
   });
-  // 块级节（导航记录 / 锚点索引）挂在最新那一折上：合并时它们走并集，挂在哪一折不影响结果，
-  // 但重渲染必须在块级再写一次（否则第 2 次折叠就把导航与锚点弄丢）。
+  // 块级节（导航记录）挂在最新那一折上：合并时它走并集，挂在哪一折不影响结果，
+  // 但重渲染必须在块级再写一次（否则第 2 次折叠就把导航弄丢）。
   segments[0].navigationRecord = parseNavigationRecord(value);
-  segments[0].anchors = parseAnchorSection(value);
   return segments;
 }
 
@@ -615,7 +569,6 @@ function foldRecordSegments(foldRecords) {
       inventory,
       stubs,
       navigationRecord: undefined,
-      anchors: undefined,
       legacy: false,
     });
   }
@@ -923,9 +876,9 @@ function uncoveredNote(uncovered, uncoveredRounds) {
  * 分段块（issue #601）：近期给全 / 远期只给 title，**最新在最前**。
  *
  * 顺序是硬的：字节夹断（`buildFoldedFacts` 的前缀夹断，默认 2048）只削**尾部** ⇒
- * 最新那一折永远在最前面活着；被削掉的是远期 title 行与锚点节，不是最近发生过什么。
+ * 最新那一折永远在最前面活着；被削掉的是远期 title 行，不是最近发生过什么。
  */
-function formatSegmentedFoldSummary({ segments, navigationRecord, recoveryHint, anchors }) {
+function formatSegmentedFoldSummary({ segments, navigationRecord, recoveryHint }) {
   const recent = segments.slice(0, FOLD_SUMMARY_RECENT_FOLDS);
   const older = segments.slice(FOLD_SUMMARY_RECENT_FOLDS);
   // issue #603 判据 2：逐条列出的远期 title 有上界，`另有 N 次` 的 N = **没列出来的那批**。
@@ -961,9 +914,7 @@ function formatSegmentedFoldSummary({ segments, navigationRecord, recoveryHint, 
   }
   if (navigationRecord) lines.push(`导航记录：${JSON.stringify(navigationRecord)}`);
   lines.push(recoveryHint);
-  const summary = lines.join("\n");
-  // 锚点节（A2）固定追加在整块最末（与单折路径同口径）：夹断削的就是它。
-  return anchors && anchors.text !== "" ? `${summary}\n\n${anchors.text}` : summary;
+  return lines.join("\n");
 }
 
 export function formatFoldSummary({
@@ -976,11 +927,10 @@ export function formatFoldSummary({
   segments = undefined,
   navigationRecord,
   recoveryHint = DEFAULT_RECOVERY_HINT,
-  anchors,
 }) {
   // issue #601：多折 ⇒ 分段渲染；单折（或未给分段）⇒ 与旧实现**逐字相同**的单区间块。
   if (Array.isArray(segments) && segments.length > 1) {
-    return formatSegmentedFoldSummary({ segments, navigationRecord, recoveryHint, anchors });
+    return formatSegmentedFoldSummary({ segments, navigationRecord, recoveryHint });
   }
   const footprint = footprintText(tools);
   const boundedInventory = inventory.slice(0, MAX_TOOL_INVENTORY_ENTRIES);
@@ -1004,16 +954,13 @@ export function formatFoldSummary({
   const summary = stubs.length > 0 || navigationRecord || boundedInventory.length > 0
     ? `${prefix}\n${suffix}`
     : `${prefix}${suffix}`;
-  // 锚点节（A2）固定追加在摘要最末：recoveryHint 之后，整节为机械抽取文本。
-  return anchors && anchors.text !== "" ? `${summary}\n\n${anchors.text}` : summary;
+  return summary;
 }
 
 function mergedFoldSummaryContent(
   originalContent,
   summary,
   recoveryHint,
-  anchorClamp = {},
-  anchorsEnabled = true,
   foldRecords = undefined,
 ) {
   const summaries = originalContent
@@ -1034,9 +981,8 @@ function mergedFoldSummaryContent(
   const useLedger = ledgerSegments !== undefined && ledgerCoversBlock(ledgerSegments, summaries);
   const previous = useLedger ? ledgerSegments : summaries;
   if (useLedger && summaries.length > 0) {
-    // 块级节（锚点索引 / 导航记录）是**累计**的、只存在于块里（账本不存它们）⇒ 挂到最新那一折上，
-    // 并集合并不在乎挂在哪一折；不这么做的话账本路径会把锚点节丢掉。
-    previous[0].anchors = summaries[0].anchors;
+    // 块级节（导航记录）是**累计**的、只存在于块里（账本不存它）⇒ 挂到最新那一折上，
+    // 并集合并不在乎挂在哪一折；不这么做的话账本路径会把导航记录丢掉。
     previous[0].navigationRecord = summaries[0].navigationRecord;
   }
   // issue #601：**最新在最前**。旧块按自己的渲染顺序已经是「新 → 旧」（分段块）或只有一条（旧格式），
@@ -1063,24 +1009,6 @@ function mergedFoldSummaryContent(
   }
   // 清单：**每折自己那一份**（issue #601）。不再全局并集 —— 近期那几折各带自己的清单节，
   // 远期那几折只剩 title（清单在它的 title 行里已有一条代表）。
-  // 锚点并集（A2 关键回归）：旧摘要锚点在前、新折叠锚点按 kind 追加在后，去重后重新夹取上限
-  // （MAX_ANCHORS=20 / 1200 字符）——连续折叠锚点不丢、不重复、不超限。
-  /** @type {Record<string, string[]>} */
-  const unionByKind = {};
-  for (const parsed of [...merged].reverse()) {
-    for (const [kind, values] of Object.entries(parsed.anchors ?? {})) {
-      if (!Array.isArray(values)) continue;
-      const bucket = (unionByKind[kind] ??= []);
-      for (const value of values) {
-        if (!bucket.includes(value)) bucket.push(value);
-      }
-    }
-  }
-  // anchors:false（评审修复）：旧摘要里解析出的锚点一并丢弃，合并结果不得含锚点节
-  // ——否则第 1 次默认折叠产生锚点后，第 2 次 anchors:false 折叠仍会把它带回来。
-  const mergedAnchors = anchorsEnabled
-    ? clampAnchorSection(unionByKind, anchorClamp)
-    : { byKind: {}, text: "" };
   const mergedRange = {
     from: Math.min(...merged.map((parsed) => parsed.from)),
     to: Math.max(...merged.map((parsed) => parsed.to)),
@@ -1108,7 +1036,6 @@ function mergedFoldSummaryContent(
       segments: merged,
       navigationRecord: mergedNavigation,
       recoveryHint: resolveRecoveryHint(recoveryHint),
-      anchors: mergedAnchors,
     });
   const contentWithoutSummaries = originalContent.flatMap((block) => {
     // 旧格式仅兼容读取，保留原块；v1 marker 是专用的可替换区段。
@@ -1128,8 +1055,6 @@ function prependSummary(
   summary,
   summaryRole = "user",
   recoveryHint = DEFAULT_RECOVERY_HINT,
-  anchorClamp = {},
-  anchorsEnabled = true,
   foldRecords = undefined,
 ) {
   if (summaryRole === "system") {
@@ -1148,8 +1073,6 @@ function prependSummary(
         content,
         summary,
         recoveryHint,
-        anchorClamp,
-        anchorsEnabled,
         foldRecords,
       ),
     };
@@ -1173,8 +1096,6 @@ function prependSummary(
       originalContent,
       summary,
       recoveryHint,
-      anchorClamp,
-      anchorsEnabled,
       foldRecords,
     ),
   };
@@ -1187,7 +1108,7 @@ function prependSummary(
  *
  * @param {object[]} foldedPayload Raw folded messages.
  * @param {{from?: number, to?: number, count?: number, recoveryHint?: string, noteTools?: string[],
- *   anchors?: {text: string}, stubs?: string[], navigationRecord?: object}} [options]
+ *   stubs?: string[], navigationRecord?: object}} [options]
  * @returns {string}
  */
 export function summarizeFoldedPayload(foldedPayload, options = {}) {
@@ -1212,7 +1133,6 @@ export function summarizeFoldedPayload(foldedPayload, options = {}) {
       options.recoveryHint,
       noteRecallFromMessages(payload, options.noteTools),
     ),
-    ...(options.anchors === undefined ? {} : { anchors: options.anchors }),
   });
 }
 
@@ -1257,8 +1177,8 @@ export function createFoldStatisticalStrategy(options = {}) {
           targetTokens,
           headMessages: head,
           // 摘要开销估算 = 本策略**实际会拼出来的那份**机械摘要，走同一个生产函数
-          // `summarizeFoldedPayload`（内含 inventory / stubs / navigation record / recovery hint /
-          // anchors），用 `estimateTokens` 估长度（issue #873 验收阻断②）。旧版只传 `{from,to,count}`
+          // `summarizeFoldedPayload`（内含 inventory / stubs / navigation record / recovery hint），
+          // 用 `estimateTokens` 估长度（issue #873 验收阻断②）。旧版只传 `{from,to,count}`
           // 的占位串。
           // issue #873 修复②（copilot 拦下的第 ② 条）：选择器折的**不是连续前缀**——
           // 连续性块 / 工作集地板都会让中间轮被保留（#898 之前还多一条 `protectedMessage`）
@@ -1277,10 +1197,6 @@ export function createFoldStatisticalStrategy(options = {}) {
             // 范围句与生产路径同一个口径（`roundRangeForIndexes`：`roundOffset` / `roundNumbers`）。
             const estRange = roundRangeForIndexes(indexes, settings.roundOffset, settings.roundNumbers)
               ?? { from: 1, to: indexes.length };
-            const estAnchorsEnabled = settings.anchors !== false;
-            const estAnchorClamp = settings.anchors === false
-              ? {}
-              : (settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {});
             const text = summarizeFoldedPayload(estFolded, {
               from: estRange.from,
               to: estRange.to,
@@ -1289,7 +1205,6 @@ export function createFoldStatisticalStrategy(options = {}) {
               navigationRecord: buildFoldNavigationRecord(estFolded, estRange),
               recoveryHint: settings.recoveryHint,
               noteTools: settings.noteTools,
-              ...(estAnchorsEnabled ? { anchors: extractAnchors(estFolded, estAnchorClamp) } : {}),
             });
             return estimateTokens(text);
           },
@@ -1331,17 +1246,6 @@ export function createFoldStatisticalStrategy(options = {}) {
         roundRange,
       });
 
-      // 锚点索引（A2）：默认启用，anchors:false 时与 0.7.0 行为完全一致
-      // （本轮不抽取，且旧摘要的锚点节在合并时丢弃）。
-      const anchorsEnabled = settings.anchors !== false;
-      const anchorClamp = settings.anchors === false
-        ? {}
-        : (settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {});
-      const anchors = anchorsEnabled ? extractAnchors(foldedPayload, anchorClamp) : undefined;
-      if (anchors?.text !== "") {
-        settings.onLayer?.({ layerId: "anchors" });
-      }
-
       let compactedHead = head;
       // issue #470（A1）：本次折叠的**机械替代物**（进账本用，不进消息流）。
       /** @type {{ source: string, text?: string, degradeReason?: string }|undefined} */
@@ -1359,15 +1263,12 @@ export function createFoldStatisticalStrategy(options = {}) {
           stubs: foldedStubs,
           navigationRecord,
           recoveryHint,
-          anchors,
         });
         compactedHead = prependSummary(
           head,
           summary,
           settings.summaryRole,
           recoveryHint,
-          anchorClamp,
-          anchorsEnabled,
           foldRecords,
         );
         // 机械摘要本来就在手里，顺手带一份给轮记录（#470-A1）。
