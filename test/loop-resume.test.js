@@ -21,8 +21,11 @@ const textMessage = (text) => ({
 
 /** issue #439 A：`load()` 的折叠结果给每条逻辑消息带了行级 `ts`（落盘时刻，宿主时间线），
  * 内存里的消息没有——比较「档案 = 完整正文」时剥掉信封字段，**逐字比正文**。
- * 不静默放宽：调用点另有一句断言档案侧**真的**带 `ts`（否则这条剥字段就成了白名单）。 */
-const withoutJournalTs = (messages) => messages.map(({ ts, ...message }) => message);
+ * 不静默放宽：调用点另有一句断言档案侧**真的**带 `ts`（否则这条剥字段就成了白名单）。
+ * #261127-15 同纪律：本轮内稳定位置 `round_no` + `msg_seq` 也是档案信封（`recallEvidence` 的行主键），
+ * 同样不属于模型可见正文——provider 请求里根本不会出现这两个键（canonical 只读 role/content）。 */
+const withoutJournalTs = (messages) => messages
+  .map(({ ts, round_no: _roundNo, msg_seq: _msgSeq, ...message }) => message);
 
 async function addExecutedEvidence(store, runId, round, toolUseId) {
   const rows = await store.listRecoveryRows(runId);

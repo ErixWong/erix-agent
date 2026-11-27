@@ -126,6 +126,78 @@ function stampRowTs(message, row) {
 }
 
 /**
+ * 一行里的第 `index` 条消息的**稳定位置**（`round_no` + `msg_seq`）——stamp 侧（`stampRowPosition`）
+ * 与读侧（`messageRowPosition`，`recall_ask` / `recall_read` 的生成与回验都走它）共用的**单一定义**，
+ * 两侧地址不可能对不上。取不到稳定位置 ⇒ `null`（不猜值）。
+ *
+ * `round_no` + `msg_seq` 合起来是**本轮内稳定**的消息地址（issue #261127-15：`recallEvidence`
+ * 的行主键），两个分量都只取**行上的不可变位置**：
+ *  - `round_no` = 该行所属的轮（`row.round`）；
+ *  - `msg_seq` 按行种类取：
+ *    · 消息行（`kind === "message"`）⇒ `row.seq`：每轮计数器（`nextMessageSeqByRound`）落一次就
+ *      不再变，`appendRound` / 消息行的同键异 payload 还会抛 ⇒ 位置不可变；
+ *    · 轮载体行（以及老账本自带正文的轮行）⇒ 该消息在**该行自己的** `row.messages` 里的下标：
+ *      载体行一次写入（`appendRound` 同键异 payload 会抛）⇒ 行不可变 ⇒ 下标稳定。
+ *
+ * ⚠ 两者都**不是**「折完之后在 `messages[]` 里的下标」——那个下标会随同轮再落消息行、随消息行被
+ * 折进载体而漂（#973 当初正是为躲它才改用内容寻址）；这里取的是**行上的**位置，折进载体仍是同一个值。
+ *
+ * 不可寻址的形状 ⇒ `null`：行没有可用轮号；消息行缺整数 `seq`（宿主手写的 `:input:` 那类行）。
+ *
+ * @param {any} row
+ * @param {number} index 该消息在 `row.messages` 里的下标（载体行按它取位置）
+ * @returns {{ round_no: number, msg_seq: number } | null}
+ */
+function positionOfRowMessage(row, index) {
+  const roundNo = Number.isSafeInteger(row?.round) ? row.round : undefined;
+  if (roundNo === undefined) return null;
+  if (row?.kind === MESSAGE_ROW_KIND) {
+    return Number.isSafeInteger(row.seq) ? { round_no: roundNo, msg_seq: row.seq } : null;
+  }
+  return Number.isSafeInteger(index) ? { round_no: roundNo, msg_seq: index } : null;
+}
+
+/**
+ * 给折出来的一条消息 stamp **本轮内的稳定位置** `round_no` + `msg_seq`（口径见
+ * `positionOfRowMessage`）。与 `stampRowTs` 同族、同一处调用点、同一纪律：
+ * **已有** `round_no` + `msg_seq`（都是整数）的消息**不改写**——幂等，且让前一次折叠 stamp 过、
+ * 又被宿主持久化进载体的消息在再折叠时保住原地址（否则同一段正文折一次换一套门牌号）。
+ * 位置取不到（见 `positionOfRowMessage`）⇒ **缺键**，不写 `undefined`。
+ *
+ * @param {any} message
+ * @param {any} row 该消息所在的那一行（位置的唯一来源）
+ * @param {number} index 该消息在 `row.messages` 里的下标
+ * @returns {any}
+ */
+function stampRowPosition(message, row, index) {
+  if (message === null || typeof message !== "object" || Array.isArray(message)) return message;
+  if (Number.isSafeInteger(message.round_no) && Number.isSafeInteger(message.msg_seq)) return message;
+  const position = positionOfRowMessage(row, index);
+  return position === null ? message : { ...message, round_no: position.round_no, msg_seq: position.msg_seq };
+}
+
+/**
+ * 读侧口径：这一行第 `index` 条消息的稳定位置。**优先**读消息上已有的 `round_no` / `msg_seq`
+ * （`foldMessageRows` stamp 上去的，或宿主把折好的正文持久化进载体后留下的），没有再按
+ * `positionOfRowMessage` 从行上派生（手写行 / 没经过内置折叠的 store）。
+ *
+ * 生成侧（`collectRoundMessagesInRange`）与校验侧（`recall_read` 的 evidence 模式）**都**用它 ⇒
+ * 同一条消息在两侧算出的地址逐字相同，这是「折行不变性」的实现前提。
+ *
+ * @param {any} message
+ * @param {any} row
+ * @param {number} index
+ * @returns {{ round_no: number, msg_seq: number } | null}
+ */
+export function messageRowPosition(message, row, index) {
+  if (message !== null && typeof message === "object" && !Array.isArray(message)
+    && Number.isSafeInteger(message.round_no) && Number.isSafeInteger(message.msg_seq)) {
+    return { round_no: /** @type {number} */ (message.round_no), msg_seq: /** @type {number} */ (message.msg_seq) };
+  }
+  return positionOfRowMessage(row, index);
+}
+
+/**
  * 读侧折叠：把 `kind: "message"` 行的正文按轮拼回轮行。
  * 无消息行时返回入参本身（老账本零改写）。
  *
@@ -145,6 +217,11 @@ function stampRowTs(message, row) {
  * （见 `stampRowTs`；分片只追加 content、不改写首片写上的戳）。行上没有 `ts`（手写行 / 不落 `ts`
  * 的宿主 store）⇒ 该消息**没有 `ts` 键**。宿主拿它做时间线/延迟分析——载体行自己的 `ts` 是
  * **轮行**落盘时刻，不是这条消息成型的时刻。
+ *
+ * **逐条稳定位置 `round_no` + `msg_seq`（issue #261127-15）**：同一处调用点还 stamp 上**本轮内稳定**的
+ * 消息地址（见 `stampRowPosition` / `positionOfRowMessage`：消息行取 `row.seq`，轮载体行取该消息在
+ * **该行自己的** `messages` 里的下标——两者都是**行上的不可变位置**，不是折完之后在 `messages[]` 里的
+ * 下标）。它是 `recallEvidence` 的行主键；行上取不到稳定位置（无轮号 / 消息行缺整数 `seq`）⇒ **缺键**。
  *
  * **守卫（载体已带这一轮的正文 ⇒ 该轮跳过）**：某轮载体行的 `messages` 已经等于从该轮消息行折出来的
  * 正文（逐字段深比较相等）时，这一轮的消息行被当作**重复副本**丢弃，不再往里拼一次。这就是宿主
@@ -210,7 +287,9 @@ export function foldMessageRows(records) {
         continue;
       }
       if (key !== "") parts.set(key, messages.length);
-      messages.push(...row.messages.map((message) => stampRowTs(message, row)));
+      // #261127-15：位置 stamp 与 `ts` 同一处、同一纪律——消息行折进载体也不改位置（行上的 `seq` /
+      // 载体行自己的下标都是不可变的，见 `stampRowPosition`）。
+      messages.push(...row.messages.map((message, index) => stampRowPosition(stampRowTs(message, row), row, index)));
     }
     // 守卫（issue #401 R3）：该轮载体**已经带着这一轮的正文**——宿主把折好的载体与原始消息行
     // 都交给了我们。此时再把消息行拼一次就是同一轮正文重复一遍（实测 r1 变
@@ -332,18 +411,25 @@ export function foldLedgerMessages(records) {
 }
 
 /**
- * 去掉消息上的**档案信封**字段 `ts`（issue #439）。
+ * 去掉消息上的**档案信封**字段：`ts`（issue #439）与 `round_no` / `msg_seq`（issue #261127-15）。
  *
  * 只用于「这段正文是否已经折过」的比较（`foldMessageRows` 的守卫）与恢复路径的规范化
- * （`foldLedgerMessages`）：`ts` 是档案信封，不是正文身份的一部分。
- * 只在真的带 `ts` 时拷贝；没有就原样返回（老账本/手写行/宿主不落 `ts` 的 store 零改写）。
+ * （`foldLedgerMessages`）：`ts` 与位置戳都是档案信封，不是正文身份的一部分。
+ * **位置戳必须一起剥**：守卫比的是「载体已有正文 == 从消息行折出来的正文」，升级现场（旧载体没被
+ * stamp 过、新折出的消息带 `round_no`/`msg_seq`）若让信封键参与比较就判不等 ⇒ 同一轮正文拼第二遍
+ * ——与 #439 那个 `ts` 事故同一个形状。
+ * 只在真的带信封字段时拷贝；都没有就原样返回（老账本/手写行/宿主不落这些键的 store 零改写）。
  * @param {any} message
  * @returns {any}
  */
 function withoutJournalTs(message) {
   if (message === null || typeof message !== "object" || Array.isArray(message)) return message;
-  if (typeof message.ts !== "string") return message;
+  const hasEnvelope = typeof message.ts === "string"
+    || Number.isSafeInteger(message.round_no) || Number.isSafeInteger(message.msg_seq);
+  if (!hasEnvelope) return message;
   const rest = { ...message };
   delete rest.ts;
+  delete rest.round_no;
+  delete rest.msg_seq;
   return rest;
 }

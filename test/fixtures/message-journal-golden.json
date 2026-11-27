@@ -65,7 +65,9 @@
                   },
                   "erix": {}
                 }
-              ]
+              ],
+              "round_no": 1,
+              "msg_seq": 0
             },
             {
               "role": "user",
@@ -88,7 +90,9 @@
                     "success": true
                   }
                 }
-              ]
+              ],
+              "round_no": 1,
+              "msg_seq": 1
             }
           ],
           "response": {
@@ -187,7 +191,9 @@
                   "type": "text",
                   "text": "第二段正文"
                 }
-              ]
+              ],
+              "round_no": 2,
+              "msg_seq": 0
             }
           ],
           "response": {
@@ -304,7 +310,9 @@
                   },
                   "erix": {}
                 }
-              ]
+              ],
+              "round_no": 3,
+              "msg_seq": 0
             },
             {
               "role": "user",
@@ -318,7 +326,9 @@
                     "success": true
                   }
                 }
-              ]
+              ],
+              "round_no": 3,
+              "msg_seq": 1
             }
           ],
           "response": {
@@ -408,7 +418,9 @@
                   "type": "text",
                   "text": "第一版终稿"
                 }
-              ]
+              ],
+              "round_no": 4,
+              "msg_seq": 0
             }
           ],
           "response": {
@@ -520,7 +532,9 @@
                   "type": "text",
                   "text": "第二版终稿"
                 }
-              ]
+              ],
+              "round_no": 5,
+              "msg_seq": 0
             }
           ],
           "response": {
@@ -633,7 +647,9 @@
               },
               "erix": {}
             }
-          ]
+          ],
+          "round_no": 1,
+          "msg_seq": 0
         },
         {
           "role": "user",
@@ -656,7 +672,9 @@
                 "success": true
               }
             }
-          ]
+          ],
+          "round_no": 1,
+          "msg_seq": 1
         },
         {
           "role": "assistant",
@@ -665,7 +683,9 @@
               "type": "text",
               "text": "第二段正文"
             }
-          ]
+          ],
+          "round_no": 2,
+          "msg_seq": 0
         },
         {
           "role": "user",
@@ -691,7 +711,9 @@
               },
               "erix": {}
             }
-          ]
+          ],
+          "round_no": 3,
+          "msg_seq": 0
         },
         {
           "role": "user",
@@ -705,7 +727,9 @@
                 "success": true
               }
             }
-          ]
+          ],
+          "round_no": 3,
+          "msg_seq": 1
         },
         {
           "role": "assistant",
@@ -714,7 +738,9 @@
               "type": "text",
               "text": "第一版终稿"
             }
-          ]
+          ],
+          "round_no": 4,
+          "msg_seq": 0
         },
         {
           "role": "user",
@@ -735,7 +761,9 @@
               "type": "text",
               "text": "第二版终稿"
             }
-          ]
+          ],
+          "round_no": 5,
+          "msg_seq": 0
         }
       ]
     },
@@ -908,7 +936,9 @@
                   },
                   "erix": {}
                 }
-              ]
+              ],
+              "round_no": 1,
+              "msg_seq": 0
             },
             {
               "role": "user",
@@ -922,7 +952,9 @@
                     "success": true
                   }
                 }
-              ]
+              ],
+              "round_no": 1,
+              "msg_seq": 1
             }
           ],
           "response": {
@@ -1012,7 +1044,9 @@
                   "type": "text",
                   "text": "第一段正文"
                 }
-              ]
+              ],
+              "round_no": 2,
+              "msg_seq": 0
             }
           ],
           "response": {
@@ -1129,7 +1163,9 @@
                   },
                   "erix": {}
                 }
-              ]
+              ],
+              "round_no": 3,
+              "msg_seq": 0
             },
             {
               "role": "user",
@@ -1143,7 +1179,9 @@
                     "success": true
                   }
                 }
-              ]
+              ],
+              "round_no": 3,
+              "msg_seq": 1
             }
           ],
           "response": {
@@ -1254,7 +1292,9 @@
                   },
                   "erix": {}
                 }
-              ]
+              ],
+              "round_no": 4,
+              "msg_seq": 0
             },
             {
               "role": "user",
@@ -1268,7 +1308,9 @@
                     "success": true
                   }
                 }
-              ]
+              ],
+              "round_no": 4,
+              "msg_seq": 1
             }
           ],
           "response": {
@@ -1360,7 +1402,9 @@
                   "type": "text",
                   "text": "恢复后的终稿"
                 }
-              ]
+              ],
+              "round_no": 5,
+              "msg_seq": 0
             }
           ],
           "response": {
@@ -1466,7 +1510,9 @@
               },
               "erix": {}
             }
-          ]
+          ],
+          "round_no": 1,
+          "msg_seq": 0
         },
         {
           "role": "user",
@@ -1480,7 +1526,9 @@
                 "success": true
               }
             }
-          ]
+          ],
+          "round_no": 1,
+          "msg_seq": 1
         },
         {
           "role": "assistant",
@@ -1489,7 +1537,9 @@
               "type": "text",
               "text": "第一段正文"
             }
-          ]
+          ],
+          "round_no": 2,
+          "msg_seq": 0
         },
         {
           "role": "user",
@@ -1515,7 +1565,9 @@
               },
               "erix": {}
             }
-          ]
+          ],
+          "round_no": 3,
+          "msg_seq": 0
         },
         {
           "role": "user",
@@ -1529,7 +1581,9 @@
                 "success": true
               }
             }
-          ]
+          ],
+          "round_no": 3,
+          "msg_seq": 1
         },
         {
           "role": "user",
@@ -1552,7 +1606,9 @@
               },
               "erix": {}
             }
-          ]
+          ],
+          "round_no": 4,
+          "msg_seq": 0
         },
         {
           "role": "user",
@@ -1566,7 +1622,9 @@
                 "success": true
               }
             }
-          ]
+          ],
+          "round_no": 4,
+          "msg_seq": 1
         },
         {
           "role": "assistant",
@@ -1575,7 +1633,9 @@
               "type": "text",
               "text": "恢复后的终稿"
             }
-          ]
+          ],
+          "round_no": 5,
+          "msg_seq": 0
         }
       ]
     }

@@ -7,7 +7,9 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 
 /** issue #439 A：`load()` 的折叠结果给每条逻辑消息带了行级 `ts`（落盘时刻），内存里的消息没有。
  * 比较「档案 = 完整正文」时剥掉这个信封字段，并另有一句断言档案侧**真的**带 `ts`。 */
-const withoutJournalTs = (messages) => messages.map(({ ts, ...message }) => message);
+// 剥掉**档案信封**：`ts`（#439）与本轮内稳定位置 `round_no` + `msg_seq`（#261127-15）——
+// 它们都在 `load()` 时被 stamp 上消息，但不属于模型可见正文。
+const withoutJournalTs = (messages) => messages.map(({ ts, round_no: _roundNo, msg_seq: _msgSeq, ...message }) => message);
 
 test("returns a single-turn final response", async () => {
   const provider = createFakeProvider([

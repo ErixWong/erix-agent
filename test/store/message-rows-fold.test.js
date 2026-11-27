@@ -216,7 +216,12 @@ test("261021 fold: partOf 指认的分片按 seq 接回同一条消息（一条 
     messageRow(2, 0, msg("assistant", "轮二正文")),
   ]);
   // 期望值手写：与改造前那条聚合消息逐字相等（分片行不额外产生一条消息）。
-  assert.deepEqual(folded[0].messages, [msg("assistant", "轮二正文"), aggregate]);
+  // #261127-15：折出的每条消息还带**本轮内稳定位置** `round_no` + `msg_seq`（消息行取 `row.seq`；
+  // 分片折回的聚合消息取**首片**（seq 1）的 seq——与 `ts` 同一纪律）；这是 `recallEvidence` 的行主键。
+  assert.deepEqual(folded[0].messages, [
+    { ...msg("assistant", "轮二正文"), round_no: 2, msg_seq: 0 },
+    { ...aggregate, round_no: 2, msg_seq: 1 },
+  ]);
 });
 
 test("261021 fold: partOf 指认的行不在本组（或没指认到）⇒ 分片行按普通消息拼接，不丢正文", () => {

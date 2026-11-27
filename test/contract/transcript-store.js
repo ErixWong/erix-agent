@@ -445,11 +445,14 @@ export function transcriptStoreContract(label, createStore, options = {}) {
       }, { ts: foldTs(4), partOf: `${foldRunId}:msg:${String(round)}:2` }),
     ];
     const expected = [
-      { role: "user", content: [textBlock("inspect files")], ts: foldTs(1) },
+      // #261127-15：折叠除了 `ts` 还 stamp **本轮内稳定位置** `round_no` + `msg_seq`（消息行取 `row.seq`，
+      // 分片折回的那条取**首片**的 seq——与 `ts` 同一纪律）；这是 `recallEvidence` 的行主键。
+      { role: "user", content: [textBlock("inspect files")], ts: foldTs(1), round_no: round, msg_seq: 0 },
       {
         role: "assistant",
         content: [{ type: "tool_use", id: useId, name: "list", input: { path: "." } }],
         ts: foldTs(2),
+        round_no: round, msg_seq: 1,
       },
       {
         role: "user",
@@ -459,6 +462,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
         ],
         // 分片折回的那条聚合消息取**首片**（seq 2）的 ts，不是末片（seq 3）的 —— issue #439 A。
         ts: foldTs(3),
+        round_no: round, msg_seq: 2,
       },
     ];
     return { rows, expected };
@@ -531,14 +535,16 @@ export function transcriptStoreContract(label, createStore, options = {}) {
       }, { ts: foldTs(14) }),
     ];
     const expected = [
-      { role: "user", content: [textBlock("go")], ts: foldTs(11) },
-      { role: "assistant", content: [{ type: "thinking", thinking: "先看一下目录", signature: "sig-1" }], ts: foldTs(12) },
+      // #261127-15：同 `foldRound`——位置戳逐条跟上（块类型无关，thinking / tool_use 一样 stamp）。
+      { role: "user", content: [textBlock("go")], ts: foldTs(11), round_no: round, msg_seq: 0 },
+      { role: "assistant", content: [{ type: "thinking", thinking: "先看一下目录", signature: "sig-1" }], ts: foldTs(12), round_no: round, msg_seq: 1 },
       {
         role: "assistant",
         content: [{ type: "tool_use", id: useId, name: "list", input: { path: "src" } }],
         ts: foldTs(13),
+        round_no: round, msg_seq: 2,
       },
-      { role: "user", content: [{ type: "tool_result", tool_use_id: useId, content: "ok" }], ts: foldTs(14) },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: useId, content: "ok" }], ts: foldTs(14), round_no: round, msg_seq: 3 },
     ];
     for (const row of rows) await store.appendRound(foldRunId, row);
 
