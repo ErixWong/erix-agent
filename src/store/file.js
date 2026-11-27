@@ -8,6 +8,7 @@ import { foldMessageRows } from "./message-rows.js";
 import {
   assertSafeRound, dedupConflictError, payloadFingerprint, recordKey,
 } from "./transcript-dedup.js";
+import { createFoldChannelBookkeeping, foldRecordsFromRoundRecords, mergeFoldRecords, nextFoldSeq, sortFoldsBySeq } from "./folds.js";
 
 const HASHED_RUN_ID_PREFIX = "run-h-";
 
@@ -95,11 +96,39 @@ export function partialSlotPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.partial.jsonl`);
 }
 
+/**
+ * ADR-022 §1.3（工单本刀）：**折叠通道**的落盘路径 `<dir>/<safeRunId(runId).folds.jsonl`。
+ *
+ * 与 recovery 侧车同款写法：一表一文件、只追加、走自己的读口 `loadFolds()`——**轮记录通道的
+ * 每一个读口零改动**（ADR 对恢复行同款的理由）。命名口径仍由 `safeRunId` 唯一实现。
+ * @param {string} dir @param {string} runId @returns {string}
+ */
+export function foldsPath(dir, runId) {
+  return join(dir, `${safeRunId(runId)}.folds.jsonl`);
+}
+
 // 去重缓存的**文件后缀**：同一个 runId 现在有两份恢复行文件 ⇒ 缓存必须按文件分开。
 // 少了这层后缀，「事件文件里那条 key」会让槽文件把同号的正文判成「已写过」——
 // 正是被本刀要钉死的那个静默 bug（重放被替换掉的正文被判成已写过）。
 const RECOVERY_CACHE_SUFFIX_EVENTS = ":events";
 const RECOVERY_CACHE_SUFFIX_PARTIAL = ":partial";
+
+/**
+ * 播种读不动轮记录（PR #971 终验）：`appendFold` 宁可失败也不许发出**可能已被占用**的 `seq`。
+ * 调用方（orchestrator）按**可检测的降级**处理：折叠事实仍写轮记录，通道这次不落，并留痕。
+ */
+export class FoldSeedUnavailableError extends Error {
+  /**
+   * @param {string} runId
+   * @param {unknown} cause
+   */
+  constructor(runId, cause) {
+    super(`appendFold(${String(runId)}): 读不动轮记录的 foldedFacts，无法安全分配 folds.seq（fail-closed）`);
+    this.name = "FoldSeedUnavailableError";
+    this.code = "FOLD_SEED_UNAVAILABLE";
+    this.cause = cause;
+  }
+}
 
 function statePath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.state.json`);
@@ -605,7 +634,9 @@ async function replacePartialTextSlot(path, runId, record, dedupCaches, cacheKey
  *   loadRawRows: (runId:string) => Promise<RoundRecord[]>,
  *   appendRecoveryRow: (runId:string, record:object) => Promise<boolean>,
  *   listRecoveryRows: (runId:string) => Promise<object[]>,
- *   clearRecoveryRows: (runId:string) => Promise<boolean>
+ *   clearRecoveryRows: (runId:string) => Promise<boolean>,
+ *   appendFold: (runId:string, fold:object) => Promise<object>,
+ *   loadFolds: (runId:string) => Promise<object[]>
  * }}
  */
 export function createFileTranscriptStore({ dir }) {
@@ -617,6 +648,9 @@ export function createFileTranscriptStore({ dir }) {
   // issue #769：恢复行通道的 dedup 缓存（与轮记录那份**分开**：两份文件各自的 key 集不得互相污染，
   // 否则一个 `…:recovery:…` 键会被当成轮记录的 key 参与幂等判定）。
   const recoveryDedupCaches = new Map();
+  // ADR-022 §1.3：折叠通道的 `seq` 分配器簿记（每个 runId 一份）。`seq` 分配与内存 store 共用
+  // `./folds.js` 的同一份实现⇒ 同一操作序列两侧的 `loadFolds()` 序列化逐字节相同。
+  const foldChannels = /** @type {Map<string, ReturnType<typeof createFoldChannelBookkeeping>>} */ (new Map());
   const loadRecords = async (runId) => {
     const path = transcriptPath(dir, runId);
     await repairTranscriptTail(path);
@@ -727,6 +761,87 @@ export function createFileTranscriptStore({ dir }) {
       for await (const row of readRecords(recoveryRowsPath(dir, runId))) rows.push(row);
       for await (const row of readRecords(partialSlotPath(dir, runId))) rows.push(row);
       return rows;
+    },
+
+    /**
+     * ADR-022 §1.3（可选能力）：把一次折叠追加进**折叠通道** `<runId>.folds.jsonl`（一折一行），
+     * 形状与 `buildFoldedFacts` 逐键对齐，再由本 store 赋 `seq`。
+     *
+     * 幂等（ADR §1.3 末段）：**盘上是真相源**——先读回已存行，同 `foldId` 已入账 ⇒ 直接返回
+     * 那一条（同一个 `seq`），**不新增行**；新折叠的 `seq` 由 `./folds.js` 的分配器接在已见
+     * 最大值之后（严格递增、不断档）。分配器首次为该 run 使用时从盘上已存行 seed ⇒
+     * 重新打开目录后重投同 `foldId` 仍拿回同一个号。
+     * @param {string} runId @param {object} fold 折叠记录（不含 `seq`）
+     * @returns {Promise<object>} 落账那一条（带 `seq`）
+     */
+    async appendFold(runId, fold) {
+      return await withAppendLock(runId, async () => {
+        await mkdir(dir, { recursive: true });
+        const path = foldsPath(dir, runId);
+        // ①（崩溃安全）：与 recovery 侧车 `appendRecord` / `appendRound` 同法——追加**前**先修复
+        // 文件尾部（完整 JSON 缺 LF ⇒ 补 `\n`；半行残段 ⇒ 隔离 `.corrupt.*` + 截断）。不先修的话，
+        // 一次崩溃留下的尾部残行会被本次 append 粘成「中间行的残骸」，`readRecords` 只会在 EOF
+        // 跳残行、粘在新行前面的残行从此再也读不出 ⇒ 整份 `.folds.jsonl` 解析坏掉。
+        await repairTranscriptTail(path);
+        /** @type {object[]} */
+        const rows = [];
+        for await (const row of readRecords(path)) rows.push(row);
+        // ②（合并播种）：分配器必须从「通道 ∪ 轮记录 `foldedFacts`」播种——与 resume 的合并读
+        // 同一份数据、同一口径（`mergeFoldRecords`）。兼容期同一批折叠**也**在轮记录里；只播
+        // 通道 ⇒ 拿不到通道（旧 transcript）或通道不完整时，新折叠会从头编号、与轮记录里已存在的
+        // `seq` 撞车。读轮记录只为播种 ⇒ 失败时退化为「只播通道」（与修复前同口径，不会更差）。
+        /** @type {object[]} */
+        const roundFacts = [];
+        try {
+          /** @type {object[]} */
+          const roundRecords = [];
+          for await (const rec of readRecords(transcriptPath(dir, runId))) roundRecords.push(rec);
+          roundFacts.push(...foldRecordsFromRoundRecords(roundRecords));
+        } catch (error) {
+          // **fail-closed**（PR #971 终验）：轮记录读不动（如中途损坏）时**不许**退回「只播通道」。
+          // 兼容期同一批折叠也在轮记录里；只播通道会发出一个**可能已被占用**的 `seq`，
+          // 于是「同一折叠拿回同一个号」这条幂等判据在崩溃/损坏的账本上静默失效。
+          // 折叠事实宁可这次不落通道（由调用方按降级处理并留痕），也不许写出一个错的号。
+          throw new FoldSeedUnavailableError(runId, error);
+        }
+        const merged = mergeFoldRecords({ channelRows: rows, roundFacts });
+        /** @type {ReturnType<typeof createFoldChannelBookkeeping>} */
+        let channel = foldChannels.get(runId);
+        if (channel === undefined) {
+          channel = createFoldChannelBookkeeping();
+          foldChannels.set(runId, channel);
+        }
+        // 首次为该 run 使用 ⇒ 从合并集灌回分配器（seed 幂等，只真正 seed 一次）。
+        channel.seedFromRows(merged);
+        const copy = structuredClone(fold);
+        const foldId = /** @type {{ foldId?: unknown }} */ (copy ?? {}).foldId;
+        // 幂等：同 foldId 已在**通道**入账 ⇒ 返回已存那条（同一 seq），不新增行。
+        if (typeof foldId === "string" && foldId !== "") {
+          const existing = rows.find((row) => (/** @type {{ foldId?: unknown }} */ (row).foldId) === foldId);
+          if (existing !== undefined) return structuredClone(existing);
+        }
+        const record = { ...copy, seq: nextFoldSeq(channel.allocator, merged, copy) };
+        const handle = await open(path, "a+");
+        try {
+          await handle.write(`${JSON.stringify(record)}\n`, null, "utf8");
+        } finally {
+          await handle.close();
+        }
+        return record;
+      });
+    },
+
+    /**
+     * ADR-022 §1.3（可选能力）：读回 `<runId>.folds.jsonl` 的全部折叠行，按 `seq` **升序**返回。
+     * 文件不在场 ⇒ `[]`。排序口径与内存 store 共用 `./folds.js`⇒ 两侧对同一操作序列产出
+     * 逐字节相同的序列化结果。
+     * @param {string} runId @returns {Promise<object[]>}
+     */
+    async loadFolds(runId) {
+      /** @type {object[]} */
+      const rows = [];
+      for await (const row of readRecords(foldsPath(dir, runId))) rows.push(row);
+      return sortFoldsBySeq(rows);
     },
 
     /**

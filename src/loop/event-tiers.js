@@ -115,6 +115,9 @@ export const EVENT_TIERS = Object.freeze({
   context_unknown_option: EVENT_TIER_FACT,
   model_metadata_missing: EVENT_TIER_FACT,
   persistence_capability_degraded: EVENT_TIER_FACT,
+  // ADR-022 §4（新格）：宿主 store 没有折叠通道（`appendFold`）⇒ 一次性降级诊断，与
+  // `persistence_capability_degraded` 同档（可检测的降级、不静默、每 run 至多一条 ⇒ 唯一副本）。
+  store_folds_channel_absent: EVENT_TIER_FACT,
   budget_below_working_set: EVENT_TIER_FACT,
   forced_final: EVENT_TIER_FACT,
   final_guard: EVENT_TIER_FACT,

@@ -184,6 +184,7 @@ import {
   pinFedSummaryBlock,
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
+import { foldRecordsFromRoundRecords, mergeFoldRecords } from "../store/folds.js";
 import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { foldWithinBudget, prependFoldSummary } from "../compact/budget-fit.js";
 // issue #892：派生预算需要把工具定义这一项扣掉，`computeBudget` 仍是公式的唯一之家。
@@ -493,7 +494,7 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -509,6 +510,12 @@ function mergeFoldedRoundRanges(first, second) {
  *   **出现写形态的 exec 命令条数**，与 finalGuard payload 的同名键**同源同口径**（解析不出目标也
  *   算）：说的是「这里有写、我不全知道」，不是「写了几次文件」。只在 payload 里有值时才写键
  *   （0 不写，同 payload 口径）；其余事件不写该键。
+ * @property {string} [code] issue #971（additive）：`store_folds_channel_absent` 这一族用 `code` 区分
+ *   两种**不同**情形——`store_folds_channel_absent`（宿主没实现端口）与
+ *   `store_folds_channel_write_failed`（实现了，但这次写不成，见 `FoldSeedUnavailableError`）。
+ *   只在带 `code` 的那几条诊断上出现；其余事件不写该键。
+ * @property {string} [error] issue #971（additive）：同上——失败原因的一句话（`Error.message` 或
+ *   `String(error)`），只在该族事件上出现。它**不是**给模型看的，是给宿主排障的。
  * @property {number} [execWriteUnresolvedCount] issue #881（additive）：`deliverable_blind` 专用——
  *   上述写形态里**没进台账**的目标个数（目标解析不出 / 结构读不懂 / 被截断 / 来自不透明包装如
  *   `bash -c '… > …'`；不透明包装处是**下界**，口径同 payload 同名键）。三个盲区键就是本事件的
@@ -1487,6 +1494,62 @@ export async function runToolLoop(options) {
       });
     }
   };
+  // ADR-022 §4（可选端口）：宿主 store 没有 `appendFold` ⇒ 折叠只写轮记录（今天的旧行为），
+  // 但**必须可检测**：一次性 `store_folds_channel_absent` 诊断（不许静默）。去重与直调
+  // `onEvent` 的风格照抄上方 `notifyModelMetadataMissing`（同样绕开定义在下方的 `emitEvent`，
+  // 避免踩 TDZ）；每 run 最多一条。
+  let foldsChannelAbsentNotified = false;
+  const notifyFoldsChannelAbsent = () => {
+    if (foldsChannelAbsentNotified) return;
+    foldsChannelAbsentNotified = true;
+    // ④（非静默降级的真正保证）：先落进 run state 的 `deterministic` 层（`storeFoldsChannelAbsent`），
+    // 再发 `onEvent`。`onEvent` 缺席（宿主没注册 listener）时事件会静默丢失，但 run state 里仍查得到。
+    governorState.storeFoldsChannelAbsent = true;
+    try {
+      onEvent?.({
+        type: "store_folds_channel_absent",
+        runId,
+        ...(parentRunId === undefined ? {} : { parentRunId }),
+        method: "appendFold",
+        detail: "store does not implement appendFold/loadFolds; folds are written into the round"
+          + " record only (legacy behavior) and the dedicated folds channel is skipped for this run",
+      });
+    } catch (hostError) {
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        type: "store_folds_channel_absent",
+        method: "appendFold",
+      });
+    }
+  };
+
+  // PR #971 终验：`appendFold` 存在但**这次写不成**（fail-closed）——与「宿主没实现」是两件事，
+  // 所以走独立诊断码 `store_folds_channel_write_failed`；同样先落 run state 再发事件。
+  let foldsChannelWriteFailedNotified = false;
+  /** @param {unknown} error */
+  const notifyFoldsChannelWriteFailed = (error) => {
+    if (foldsChannelWriteFailedNotified) return;
+    foldsChannelWriteFailedNotified = true;
+    governorState.storeFoldsChannelWriteFailed = true;
+    try {
+      onEvent?.({
+        // 事件 `type` 必须是 `LoopEvent.type` 联合里已有的那个（新增 type 要同步联合与分级表）；
+        // 所以这里复用 `store_folds_channel_absent` 这一族，靠 `code` 区分「没实现」与「这次写不成」。
+        type: "store_folds_channel_absent",
+        code: "store_folds_channel_write_failed",
+        method: "appendFold",
+        detail: "appendFold failed closed (could not seed folds.seq from the round ledger); "
+          + "the fold was written into the round record only for this round",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch (hostError) {
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        hook: "persistence_degraded",
+        detail: "host onEvent threw while reporting a folds-channel write failure",
+      });
+    }
+  };
   /**
    * @param {string} method store 方法名
    * @param {...any} args 交给 store 的原样参数
@@ -2096,6 +2159,11 @@ export async function runToolLoop(options) {
     // 为什么不能只靠 `compactionStats` 里那条 `trigger` 记录：那份列表是 32 条**滚动窗口**，
     // 32 次折叠之后记录会被挤掉 ⇒ 配额静默重置（copilot 验收点出来的）。
     contextWindowRecoveryUsed: false,
+    // issue #971 ④：`store` 缺 `appendFold`/`loadFolds` ⇒ 折叠降级只写轮记录。这个标记与
+    // `contextWindowRecoveryUsed` 同一类「事后要能查」的一次性事实：诊断除 `onEvent` 外还落进
+    // run state 的 `deterministic` 层，使「没有 listener 时诊断仍不静默」。
+    storeFoldsChannelAbsent: false,
+    storeFoldsChannelWriteFailed: false,
     // issue #473：`judge_done` 的「无交付物正文」降级配额（见 `JUDGE_DONE_GAP_NUDGE_LIMIT`）。
     judgeDoneGapNudges: 0,
     noToolStreak: 0,
@@ -2336,16 +2404,21 @@ export async function runToolLoop(options) {
     notifyCapabilitySkipped,
     // issue #326（wo-C）：恢复时把**已入账的折叠摘要**灌回引擎的复用账本 ⇒ 同一折叠输入不再调摘要器。
     // 写成「属性 + 箭头函数」（`test/loop-callback-this.test.js` 钉住的口径），不是方法简写。
-    seedFoldSummaries: (records) => {
+    seedFoldSummaries: async (records) => {
       foldSummaryLedger.seedFromRecords(records);
-      // issue #601：resume 的账本列表 = store 里全部轮记录的 `foldedFacts`（一折一条，旧 → 新）。
-      // 拿不到记录列表时保持空数组 ⇒ 策略侧闸门判「账本覆盖不到块」⇒ 退回解析块（不静默丢折）。
-      foldRecordLedger = Array.isArray(records)
-        ? records
-          .map((record) => record?.[FOLDED_FACTS_RECORD_FIELD])
-          .filter((facts) => facts !== null && typeof facts === "object")
-          .map((facts) => cloneState(facts))
+      // issue #601：resume 的折叠账本 = **合并读**（ADR-022 §4）：`folds` 通道 ∪ 轮记录里的
+      // `foldedFacts`，按身份去重（`foldId ?? fingerprint ?? sha256(from,to,text)`）、**通道行优先**。
+      // **不许**「通道空才回退扫旧记录」：迁移中途失败时两处各有一半，回退式读会漏。
+      // 拿不到通道（无 `loadFolds`）时 channelRows=[] ⇒ 退回与旧代码等价的「只读轮记录」（不静默丢折）。
+      // 合并读口径唯一（issue #971 ②）：与两侧 store 的 `appendFold` 播种共用 `./folds.js` 的
+      // `mergeFoldRecords` / `foldRecordsFromRoundRecords`——身份去重（`foldIdentityKey`）、**通道行
+      // 优先**、按 `seq` 升序，全部在那一处。拿不到通道（无 `loadFolds`）⇒ `channelRows=[]` ⇒ 退回
+      // 与旧代码等价的「只读轮记录」（不静默丢折）。`cloneState` 逐值副本（与修复前同形）。
+      const channelRows = typeof store?.loadFolds === "function"
+        ? await store.loadFolds(runId)
         : [];
+      const roundFacts = foldRecordsFromRoundRecords(records);
+      foldRecordLedger = mergeFoldRecords({ channelRows, roundFacts }).map(cloneState);
       // issue #567：把已入账的折叠身份（`foldId`/`seq`）灌回分配器 ⇒ resume 之后
       // ① 重放同一次折叠拿回**同一个** `seq`（宿主去重不会被 resume 打穿）；
       // ② 新折叠的 `seq` 接在账本最大值之后（严格递增不断档）。#567 之前写的记录没有 `seq`，
@@ -3524,6 +3597,9 @@ export async function runToolLoop(options) {
       guardExtensionUsed: governorState.guardExtensionUsed,
       // issue #930：超窗自恢复配额随 run-state 落盘（同上，跨 resume 不重置）。
       contextWindowRecoveryUsed: governorState.contextWindowRecoveryUsed,
+      // issue #971 ④：折叠通道缺失的降级事实随 run-state 落盘（无 listener 时仍可事后查，不静默）。
+      storeFoldsChannelAbsent: governorState.storeFoldsChannelAbsent,
+      storeFoldsChannelWriteFailed: governorState.storeFoldsChannelWriteFailed,
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {
@@ -6445,8 +6521,25 @@ export async function runToolLoop(options) {
       // `record.summary`（本轮自身摘要）一字不动 ⇒ 既有的横幅语义、`#326` 守卫、归档都不受影响。
       if (compaction.foldedFacts !== undefined) {
         roundRecord[FOLDED_FACTS_RECORD_FIELD] = cloneState(compaction.foldedFacts);
-        // issue #601：同一份事实进 run 作用域的折叠记录账本（与落盘同一条件 ⇒ 列表与账本同源）。
-        foldRecordLedger.push(cloneState(compaction.foldedFacts));
+        // ADR-022 §1.3/§4：折叠升为**独立通道**，同时轮记录里的 `foldedFacts` 是**兼容期双写**
+        //（下一刀才撤）。账本（`foldRecordLedger`）的来源改成**通道返回的那一条**（带通道
+        // 分配的 `seq`）；store 没有 `appendFold` ⇒ 保持今天行为（只写轮记录 + 推账本）并发一次
+        // 可检测的降级诊断（不静默）。
+        if (typeof store?.appendFold === "function") {
+          try {
+            const persistedFold = await store.appendFold(runId, cloneState(compaction.foldedFacts));
+            foldRecordLedger.push(cloneState(persistedFold ?? compaction.foldedFacts));
+          } catch (foldChannelError) {
+            // PR #971 终验：`appendFold` 的 fail-closed（播种读不动轮记录 ⇒ 拒绝发出可能被占用的 seq）
+            // 落到这里。**折叠本身不失败**——事实仍写轮记录，账本仍推进；只是这次不落通道，并留痕。
+            foldRecordLedger.push(cloneState(compaction.foldedFacts));
+            notifyFoldsChannelWriteFailed(foldChannelError);
+          }
+        } else {
+          // issue #601：同一份事实进 run 作用域的折叠记录账本（与落盘同一条件 ⇒ 列表与账本同源）。
+          foldRecordLedger.push(cloneState(compaction.foldedFacts));
+          notifyFoldsChannelAbsent();
+        }
       }
     }
     // issue #460：宿主有权对**单条记录**定界（本站 1 MB）。归档是咨询性字段 —— 正文早已按轮

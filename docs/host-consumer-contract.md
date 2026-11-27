@@ -6689,6 +6689,7 @@ at the emission site, and two of them were wrong in the first draft of this sect
 | `continuity_injection_skipped` | `fact` | no | Why the handoff was not injected this time. |
 | `model_metadata_missing` | `fact` | no | One-shot diagnostic; the event itself is the only durable record. |
 | `persistence_capability_degraded` | `fact` | no | Same. |
+| `store_folds_channel_absent` | `fact` | no | Same (ADR-022: store lacks the folds channel; one-shot degrade diagnostic). |
 | `budget_below_working_set` | `fact` | no | Same. |
 | `config_override_conflict` | `fact` | no | Same. |
 | `context_unknown_option` | `fact` | no | Same. |

@@ -4,6 +4,7 @@ import { foldMessageRows } from "./message-rows.js";
 import {
   assertSafeRound, dedupConflictError, payloadFingerprint, recordKey,
 } from "./transcript-dedup.js";
+import { createFoldChannelBookkeeping, foldRecordsFromRoundRecords, mergeFoldRecords, nextFoldSeq, sortFoldsBySeq } from "./folds.js";
 
 /**
  * @typedef {{
@@ -43,7 +44,9 @@ function copyRecord(record) {
  *   loadRawRows: (runId:string) => Promise<RoundRecord[]>,
  *   appendRecoveryRow: (runId:string, record:object) => Promise<boolean>,
  *   listRecoveryRows: (runId:string) => Promise<object[]>,
- *   clearRecoveryRows: (runId:string) => Promise<boolean>
+ *   clearRecoveryRows: (runId:string) => Promise<boolean>,
+ *   appendFold: (runId:string, fold:object) => Promise<object>,
+ *   loadFolds: (runId:string) => Promise<object[]>
  * }}
  */
 export function createMemoryTranscriptStore() {
@@ -57,6 +60,10 @@ export function createMemoryTranscriptStore() {
   const partialSlots = /** @type {Map<string, object[]>} */ (new Map());
   const runStates = new Map();
   const runStatuses = new Map();
+  // ADR-022 §1.3（可选能力）：**折叠通道**（与 `transcripts` / 恢复行**分开**，`load()` 永远看不到它）。
+  // 值是按 `seq` 入账的折叠行；每个 run 一份 `seq` 分配器簿记（与 file store 共用 `./folds.js` 的口径）。
+  const folds = /** @type {Map<string, object[]>} */ (new Map());
+  const foldChannels = /** @type {Map<string, ReturnType<typeof createFoldChannelBookkeeping>>} */ (new Map());
   /** 落盘行的**副本**（`load()` 与 `loadRawRows` 的共同输入；折叠只发生在 `load()` 那一侧）。
    * @param {string} runId @returns {RoundRecord[]} */
   const rawRows = (runId) => (transcripts.get(runId) ?? []).map(copyRecord);
@@ -224,6 +231,52 @@ export function createMemoryTranscriptStore() {
     async loadRunStateStatus(runId) {
       if (runStatuses.has(runId)) return runStatuses.get(runId);
       return runStates.get(runId)?.state;
+    },
+
+    /**
+     * ADR-022 §1.3（可选能力）：把一次折叠写进**折叠通道**——一次折叠一行，形状与 `buildFoldedFacts`
+     * 的返回逐键对齐，再由本 store 赋 `seq`。
+     *
+     * 幂等（ADR §1.3 末段，**不用** `ON CONFLICT DO NOTHING` 那种把冲突吞掉的写法）：同 `foldId`
+     * 重投 ⇒ 返回**已存的那一条**（同一个 `seq`），**不新增行**。新折叠的 `seq` 接在 run 内最大值之后
+     * （严格递增、不断档），口径由 `./folds.js` 与 file store **共用同一份实现**。
+     * @param {string} runId @param {object} fold 折叠记录（`buildFoldedFacts` 的返回，不含 `seq`）
+     * @returns {Promise<object>} 落账的那一条（带 `seq`）的副本
+     */
+    async appendFold(runId, fold) {
+      /** @type {ReturnType<typeof createFoldChannelBookkeeping>} */
+      let channel = foldChannels.get(runId);
+      if (channel === undefined) {
+        channel = createFoldChannelBookkeeping();
+        foldChannels.set(runId, channel);
+      }
+      const rows = folds.get(runId) ?? [];
+      // ②（合并播种）：与 file store 同口径——分配器从「通道 ∪ 轮记录 `foldedFacts`」播种
+      // （`mergeFoldRecords`）。只播通道 ⇒ 拿不到通道 / 通道不完整时，新折叠会从头编号、与轮
+      // 记录里已存在的 `seq` 撞车。
+      const roundFacts = foldRecordsFromRoundRecords(transcripts.get(runId) ?? []);
+      const merged = mergeFoldRecords({ channelRows: rows, roundFacts });
+      channel.seedFromRows(merged);
+      const copy = copyRecord(fold);
+      const foldId = /** @type {{ foldId?: unknown }} */ (copy ?? {}).foldId;
+      // 幂等：同 foldId 已在**通道**入账 ⇒ 拿回已存的那一条（同一 seq），不新增行。
+      if (typeof foldId === "string" && foldId !== "") {
+        const existing = rows.find((row) => (/** @type {{ foldId?: unknown }} */ (row).foldId) === foldId);
+        if (existing !== undefined) return copyRecord(existing);
+      }
+      const record = { ...copy, seq: nextFoldSeq(channel.allocator, merged, copy) };
+      rows.push(copyRecord(record));
+      folds.set(runId, rows);
+      return copyRecord(record);
+    },
+
+    /**
+     * ADR-022 §1.3（可选能力）：读回该 run 的折叠通道，按 `seq` **升序**返回（副本）。
+     * 排序口径与 file store 共用 `./folds.js` ⇒ 两侧对同一操作序列产出逐字节相同的序列化结果。
+     * @param {string} runId @returns {Promise<object[]>}
+     */
+    async loadFolds(runId) {
+      return sortFoldsBySeq((folds.get(runId) ?? []).map(copyRecord));
     },
   };
 }
