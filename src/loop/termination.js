@@ -600,7 +600,7 @@ export function createTerminationManager(ctx) {
   // 它回答的是「这一路的停机是被预算/截断掐断的吗」，只有这一问需要「末轮正文非空也要再问一发」；
   // 其余 reason 一律只看「手里有没有终稿正文」。**不复用** `TRUNCATED_TERMINATION_REASONS`：那个集合还含
   // `final_guard_unverified`，而它今天从不走到强制收尾（两个调用点只喂 `stop` 动作与 `max_rounds_cap`）。
-  // **为什么开在函数里而不是模块顶层**：`docs-drift-check --self-test` 的三个变异体把靶子钉在
+  // **为什么开在函数里而不是模块顶层**：原 `docs-drift-check --self-test` 的三个变异体把靶子钉在
   // `termination.js:111`（`terminationReasonForAction`）与 `:116`（`max_rounds_cap` 字面量）上，模块顶层插 19 行
   // 会把这两个声明行推走 ⇒ 自测报「变异没落上」（按 #210 R2，变异没落上就算失败）。位置选在这里，
   // 111 / 116 两个声明行**一字不动**，契约的符号锚点与自测变异体同时成立。

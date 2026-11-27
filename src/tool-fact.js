@@ -7,7 +7,7 @@
 //   1. **同一个 tool_result 事实只由 `buildToolResultFact()` 构造一次**（引擎事实在 `erix.*`，
 //      宿主扩展在 `metadata.*`，`is_error` 留在顶层是 wire 字段）；构造器**不**把 metadata 摊平到顶层；
 //   2. **「谁是某个字段的拥有者」写进导出的 `TOOL_RESULT_CONTRACT`**，由三方消费同一份：
-//      构造器（按它写路径）、`scripts/docs-drift-check.mjs`（契约文档的字段清单与该常量双向比成员）、
+//      构造器（按它写路径）、`docs-drift-check`（契约文档的字段清单与该常量双向比成员）、
 //      `test/contract/tool-result-envelope.js`（从常量生成期望字段集合）。
 //
 // T1 是 additive 双写期；**T2（工单 261014）结束双写**：引擎不再写顶层摊平的宿主键，也不再写顶层
@@ -34,7 +34,7 @@ function deepFreeze(
  * 字段归属的唯一真相（工单 §4）。
  *
  * 消费方与本常量的关系是**成员级**的：新增/改名一个引擎字段必须改这里，于是
- * 契约文档的字段清单（`docs-drift-check` 的 `anchors` 规则）与契约测试的期望字段集
+ * 契约文档的字段清单（原 `docs-drift-check` 的 `anchors` 规则，该闸已删）与契约测试的期望字段集
  * 会同时变红，而不是留下第三处自说自话的清单。
  */
 export const TOOL_RESULT_CONTRACT = deepFreeze({
