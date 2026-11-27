@@ -75,7 +75,10 @@
 | `termination_reason` | text | 可空 | **怎么结束的**：`end_turn` / `judge_done` / `no_tool` / `stall` / `max_rounds_cap` / `aborted` / `failed` / `persistence_failed`。**`NULL` = 没结束**（在飞，或崩了）——收口与否由它表达，不另立 `status` |
 | `termination_detail` | text | 可空 | 一句人可读说明 |
 | `termination_error_code` | text | 可空 | 仅 `reason='failed'` 时：`timeout` / `rate_limited` / `auth` / `unknown` |
-| `state` | jsonb | | run-state **整份快照**：含 `schemaVersion`（格式代次）、`stateVersion`（注入次数）、预算 / 工具统计 / 折叠计数 |
+| `state_version` | int | not null | **状态块注入过几次**。计数器，不可派生 |
+| `quotas` | jsonb | | **一次性额度的领取记录**：`{lowBudgetPrompted, guardExtensionUsed, contextRecoveryUsed}`。三者是**决定**（"已经领过"），不是事实的投影；读者是同一个门 |
+| `max_rounds` | int | | 本次运行的轮数预算（输入配置） |
+| `compaction_stats` | jsonb | 可空 | 每次压缩的实测数字（`tokensBefore` / `tokensAfter` / 各层触发）。**不可重算**，纯诊断面 |
 | `verification_status` | text | 可空 | **验证结论**：`verified` / `unverified` / `skipped` / `error`。**不可派生**——guard 真的跑过才有这个值 |
 | `verification_reason` | text | 可空 | `deliverables_failed` / `machine_only` / guard 给的 reason |
 | `board` | text | | **白板：一整块现状文本**（≤1500 token），整块覆盖写。不是表——渲染时整块拼进上下文，没有按条目查询的读者（§1.7） |
@@ -92,29 +95,30 @@
 前两个可派生，**第三个不可派生**（guard 跑没跑过不是任何字段的函数）。所以 `status` 删掉，三个维度各自成列：
 清理判据读 `termination_reason`，UI 读 `verification_status`，审计读 `verification_reason`，各读各的，没有"同一个派生表达式必须写在一处"的纪律要求。
 
-`guardVerdict` / `guardMetrics` 是诊断面（宿主调试用），留在 `state`，不占列。
+`guardVerdict` / `guardMetrics` 是诊断面（宿主调试用），进 `compaction_stats` 之外的诊断位——**不占列**。
 
 **为什么 `state_schema_version` / `state_epoch` 不是列**：它们是快照里的 `schemaVersion` / `stateVersion`。
 一个事实只住一处——列和 jsonb 各存一份，就多了一条"必须同步"的纪律，而没有读者需要按它们查询。
 快照里的 `stateVersion` 数的是**注入次数**，不是版本号（这个名字会被所有人读错，但它住在快照 schema 里，
 名字由那边决定）。
 
-**`state` 为什么不展开成列**：它的读者（恢复路径 / 渲染 / 宿主）都读**整份**，没有按字段查询的读者。
-但里面的键分三类，价值完全不同，必须标开：
+**没有 `state` 这个 jsonb**：它原来装 12 个键，实测 90 份真实快照里——
 
-| 类 | 键 | 能不能重算 |
+| 键 | 非默认值的快照 | 能不能算出来 |
 |---|---|---|
-| **真状态**（必须存） | `guardExtension.used`、`contextWindowRecovery.used`、`lowBudgetPrompted`、`stateVersion` | **不能**——"额度已经领过"是决定，不是事实的投影 |
-| **派生缓存**（存是为了省时间） | `tools`、`filesWritten`、`foldedRounds`、`compactionStats` | 能（从 `messages` / `folds` 算），但渲染每轮都发生，现算是 O(n) |
-| **渲染参数** | `bounds`、`maxSerializedBytes`、`truncated` | 不是数据，是"这份被压过"的自描述 |
+| `tools` 非空 | 51（57%） | **能**（数 `tool_use` 块） |
+| `stateVersion > 0` | 28（31%） | 不能（计数器）→ 列 |
+| `filesWritten` 非空 | 19（21%） | **能**（扫写工具入参） |
+| `foldedRounds > 0` | 10（11%） | **能**（`max(cut_round)`） |
+| `lowBudgetPrompted` | 8（9%） | 不能（决定）→ `quotas` |
+| `compactionStats` 非空 | 1（1%） | 不能（实测）→ 列 |
+| `semantic` / `errors` / `guardExtension` / `contextWindowRecovery` | **0** | 能 / 能 / 决定 / 决定 |
+| `rendered` | 每次保存都写 | **纯投影，写进去再没人读**：全仓 3 处读点全读内存对象，`resume` 直接重渲染（`resume-manager.js` / `run-state.js` 里 grep `rendered` 零命中） |
+| `stateStatus` / `stateAvailability` | 恒 `available` | **读者对快照的观测，被写进作者的产物**——能不能用是读的时候判的 |
 
-**不能拿第二类当真相去对账**——对不上时你分不清是缓存过期还是真错。
+**热路径在内存，不在表上**：引擎每轮渲染读的是增量维护的计数器；`tools` / `filesWritten` / `foldedRounds`
+这类统计要重建时，一次 `GROUP BY` / `jsonb_array_elements` 扫描就够，而 `resume` 本来就要把全部消息读进来。
 
-要跨 run 按某个键查询（"哪些 run 用光了补跑额度"）时也**不用展开**，给 JSONB 路径建索引即可：
-
-```sql
-CREATE INDEX ON runs ((state->'deterministic'->'guardExtension'->>'used'));
-```
 
 ### 1.2 `rounds` —— 一行一轮（元数据）
 
@@ -419,7 +423,7 @@ runs 1─┬─N rounds ──── N messages（最小单位，轮内按 msg_s
 |---|---|---|
 | `folds.title` / `folds.description` / `folds.intent` | **折叠事实**（本折日志） | `folds` |
 | 实际喂给模型的那串字节 | **请求事实**。今天字段名有两个，别混：`foldedSummary.text` 是折叠后**整条消息**的投影（含原任务正文与安全层插的 `[已修剪]`）；`foldedSummary.fedSummaryText` 才是「写侧当场证得的那一块」逐字副本 | 留在**该轮的记录**上，不从 `folds` 派生 |
-| `requestStateBlock` | 会话状态块的渲染 | run-state |
+| `requestStateBlock` | 会话状态块的渲染 | **派生**（从 `rounds` + `folds` + `notes` 现拼），不落正文 |
 | 白板（`runs.board`）vs `notes` | **现状 vs 可查存档**：白板每轮整块注入、整块替换；`notes` 一条一条，按需 `note_read` | `runs.board` / `notes`，不互相派生 |
 | **judge 决策**（done / confidence / reason / evidence / direction） | **控制流证据**，不进上下文、不参与渲染 | **外部账**：`judge.log`，按 `runId` join。形状只收它**注入的那条消息**（`caller='judge'`） |
 | `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的切点查询），不落正文 |
