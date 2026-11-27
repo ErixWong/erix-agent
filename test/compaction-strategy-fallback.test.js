@@ -196,7 +196,7 @@ function summaryProvider({ toolTurns, summaryBytes }) {
  * 一条 `fold-llm` 折叠链（`keepRounds` / `foldAtRatio` 可调），返回事件面 + 账本面。
  *
  * ⚠ 全部用**规位拼写**（`config.run.*` / `config.folding.context.*`）：本文件不许新增扁平写点，
- * 否则清单外的 (文件, 面) 会令 `scripts/compat-pin-allowlist.mjs` 的白名单判据变红（`check:inventory`）。
+ * 否则清单外的 (文件, 面) 过去会令 `scripts/compat-pin-allowlist.mjs`（已删）的白名单判据变红（`check:inventory`，该闸已删）。
  */
 async function runFoldLlmChain({
   runId,

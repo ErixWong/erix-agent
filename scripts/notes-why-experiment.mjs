@@ -28,7 +28,7 @@ import {
   validateCostPlan,
 } from "./experiment-guardrails.mjs";
 // 真模型实验的闸口与真模型端点 e2e 共用**一个**读取点（issue #817：旧名 `ERIX_E2E_REAL` 已退役 ⇒ 设了判红，不再开闸
-// 命中时由闸门自己打那一行弃用告警）。先例同 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`。
+// 命中时由闸门自己打那一行弃用告警）。先例同 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`（两者均已删）。
 import { REAL_GATE_ENV, readRealGate, retiredGateMessage } from "../examples/e2e-real-gate.mjs";
 // #532：这两个符号在 notes 瘦身（9fd2277）里被改名/删除，import 站不住 ⇒ 按**今天真实的导出面**改写调用点：
 //   · `buildArchiveSystemPrompt` → `buildArchiveNotice`（同一个角色：把归档目录拼进 system prompt）；
@@ -721,7 +721,7 @@ export function parseArgs(args) {
 }
 
 /**
- * 真模型实验的**闸口**（#546）：照 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`
+ * 真模型实验的**闸口**（#546）：照 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`（两者均已删）
  * 的先例，`ERIX_E2E_MODEL=1` 才跑，否则**退出码 0 + 分类说明**。
  * 闸门读取同样走 `examples/e2e-real-gate.mjs#readRealGate()`（旧名 `ERIX_E2E_REAL` 已退役：期内当别名，
  * 命中时由闸门自己打那一行弃用告警）。

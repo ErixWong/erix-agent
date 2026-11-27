@@ -83,7 +83,7 @@ async function runChain({ runId, provider, budgetTokens = 1700, toolBytes = 600,
   const result = await runDirect({
     provider,
     executeTool: async ({ id }) => `tool output ${id} ${TOOL_FILLER.repeat(toolBytes)}`,
-    // 全部用规位拼写（不新增扁平写点，否则本文件会在 `scripts/compat-pin-allowlist.mjs` 里多出清单外写点而令 `check:inventory` 变红）。
+    // 全部用规位拼写（不新增扁平写点，否则本文件过去会在 `scripts/compat-pin-allowlist.mjs`（已删）里多出清单外写点而令 `check:inventory`（该闸已删）变红）。
     config: {
       run: { maxRounds: 20, completion: false, reflection: false },
       folding: { context: { budgetTokens, keepRounds: 0, strategy: "fold-llm" } },

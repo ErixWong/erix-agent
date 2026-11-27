@@ -479,8 +479,8 @@ export function positionContinuityBlock(messages) {
 // 交接」和 judge nudge / 扩轮续跑提示 / 强制收尾是**同一类动作**。`continuityProvider` 因此保留为
 // **override**（宿主确实知道模型不知道的事，如「CI 红了」），默认写者补在下面这一段里。
 //
-// ⚠ **为什么与渲染面同处一个文件**（#598 落地时的实际约束，不是疏忽）：`npm run check:docs` 的
-// modulemap 规则要求 `src/` 下每个 `.js` 都出现在两份 README 的模块地图里，而 #598 的改动面
+// ⚠ **为什么与渲染面同处一个文件**（#598 落地时的实际约束，不是疏忽）：`npm run check:docs`（该闸已删）的
+// modulemap 规则当时要求 `src/` 下每个 `.js` 都出现在两份 README 的模块地图里，而 #598 的改动面
 // 明确不含 README。把写者放进已经登记过的本模块是唯一「不新增文件又不改文档」的落法。
 // 将来谁有权动 README，可以把它整段切到 `src/loop/continuity-writer.js`：下面这段**只依赖**
 // `node:` 内置与本文件的 `CONTINUITY_SECTION_NAMES`，没有一处反向依赖渲染逻辑。

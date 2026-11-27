@@ -6,10 +6,9 @@
 // 本模块不补一条字段，而是把两件事变成同源事实：
 //   1. **同一个 tool_result 事实只由 `buildToolResultFact()` 构造一次**（引擎事实在 `erix.*`，
 //      宿主扩展在 `metadata.*`，`is_error` 留在顶层是 wire 字段）；构造器**不**把 metadata 摊平到顶层；
-//   2. **「谁是某个字段的拥有者」写进导出的 `TOOL_RESULT_CONTRACT`**，由三方消费同一份：
-//      构造器（按它写路径）、契约文档的字段清单（原由 `docs-drift-check` 与该常量双向比成员，
-//      该闸已随门禁删除，现在只有人工对账）、
-//      `test/contract/tool-result-envelope.js`（从常量生成期望字段集合）。
+//   2. **「谁是某个字段的拥有者」写进导出的 `TOOL_RESULT_CONTRACT`**，由两方消费同一份：
+//      构造器（按它写路径）、`test/contract/tool-result-envelope.js`（从常量生成期望字段集合）。
+//      契约文档的字段清单过去由文档闸与该常量双向比成员；该闸已随门禁删除，现在**只有人工对账**。
 //
 // T1 是 additive 双写期；**T2（工单 261014）结束双写**：引擎不再写顶层摊平的宿主键，也不再写顶层
 // `erixRound` / `duration` / `executionStatus` / `success`。那是 BREAKING，进 CHANGELOG 的
@@ -35,8 +34,8 @@ function deepFreeze(
  * 字段归属的唯一真相（工单 §4）。
  *
  * 消费方与本常量的关系是**成员级**的：新增/改名一个引擎字段必须改这里，于是
- * 契约文档的字段清单（原 `docs-drift-check` 的 `anchors` 规则，该闸已删）与契约测试的期望字段集
- * 会同时变红，而不是留下第三处自说自话的清单。
+ * 契约测试的期望字段集与构造器的写路径会同时变红，而不是留下第三处自说自话的清单。
+ * （契约文档的字段清单不再有自动判据：文档闸已随门禁删除，只能人工对账。）
  */
 export const TOOL_RESULT_CONTRACT = deepFreeze({
   protocol: {

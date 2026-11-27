@@ -214,7 +214,7 @@ test("T4 #213 R4 的两种静默退化形态都不许回来（独立 `//` 行 / 
 // issue #519（0.30.0 破坏包）把直连路线的「两边各给一次」变成启动期抛，于是装配口路线
 // （`runToolLoop({ assemblyPort, … })`）**只能**在端口那一侧给 `provider` / `executeTool`。
 // 类型面若把它们声明成必填，这个唯一合法的调用在 `tsc --strict` 下就编译不过（实测 TS2739），
-// 发布出去的声明文件会把合法宿主挡在门外——`check:release` 第 4 步的真 TS 宿主就是撞在这上面。
+// 发布出去的声明文件会把合法宿主挡在门外——原 `check:release`（该闸已删）第 4 步的真 TS 宿主过去就是撞在这上面。
 // T1 只比名字集合、看不见可选性，所以这条单列一格。
 test("T5 `provider` / `executeTool` 声明为可选（装配口路线不许在调用点重复给，issue #519）", () => {
   for (const name of ["provider", "executeTool"]) {

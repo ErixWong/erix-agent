@@ -731,7 +731,7 @@ const SYNC_FIXTURE = Object.freeze({
   "package.json": '{\n  "name": "erix-agent",\n  "version": "0.30.0"\n}\n',
   "README.md": "# fixture\n\nline below against it. Current release: **v0.30.0** (2026-11-03). The complete list follows.\n",
   "README_cn.md": "# 夹具\n\n当前发布版本：**v0.30.0**（2026-11-03；**0.27.0 从未发布**）。下面引用的 `files` 清单以 `package.json` 为权威：\n",
-  "AGENTS.md": "- Current version: `package.json` says `0.30.0` (the repo version) and the published line — npm's `dist-tags.latest` — is `0.30.0`; `check:docs` reconciles both live. `0.24.0` was **never published** to the registry.\n",
+  "AGENTS.md": "- Current version: `package.json` says `0.30.0` (the repo version) and the published line — npm's `dist-tags.latest` — is `0.30.0`; `check:docs` used to reconcile both live (this gate has since been removed). `0.24.0` was **never published** to the registry.\n",
   "AGENTS_cn.md": "- 当前版本：`package.json` 写 `0.30.0`（本仓版本），发布行——npm 的 `dist-tags.latest`——是 `0.30.0`。`0.24.0` **从未发布**到 registry。\n",
   "docs/requirements.md": "This document was reconciled with the implementation shipped in version 0.30.0. It exists in package version 0.30.0.\n\n| **v0.9.0–v0.30.0 — current** | scope | status |\n",
   "docs/requirements_cn.md": "本文档现已与 0.30.0 版本交付的实现完成对照；下面将分期计划与 package 版本 0.30.0 对齐。\n\n| **v0.9.0–v0.30.0 — 当前** | 范围 | 状态 |\n",

@@ -79,7 +79,7 @@
 //     为什么不原地改：`writeFileSync` 是「先截断后写」，并发测试文件 import 到这个模块会拿到半写文件
 //     ⇒ 整个测试文件级 `'test failed'`（实测 `npm test` 1/25，与本票无关的干净 main 也能复现）。
 //
-// 隔离纪律（照 `scripts/cli-real-smoke.mjs` 的 C8 与 `examples/resume-real-e2e.test.mjs`）：
+// 隔离纪律（照已删的 `scripts/cli-real-smoke.mjs` 的 C8 与 `examples/resume-real-e2e.test.mjs`）：
 // - 两个 CLI 的 `--dir` 一律指临时目录；真实 `~/.erix` 只**读**（配置）。开跑前取 `~/.erix` 快照
 //   + 选中配置哈希，跑完硬断言「选中配置一字节没变」「真实 `~/.erix/transcripts` 下没有本次 runId
 //   的任何产物」「真实 `~/.erix/outputs` 下没有本次 run 的归档目录」——后两条有牙齿：`--dir` 若被
@@ -545,7 +545,7 @@ async function runProcess(command, args, options, timeoutMs) {
   });
 }
 
-/** 真实 `~/.erix` 的快照（**只读**，用于污染对账；与 `scripts/cli-real-smoke.mjs` 同一口径）。 */
+/** 真实 `~/.erix` 的快照（**只读**，用于污染对账；与已删的 `scripts/cli-real-smoke.mjs` 同一口径）。 */
 function snapshotDir(dir) {
   if (!existsSync(dir)) return { exists: false, files: 0, newest: 0 };
   let files = 0;
