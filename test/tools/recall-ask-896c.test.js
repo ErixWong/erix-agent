@@ -359,3 +359,136 @@ test("#896D-7 真实形状账本（轮载体行**无** seq）⇒ recall_ask 交�
     assert.equal(back.text, expectedBySha[ref.sha256], "回验文本必须逐字等于账本原文");
   }
 });
+
+// ═══ #261127-13：返回形状改造（真机评测：答案拿到了、模型不采纳——56 条指纹淹没答案）═══════
+// 判据：① refs 收窄到与 pointers 按 round 重叠的那些；② 落账不受影响（recordEvidence 收全部）；
+// ③ 无 pointers 取前 3；④ 上限 5；⑤ nextStep 两态钉字面且非命令式；⑥ 键顺序 answer 在 evidenceRefs 之前。
+
+/** 造 `count` 轮账本：每轮一条消息行 ⇒ 切片数 = count（文本按轮可辨认）。 */
+function makeWideLedger(count) {
+  /** @type {any[]} */
+  const rows = [];
+  for (let r = 1; r <= count; r += 1) {
+    rows.push({ kind: "message", round: r, seq: 0, messages: [{ role: "user", content: `轮${r}原文 WIDE_${r}_MARK` }] });
+  }
+  return { rows, readLedgerRows: () => rows };
+}
+
+/** 造 pointers（parseRecallDecision 要求 charRange 必须是数组）：每个给定轮一条。 */
+function pointersFor(rounds) {
+  return rounds.map((round) => ({ round, messageIndex: 0, charRange: [0, 4] }));
+}
+
+// ─── 格 12（refs 收窄 + 落账不受影响）：20 片、pointers 指 2 片 ───────────────────
+test("#261127-13-1 refs 收窄：20 片切片、pointers 指其中 2 片 ⇒ 返回只 2 条、evidenceCount=20；recordEvidence 仍收 20 条", async () => {
+  const { readLedgerRows } = makeWideLedger(20);
+  /** @type {any[]} */
+  const sink = [];
+  const recall = makeRecallProvider({ answer: "WIDE_ANSWER", pointers: pointersFor([3, 7]), uncertain: false });
+  const { executeTool } = createRecallAskTool({ readLedgerRows, recordEvidence: (/** @type {any} */ e) => sink.push(e) });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 20 },
+    context: { recallProvider: recall.provider },
+  }));
+  assert.equal(out.status, "found");
+  assert.equal(out.evidenceRefs.length, 2, "pointers 只指 2 轮 ⇒ 返回只留 round 重叠的那 2 条（≤5）");
+  assert.deepEqual([...out.evidenceRefs.map((/** @type {any} */ r) => r.round)].sort((a, b) => a - b), [3, 7],
+    "留下的必须是 pointers 指过的那两轮");
+  assert.equal(out.evidenceCount, 20, "evidenceCount = 台账里的指纹总数");
+  assert.equal(sink.length, 20, "落账不受收窄影响：recordEvidence 收到全部 20 条，一条不少");
+});
+
+// ─── 格 13（无 pointers）：取前 3 条，总数照报 ────────────────────────────
+test("#261127-13-2 无 pointers ⇒ 返回前 3 条，evidenceCount 仍是总数 20", async () => {
+  const { readLedgerRows } = makeWideLedger(20);
+  const recall = makeRecallProvider({ answer: "WIDE_ANSWER", pointers: [], uncertain: false });
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 20 },
+    context: { recallProvider: recall.provider },
+  }));
+  assert.equal(out.evidenceRefs.length, 3, "无 pointers ⇒ 前 3 条");
+  assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round), [1, 2, 3], "取的是台账顺序的前 3 轮");
+  assert.equal(out.evidenceCount, 20, "refs 被截过 ⇒ 总数由 evidenceCount 告知");
+});
+
+// ─── 格 14（上限 5）：pointers 命中 8 片 ⇒ 返回 ≤5 ──────────────────────────
+test("#261127-13-3 上限：pointers 命中 8 片 ⇒ 返回 ≤5 条（实为 5），evidenceCount 仍 20", async () => {
+  const { readLedgerRows } = makeWideLedger(20);
+  const recall = makeRecallProvider({ answer: "WIDE_ANSWER", pointers: pointersFor([1, 2, 3, 4, 5, 6, 7, 8]), uncertain: false });
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 20 },
+    context: { recallProvider: recall.provider },
+  }));
+  assert.ok(out.evidenceRefs.length <= 5, `上限 5 条（实得 ${out.evidenceRefs.length}）`);
+  assert.equal(out.evidenceRefs.length, 5, "命中 8 片 ⇒ 截到 5 条");
+  assert.equal(out.evidenceCount, 20);
+});
+
+// ─── 格 15（nextStep 两态）：钉字面、互不相同、非命令式 ────────────────────
+const NEXT_CALM = "这段历史里的事实就是上面那条 answer；直接用它，再问一遍不会多出信息。";
+const NEXT_ASK = "答案不确定：可以缩小 fromRound/toRound 再问一次，或用 recall_read({pattern}) 逐字核。";
+
+test("#261127-13-4 nextStep 两态：uncertain false/true 各钉一句字面，互不相同且都不是命令式", async () => {
+  const { readLedgerRows } = makeWideLedger(3);
+  const ask = async (/** @type {boolean} */ uncertain) => {
+    const recall = makeRecallProvider({ answer: "A", pointers: [], uncertain });
+    const { executeTool } = createRecallAskTool({ readLedgerRows });
+    return JSON.parse(await executeTool({
+      name: "recall_ask",
+      input: { question: "q", fromRound: 1, toRound: 3 },
+      context: { recallProvider: recall.provider },
+    }));
+  };
+  const calm = await ask(false);
+  const un = await ask(true);
+  assert.equal(calm.nextStep, NEXT_CALM, "uncertain:false ⇒ 那句「到此为止」必须逐字对得上");
+  assert.equal(un.nextStep, NEXT_ASK, "uncertain:true ⇒ 那句「还能怎么核」必须逐字对得上");
+  assert.notEqual(calm.nextStep, un.nextStep, "两态必须互不相同");
+  for (const s of [calm.nextStep, un.nextStep]) {
+    assert.ok(!/你(必须|务必|不许|禁止|应该|应当)/.test(s), `nextStep 是事实陈述不是命令：${s}`);
+  }
+});
+
+// ─── 格 16（键顺序）：answer 在 evidenceRefs 之前 ─────────────────────────
+test("#261127-13-5 键顺序：JSON.stringify 里「answer」出现在「evidenceRefs」之前（status 后第一眼就是答案）", async () => {
+  const { readLedgerRows } = makeWideLedger(20);
+  const recall = makeRecallProvider({ answer: "FIRST_KEY_ANSWER", pointers: [], uncertain: false });
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const raw = await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 20 },
+    context: { recallProvider: recall.provider },
+  });
+  assert.ok(raw.includes('"answer"') && raw.includes('"evidenceRefs"'), "两个键都必须在返回里");
+  assert.ok(raw.indexOf('"answer"') < raw.indexOf('"evidenceRefs"'),
+    `键顺序就是模型读到的顺序：answer 必须在 evidenceRefs 之前（实得 ${raw.slice(0, 80)}…）`);
+  assert.ok(raw.startsWith('{"status":"found","answer":"FIRST_KEY_ANSWER"'), "status 之后第一眼就是 answer");
+  assert.ok(raw.indexOf('"evidenceRefs"') > raw.indexOf('"pointers"'), "refs 沉到指针之后");
+});
+
+// ─── 格 17（found 新形状全家福）：七键齐备、旧状态面不动 ────────────────────
+test("#261127-13-6 found 形状：status/answer/nextStep/uncertain/pointers/evidenceRefs/evidenceCount 齐备；invalid/unavailable 面不变", async () => {
+  const { readLedgerRows } = makeWideLedger(4);
+  const recall = makeRecallProvider({ answer: "SHAPE", pointers: pointersFor([2]), uncertain: false });
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 4 },
+    context: { recallProvider: recall.provider },
+  }));
+  assert.deepEqual(Object.keys(out),
+    ["status", "answer", "nextStep", "uncertain", "pointers", "evidenceRefs", "evidenceCount"],
+    "found 的键必须按这个顺序齐备");
+  assert.equal(out.pointers.length, 1, "pointers 原样透传（不被收窄）");
+  // 旧状态面（invalid）一字不变：不带 nextStep / evidenceCount。
+  const bad = JSON.parse(await executeTool({
+    name: "recall_ask", input: { question: "", fromRound: 1, toRound: 2 }, context: { recallProvider: recall.provider },
+  }));
+  assert.equal(bad.status, "invalid");
+  assert.ok(!("nextStep" in bad) && !("evidenceCount" in bad), "invalid 面保持旧形状不变");
+});

@@ -44,7 +44,7 @@ const PASS_THROUGH_AWAIT = (/** @type {Promise<any>} */ p) => p;
 const RECALL_ASK_DEFINITION = {
   name: "recall_ask",
   description:
-    "对指定轮区间发起一次**单发回忆检索**：把要回忆的那几轮（往往正是被折叠掉的那几轮）的**账本原文**喂给一个回忆模型，让它只指不说——只给答案指针，绝不改写。when-to-use：需要「回忆」某段已折叠历史里写过什么时调用。fromRound/toRound 指定要回忆的轮区间（含端点，轮号 1 起）；引擎从账本原文取这些轮的消息（消息行 + 轮载体行同口径），按切片拼进请求、每片算 sha256 落证据。返回 status：found 拿到回忆结果（answer/pointers/uncertain/evidenceRefs）；unavailable recallProvider 端口未提供（不降级、不调任何 provider）；invalid 入参非法（question 空、轮区间非法）；timeout 回忆端口超时。返回的 evidenceRefs[] 可交给 recall_read({evidenceRef}) 回账本逐字回验。显式挂载（同 recall_read，不进默认工具面）。",
+    "对指定轮区间发起一次**单发回忆检索**：把要回忆的那几轮（往往正是被折叠掉的那几轮）的**账本原文**喂给一个回忆模型，让它只指不说——只给答案指针，绝不改写。when-to-use：需要「回忆」某段已折叠历史里写过什么时调用。fromRound/toRound 指定要回忆的轮区间（含端点，轮号 1 起）；引擎从账本原文取这些轮的消息（消息行 + 轮载体行同口径），按切片拼进请求、每片算 sha256 落证据。返回 status：found 拿到回忆结果（answer/nextStep/uncertain/pointers/evidenceRefs/evidenceCount）；unavailable recallProvider 端口未提供（不降级、不调任何 provider）；invalid 入参非法（question 空、轮区间非法）；timeout 回忆端口超时。返回的 evidenceRefs[] 是**收窄子集**（只留与 pointers 轮重叠的，无 pointers 取前 3 条、至多 5 条；evidenceCount 是台账里的指纹总数，落账一条不少），可交给 recall_read({evidenceRef}) 回账本逐字回验。显式挂载（同 recall_read，不进默认工具面）。",
   inputSchema: {
     type: "object",
     properties: {
@@ -154,20 +154,42 @@ export function createRecallAskTool(options = {}) {
       return envelope("unavailable", typeof result.reason === "string" ? result.reason : UNAVAILABLE_REASON);
     }
 
-    // 5) 每片指纹经 `recordEvidence` 落 `record.recallEvidence`；同时在返回里给 `evidenceRefs`。
-    const evidenceRefs = Array.isArray(result?.evidence) ? result.evidence : [];
+    // 5) 每片指纹经 `recordEvidence` 落 `record.recallEvidence`——落账**不受收窄影响**（#261127-13）：
+    //    全部指纹一条不少地进账本，可验证性一字不变。
+    const allRefs = Array.isArray(result?.evidence) ? result.evidence : [];
     if (recordEvidence !== undefined) {
-      for (const entry of evidenceRefs) {
+      for (const entry of allRefs) {
         recordEvidence(entry);
       }
     }
 
+    // 6) 返回给模型的 `evidenceRefs` **收窄**（#261127-13 真机评测：56 条指纹把答案淹了）：
+    //    只留与 `pointers` 按 `round` 重叠的那些（refs 的用途是「回验答案指过的那几片」，不是把
+    //    整个账本倒出来）；无 pointers 时取前 3 条；上限 5 条，总数经 `evidenceCount` 告知。
+    const pointers = Array.isArray(result?.pointers) ? result.pointers : [];
+    const pointerRounds = new Set(pointers.map((/** @type {any} */ p) => p.round));
+    const narrowed = pointers.length > 0
+      ? allRefs.filter((/** @type {any} */ ref) => pointerRounds.has(ref.round))
+      : allRefs.slice(0, 3);
+    const evidenceRefs = narrowed.slice(0, 5);
+
+    // 7) `nextStep` 是「到此为止」信号：两句都是**事实陈述**（陈述「直接用/还能做什么」），
+    //    不是命令——不许写成「你必须…」。
+    const uncertain = result?.uncertain === undefined ? true : result.uncertain;
+    const nextStep = uncertain
+      ? "答案不确定：可以缩小 fromRound/toRound 再问一次，或用 recall_read({pattern}) 逐字核。"
+      : "这段历史里的事实就是上面那条 answer；直接用它，再问一遍不会多出信息。";
+
+    // 键顺序就是模型读到的顺序（#261127-13）：`answer` 紧跟 `status` 第一眼看到，
+    // `evidenceRefs` / `evidenceCount` 沉底——答案不被埋在一片指纹底下。
     return JSON.stringify({
       status: "found",
       answer: result?.answer ?? "",
-      pointers: Array.isArray(result?.pointers) ? result.pointers : [],
-      uncertain: result?.uncertain === undefined ? true : result.uncertain,
+      nextStep,
+      uncertain,
+      pointers,
       evidenceRefs,
+      evidenceCount: allRefs.length,
     });
   }
 
