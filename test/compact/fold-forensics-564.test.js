@@ -117,6 +117,9 @@ test("#564-3 exec git commit -m \"…closes #123\" 被折走后命令与 #123 �
 
   // 入参里的命令进了清单（#123 随命令原文一起留在清单行里）。
   assert.match(summary, /^- exec git commit -m "feat\(compact\)/mu);
+  // copilot 复审（PR #982）：上面那条只匹配命令**前缀**，抓不到「#123 还在不在」——而那正是本格
+  // 标题（取证力）要钉的东西。锚点节退役后 #123 只能靠命令原文留在清单里，所以必须单独钉它。
+  assert.match(summary, /closes #123/u, "命令里的 #123 必须逐字留在清单行里（锚点退役后这是唯一来源）");
   // 反向锁：锚点节已退役 ⇒ 既无节标题，也无 `issues:` kind 行。
   assert.doesNotMatch(summary, /## 锚点索引/u);
   assert.doesNotMatch(summary, /^issues:/mu);

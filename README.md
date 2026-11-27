@@ -241,7 +241,6 @@ src/
     resume-fold-trim.js           Read-side fold watermark: trim resumed context and re-inject the journaled summary (issue #462)
     provider-summarizer.js         Default fold-llm summarizer backed by the run provider
     strategy-resolution.js         Built-in strategy name resolution for context.strategy
-    anchors.js                     Mechanical anchor extraction (paths/SHAs/issues/URLs/errors)
     fold-fidelity.js               Verbatim user-input quotes and reverse-signal detection
     helpers.js                     Shared folding, protection, stub, and hook helpers
     sliding-window.js              Sliding-window folding strategy
@@ -1480,7 +1479,7 @@ migration steps remain in
   retryable empty assistant messages, CLI tool whitelists, the pure-Node
   `grep` tool, and language-aware output instructions.
 - **v0.7.0 (2026-09-19)**: per-round aggregate output budget, fold-summary
-  anchors (paths/SHAs/URLs mechanically preserved), head+tail CLI exec
+  anchors (paths/SHAs/URLs mechanically preserved — **retired in issue #261127-19**), head+tail CLI exec
   truncation, interception interval 5→10 with on-track pass-through, stall
   detection default `consecutive`, and resume round-budget semantics
   (identity rounds vs per-run `budgetRounds`).
@@ -1573,4 +1572,5 @@ MIT © 2026 ErixWong (see [LICENSE](LICENSE)).
 
 ## Fold-summary delivery hook (`onFoldSummary`)
 
-When the engine folds older rounds it computes a **deterministic substitute** for what it removed (range sentence + tool footprint + mechanical anchor index) and lands it on the round record as `record.foldedFacts` — bounded at 2 KiB by default, no LLM in the loop. Hosts that render a "this segment was folded" banner can subscribe instead of polling the ledger: `onFoldSummary?.({ ...foldedFacts, round })` (top-level option or `policy.onFoldSummary`) fires **once per fold, at the point the facts are final**, and never when there is no text to deliver. `context.onFoldSummary` is **retired** as of issue #499 — the engine never read it, and it is now reported as an unknown `context` key (`context_unknown_option` on the assembly-port route) instead of being silently accepted. A throwing hook surfaces as `persistence_error` (`operation: "onFoldSummary"`, `fatal: false`) and **never** changes the run's outcome; not passing it leaves behaviour byte-identical. Related: issues #470 (substitute must be both booked and trimmable), #462 (resume trims below the fold watermark using that substitute), #475 (a stop reason that wrote not a single character now force-writes a final — landed, see `## [Unreleased]` in `CHANGELOG.md`) / #476 (open follow-up: a deterministic forced-final stop). Contract is the source of truth: `docs/host-consumer-contract.md`.
+When the engine folds older rounds it computes a **deterministic substitute** for what it removed (range sentence + tool footprint; the mechanical anchor index it used to carry was retired in issue
+#261127-19) and lands it on the round record as `record.foldedFacts` — bounded at 2 KiB by default, no LLM in the loop. Hosts that render a "this segment was folded" banner can subscribe instead of polling the ledger: `onFoldSummary?.({ ...foldedFacts, round })` (top-level option or `policy.onFoldSummary`) fires **once per fold, at the point the facts are final**, and never when there is no text to deliver. `context.onFoldSummary` is **retired** as of issue #499 — the engine never read it, and it is now reported as an unknown `context` key (`context_unknown_option` on the assembly-port route) instead of being silently accepted. A throwing hook surfaces as `persistence_error` (`operation: "onFoldSummary"`, `fatal: false`) and **never** changes the run's outcome; not passing it leaves behaviour byte-identical. Related: issues #470 (substitute must be both booked and trimmable), #462 (resume trims below the fold watermark using that substitute), #475 (a stop reason that wrote not a single character now force-writes a final — landed, see `## [Unreleased]` in `CHANGELOG.md`) / #476 (open follow-up: a deterministic forced-final stop). Contract is the source of truth: `docs/host-consumer-contract.md`.

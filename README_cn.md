@@ -189,7 +189,6 @@ src/
     resume-fold-trim.js             折叠水位线的读侧：按水位线裁续跑正文并回填已入账摘要（issue #462）
     provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer
     strategy-resolution.js          context.strategy 内置策略名解析
-    anchors.js                      机械锚点抽取（路径/SHA/issue/URL/错误行）
     fold-fidelity.js                用户输入逐字引用与反向信号检测
     helpers.js                      共享的折叠、保护、stub 与 hook 辅助函数
     sliding-window.js               滑动窗口折叠策略
@@ -738,7 +737,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - **v0.11.0–v0.12.0 (2026-09-26/27)**：notes 迁到宿主侧 `NotesStore` 并收敛为单一保留期旋钮（`ERIX_NOTES_RETENTION_MS`），`createBuiltinNotesTools()` 收敛为 6 键 canonical API（退役 bundled notes skill shim）。
 - **v0.9.0 (2026-09-22)**：扩轮决策统一归 judge——nearLimit 时 end-turn judge 与工具拦截审计必须返回 `extend`/`extendReason`/`plan`；批准的 `extend: true` 提升有效轮数预算（拦截路径补上了「模型从不 end_turn」的盲区）。删除 legacy nearLimit reflection 路径：`reflection.triggerRound` 移除，`reflection_stop` 当前无触发路径。长任务不再「未评估即撞 `max_rounds_cap`」。
 - **v0.8.0 (2026-09-21)**：recall 适配器和有界 transcript 取回退役；模型侧改为 note-first（`note_list` → `note_read`）。新增 request-view 工具结果 TTL 折叠、可重试的空 assistant 消息、CLI 工具白名单、纯 Node `grep` 工具和按语言输出指令。
-- **v0.7.0 (2026-09-19)**：单轮聚合输出预算、折叠摘要锚点（路径/SHA/URL 机械保真）、CLI exec 截断改 head+tail、intercept 审计间隔 5→10 且 on_track 放行、stall 检测默认 `consecutive`、resume 轮号/轮预算拆分。
+- **v0.7.0 (2026-09-19)**：单轮聚合输出预算、折叠摘要锚点（路径/SHA/URL 机械保真，**issue #261127-19 已退役**）、CLI exec 截断改 head+tail、intercept 审计间隔 5→10 且 on_track 放行、stall 检测默认 `consecutive`、resume 轮号/轮预算拆分。
 - **v0.6.0 (2026-09-18)**：ADR-015/ADR-016 破坏窗口收口——可重放概念（`rerunOf` 告知、重跑检测、auto-capture）与 `resourceStore` 端口删除；guard 改为核验结束信封的 `findings` 与全部归档输出比对；引擎标配 transcript 输出卫生（`toolOutputs`）；持久化失败通过 `unpersisted`/`completionErrors` 上报；陌生 run 选项抛错。详见 CHANGELOG 与 0.6.0 升级指南。
 - 更早版本（v0.2.0 ~ v0.5.1）：见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -791,4 +790,4 @@ MIT © 2026 ErixWong（见 [LICENSE](LICENSE)）。
 
 ## 折叠替代物投递出口（`onFoldSummary`）
 
-引擎折掉早期轮次时，会为「被折掉的内容」算出一份**确定性替代物**（范围句 + 工具足迹 + 机械锚点索引），落到轮记录就是 `record.foldedFacts`——默认 2 KiB 夹断，全程不走 LLM。要渲染「此段已折叠」横幅的宿主可以直接订阅，不必自己去轮询账本：`onFoldSummary?.({ ...foldedFacts, round })`（顶层选项或 `policy.onFoldSummary`）在**替代物定稿处**触发、**一次折叠一次**，且**没有文本时不调用**（不造空横幅）。`context.onFoldSummary` 自 issue #499 起**已退役**——引擎从来没读过它，现在它按未知 `context` 键如实报出（装配口路线一条 `context_unknown_option`），不再静默接受。钩子抛错走 `persistence_error`（`operation: "onFoldSummary"`、`fatal: false`），**绝不改写 run 的终局**；不传这个钩子时行为逐字不变。相关：#470（替代物既要落账也要能裁）、#462（续跑按折叠水位线用这份替代物裁正文）、#475（一个字都没写过的停机现在会补写终稿，已落 `CHANGELOG.md` 的 `## [Unreleased]`）、#476（残留口径：强制收尾的可确定性停机，仍开放）。口径正本在 `docs/host-consumer-contract_cn.md`。
+引擎折掉早期轮次时，会为「被折掉的内容」算出一份**确定性替代物**（范围句 + 工具足迹；它原先带的机械锚点索引已随 issue #261127-19 退役），落到轮记录就是 `record.foldedFacts`——默认 2 KiB 夹断，全程不走 LLM。要渲染「此段已折叠」横幅的宿主可以直接订阅，不必自己去轮询账本：`onFoldSummary?.({ ...foldedFacts, round })`（顶层选项或 `policy.onFoldSummary`）在**替代物定稿处**触发、**一次折叠一次**，且**没有文本时不调用**（不造空横幅）。`context.onFoldSummary` 自 issue #499 起**已退役**——引擎从来没读过它，现在它按未知 `context` 键如实报出（装配口路线一条 `context_unknown_option`），不再静默接受。钩子抛错走 `persistence_error`（`operation: "onFoldSummary"`、`fatal: false`），**绝不改写 run 的终局**；不传这个钩子时行为逐字不变。相关：#470（替代物既要落账也要能裁）、#462（续跑按折叠水位线用这份替代物裁正文）、#475（一个字都没写过的停机现在会补写终稿，已落 `CHANGELOG.md` 的 `## [Unreleased]`）、#476（残留口径：强制收尾的可确定性停机，仍开放）。口径正本在 `docs/host-consumer-contract_cn.md`。
