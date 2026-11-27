@@ -466,6 +466,47 @@ test("#261127-13-4 nextStep 两态：uncertain false/true 各钉一句字面，�
   assert.ok(!isNonDirective("需要逐字核对时用 recall_read。"), "守卫必须能咬住「指令式措辞」");
 });
 
+// ─── 格 17（#261127-16 防幻觉）：answerUnbacked 是引擎算的，不是模型自评 ──────
+// 真机评测场景 4：模型答对了却一条指针都没给 ⇒「影子当事实」。引擎读不懂答案对不对，
+// 但它算得动「这条答案在账本上有没有落脚点」——指针与切片的交集为空就是没有。
+const ASK = async (/** @type {any} */ { readLedgerRows, pointers, uncertain }) => {
+  const recall = makeRecallProvider({ answer: "A", pointers, uncertain });
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  return JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 20 },
+    context: { recallProvider: recall.provider },
+  }));
+};
+
+test("#261127-16-1 指针为空 ⇒ answerUnbacked=true（哪怕模型自报 uncertain=false）", async () => {
+  const { readLedgerRows } = makeWideLedger(20);
+  const out = await ASK({ readLedgerRows, pointers: [], uncertain: false });
+  assert.equal(out.answerUnbacked, true, "一条指针都没有 ⇒ 账本上核不动，引擎必须说出来");
+  assert.equal(out.uncertain, false, "模型自评原样透传：引擎不改写模型说的把握");
+});
+
+test("#261127-16-2 指针指了轮、那些轮不在切片区（幻觉轮号）⇒ answerUnbacked=true", async () => {
+  // 切片区是 1..20，指针指 99 —— 模型编了一个不存在的轮号
+  const { readLedgerRows } = makeWideLedger(20);
+  const out = await ASK({ readLedgerRows, pointers: pointersFor([99]), uncertain: false });
+  assert.equal(out.answerUnbacked, true, "指针指的轮不在台账切片里 ⇒ 没有落脚点");
+  assert.equal(out.evidenceRefs.length, 0, "与 pointers 无交集 ⇒ 返回 0 条（不退回「前 3 条」充数）");
+});
+
+test("#261127-16-3 指针命中切片区 ⇒ answerUnbacked=false，且 refs 就是那几片", async () => {
+  const { readLedgerRows } = makeWideLedger(20);
+  const out = await ASK({ readLedgerRows, pointers: pointersFor([3, 7]), uncertain: true });
+  assert.equal(out.answerUnbacked, false, "指针指到的轮真在台账里 ⇒ 有落脚点");
+  // 单向判据：false 不等于「答案被支撑」，只等于「有轮号交集」——工具描述必须这么说，否则 `false`
+  // 会被读成「已核实」（copilot 复审点出来的）。
+  const desc = createRecallAskTool({ readLedgerRows }).definitions[0].description;
+  assert.match(desc, /反过来不成立/, "描述必须写明 false 只表示轮号交集");
+  assert.match(desc, /不证明答案内容被那些切片支持/, "描述必须写明 false 不证明内容被支持");
+  assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round), [3, 7]);
+  assert.equal(out.uncertain, true, "自评仍原样透传（与 answerUnbacked 相互独立）");
+});
+
 // ─── 格 16（键顺序）：answer 在 evidenceRefs 之前 ─────────────────────────
 test("#261127-13-5 键顺序：JSON.stringify 里「answer」出现在「evidenceRefs」之前（status 后第一眼就是答案）", async () => {
   const { readLedgerRows } = makeWideLedger(20);
@@ -484,7 +525,7 @@ test("#261127-13-5 键顺序：JSON.stringify 里「answer」出现在「evidenc
 });
 
 // ─── 格 17（found 新形状全家福）：七键齐备、旧状态面不动 ────────────────────
-test("#261127-13-6 found 形状：status/answer/nextStep/uncertain/pointers/evidenceRefs/evidenceCount 齐备；invalid/unavailable 面不变", async () => {
+test("#261127-13-6 found 形状：status/answer/answerUnbacked/nextStep/uncertain/pointers/evidenceRefs/evidenceCount 齐备；invalid/unavailable 面不变", async () => {
   const { readLedgerRows } = makeWideLedger(4);
   const recall = makeRecallProvider({ answer: "SHAPE", pointers: pointersFor([2]), uncertain: false });
   const { executeTool } = createRecallAskTool({ readLedgerRows });
@@ -494,8 +535,8 @@ test("#261127-13-6 found 形状：status/answer/nextStep/uncertain/pointers/evid
     context: { recallProvider: recall.provider },
   }));
   assert.deepEqual(Object.keys(out),
-    ["status", "answer", "nextStep", "uncertain", "pointers", "evidenceRefs", "evidenceCount"],
-    "found 的键必须按这个顺序齐备");
+    ["status", "answer", "answerUnbacked", "nextStep", "uncertain", "pointers", "evidenceRefs", "evidenceCount"],
+    "found 的键必须按这个顺序齐备（answerUnbacked 紧贴 answer 之后）");
   assert.equal(out.pointers.length, 1, "pointers 原样透传（不被收窄）");
   // 旧状态面（invalid）一字不变：不带 nextStep / evidenceCount。
   const bad = JSON.parse(await executeTool({
