@@ -1,3 +1,5 @@
+> 历史快照（#961/#967 之后）：本文提到的 `check:docs` 等门禁已全部删除，本仓现在没有门禁，唯一的自动判据是 `npm test`。
+
 # docs(policy): publish a pre-1.0 stability / deprecation policy for host-facing APIs
 
 ## Background
