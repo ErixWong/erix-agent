@@ -65,7 +65,7 @@ const RECALL_ASK_DEFINITION = {
  *
  * @param {{
  *   readLedgerRows: () => Promise<any[]> | any[],
- *   recordEvidence?: (entry: {round:number, textSha256:string, occurrence:number, charRange:[number,number], sha256:string, bytes:number}) => void,
+ *   recordEvidence?: (entry: {round_no:number, msg_seq:number, charRange:[number,number], sha256:string, bytes:number}) => void,
  * }} options
  *   - `readLedgerRows`：只读访问器，返回该 run 的账本行（`store.load(runId)` 的输出）。
  *   - `recordEvidence`：可选。每片指纹经它落 `record.recallEvidence`；不提供就只在返回里给 `evidenceRefs`。
@@ -123,10 +123,16 @@ export function createRecallAskTool(options = {}) {
     }
     if (!Array.isArray(rows)) rows = [];
     const slices = collectRoundMessagesInRange(rows, fromRound, toRound).filter((s) => s.text.length > 0);
-    // 内容寻址透传（PR #973）：每片带 `textSha256`（那条消息整段正文的 sha256）+ `occurrence`（该轮内
-    // 同正文第几次出现，0 基）+ `round`（定位必需），而不是行身份 rowSeq——真实写侧轮载体行无 seq、
-    // 消息行又被 store.load() 折进载体，行会漂；内容不变则身份不变。
-    const folds = slices.map((s) => ({ round: s.round, textSha256: s.textSha256, occurrence: s.occurrence, text: s.text }));
+    // 行主键透传（issue #261127-15）：每片带 `round_no` + `msg_seq`——本轮内**稳定**的消息地址
+    // （口径在 `src/store/message-rows.js#messageRowPosition`：消息行取行上的 seq、轮载体行取该消息在
+    // 该行自己 messages 里的下标）：同轮再落一条消息行、消息行被 store.load() 折进载体，地址都不变。
+    // （旧的内容寻址透传已删：textSha256 / occurrence 不再带，`round` 改名为 `round_no`。）
+    const folds = slices.map((s) => ({
+      round_no: s.round_no,
+      row_key: s.row_key,
+      msg_seq: s.msg_seq,
+      text: s.text,
+    }));
 
     // 4) 单发回忆调用：端口、用量、abort、超时全部**每次调用**经 deps 传入（缺省走安全默认）。
     /** @type {any} */
@@ -164,12 +170,13 @@ export function createRecallAskTool(options = {}) {
     }
 
     // 6) 返回给模型的 `evidenceRefs` **收窄**（#261127-13 真机评测：56 条指纹把答案淹了）：
-    //    只留与 `pointers` 按 `round` 重叠的那些（refs 的用途是「回验答案指过的那几片」，不是把
+    //    只留与 `pointers` 按轮重叠的那些（refs 的用途是「回验答案指过的那几片」，不是把
     //    整个账本倒出来）；无 pointers 时取前 3 条；上限 5 条，总数经 `evidenceCount` 告知。
+    //    （#261127-15：ref 侧的轮键已改名 `round_no`，pointer 侧的 `round` 是模型输出、不变。）
     const pointers = Array.isArray(result?.pointers) ? result.pointers : [];
     const pointerRounds = new Set(pointers.map((/** @type {any} */ p) => p.round));
     const pointed = pointers.length > 0
-      ? allRefs.filter((/** @type {any} */ ref) => pointerRounds.has(ref.round))
+      ? allRefs.filter((/** @type {any} */ ref) => pointerRounds.has(ref.round_no))
       : [];
     const evidenceRefs = (pointers.length > 0 ? pointed : allRefs.slice(0, 3)).slice(0, 5);
     // 7b) 「这条答案在账本上有没有落脚点」是**引擎算的**，不是模型自评（#261127-16 真机评测：场景 4 里

@@ -58,9 +58,13 @@ test("T1: user 侧 content:[] 落盘是字面空数组，load() 折叠回同形�
     assert.deepEqual(persisted[1].messages, [{ role: "user", content: [] }]);
     assert.equal(JSON.stringify(persisted[1]).includes('"content":[]'), true);
 
-    // ② 读侧往返：load() 把消息行折回载体行，形状与写侧逐字段相等。
+    // ② 读侧往返：load() 把消息行折回载体行，形状与写侧逐字段相等（另加 #261127-15 的位置戳：
+    //    折出的每条消息带本轮内稳定地址 `round_no` + `row_key` + `msg_seq`，消息行取 `seq`、行身份取 `dedupKey`）。
     const loaded = await store.load(RUN);
-    assert.deepEqual(loaded, [{ ...carrier, messages: [{ role: "user", content: [] }] }]);
+    assert.deepEqual(loaded, [{
+      ...carrier,
+      messages: [{ role: "user", content: [], round_no: 1, row_key: `${RUN}:msg:1:0`, msg_seq: 0 }],
+    }]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -86,7 +90,10 @@ test("T1: assistant 侧 content:[] 同样落盘并折叠回同形状（两侧同
       messages: [emptyAssistant],
     });
     assert.deepEqual(await store.load(RUN), [
-      { ...carrier, messages: [{ role: "assistant", content: [] }] },
+      {
+        ...carrier,
+        messages: [{ role: "assistant", content: [], round_no: 2, row_key: `${RUN}:msg:2:0`, msg_seq: 0 }],
+      },
     ]);
   } finally {
     await rm(dir, { recursive: true, force: true });

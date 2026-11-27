@@ -16,6 +16,14 @@
 //     `lastToolCall` / `rendered` 两种行（10 条记录 × 2 处），零其它差异。
 // 这条自述是**如实**的：夹具里除那两条路径外的一切仍是基线产出，`fixtureHasMessageRows` 守卫
 // 也仍然成立（重放没有掺进 `kind:"message"` 行）。
+//
+// ⚠ **第二次机械重放（issue #261127-15）**：`store.load()` 的折叠层现在还给每条消息 stamp 上
+// **本轮内稳定位置** `round_no` + `msg_seq`（`recallEvidence` 的行主键；`src/store/message-rows.js`
+// 的 `stampRowPosition`）。那是基线代码同样不可能产出的**有意**形状变更，所以夹具又重放了一次：
+//   · 只补两类键：每条记录 `records[*].messages[*]` 与 `messagesFlat[*]` 上的 `round_no` / `msg_seq`；
+//   · 取值来源仍是引擎自己（`capture()` 的同名路径），逐键拷贝、不手写值；
+//   · 可核对：`git diff test/fixtures/message-journal-golden.json` 只有这两类键的新增行
+//     （60 个键）与因它们而多的尾逗号，零其它差异。
 import test from "node:test";
 import assert from "node:assert/strict";
 

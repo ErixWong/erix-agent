@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { createRecallAskTool } from "../../src/tools/recall-ask.js";
 import { createBuiltinRecallTools } from "../../src/tools/recall.js";
 import { RECALL_MAX_EVIDENCE_BYTES, sha256Hex } from "../../src/loop/recall-runner.js";
+import { MSG_SEQ_CARRIER_BASE } from "../../src/store/message-rows.js";
 import { runDirect } from "../helpers/run-direct.js";
 
 /** 区间内两轮的账本原文（一条消息行 + 一条轮载体行，覆盖 recall_read 的两条口径）。 */
@@ -26,10 +27,10 @@ const BAIT_TEXT = "第9轮诱饵 BAIT_MARK 区间外绝不该出现在请求里"
 function makeLedger() {
   /** @type {any[]} */
   const rows = [
-    { kind: "message", round: 1, seq: 0, messages: [{ role: "user", content: R1_TEXT }] },
+    { kind: "message", round: 1, seq: 0, dedupKey: `msg-row:1:0`, messages: [{ role: "user", content: R1_TEXT }] },
     // 轮载体行**不带 seq**（照真实写侧：orchestrator 的轮 record 只有 round/roundKey/dedupKey/ts…，
-    // 只有消息行带轮内 seq）。evidence 现在按内容寻址（round + textSha256 + occurrence）寻址（PR #973），
-    // 不再依赖行身份 ⇒ 载体行有没有 seq 都不影响定位。
+    // 只有消息行带轮内 seq）。evidence 现在按**行主键** `(round_no, msg_seq)` 寻址（#261127-15）：
+    // 消息行取 `row.seq`、轮载体行取 `MSG_SEQ_CARRIER_BASE + 该行 messages 的下标`（两套区间不相交）。
     { kind: "round", round: 2, roundKey: "run-ask:round:2", messages: [{ role: "user", content: R2_TEXT }] },
     { kind: "round", round: 9, roundKey: "run-ask:round:9", messages: [{ role: "assistant", content: BAIT_TEXT }] },
   ];
@@ -204,8 +205,8 @@ test("#896A-5 e2e：recall_ask 的 evidenceRefs 经 recall_read({evidenceRef}) �
   const expectByRound = { 1: R1_TEXT, 2: R2_TEXT };
   for (const ref of out.evidenceRefs) {
     const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
-    assert.equal(back.status, "found", `ref round=${ref.round} 必须回账本 found`);
-    assert.equal(back.text, expectByRound[ref.round], "回验文本必须逐字等于账本原文");
+    assert.equal(back.status, "found", `ref round_no=${ref.round_no} 必须回账本 found`);
+    assert.equal(back.text, expectByRound[ref.round_no], "回验文本必须逐字等于账本原文");
     assert.ok(rows.some((/** @type {any} */ r) => JSON.stringify(r.messages).includes(back.text)), "回验文本必须能在账本里找到");
   }
 });
@@ -220,13 +221,13 @@ test("#896A-6 把账本原文改一个字 ⇒ 同一 evidenceRef ⇒ stale（绝
     input: { question: "q", fromRound: 1, toRound: 2 },
     context: { recallProvider: recall.provider },
   }));
-  const refOld = out.evidenceRefs.find((/** @type {any} */ r) => r.round === 1);
+  const refOld = out.evidenceRefs.find((/** @type {any} */ r) => r.round_no === 1);
   assert.ok(refOld, "应有 round 1 的 ref");
-  // 账本改一个字（等长替换：原文→原纹）。内容寻址下这条消息**仍能被认出**（拿改后正文的 sha256
-  // 仍定位到同轮同正文），但它当初记录的**切片 sha256 是旧正文**的 ⇒ 重算不一致 ⇒ stale（影子对不上原文）。
+  // 账本改一个字（等长替换：原文→原纹）。行主键下这条消息的**地址一字未动**（还是第 1 轮位置 0 那条），
+  // 但它当初记录的**切片 sha256 是旧正文**的 ⇒ 重算不一致 ⇒ stale（影子对不上原文）。
   const NEW = R1_TEXT.replace("原文", "原纹");
   rows[0].messages[0].content = NEW;
-  const ref = { ...refOld, textSha256: sha256Hex(NEW) };
+  const ref = refOld; // ref 逐字不动：不许为了「仍然 stale」去改它
   const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
   const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
   assert.equal(back.status, "stale");
@@ -257,8 +258,9 @@ test("#896A-8 验证侧 2 KiB 上限与 recall-runner 生成侧同值（单一�
 // 缺陷：evidence 曾用 `(round, messageIndex)` 寻址，而那个下标是「消息行在前、轮载体行在后」当场
 // 数出来的 ⇒ 同一轮再落一条消息行（resume 补工具结果、普通工具结果入账）或把消息行折进轮载体，
 // 都会把载体行里那条消息的**轮内下标**挪位，而它的文本一个字都没变 ⇒ 重算 sha256 对不上 ⇒ 假 stale。
-// 修法（PR #973）：evidence 改**内容寻址** `(round, textSha256, occurrence)`——用那条消息整段正文的
-// sha256 定正文、轮内同正文第几次出现区分重复；文本未变则身份不变，位置怎么漂都仍 found。
+// 修法（#261127-15）：evidence 改**行主键** `(round_no, msg_seq)`——消息行取行上 `seq`、轮载体行取
+// `MSG_SEQ_CARRIER_BASE + 该行自己的 messages 下标`；两者都是行上的不可变位置，位置怎么漂地址都不变。
+// （上一版的内容寻址 (round, textSha256, occurrence) 整块删除：它的唯一理由是「折行后位置会变」。）
 const CARRIER_TEXT = "载体里的引擎控制正文 CARRIER_MARK";
 const TOOL_RESULT_TEXT = "同轮后补的工具结果 TOOLRESULT_MARK 这条比载体那条长，好让切片不越界";
 const ABSORBED_TEXT = "被折进轮载体的那条消息行 ABSORB_MARK 也比载体那条长，好让切片不越界";
@@ -271,7 +273,7 @@ function makeDriftLedger() {
   /** @type {any[]} */
   const rows = [
     { kind: "round", round: 1, roundKey: "run-ask:round:1", messages: [{ role: "assistant", content: CARRIER_TEXT }] },
-    { kind: "message", round: 1, seq: 0, messages: [{ role: "user", content: R1_TEXT }] },
+    { kind: "message", round: 1, seq: 0, dedupKey: `msg-row:1:0`, messages: [{ role: "user", content: R1_TEXT }] },
   ];
   return { rows, readLedgerRows: () => rows };
 }
@@ -297,7 +299,7 @@ test("#896D-1 同轮再落一条消息行（轮内下标漂移、文本未变）
 
   // resume 往**同一轮**追加一条工具结果消息行：账本只追加、既有行的文本一字未动，
   // 但轮内位置口径下载体那条从下标 1 被顶到下标 2（copilot 指的就是这一步）。
-  rows.push({ kind: "message", round: 1, seq: 2, messages: [{ role: "user", content: TOOL_RESULT_TEXT }] });
+  rows.push({ kind: "message", round: 1, seq: 2, dedupKey: `msg-row:1:2`, messages: [{ role: "user", content: TOOL_RESULT_TEXT }] });
 
   const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
   const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
@@ -349,11 +351,20 @@ test("#896D-7 真实形状账本（轮载体行**无** seq）⇒ recall_ask 交�
     [sha256Hex(CARRIER_TEXT)]: CARRIER_TEXT,
     [sha256Hex(TOOL_RESULT_TEXT)]: TOOL_RESULT_TEXT,
   };
+  // 载体行下标 → 该条正文：下面据此核对 msg_seq 真的是 `MSG_SEQ_CARRIER_BASE + 下标`。
+  const expectedByIndex = new Map([[sha256Hex(CARRIER_TEXT), 0], [sha256Hex(TOOL_RESULT_TEXT), 1]]);
   const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
   for (const ref of out.evidenceRefs) {
-    assert.equal(ref.round, 4, "内容寻址下 round 定位必需");
+    assert.equal(ref.round_no, 4, "行主键下 round_no 定位必需");
     assert.ok(!("rowSeq" in ref), "新 ref 不再带 rowSeq");
     assert.ok(!("messageIndex" in ref), "新 ref 不再带 messageIndex");
+    assert.ok(!("textSha256" in ref) && !("occurrence" in ref), "内容寻址那两键已整块删除");
+    // 载体行**无 seq** ⇒ msg_seq 必须是 `MSG_SEQ_CARRIER_BASE + 该消息在载体行 messages 里的下标`，
+    // 两条正文各占一个位置（这钉住「载体行按下标、消息行按 seq」两套命名空间在同轮里不串）。
+    assert.ok(ref.msg_seq >= MSG_SEQ_CARRIER_BASE && ref.msg_seq < MSG_SEQ_CARRIER_BASE + carrierRow.messages.length,
+      `载体行 msg_seq 必须落在载体命名空间里（实得 ${ref.msg_seq}）`);
+    assert.equal(ref.msg_seq, MSG_SEQ_CARRIER_BASE + expectedByIndex.get(ref.sha256),
+      "msg_seq 必须逐字对回该消息在载体行 messages 里的下标");
     const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
     assert.equal(back.status, "found", `真形状账本的 ref 必须 found（实得 ${back.status}：${back.reason ?? ""}）`);
     assert.equal(back.text, expectedBySha[ref.sha256], "回验文本必须逐字等于账本原文");
@@ -369,7 +380,7 @@ function makeWideLedger(count) {
   /** @type {any[]} */
   const rows = [];
   for (let r = 1; r <= count; r += 1) {
-    rows.push({ kind: "message", round: r, seq: 0, messages: [{ role: "user", content: `轮${r}原文 WIDE_${r}_MARK` }] });
+    rows.push({ kind: "message", round: r, seq: 0, dedupKey: `msg-row:r:0`, messages: [{ role: "user", content: `轮${r}原文 WIDE_${r}_MARK` }] });
   }
   return { rows, readLedgerRows: () => rows };
 }
@@ -393,7 +404,7 @@ test("#261127-13-1 refs 收窄：20 片切片、pointers 指其中 2 片 ⇒ 返
   }));
   assert.equal(out.status, "found");
   assert.equal(out.evidenceRefs.length, 2, "pointers 只指 2 轮 ⇒ 返回只留 round 重叠的那 2 条（≤5）");
-  assert.deepEqual([...out.evidenceRefs.map((/** @type {any} */ r) => r.round)].sort((a, b) => a - b), [3, 7],
+  assert.deepEqual([...out.evidenceRefs.map((/** @type {any} */ r) => r.round_no)].sort((a, b) => a - b), [3, 7],
     "留下的必须是 pointers 指过的那两轮");
   assert.equal(out.evidenceCount, 20, "evidenceCount = 台账里的指纹总数");
   assert.equal(sink.length, 20, "落账不受收窄影响：recordEvidence 收到全部 20 条，一条不少");
@@ -410,7 +421,7 @@ test("#261127-13-2 无 pointers ⇒ 返回前 3 条，evidenceCount 仍是总数
     context: { recallProvider: recall.provider },
   }));
   assert.equal(out.evidenceRefs.length, 3, "无 pointers ⇒ 前 3 条");
-  assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round), [1, 2, 3], "取的是台账顺序的前 3 轮");
+  assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round_no), [1, 2, 3], "取的是台账顺序的前 3 轮");
   assert.equal(out.evidenceCount, 20, "refs 被截过 ⇒ 总数由 evidenceCount 告知");
 });
 
@@ -503,7 +514,8 @@ test("#261127-16-3 指针命中切片区 ⇒ answerUnbacked=false，且 refs 就
   const desc = createRecallAskTool({ readLedgerRows }).definitions[0].description;
   assert.match(desc, /反过来不成立/, "描述必须写明 false 只表示轮号交集");
   assert.match(desc, /不证明答案内容被那些切片支持/, "描述必须写明 false 不证明内容被支持");
-  assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round), [3, 7]);
+  // 地址口径是行主键（#261127-15）：`round` 已不在 ref 上，改看 `round_no`。
+  assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round_no), [3, 7]);
   assert.equal(out.uncertain, true, "自评仍原样透传（与 answerUnbacked 相互独立）");
 });
 
