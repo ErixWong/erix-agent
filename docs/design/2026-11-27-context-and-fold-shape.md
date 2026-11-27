@@ -67,13 +67,29 @@
 | `run_id` | text | **PK₁**, FK→runs | |
 | `seq` | bigint | **PK₂** | 会话内严格递增（落盘序） |
 | `round` | int | not null | 轮号 ≥ 0；`0` 是 seed 行 |
-| `kind` | text | not null | `round` / `message` / `control` / `fact` |
+| `kind` | text | not null | `round` / `message` / `input` / `control` / `fact` |
 | `dedup_key` | text | not null | 写侧幂等身份 |
 | `payload_fingerprint` | text | not null | 规范化 JSON 的摘要，形状 `sha256:<24 hex>` |
 | `payload` | jsonb | not null | 行内容（`kind='message'` 时是一条消息，content 块留在 payload 里） |
 | `created_at` | timestamptz | not null | |
 
 `payload` 不拆到块一级：原子单位是**消息**。只有需要 `tool_use ↔ tool_result ↔ 执行证据` 三向 join 时才拆。
+
+**用户提问存在哪里**：就是一行 `rounds`，`kind='input'`，payload 里是
+`messages: [{role:'user', content:[{type:'text', text}]}]`。
+
+| 行的 kind | 里面是什么 | 进不进读侧折叠 |
+|---|---|---|
+| `input` | **人/宿主的提问**（`steer` 也走这里） | **不进**——它没有轮内序号，而且宿主的幂等判据要求 `load()` 能看见自己那条 `dedup_key` |
+| `message` | 引擎产出的消息（assistant 响应 / tool_result） | 进（靠 `seq` 排序，折回轮载体） |
+| `control` | 引擎在轮记录落盘**之后**注入的消息（judge nudge / finalGuard revise） | 不进（无 `seq`） |
+| `fact` | 引擎事实（`messages: []`） | 不进 |
+
+⚠ **`role='user'` ≠ 提问**：`tool_result` 也住在 user 消息里。区分靠 `origin`：
+`host`（人/宿主提问） / `engine`（引擎注入） / `settle`（结清桩） / `model`（模型产出）。
+
+**提问落在哪一轮**：第一条在 `round 0`（seed 行）；之后每一条落在**提问发生时已完成的最大轮号**。
+所以“段”（人的一次提问 → 它引发的所有轮）是一条查询：按 `kind='input'` 的行切，不需要表。
 
 **幂等的三态**（唯一约束表达不了）：同 key 同指纹 ⇒ 幂等 no-op；同 key **异**指纹 ⇒ 冲突，
 既不覆盖也不静默丢；新 key ⇒ 插入。单纯 `ON CONFLICT DO NOTHING` 会把第二种吞掉。
