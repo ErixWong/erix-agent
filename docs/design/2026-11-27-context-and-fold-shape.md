@@ -90,6 +90,7 @@
 | `msg_seq` | int | **PK₃** | 轮内单调，从 0 起 |
 | `caller` | text | not null | **谁写的**：`user` / `assistant` / `tool` / `judge` / `engine` |
 | `role` | text | not null | **协议要求它装成谁**：`user` / `assistant` / `system` |
+| `part_of_msg_seq` | int | 可空，自引用 | **切片归属**：这条是某条逻辑消息的一个分片，指向**首片** |
 | `content` | jsonb | not null | 块数组（`text` / `tool_use` / `tool_result` / `image`），保序 |
 | `dedup_key` | text | not null | 写侧幂等身份 |
 | `payload_fingerprint` | text | not null | 规范化 JSON 的摘要，形状 `sha256:<24 hex>` |
@@ -134,6 +135,24 @@
 
 **哪些消息进折叠**：`caller IN ('assistant','tool')`。`user` 不进——宿主的幂等判据要求
 `load()` 能看见自己那条 `dedup_key`；`engine` 不进——它在轮记录落盘之后才产生。
+
+**切片（`part_of_msg_seq`）—— 一行一条消息，但一条消息可以是多行**：
+
+模型一次调 3 个工具，结果**每完成一个就落一行**（崩溃时不丢已完成的），靠 `part_of_msg_seq` 标
+"我属于同一条逻辑消息"：
+
+```
+msg_seq=0  assistant  [text, tool_use(tu_1), tool_use(tu_2), tool_use(tu_3)]   ← 首片
+msg_seq=1  tool       [tool_result(tu_1)]   part_of=null                        ← 首片
+msg_seq=2  tool       [tool_result(tu_2)]   part_of=1
+msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
+```
+
+**折叠与渲染必须拼回一条**：协议要求一条 `tool_use` 由**紧随其后的那一条** user 消息结清；
+拆成三条 user 消息发出去，provider 直接 400。
+
+⚠ **`part_of` 只能指首片，不许链式指上一片**。链式会让"每隔一片落一次"（首片 → 指向它 →
+指向分片），配对永久失败，而且坏形状是**静默的**：不报错、不丢块，只是工具结果再也配不上。
 
 **“段”（人的一次提问 → 它引发的所有轮）是一条查询**：按 `caller='user'` 的消息切，不建表。
 
