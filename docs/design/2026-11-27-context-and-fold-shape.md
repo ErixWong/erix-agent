@@ -73,12 +73,12 @@
 |---|---|---|---|
 | `run_id` | text | **PK** | 跨 resume 不变 |
 | `termination_reason` | text | 可空 | **怎么结束的**：`end_turn` / `judge_done` / `no_tool` / `stall` / `max_rounds_cap` / `aborted` / `failed` / `persistence_failed`。**`NULL` = 没结束**（在飞，或崩了）——收口与否由它表达，不另立 `status` |
-| `termination_detail` | text | 可空 | 一句人可读说明 |
+| `termination_detail` | text | 可空 | 一句人可读说明。**读者是宿主 UI**（引擎内零读）——错误文本没有第二个家：返回对象宿主不落盘就没了 |
 | `termination_error_code` | text | 可空 | 仅 `reason='failed'` 时：`timeout` / `rate_limited` / `auth` / `unknown` |
 | `state_version` | int | not null | **状态块注入过几次**。计数器，不可派生 |
 | `quotas` | jsonb | | **一次性额度的领取记录**：`{lowBudgetPrompted, guardExtensionUsed, contextRecoveryUsed}`。三者是**决定**（"已经领过"），不是事实的投影；读者是同一个门 |
 | `max_rounds` | int | | 本次运行的轮数预算（输入配置） |
-| `compaction_stats` | jsonb | 可空 | 每次压缩的实测数字（`tokensBefore` / `tokensAfter` / 各层触发）。**不可重算**，纯诊断面 |
+| `compaction_stats` | jsonb | 可空 | **压缩事件总账**：每次压缩的 `tokensBefore` / `tokensAfter` / 各层触发。**不可重算**。不是 `folds` 的附属——`ttl` / `slidingWindow` / `anchors` / `enforceSize` 都不是折叠，`folds` 装不下它们 |
 | `verification_status` | text | 可空 | **验证结论**：`verified` / `unverified` / `skipped` / `error`。**不可派生**——guard 真的跑过才有这个值 |
 | `verification_reason` | text | 可空 | `deliverables_failed` / `machine_only` / guard 给的 reason |
 | `board` | text | | **白板：一整块现状文本**（≤1500 token），整块覆盖写。不是表——渲染时整块拼进上下文，没有按条目查询的读者（§1.7） |
@@ -128,7 +128,7 @@
 | `round_no` | int | **PK₂** | ≥ 0；`0` 是 seed |
 | `provider_stop_reason` | text | | **provider 给的结束原因**：`tool_use` / `end_turn` / `max_tokens`。**不是「本轮为什么停」**——那是 `runs.termination_reason`。实测 906 轮只有前两个值，且与「本轮有没有工具调用」完全相关；`max_tokens` 是续写门的输入（读的是内存里的 response，不是这一列） |
 | `usage` | jsonb | | 本轮**累计**用量（截断续写时是多次之和） |
-| `response_usage` | jsonb | | **最后一发**的用量。不是 `usage` 的特例：它带 `reasoningTokens` 这类额外字段，截断续写时两者也不相等 |
+| `response_usage` | jsonb | | **最后一发的原始 provider usage**。实测 25 轮里 13 轮与 `usage` 完全相等、12 轮只差 `reasoningTokens`——它不是「另一个事实」，是 `usage` 的桶里没有的 provider 特有字段（`bin/reasoning-effort.js` 读它做推理强度校准） |
 | `engine_usage` | jsonb | 可空 | **本轮引擎自发起的调用**（round judge / 收尾归一化 / 折叠摘要）的用量。缺键 = 本轮没有这类调用。`usage` 只装主模型桶——只留 `usage` 会把引擎用量藏进主账 |
 | `wrapup` | jsonb | | 收尾那一次的结构化产物（**真状态**：模型输出的规范化结果，不可重算）。只有最后一轮有值 |
 
@@ -270,13 +270,15 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `title` | text | not null | **模型写的短标题**，≤ 60 字符 |
 | `title_src` | text | not null | `model` / `first_line`（回退，见 §3.4 ①） |
 | `description` | text | not null | **模型写的三节**（行动 / 遗留 / 关键词），约 400 token |
-| `description_tokens` | int | not null | 渲染时按它算预算 |
 | `intent` | jsonb | not null | **折叠前的白板全文**（机械抄）——渲染成 `## 意图` |
 | `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空 |
 | `source` | text | not null | `llm` / `host`（**没有 `statistical`**） |
 | `trigger` | text | not null | `budget` / `context_window_recovery` / `manual` |
 | `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行** |
 | `created_at` | timestamptz | not null | |
+
+**没有 `description_tokens`**：`estimateTokens(description)` 对 ≤4000 字符是微秒级，每轮最多算 10 折；
+而这一列连代码里的读点都没有。缓存列的不一致风险（换 tokenizer 就过期）是实的。
 
 **折叠的身份是三元组** `(cut_round, cut_msg_seq, prior_seq)`：切到同一个点先后两次折（恢复前 `prior_seq=NULL`、
 恢复后 `prior_seq=3`）是**两次折叠**，不是一次。哈希身份是为"没有行 id 的存储"发明的，有了主键就没有理由。
@@ -364,7 +366,7 @@ SELECT seq, title FROM folds
 | `content` | text | not null, ≤4000 | 正文 |
 | `superseded` | jsonb | not null | **版本栈**：被覆盖掉的历史版本，最多 3 条（`MAX_SUPERSEDED`），最近的在最前。契约面：数组顺序是值的一部分 |
 | `state` | text | not null | `active` / `revoked` |
-| `created_at` / `updated_at` | timestamptz | not null | 保留期只看 `updated_at` |
+| `created_at` / `updated_at` | timestamptz | not null | 保留期只看 `updated_at`。`created_at` 的读者是**审计**（「这条事实什么时候第一次记下」）——它**不可派生**：一旦更新过，创建时间就再也算不回来，所以它不适用「能算出来的不进列」 |
 
 **没有 `kind` / `pinned` / `board` / `tags` / `relevance`**：
 
