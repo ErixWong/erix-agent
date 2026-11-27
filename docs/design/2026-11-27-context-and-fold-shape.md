@@ -111,7 +111,9 @@ SELECT r.* FROM fold_round_rows m JOIN rounds r ON r.run_id = m.round_run_id AND
 实测依据：一份真机归档里，被归档的副本 940,278 字节，而它拷贝的那些行自己合计 941,379 字节
 ——**差 0.1%，等于纯冗余**。
 
-### 1.5 分组是渲染时算的，**不是表**
+### 1.5 两样东西是渲染时算的，**不是表**
+
+#### ① 分组行
 
 折数一多，`title` 也是线性增长的（1000 折 × 20 token = 20k）。需要把最老的那些并成一行——
 但这件事**不需要存储**：
@@ -127,6 +129,22 @@ SELECT r.* FROM fold_round_rows m JOIN rounds r ON r.run_id = m.round_run_id AND
 
 代价是标签质量略差（组内第一折的标题不一定概括整段）。可以接受：这一层是**回忆的指针**，
 不是摘要——真要细节就去查账本。
+
+#### ② 会话级概述
+
+“这段会话到底干了什么”——宿主横幅与人类阅读都要它，但**也不要存**：
+
+```sql
+SELECT seq, title FROM folds
+ WHERE run_id = ? AND superseded_by IS NULL ORDER BY seq;
+```
+
+拼出来就是概述；超过一定条数会自动并成分组行（①），再想细就拼 `description`。
+
+**不存理由**：它是上面这些行的函数。一旦落进 `folds` 行（每折一份）就是 N 份越来越大的
+累计快照——这正是被否掉的那个形状（实测摘要 3.9k → 5.9k → 6.9k token，涨的全是重复）。
+即使只存“最新一份”，那也是一次**不可审计的重写**：模型每折压一遍，丢掉了什么账本上看不出来，
+而它能提供的信息量，十条 title 已经给了。
 
 ### 1.6 `notes` / `note_history` / `note_ops` —— 白板是 note 的一个维度
 
