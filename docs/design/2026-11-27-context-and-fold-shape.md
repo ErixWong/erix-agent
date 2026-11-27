@@ -281,10 +281,19 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `tokens_before` / `tokens_after` | int | not null | 折叠前后的上下文 token。**每折省了多少就挂在折上**——不需要另立一张压缩统计表 |
 | `intent` | jsonb | not null | **折叠前的白板全文**（机械抄）——渲染成 `## 意图` |
 | `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空 |
-| `source` | text | not null | `llm` / `host`（**没有 `statistical`**） |
+| `source` | text | not null | `llm` / `host`。**没有 `statistical`，也没有 `mechanical`**：后者今天存在，专指「LLM 摘要失败后的降级」；本形状里解析不出就是**折叠失败**（§3.7），不降级 |
 | `trigger` | text | not null | `budget` / `context_window_recovery` / `manual` |
-| `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行** |
+| `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行**。读者是**渲染**：被取代的折不渲染——否则恢复后重折的那一段会出现两次（旧折描述半段、新折描述整段） |
 | `created_at` | timestamptz | not null | |
+
+**代码里有、形状里故意没有的四样**（不写清楚就会被当成遗漏，下次有人补回来）：
+
+| 代码里的字段 | 被什么取代 |
+|---|---|
+| `toolCalls: [{name, argsSummary}]`（每折的工具足迹） | `description` 的 `## 行动`——模型写的比机械足迹有用 |
+| `bytes` / `bytesBefore` / `truncated` | `tokens_before` / `tokens_after`——序列化尺子 vs 预算尺子，只留后者 |
+| `degradeReason` | 不降级：解析不出就是折叠失败 |
+| `fingerprint` | 折叠身份改用三元组 `(cut_round, cut_msg_seq, prior_seq)` |
 
 **没有 `compaction_stats`**：今天的六层压缩里只有 `foldLlm` 是折叠——`slidingWindow` 是**整轮丢弃**
 （新形状里被梯度渲染取代，内容不丢）、`foldStatistical` 新形状里没有、`anchors` 是折叠的附属产物、
