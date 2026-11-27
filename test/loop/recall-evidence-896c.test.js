@@ -149,13 +149,15 @@ test("#896C-7 recallEvidence 形状、≤2KiB、sha256 与原文切片一致", a
   const r = await recallOnce(baseDeps({ recallProviderPort: provider }), {
     question: "q",
     folds: [
-      { round: 4, messageIndex: 1, text: "短正文 ABC" },
-      { round: 5, messageIndex: 0, text: longText },
+      { rowSeq: 11, round: 4, messageIndex: 1, text: "短正文 ABC" },
+      { rowSeq: 12, round: 5, messageIndex: 0, text: longText },
     ],
   });
   assert.ok(Array.isArray(r.evidence) && r.evidence.length === 2);
   for (const ev of r.evidence) {
-    assert.deepEqual(Object.keys(ev).sort(), ["bytes", "charRange", "messageIndex", "round", "sha256"]);
+    assert.deepEqual(Object.keys(ev).sort(), ["bytes", "charRange", "messageIndex", "round", "rowSeq", "sha256"]);
+    // 稳定身份必须透传：rowSeq = 那条消息所在**账本行的 seq**（不拿轮内位置凑数）。
+    assert.equal(ev.rowSeq, ev.round === 4 ? 11 : 12);
     assert.ok(Array.isArray(ev.charRange) && ev.charRange.length === 2);
     assert.ok(ev.bytes <= RECALL_MAX_EVIDENCE_BYTES, `bytes=${ev.bytes} 必须 ≤2048`);
     assert.equal(ev.bytes, Buffer.byteLength(
@@ -207,9 +209,9 @@ function makeLedger() {
   };
 }
 
-/** 用 recall-runner 对同一份文本算一个合法 evidenceRef（round=3,index=0，全文）。 */
+/** 用 recall-runner 对同一份文本算一个合法 evidenceRef（账本行 seq=1、行内下标 0，全文）。 */
 function refForText(text) {
-  const { evidence } = buildRecallRequest("q", [{ round: 3, messageIndex: 0, text }]);
+  const { evidence } = buildRecallRequest("q", [{ rowSeq: 1, round: 3, messageIndex: 0, text }]);
   return evidence[0];
 }
 
@@ -238,7 +240,7 @@ test("#896C-8c ref 不存在于台账 ⇒ invalid", async () => {
   const { readLedgerRows } = makeLedger();
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows });
   const ref = refForText(LEDGER_TEXT);
-  const missing = { ...ref, round: 999 }; // 账本里没有第 999 轮
+  const missing = { ...ref, rowSeq: 999 }; // 账本里没有 seq=999 那一行（按 rowSeq 找不到行 ⇒ invalid）
   const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: missing } }));
   assert.equal(out.status, "invalid");
 });
@@ -322,9 +324,77 @@ test("#896C-11d 2 KiB 上限在验证侧也拦（切片字节 > 2048 ⇒ invalid
   // 用全长 charRange（未夹断）+ 与实际字节一致的 bytes：此时字节数超 2048 ⇒ 必须 invalid。
   const out = JSON.parse(await executeTool({
     name: "recall_read",
-    input: { evidenceRef: { round: 3, messageIndex: 0, charRange: [0, long.length], sha256: fullRef.sha256, bytes: Buffer.byteLength(long, "utf8") } },
+    input: { evidenceRef: { rowSeq: 1, round: 3, messageIndex: 0, charRange: [0, long.length], sha256: fullRef.sha256, bytes: Buffer.byteLength(long, "utf8") } },
   }));
   assert.equal(out.status, "invalid", "验证侧必须拦 >2KiB 的切片");
   assert.ok(/2048|字节超过|上限/.test(out.reason ?? ""));
   assert.ok(fullRef.bytes <= RECALL_MAX_EVIDENCE_BYTES, "生成侧自己会夹到 ≤2048（对照：全长 ref 才会触发验证侧拦截）");
+});
+
+// ─── 格 12（PR #969 合并后终验的真缺陷）：身份口径的四格 ───────────────────────
+// 旧形状把证据按「轮 + 轮内位置下标」寻址，而位置会同轮追加消息行 / 把消息行折进轮载体而漂
+// ⇒ 未改的原文也会被重算成不同的指纹 ⇒ 假 stale。新形状按「账本行 seq + 行内下标」寻址；
+// 下面四格钉住四件事：找不到行⇒invalid、旧格式（无 rowSeq）⇒invalid 不猜、round 不参与定位、
+// 文本真改了仍 stale。
+test("#896D-3 rowSeq 指向不存在的行 ⇒ invalid（reason 点明是哪一行）", async () => {
+  const { readLedgerRows } = makeLedger();
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows });
+  const ref = refForText(LEDGER_TEXT);
+  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: { ...ref, rowSeq: 4242 } } }));
+  assert.equal(out.status, "invalid");
+  assert.ok(/seq=4242/.test(out.reason ?? ""), `reason 必须点明找不到哪一行（实得 ${out.reason}）`);
+});
+
+test("#896D-4 旧格式 ref（只有 round+messageIndex、无 rowSeq）⇒ invalid（明确不兼容，不许按位置猜）", async () => {
+  const { readLedgerRows } = makeLedger();
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows });
+  // 逐字照旧格式手造：round/messageIndex/charRange/sha256/bytes 全部对得上（修前会 found），只缺 rowSeq。
+  const legacy = {
+    round: 3,
+    messageIndex: 0,
+    charRange: [0, LEDGER_TEXT.length],
+    sha256: sha256Hex(LEDGER_TEXT),
+    bytes: Buffer.byteLength(LEDGER_TEXT, "utf8"),
+  };
+  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: legacy } }));
+  assert.equal(out.status, "invalid", "旧格式位置寻址的 ref 一律 invalid（不许退回按 round+轮内下标猜）");
+  assert.ok(/rowSeq/.test(out.reason ?? ""), `reason 必须点明缺的是 rowSeq（实得 ${out.reason}）`);
+});
+
+test("#896D-5 round 只是冗余提示：唯一命中时完全不参与定位，同 seq 多行时才用它挑对的那一行", async () => {
+  // 唯一命中：ref 里的 round 写成别的轮号也不许改判（只有 rowSeq + 行内下标参与定位）。
+  /** @type {any[]} */
+  const soloRows = [{ round: 3, seq: 1, messages: [{ role: "user", content: LEDGER_TEXT }] }];
+  const { executeTool: soloTool } = createBuiltinRecallTools({ readLedgerRows: () => soloRows });
+  const soloRef = buildRecallRequest("q", [{ rowSeq: 1, round: 3, messageIndex: 0, text: LEDGER_TEXT }]).evidence[0];
+  const wrongRound = JSON.parse(await soloTool({ name: "recall_read", input: { evidenceRef: { ...soloRef, round: 77 } } }));
+  assert.equal(wrongRound.status, "found", "round 是冗余提示：写错轮号不许改判");
+  assert.equal(wrongRound.text, LEDGER_TEXT);
+
+  // 引擎的 seq 是**轮内**计数器 ⇒ 跨轮可以重号：同一 seq 命中两行时拿 round 挑同一轮那一行。
+  const R4_TEXT = "第4轮原文：MARKER_R4 与第3轮那行同 seq，但正文不同。";
+  /** @type {any[]} */
+  const dupRows = [
+    { round: 3, seq: 7, messages: [{ role: "user", content: LEDGER_TEXT }] },
+    { round: 4, seq: 7, messages: [{ role: "user", content: R4_TEXT }] },
+  ];
+  const { executeTool: dupTool } = createBuiltinRecallTools({ readLedgerRows: () => dupRows });
+  const refR4 = buildRecallRequest("q", [{ rowSeq: 7, round: 4, messageIndex: 0, text: R4_TEXT }]).evidence[0];
+  const hit = JSON.parse(await dupTool({ name: "recall_read", input: { evidenceRef: refR4 } }));
+  assert.equal(hit.status, "found", "同 seq 两行必须按 round 提示挑对那一行（挑错就 stale）");
+  assert.equal(hit.text, R4_TEXT);
+});
+
+test("#896D-6 文本真的改了 ⇒ 仍 stale（行身份还在也不许判 found）", async () => {
+  /** @type {any[]} */
+  const rows = [{ round: 3, seq: 1, messages: [{ role: "user", content: LEDGER_TEXT }] }];
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
+  const ref = buildRecallRequest("q", [{ rowSeq: 1, round: 3, messageIndex: 0, text: LEDGER_TEXT }]).evidence[0];
+  // 行只尾部追加（行内下标 0 仍是那一条，行 seq 也没变）⇒ 能改判的只有「它自己的文本」。
+  rows[0].messages.push({ role: "user", content: "同一行尾部追加的一条 APPEND_MARK" });
+  rows[0].messages[0].content = LEDGER_TEXT.replace("验证", "检定");
+  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: ref } }));
+  assert.equal(out.status, "stale", "改的是文本 ⇒ 必须仍 stale（缺陷不能修成「永不 stale」）");
+  assert.equal(out.expectedSha, ref.sha256);
+  assert.notEqual(out.actualSha, ref.sha256, "改字后 sha 必须对不上");
 });

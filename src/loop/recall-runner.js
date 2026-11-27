@@ -69,23 +69,30 @@ export function sha256Hex(slice) {
 /**
  * 组装单发回忆请求。`folds` 里每一折只贡献它的**归档正文**（截到 ≤2 KiB 的切片），拼成 user 文本；
  * 未被传进来的折（诱饵）不会出现在请求里。同时按「引擎实际读进请求的那段切片」算指纹。
+ * 指纹的身份口径（PR #969 终验缺陷）：`rowSeq`（那条消息所在**账本行的 `seq`**）+ `messageIndex`
+ * （**该行 `messages[]` 里**的下标）——两者都只追加，所以同轮追加消息行 / 把消息行折进轮载体
+ * 只会改「轮内位置」而不会改它们；`round` 透传作冗余提示。`fold.rowSeq` 不是安全整数 ⇒ `null`
+ * （调用方给不出稳定身份 ⇒ 验证侧判 invalid，不拿位置猜）。
  * @param {string} question
  * @param {any[]} folds
- * @returns {{ text: string, evidence: Array<{ round: number, messageIndex: number, charRange: [number, number], sha256: string, bytes: number }> }}
+ * @returns {{ text: string, evidence: Array<{ rowSeq: number|null, round: number, messageIndex: number, charRange: [number, number], sha256: string, bytes: number }> }}
  */
 export function buildRecallRequest(question, folds) {
-  /** @type {Array<{ round: number, messageIndex: number, charRange: [number, number], sha256: string, bytes: number }>} */
+  /** @type {Array<{ rowSeq: number|null, round: number, messageIndex: number, charRange: [number, number], sha256: string, bytes: number }>} */
   const evidence = [];
   const parts = [];
   for (const fold of folds ?? []) {
     const body = archivedBody(fold);
     const { slice, bytes } = prefixWithinBytes(body, RECALL_MAX_EVIDENCE_BYTES);
     const messageIndex = Number.isInteger(fold?.messageIndex) ? fold.messageIndex : 0;
-    // charRange 单位是 UTF-16 下标（`slice` 是 `body` 的前缀）；recall_read 在同一 (round,
-    // messageIndex) 的原文上按同样的下标切片，两侧口径一致才能比对 sha256。
+    // 稳定身份：所在账本行的 `seq`（行只追加、永不变）。行没数值 seq ⇒ null（不猜）。
+    const rowSeq = Number.isSafeInteger(fold?.rowSeq) ? fold.rowSeq : null;
+    // charRange 单位是 UTF-16 下标（`slice` 是 `body` 的前缀）；recall_read 在同一
+    // (rowSeq, 行内 messageIndex) 的原文上按同样的下标切片，两侧口径一致才能比对 sha256。
     const charRange = /** @type {[number, number]} */ ([0, slice.length]);
     parts.push(slice);
     evidence.push({
+      rowSeq,
       round: Number.isInteger(fold?.round) ? fold.round : 0,
       messageIndex,
       charRange,

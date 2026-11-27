@@ -38,14 +38,20 @@ function isPositiveInt(v) {
 }
 
 /**
- * evidenceRef 形状校验（§3-C）：合法返回 null，否则返回报错原因（上层据此报 invalid）。
- * 只校结构（round/messageIndex/charRange/sha256 都在且形对），不对内容做真假判断。
+ * evidenceRef 形状校验（§3-C + PR #969 终验缺陷修复）：合法返回 null，否则返回报错原因（上层据此报 invalid）。
+ * 只校结构（rowSeq/round/messageIndex/charRange/sha256 都在且形对），不对内容做真假判断。
+ * `rowSeq` 是**必填**的：它是证据的稳定身份（账本行的 `seq`）。旧格式 ref（只有 `round` +
+ * `messageIndex` 的位置寻址）一律 invalid——**不退回按轮内位置猜**，因为那个位置会变（同轮追加
+ * 消息行 / 把消息行折进轮载体都会挪位），拿它猜就等于让验证层说谎。
  * @param {any} ref
  * @returns {string|null}
  */
 function evidenceRefShapeError(ref) {
   if (ref === null || typeof ref !== "object" || Array.isArray(ref)) {
-    return "evidenceRef 必须是指纹对象（round/messageIndex/charRange/sha256）";
+    return "evidenceRef 必须是指纹对象（rowSeq/round/messageIndex/charRange/sha256）";
+  }
+  if (!Number.isSafeInteger(ref.rowSeq)) {
+    return "evidenceRef.rowSeq 必须是整数（账本行的 seq）：缺失或非整数一律 invalid（不退回按 round+轮内下标猜）";
   }
   if (!isPositiveInt(ref.round)) return "evidenceRef.round 必须是 ≥1 的正整数";
   if (!(Number.isSafeInteger(ref.messageIndex) && ref.messageIndex >= 0)) {
@@ -207,8 +213,9 @@ export function createBuiltinRecallTools(options = {}) {
         // issue #896 §3-C：第三种模式——按引擎落下的指纹切片逐字取回并验影子。
         evidenceRef: {
           type: "object",
-          description: "引擎落进 record.recallEvidence 的切片指纹；给了它就进 evidence 模式（优先级高于 round/pattern）",
+          description: "引擎落进 record.recallEvidence 的切片指纹；给了它就进 evidence 模式（优先级高于 round/pattern）。定位口径是 rowSeq + messageIndex（行内下标），round 只是冗余提示",
           properties: {
+            rowSeq: { type: "integer", description: "账本行的 seq（只追加、永不变）：证据的稳定身份，校验时按它找行" },
             round: { type: "integer", minimum: 1 },
             messageIndex: { type: "integer", minimum: 0 },
             charRange: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 2, maxItems: 2 },
@@ -310,31 +317,44 @@ export function createBuiltinRecallTools(options = {}) {
   }
 
   /**
-   * 按地址 `(round, messageIndex)` 在账本里取回该条消息的逐字原文（与逐字模式同口径：
-   * 消息行按 seq 升序、后接轮载体行）。取不到时返回 null。
+   * 按**账本行身份** `(rowSeq, 行内下标)` 在账本里取回该条消息的逐字原文；取不到返回 null。
+   * 为什么不再按 `(round, 轮内下标)`（PR #969 合并后终验抓到的真缺陷）：轮内下标是「消息行在前、
+   * 轮载体行在后」当场数出来的**位置**——同轮再落一条消息行（resume 补工具结果、普通工具结果入账）
+   * 或把消息行折进轮载体（`foldMessageRows` 把正文接到留在原行位的载体上）都会把它挪位，而文本
+   * 一个字没变 ⇒ 按位置重算 sha256 会对不上 ⇒ 合法未改的账本被判 stale。行 `seq` 只追加、行内
+   * `messages` 只追加 ⇒ `(rowSeq, 行内下标)` 与文本一起不动，才是稳定身份。
+   * `round` 只是 ref 里的冗余提示：`seq` 在账本里唯一时它完全不参与定位；引擎的 `seq` 是**轮内**
+   * 计数器（跨轮可以重号），故仅当同一 `seq` 命中多行时拿它挑出同一轮那一行，挑不中也照旧用按
+   * `seq` 找到的第一行——任何情况都不退回按 (round, 位置下标) 猜。
    * @param {any[]} rows
-   * @param {number} round
-   * @param {number} messageIndex
+   * @param {number} rowSeq 账本行的 seq
+   * @param {any} roundHint ref 里的 round（冗余提示，只在同 seq 多行时消歧用）
+   * @param {number} messageIndex **该行 `messages[]` 里**的下标（从 0 起）
    * @returns {string|null}
    */
-  function ledgerTextAt(rows, round, messageIndex) {
-    const fromMessageRows = rows
-      .map((/** @type {any} */ row, /** @type {number} */ index) => ({ row, index }))
-      .filter(({ row }) => isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
-      .sort((/** @type {any} */ a, /** @type {any} */ b) => (a.row.seq - b.row.seq) || (a.index - b.index))
-      .flatMap(({ row }) => row.messages);
-    const fromCarrierRows = rows
-      .filter((/** @type {any} */ row) => !isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
-      .flatMap((/** @type {any} */ row) => row.messages);
-    const messages = [...fromMessageRows, ...fromCarrierRows];
-    if (messageIndex < 0 || messageIndex >= messages.length) return null;
+  function ledgerTextAtRow(rows, rowSeq, roundHint, messageIndex) {
+    /** @type {any[]} */
+    const matches = [];
+    for (const /** @type {any} */ row of Array.isArray(rows) ? rows : []) {
+      if (row?.seq === rowSeq) matches.push(row);
+    }
+    if (matches.length === 0) return null;
+    let row = matches[0];
+    if (matches.length > 1) {
+      const sameRound = matches.find((/** @type {any} */ r) => r?.round === roundHint);
+      if (sameRound !== undefined) row = sameRound;
+    }
+    const messages = Array.isArray(row?.messages) ? row.messages : [];
+    if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= messages.length) return null;
     return messageTextUnits(messages[messageIndex]).join("");
   }
 
   /**
    * evidence 模式（§3-C）：拿引擎落下的指纹回账本逐字取回并**重算 sha256** 验影子。
+   * 定位口径：按 `rowSeq` 找那一行（`rows.find(r => r.seq === rowSeq)`），再取 `row.messages[messageIndex]`
+   * 的原文按 `charRange` 切片——**不**按轮内位置寻址（位置会变，见 `ledgerTextAtRow` 那段）。
    * 三态：重算一致⇒found + 逐字原文；在账本但 sha256 不一致⇒stale（影子对不上原文，
-   * 绝不回一份“差不多的”）；地址取不到 ⇒invalid。sha256 在**取回的原文切片**上重算再与 ref 比。
+   * 绝不回一份“差不多的”）；行不存在 / 行内下标越界 ⇒invalid。sha256 在**取回的原文切片**上重算再与 ref 比。
    * @param {any} ref
    * @returns {Promise<string>}
    */
@@ -343,7 +363,7 @@ export function createBuiltinRecallTools(options = {}) {
     if (shapeReason !== null) {
       return JSON.stringify({ status: "invalid", reason: shapeReason, evidenceRef: ref });
     }
-    const { round, messageIndex, charRange, sha256 } = ref;
+    const { rowSeq, round, messageIndex, charRange, sha256 } = ref;
 
     let rows;
     try {
@@ -353,11 +373,11 @@ export function createBuiltinRecallTools(options = {}) {
     }
     if (!Array.isArray(rows)) rows = [];
 
-    const text = ledgerTextAt(rows, round, messageIndex);
+    const text = ledgerTextAtRow(rows, rowSeq, round, messageIndex);
     if (text === null) {
       return JSON.stringify({
         status: "invalid",
-        reason: `台账里没有这个 ref（第 ${round} 轮第 ${messageIndex} 条取不到）`,
+        reason: `台账里没有这个 ref（账本行 seq=${rowSeq} 不存在，或该行 messages 里没有第 ${messageIndex} 条）`,
         evidenceRef: ref,
       });
     }
@@ -645,16 +665,21 @@ export function createBuiltinRecallTools(options = {}) {
 }
 
 /**
- * 取 [fromRound, toRound]（含端点）轮区间内的账本原文，逐条返回 {round, messageIndex, text}。
- * 与 createBuiltinRecallTools 里 evidenceRead / 逐字模式同一套账本行口径：口径①消息行（isMessageRow
- * && round 命中 && 带 messages）按 seq 升序（seq 相同按落盘先后）拼接，口径②轮载体行（非消息行 &&
- * round 命中）接在其后；text = messageTextUnits(message).join("")——与 ledgerTextAt 取回的原文逐字一致，
- * 因此按同一 (round, messageIndex) 与同一 charRange 算的 sha256 能被 recall_read({evidenceRef}) 重算对上
- * （PR #969 复审②：指纹必须落在账本原文切片上，不是摘要）。messageIndex 是轮内下标（从 0 起）。
+ * 取 [fromRound, toRound]（含端点）轮区间内的账本原文，逐条返回 {rowSeq, round, messageIndex, text}。
+ * 与 createBuiltinRecallTools 里 evidenceRead 同一套账本行口径：口径①消息行（isMessageRow
+ * && round 命中 && 带 messages）按 seq 升序（seq 相同按落盘先后），口径②轮载体行（非消息行 &&
+ * round 命中）接在其后；text = messageTextUnits(message).join("")——与 ledgerTextAtRow 取回的原文逐字一致，
+ * 因此按同一 (rowSeq, 行内下标) 与同一 charRange 算的 sha256 能被 recall_read({evidenceRef}) 重算对上
+ * （PR #969 复审②：指纹必须落在账本原文切片上，不是摘要）。
+ * **身份口径（PR #969 终验缺陷）**：`rowSeq` = 那条消息所在**账本行的 `seq`**（只追加、永不变），
+ * `messageIndex` = **该行 `messages[]` 里的下标**（行只追加 ⇒ 行内下标也稳定）；`round` 只是冗余提示。
+ * 旧版本给的是轮内**位置**下标（把上面两条口径拍扁后当场数），同轮追加消息行 / 把消息行折进载体
+ * 都会把它挪位 ⇒ 未改的原文也会被重算成不同的指纹 ⇒ 假 stale。
+ * 行没有数值 `seq` 时 `rowSeq` 为 `null`（验证侧会判 invalid，**不**退回按位置猜）。
  * @param {any[]} rows 账本行（store.load(runId) 的输出）
  * @param {number} fromRound 区间下界（含）
  * @param {number} toRound 区间上界（含）
- * @returns {Array<{round:number, messageIndex:number, text:string}>}
+ * @returns {Array<{rowSeq:number|null, round:number, messageIndex:number, text:string}>}
  */
 export function collectRoundMessagesInRange(rows, fromRound, toRound) {
   const safeRows = Array.isArray(rows) ? rows : [];
@@ -667,21 +692,24 @@ export function collectRoundMessagesInRange(rows, fromRound, toRound) {
     }
   }
   rounds.sort((a, b) => a - b);
-  /** @type {Array<{round:number, messageIndex:number, text:string}>} */
+  /** @type {Array<{rowSeq:number|null, round:number, messageIndex:number, text:string}>} */
   const out = [];
   for (const round of rounds) {
-    const fromMessageRows = safeRows
-      .map((/** @type {any} */ row, /** @type {number} */ index) => ({ row, index }))
+    const numbered = safeRows
+      .map((/** @type {any} */ row, /** @type {number} */ index) => ({ row, index }));
+    const fromMessageRows = numbered
       .filter(({ row }) => isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
-      .sort((/** @type {any} */ a, /** @type {any} */ b) => (a.row.seq - b.row.seq) || (a.index - b.index))
-      .flatMap(({ row }) => row.messages);
-    const fromCarrierRows = safeRows
-      .filter((/** @type {any} */ row) => !isMessageRow(row) && row?.round === round && Array.isArray(row?.messages))
-      .flatMap((/** @type {any} */ row) => row.messages);
-    const messages = [...fromMessageRows, ...fromCarrierRows];
-    messages.forEach((/** @type {any} */ message, /** @type {number} */ messageIndex) => {
-      out.push({ round, messageIndex, text: messageTextUnits(message).join("") });
-    });
+      .sort((/** @type {any} */ a, /** @type {any} */ b) => (a.row.seq - b.row.seq) || (a.index - b.index));
+    const fromCarrierRows = numbered
+      .filter(({ row }) => !isMessageRow(row) && row?.round === round && Array.isArray(row?.messages));
+    // 轮内顺序照旧（消息行在前、轮载体行在后）——改的只是「每条怎么编号」：
+    // 从轮内位置下标换成（所在行的 seq，行内 messages 下标）。
+    for (const { row } of [...fromMessageRows, ...fromCarrierRows]) {
+      const rowSeq = Number.isSafeInteger(row.seq) ? row.seq : null;
+      row.messages.forEach((/** @type {any} */ message, /** @type {number} */ messageIndex) => {
+        out.push({ rowSeq, round, messageIndex, text: messageTextUnits(message).join("") });
+      });
+    }
   }
   return out;
 }
