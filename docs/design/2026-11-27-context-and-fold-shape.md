@@ -32,10 +32,13 @@
 
 ## 1. 表
 
-### 1.1 `runs` —— 会话
+### 1.1 `runs` —— 会话（session）
 
-**一行 = 一个 `runId` = 一个会话。** CLI 的 `--session <id>` 就是它（`runId = options.session ?? 默认 id`），
-resume / `-c` 续的是同一个 id，所以也是同一个文件、同一行。
+> **`runs` 就是 session。** 表名与列名保留 `runs` / `run_id`，是因为公开面（契约、事件、宿主代码）
+> 早已这么叫；**语义上它就是会话**，本文正文一律写"会话"。
+
+**一行 = 一个 `runId` = 一个会话（session）。** CLI 的 `--session <id>` 就是它
+（`runId = options.session ?? 默认 id`），resume / `-c` 续的是同一个 id，所以也是同一个文件、同一行。
 
 ⚠ **`run` 这个词在代码里被用成两个意思**，别混：
 
@@ -62,7 +65,7 @@ resume / `-c` 续的是同一个 id，所以也是同一个文件、同一行。
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` | text | **PK₁**, FK→runs | |
-| `seq` | bigint | **PK₂** | run 内严格递增（落盘序） |
+| `seq` | bigint | **PK₂** | 会话内严格递增（落盘序） |
 | `round` | int | not null | 轮号 ≥ 0；`0` 是 seed 行 |
 | `kind` | text | not null | `round` / `message` / `control` / `fact` |
 | `dedup_key` | text | not null | 写侧幂等身份 |
@@ -81,7 +84,7 @@ resume / `-c` 续的是同一个 id，所以也是同一个文件、同一行。
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `run_id` / `seq` | text / bigint | **PK(run_id, seq)** | `seq` = run 内严格递增折叠序 |
+| `run_id` / `seq` | text / bigint | **PK(run_id, seq)** | `seq` = 会话内严格递增折叠序 |
 | `from_round` / `to_round` | int | not null | 本折吃掉的轮区间 |
 | `prior_seq` | bigint | FK→folds(run_id, seq)，可空 | 续写基底 = 上一折。**用外键，不用哈希** |
 | `title` | text | not null | **模型写的短标题**，≤ 60 字符 |
@@ -221,7 +224,7 @@ runs 1─┬─N rounds ──────────┐
 |---|---|---|
 | `folds.title` / `folds.description` / `folds.intent` | **折叠事实**（本折日志） | `folds` |
 | 实际喂给模型的那串字节 | **请求事实**。今天字段名有两个，别混：`foldedSummary.text` 是折叠后**整条消息**的投影（含原任务正文与安全层插的 `[已修剪]`）；`foldedSummary.fedSummaryText` 才是「写侧当场证得的那一块」逐字副本 | 留在**该轮的记录**上，不从 `folds` 派生 |
-| `requestStateBlock` | run 状态块的渲染 | run-state |
+| `requestStateBlock` | 会话状态块的渲染 | run-state |
 | `foldedPayload` | 被折走的原始消息 | **派生**（§1.4 的行集合查询），不落正文 |
 | `compactionStats[].foldSummary` | 指标 | 诊断面，只放信号 |
 
@@ -286,8 +289,8 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 2. **`description` 必须自解释。** 每条会被单独拿出来按轮次排列，脱离上下文读。出现"上面 / 刚才 /
    该文件 / 前面提到"这类指代即不合规。
 3. **每一折必须能单独编码。** 这是形状对"跨库检索"的唯一承诺：`description` 拎出来（配 `title`
-   与 `(run_id, seq)`）就足够让任何人算出一条可用的向量，不需要同 run 的其它行、不需要原任务。
-   做不到这一条，检索层就永远得把整个 run 塞进去才能判断相关度。
+   与 `(run_id, seq)`）就足够让任何人算出一条可用的向量，不需要同一会话的其它行、不需要原任务。
+   做不到这一条，检索层就永远得把整个会话塞进去才能判断相关度。
 4. **必须有分组行。** 否则 `title` 数量线性增长（§1.5）。
 
 ### 3.5 渲染的边界与退化
@@ -394,7 +397,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 4. **降级不夹断**：任何一条要么整条进，要么降一档。
 5. **永远不出现"零历史"**：至少一条分组行。
 6. **机械填的节不许模型写**：`## 意图` 逐字等于 `intent` 的渲染结果；`## 提交` 的 sha 来自工具结果。
-7. **每一折可单独编码**：拎出 `title` + `description` + `(run_id, seq)` 就够，不依赖同 run 的其它行。
+7. **每一折可单独编码**：拎出 `title` + `description` + `(run_id, seq)` 就够，不依赖同一会话的其它行。
 8. **装不下要说清**：失败时 `budget_verdict` 给出 budget / measured / over_by / layers_tried。
 9. **一条信息只住一处**：现状→白板，历史→日志，细节→账本，常量→项目指令；**机械内容各自成列**，不混进 `description`。
 
