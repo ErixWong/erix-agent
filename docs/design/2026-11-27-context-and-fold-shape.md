@@ -179,9 +179,14 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 | `role` | text | not null | **协议要求它装成谁**：`user` / `assistant` / `system` |
 | `part_of_msg_seq` | int | 可空，自引用 | **切片归属**：这条是某条逻辑消息的一个分片，指向**首片** |
 | `content` | jsonb | not null | 块数组（`text` / `tool_use` / `tool_result` / `image`），保序 |
-| `dedup_key` | text | not null | 写侧幂等身份 |
-| `payload_fingerprint` | text | not null | 规范化 JSON 的摘要，形状 `sha256:<24 hex>` |
 | `ts` | timestamptz | | 信封时刻（不是顺序依据） |
+
+**没有 `dedup_key` / `payload_fingerprint`**：两个都是 JSONL 的产物。
+
+| 字段 | 今天是什么 | 关系模型里为什么不需要 |
+|---|---|---|
+| `dedup_key` | `<runId>:msg:<round>:<seq>` 这类字符串 | **就是复合主键的字符串编码**——主键已经承担幂等身份 |
+| `payload_fingerprint` | 整行 payload 的 `sha256[:24]` | 一行是不透明 blob 时才需要哈希比内容；关系模型里「同一份 payload」就是**非主键列全相等**，精确比较。存成列还会自指（行里存着这一行的摘要），任何字段变了都要重算 |
 
 **`caller` 与 `role` 是两个维度，别合并**：
 
