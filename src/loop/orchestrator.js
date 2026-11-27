@@ -494,7 +494,7 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -523,7 +523,7 @@ function mergeFoldedRoundRanges(first, second) {
  *   `fileWritesBlind` 成立时本键缺席（与 payload 同一口径：0 不写）。其余事件不写该键。
  * @property {string} [parentRunId] issue #617（P0，additive）：子 run 的发起者关联，只镜像不解释；
  *   宿主没给 `parentRunId` 时该字段缺省（不写假值）。
- * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing, compaction_strategy_fallback).
+ * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing).
  *   issue #730（additive）：`resume_journal_skipped` 也用它把同一 `reason` 下的分支分细（**缺席就不带
  *   那个键** ⇒ 既有事件形状不变，是纯加法）：`anchor_probe_absent` / `round_carrier_has_body` /
  *   `aggregate_row_not_in_ledger`（同一个 `mid_sequence_aggregate_row_not_in_ledger` 下三件不同的事，
@@ -623,7 +623,7 @@ function mergeFoldedRoundRanges(first, second) {
  *     timing?: {timeoutMs?: number, deadlineMs?: number,
  *       retry?: {attempts?: number, backoffBaseMs?: number, backoffMaxMs?: number,
  *         sleepImpl?: (ms: number) => Promise<void>}|false},
- *     folding?: {context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?: number,
+ *     folding?: {context?: {strategy?: object, budgetTokens?: number,
  *       keepRounds?: number, foldAtRatio?: number, toolContext?: object, task?: string, session?: any},
  *       toolResultTtl?: number, toolResultFoldMinTokens?: number},
  *     guard?: {finalGuardMaxRetries?: number, finalGuardTimeoutMs?: number, finalGuardExtend?: boolean},
@@ -1940,24 +1940,24 @@ export async function runToolLoop(options) {
     return summary;
   };
   // main 的 ADR-016 退役了 resourceStore 端口——compactionContext 不再拼它（两侧语义合并）
-  // 名字在启动期一次性解析成实例（未知名字/非法类型 → 启动期 TypeError）；对象形态原样
-  // 透传（同一引用），下游 configuredStrategy 通道零改动。名字形态额外吃 context 级的
-  // recoveryHint/stubFor（对象形态这两个字段依旧由宿主自己在策略对象上给，语义不变）。
+  // issue #261127-12：策略**名字形态已删**（唯一名字 `"fold-llm"` 与不写等价 ⇒ 纯税，用户裁决）。
+  // 折叠策略现在**永不为空**：宿主给对象就原样透传（同一引用，下游 configuredStrategy 通道零改动；
+  // 对象形态依旧**不吃** `foldLlmOptions` / context 级 `recoveryHint`/`stubFor`——那两个字段仍由宿主
+  // 自己在策略对象上给，语义不变）；没给（`undefined`/`null`）就用引擎内置 fold-llm
+  // （`resolveCompactionStrategy(undefined)` 把下面的 `foldLlmOptions` 展进工厂，注入 reusableCompactionSummarizer）。
+  // 名字（`"fold-llm"` 等）一律启动期 TypeError。
   // #498 S4c: the strategy object may arrive on the port (`capabilities.ports.strategy`) or in the
-  // legacy `context.strategy` slot (which also still accepts a built-in name — a name is data, so it
-  // is *not* a port value). `resolveCompactionStrategy` returns an object verbatim, so an injected
-  // strategy keeps its identity and its `shouldCompact` / `compact` methods are the ones called.
+  // legacy `context.strategy` slot. `resolveCompactionStrategy` returns an object verbatim, so an
+  // injected strategy keeps its identity and its `shouldCompact` / `compact` methods are the ones called.
   const configuredStrategyInput = capabilityPorts.strategy ?? context?.strategy;
-  const resolvedContextStrategy = configuredStrategyInput === undefined
-    ? undefined
-    : resolveCompactionStrategy(configuredStrategyInput, {
+  const resolvedContextStrategy = resolveCompactionStrategy(configuredStrategyInput, {
       options: {
         ...(foldHookValue("recoveryHint") === undefined ? {} : { recoveryHint: foldHookValue("recoveryHint") }),
         ...(foldHookValue("stubFor") === undefined ? {} : { stubFor: foldHookValue("stubFor") }),
       },
       // issue #469（宿主要求 B1）：三个**策略层**上限经这里透传。落点必须是 `foldLlmOptions`
-      // —— `resolveCompactionStrategy` 只对**内置名字形态**把 `foldLlmOptions` 展进工厂
-      // （`strategy-resolution.js`），所以：宿主用对象形态自带策略时这三个键**不适用**
+      // —— `resolveCompactionStrategy` 只对**缺省的内置 fold-llm**（`strategy` 为 `undefined`）把
+      // `foldLlmOptions` 展进工厂（`strategy-resolution.js`），所以：宿主用对象形态自带策略时这三个键**不适用**
       // （契约里写明，不让它变成静默无效）。
       // `optionValue()` 是「callOptions 优先、构造 options 兜底」，所以这里透传即生效。
       foldLlmOptions: {
@@ -2003,10 +2003,10 @@ export async function runToolLoop(options) {
         // (container over legacy spelling, the same direction as everywhere else). They reach the
         // strategies exactly where the old slot did: `compactOptions` below copies
         // `onBeforeFold` / `onAfterFold` / `stubFor` out of this object, and
-        // `resolveCompactionStrategy` reads `recoveryHint` / `stubFor` for the name-form strategies.
+        // `resolveCompactionStrategy` reads `recoveryHint` / `stubFor` when it builds the default built-in fold-llm.
         ...capabilityFoldHooks,
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
-        ...(resolvedContextStrategy === undefined ? {} : { strategy: resolvedContextStrategy }),
+        strategy: resolvedContextStrategy,
       };
   const baseToolContext = {
     // issue #617（P0）：把当前 run 的身份递进工具上下文——派生工具（子 agent）据此自填父身份
@@ -4248,9 +4248,8 @@ export async function runToolLoop(options) {
   // issue #460：会话级归档去重账本（同一份正文只往轮记录里写一次）。
   // 它必须活在 run 作用域（`compactBeforeRound` 每次折叠都调），所以跟折叠入口同层声明。
   const foldArchiveLedger = createFoldArchiveLedger({ store, runId });
-  // issue #464 A：库层兜底诊断事件的去重标记（每 run 恰好一条，口径同 #182 的
-  // `modelMetadataNoticeSent`）。声明在 run 作用域、折叠入口之前，故跨该 run 内所有折叠调用共享。
-  let compactionFallbackNoticeSent = false;
+  // issue #261127-12：`compactionFallbackNoticeSent` 去重标记已删——它去重的
+  // `compaction_strategy_fallback` 诊断随「策略永不为空」一起没了（见折叠入口内那段注释）。
   /**
    * @param {number} [round]
    * @param {{ trigger?: string }|undefined} [recovery]
@@ -4292,11 +4291,9 @@ export async function runToolLoop(options) {
     // issue #930（#898）：自恢复那一发必须走**已装配的 LLM 折叠策略**，不许退回机械摘要。
     // 选策略那行（下方）用 `strategyRequestsCompaction` 决定用 `configuredStrategy` 还是机械
     // `sliding-window` 兑底，所以 recovery 存在时把它强置为真 ⇒ 选中 `configuredStrategy`。
-    const strategyRequestsCompaction = recovery !== undefined
-      ? Boolean(configuredStrategy)
-      : (configuredStrategy
-        ? await configuredStrategy.shouldCompact(messages, budgetTokens)
-        : false);
+    const strategyRequestsCompaction = configuredStrategy === undefined
+      ? false
+      : (recovery !== undefined || await configuredStrategy.shouldCompact(messages, budgetTokens));
     let foldedPayload = [];
     // issue #898（#894 的收尾）：安全层逐条删掉的消息**不再并进 `foldedPayload`**。那份只收
     // 折叠层（策略那一发 + 预算兜底那一发）删掉的轮，而 `foldedRoundRange` / `foldedRounds`
@@ -4350,40 +4347,23 @@ export async function runToolLoop(options) {
     let userTurnGuard;
     let userTurnGuardChannel;
     if ((strategyRequestsCompaction || overBudget) && configuredStrategy) {
-      // issue #898 第二刀（修订设计）：**折叠必须由 LLM 完成**的含义是「不许用机械折叠冒充摘要」，
-      // 不是「不给策略就不许跑」。所以宿主没给 `compactionStrategy` / 没给 summarizer（即
-      // `configuredStrategy` 为空）时，引擎**根本不触发折叠**——不再抛错、也不再静默退回引擎库层
-      // 的 `sliding-window`（那产出 `工具足迹：exec×5` 这种零语义文本，等于把历史丢进一个看起来像
-      // 摘要的壳里）。不给策略 = 你放弃了折叠能力，就明明白白地不折；上下文超预算时**已有的**报错
-      // 路径（`cannot_fit` / `budgetUnreachable` 那套）会大声失败，比偷偷塞一段机械文本诚实得多。
-      // 预算兜底（下面 `budgetFallbackStrategy`）是另一回事：它跑在 LLM 折完之后、同一折预算仍超时
-      // 那一格，保留机械路径但已可检测（`degradeReason = "budget_fallback_mechanical"`）。
+      // issue #261127-12：`configuredStrategy` **永不为空**（缺省即引擎内置 fold-llm），所以「宿主没配
+      // 策略 ⇒ 不折」这一支随名字形态一起删——折叠照常发生，且**由 LLM 完成**（#898 口径不变：不许用
+      // 机械折叠冒充摘要）。守卫 `(strategyRequestsCompaction || overBudget) && configuredStrategy` 里那个
+      // `&& configuredStrategy` 现在只表达「`compactionContext` 存在」（无预算⇒不折，判据 4：没有可比的
+      // 目标才不折，而不是「没配策略」）。
+      // 预算兜底（下面 `createSlidingWindowStrategy()` 那一发）是另一回事：它跑在 LLM 折完之后、同一折
+      // 预算仍超时的格子，保留机械路径但已可检测（`degradeReason = "budget_fallback_mechanical"`）。
       const [budgetFallbackLayer, safetyFallbackLayer] = getCompactionFallbackChain();
       const strategy = strategyRequestsCompaction
         ? configuredStrategy
         : createSlidingWindowStrategy();
-      // issue #464 A：兜底路径此前**零可观测痕迹**——`context.strategy` 未配置而预算又兜底触发时，
-      // 实际执行的是引擎库层的 `sliding-window`（整轮 tail keep / head drop），而宿主从
-      // `compaction` 事件里根本看不出来。形状对齐 #182 `model_metadata_missing`：
-      // 每 run 恰好一条，detail 首句是固定原文（宿主可直接断言）。
-      // issue #643：兜底的行为变了（折到够用就停 + 把机械摘要 prepend 进 head），首句跟着改——
-      // 旧句「drops whole head rounds without summary or anchors」已经不是事实（那正是本单修的病）。
-      if (!configuredStrategy && !compactionFallbackNoticeSent) {
-        compactionFallbackNoticeSent = true;
-        emitEvent({
-          type: "compaction_strategy_fallback",
-          // runId 只在宿主传了时才写键（与 #182 `model_metadata_missing` 同口径：引擎不自编标识）。
-          ...(runId === undefined ? {} : { runId }),
-          ...(parentRunId === undefined ? {} : { parentRunId }),
-          round,
-          detail: 'engine compaction fallback in effect: context.strategy is not configured, '
-            + 'the library default "sliding-window" strategy folds only the oldest rounds needed '
-            + 'to fit the budget and prepends a mechanical summary'
-            + (budgetTokens === undefined
-              ? ""
-              : `; budgetTokens=${budgetTokens}, estimatedTokens=${estimatedTokens}`),
-        });
-      }
+      // issue #464 A：旧兜底诊断曾钉「`context.strategy` 未配置而预算兜底触发⇒库层 `sliding-window`」；
+      // issue #261127-12 起该诊断已删（策略永不为空）。预算兜底仍走 `sliding-window`（折到够用就停 +
+      // 把机械摘要 prepend 进 head），可观测面改由 `degradeReason = "budget_fallback_mechanical"` 承担。
+      // issue #261127-12：`compaction_strategy_fallback` 诊断（#464 A）已删——它讲的是「没配
+      // 策略⇒引擎退回 sliding-window」，那个情形随名字形态删除后**不再存在**（策略永不为空）。
+      // 预算兑底仍可观测——不是这条诊断，而是折叠定稿处的 `degradeReason = "budget_fallback_mechanical"`。
       // issue #608：**工作集**（最近 `WORKING_SET_RECENT_ROUNDS` 个带 `tool_result` 的轮次里的
       // tool_result 总量）。现算、不留新状态：折叠决策要的就是「模型当下手里有多少原文」。
       // 口径与 `estimatedTokens` 同一把尺子（`estimateMessageTokens`）。

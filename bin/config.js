@@ -3,11 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { createJsonFileModelConfigProvider } from "../src/config/json-file.js";
-import {
-  BUILTIN_COMPACTION_STRATEGY_NAMES,
-  computeBudget,
-  isBuiltinCompactionStrategyName,
-} from "../src/index.js";
+import { computeBudget } from "../src/index.js";
 import {
   CONTINUITY_WRITE_DEFAULT,
   CONTINUITY_WRITE_MODES,
@@ -96,38 +92,12 @@ function warnCompactionDisabledOnce() {
   compactionDisabledWarned = true;
   process.stderr.write(`${COMPACTION_DISABLED_WARNING}\n`);
 }
-// issue #614：CLI 默认走 **语义折叠**（fold-llm）。
-//
-// 为什么改（#614 / #607 的实测）：CLI 必然有可用 provider（它就是用来跑模型的），却曾默认
-// 放弃语义那半 ⇒ 折叠块里只有**索引**（区间 / 工具足迹 / 清单 / 锚点），没有**概括**与**经验**
-// （阶段 / 下一步 / 教训与坑）。64k 预算 / 300 段逐段翻译的实测里 80.3% 的重读有相当一部分
-// 是「不知道做到哪 / 不知道结论」——正是语义折叠该给的那两节。
-//
-// 统计摘要（fold-statistical）的位置是**零 LLM 的替代选择**，不是 fold-llm 的自动兜底：
-// issue #661 起摘要器失败（含默认 30s 上限的超时）是**终局错误** `summarizer_failed`，
-// 引擎不再退回统计摘要（那条 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]` 路径已删）。
-// issue #926 / 任务 261126-51：`--compaction` 旗标与 `config.compaction` 叶子**都已退役**
-// （chat 与 repl 都不再接受），所以「显式选择优先于默认值」那条链已经没有了——只剩这一个常量。
-// 库层边界不动：引擎 `resolveCompactionStrategy(undefined) → undefined`（不折），
-// 「默认用哪个策略」始终是**宿主/CLI 的选择**。
-export const DEFAULT_COMPACTION_STRATEGY = "fold-llm";
-
-/**
- * CLI/config 的压缩策略名解析（#167）：`--compaction` > config.compaction > 默认值。
- * 名字以**字符串**形式向下传递，由引擎解析并（对 fold-llm）注入默认 summarizer——
- * CLI 因此不需要自己写调模型的胶水。
- */
-export function resolveCompactionStrategyName(value) {
-  if (value === undefined || value === null) return DEFAULT_COMPACTION_STRATEGY;
-  const name = typeof value === "string" ? value.trim() : "";
-  if (name === "" || !isBuiltinCompactionStrategyName(name)) {
-    throw new Error(
-      `未知压缩策略：${JSON.stringify(value)}。可选值：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}`
-      + `（默认：${DEFAULT_COMPACTION_STRATEGY}）`,
-    );
-  }
-  return name;
-}
+// issue #261127-12：策略名字形态已删 ⇒ `DEFAULT_COMPACTION_STRATEGY` 与
+// `resolveCompactionStrategyName`（原 #167 的 CLI 名字解析）一并删除。折叠策略现在**永不为空**且
+// 由引擎内置：`resolveCompactionStrategy(undefined)` 直接返回带默认 summarizer 的 fold-llm，
+// `buildCompactionContext` 不再往 `config.folding.context.strategy` 写策略名，CLI 也不再传名字。
+// （#614 的语义折叠默认、#661 的 `summarizer_failed` 终局、#926 退役 `--compaction`/`config.compaction`
+// 叶子这些结论不变，只是现在由引擎内置兑现，不再需要 CLI 侧的常量与名字解析。）
 
 /**
  * issue #598 —— `config.continuity.handoff` 的 CLI 接线（续接块**默认写者**的开关）。
@@ -137,7 +107,7 @@ export function resolveCompactionStrategyName(value) {
  * 是**手工装配**的——没接的键不会报错，只会被静默忽略。于是用户在 `~/.erix/config.json` 里写
  * `continuity: { handoff: "prompt" }` 等于什么都没写（「配了等于没配」的静默形状）。
  *
- * 形态照抄 `resolveCompactionStrategyName`（#167 的同一把尺子）：
+ * 形态照抄 `resolveCompactionBudget`（同一把「未配置 ⇒ 不写键 / 非法 ⇒ load 期就抛」的尺子）：
  *   · 未配置（`continuity` 整组缺席 / `handoff` 缺席）⇒ `undefined`，`bin/cli.js` 因此**不写**
  *     `config.continuity` 这个键（请求逐字回到今天 = 零行为变更）；
  *   · 合法字面量 ⇒ `{ handoff }`，原样交给引擎（引擎再按 schema 校一次，两处同源不冲突）；
@@ -339,7 +309,7 @@ export async function loadCliConfig({ configPath, model: modelOverride, effort: 
   };
 }
 
-function withRecoveryHint(context, strategyName, recoveryHint, stubFor) {
+function withRecoveryHint(context, recoveryHint, stubFor) {
   if (context === undefined) {
     if (
       (typeof recoveryHint !== "string" || recoveryHint.trim() === "")
@@ -356,7 +326,6 @@ function withRecoveryHint(context, strategyName, recoveryHint, stubFor) {
   }
   return {
     ...context,
-    strategy: strategyName,
     ...(recoveryHint === undefined ? {} : { recoveryHint }),
     ...(stubFor === undefined ? {} : { stubFor }),
   };
@@ -380,9 +349,9 @@ function withRecoveryHint(context, strategyName, recoveryHint, stubFor) {
  * 整条机制已退役（遗忘是常态，召回才是配套手段：`recall_read` 逐字取回被折原文），
  * 所以 CLI 不再往折叠上下文里递这个钩子。
  *
- * ⚠ `strategy` 在本机 CLI 里**永远**是内置策略名（`resolveCompactionStrategyName` 返回字符串），
- * 所以它落数据侧；对象形态的策略对象属 `capabilities.ports.strategy`，CLI 不产生它——真出现时
- * 这里会把它当数据放进 `config.folding.context.strategy`，引擎照旧原样透传（`context.strategy`
+ * ⚠ `strategy` 现在**不由 CLI 写**：折叠策略永不为空（缺省即引擎内置 fold-llm），CLI 不再往
+ * `config.folding.context.strategy` 递策略名（名字形态已删）。对象形态的策略对象属
+ * `capabilities.ports.strategy`，CLI 不产生它——真出现时引擎照旧原样透传（`context.strategy`
  * 的对象形态语义不变），不是静默丢弃。
  *
  * @param {Record<string, unknown>|undefined} context `buildCompactionContext` 的返回值
@@ -403,19 +372,18 @@ export function splitCompactionContext(context) {
 }
 
 export function buildCompactionContext(config, explicitBudget, recoveryHint, stubFor, options = {}) {
-  const strategyName = resolveCompactionStrategyName(config?.compaction);
   // issue #682：**唯一**的优先级实现（旗标 > 配置叶子 > 窗口派生 > 关闭），四处调用方共用。
   const resolved = resolveCompactionBudget(config, explicitBudget);
   if (resolved.budgetTokens === undefined) {
     // 缺窗口 ⇒ 保留「不折叠」（返回 undefined，引擎侧压缩总开关不进入），但**必须出声**：
     // 一行 stderr 告警（默认 sink 进程内去重；测试可注入自己的 sink 断言文本）。
     (options.warn ?? warnCompactionDisabledOnce)(COMPACTION_DISABLED_WARNING);
-    return withRecoveryHint(undefined, strategyName, recoveryHint, stubFor);
+    return withRecoveryHint(undefined, recoveryHint, stubFor);
   }
 
   return withRecoveryHint({
     budgetTokens: resolved.budgetTokens,
     // issue #682：来源进 `config.folding.context`（数据面），子 run 记录因此带得走四态。
     budgetSource: resolved.source,
-  }, strategyName, recoveryHint, stubFor);
+  }, recoveryHint, stubFor);
 }

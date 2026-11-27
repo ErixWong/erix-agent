@@ -78,12 +78,7 @@ export {
 // createJsonFileModelConfigProvider / resolveApiKey / CONFIG_LEAF_BINDING。
 export { loadModelSlot, createProviderForSlot } from "./config/slot-provider.js";
 export { createFoldLlmStrategy, SUMMARIZER_PROMPT_GUIDE } from "./compact/fold-llm.js";
-export {
-  BUILTIN_COMPACTION_STRATEGIES,
-  BUILTIN_COMPACTION_STRATEGY_NAMES,
-  isBuiltinCompactionStrategyName,
-  resolveCompactionStrategy,
-} from "./compact/strategy-resolution.js";
+export { resolveCompactionStrategy } from "./compact/strategy-resolution.js";
 export { createProviderSummarizer } from "./compact/provider-summarizer.js";
 export { createAgent, runToolLoop } from "./loop/orchestrator.js";
 // issue #571 的逐叶绑定事实 `CONFIG_LEAF_BINDING`（原住在 `src/loop/config-namespace.js`）已随
