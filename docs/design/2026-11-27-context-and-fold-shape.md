@@ -88,7 +88,7 @@
 | `run_id` | text | **PK₁** | |
 | `round_no` | int | **PK₂**, FK→rounds | 它属于哪一轮 |
 | `msg_seq` | int | **PK₃** | 轮内单调，从 0 起 |
-| `caller` | text | not null | **谁写的**：`user` / `assistant` / `tool` / `engine` |
+| `caller` | text | not null | **谁写的**：`user` / `assistant` / `tool` / `judge` / `engine` |
 | `role` | text | not null | **协议要求它装成谁**：`user` / `assistant` / `system` |
 | `content` | jsonb | not null | 块数组（`text` / `tool_use` / `tool_result` / `image`），保序 |
 | `dedup_key` | text | not null | 写侧幂等身份 |
@@ -102,10 +102,11 @@
 | `user` | 人 / 宿主提问（`steer` 也走这里） | user |
 | `assistant` | 模型返回（可同时带 text 和 tool_use） | assistant |
 | **`tool`** | **工具结果** | **user** ← 协议把它塞进 user 消息，但作者不是用户 |
-| `engine` | 引擎注入（judge nudge / guard revise） | user |
+| `judge` | **judge 模型的评审意见**（引擎只是转述） | user |
+| `engine` | 引擎自己的模板注入（“已到预算上限，请收尾” / guard revise） | user |
 
 一致性约束：`caller='tool'` ⇔ 含 `tool_result` 块；`caller='assistant'` 可含 `tool_use` 块；
-`caller='user'` 只含 text（提问）；`caller='engine'` 不含 `tool_result`。
+`caller='user'` 只含 text（提问）；`caller IN ('judge','engine')` 不含 `tool_result`。
 
 **顺序从自然键推出来，不需要全局序号**：
 
@@ -291,6 +292,7 @@ runs 1─┬─N rounds ──── N messages（消息是最小单位，每轮
 | `folds.title` / `folds.description` / `folds.intent` | **折叠事实**（本折日志） | `folds` |
 | 实际喂给模型的那串字节 | **请求事实**。今天字段名有两个，别混：`foldedSummary.text` 是折叠后**整条消息**的投影（含原任务正文与安全层插的 `[已修剪]`）；`foldedSummary.fedSummaryText` 才是「写侧当场证得的那一块」逐字副本 | 留在**该轮的记录**上，不从 `folds` 派生 |
 | `requestStateBlock` | 会话状态块的渲染 | run-state |
+| **judge 决策**（done / confidence / reason / evidence / direction） | **控制流证据**，不进上下文、不参与渲染 | **外部账**：`judge.log`，按 `runId` join。形状只收它**注入的那条消息**（`caller='judge'`） |
 | `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的区间 + 例外查询），不落正文 |
 | `compactionStats[].foldSummary` | 指标 | 诊断面，只放信号 |
 
