@@ -280,7 +280,6 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `intent` | jsonb | not null | **折叠前的白板全文**（机械抄）——渲染成 `## 意图`。**今天不存在**：没有白板可抄，这是新能力（`runs.board` 是它的来源） |
 | `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空。**今天不存在**：折叠时不抓 commit，这是新能力 |
 | `trigger` | text | not null | `budget` / `context_window_recovery` / `manual`。**今天零对应**（代码里只有 `strategy` 和 `degradeReason`）。读者是**调参的人**：「我们为什么一直在折——预算还是超窗恢复？」记的是当时的决定，不从 `tokens_before` 反推。`manual` 是宿主唯一能介入折叠的地方——**触发可以，写正文不行** |
-| `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行**。读者是**渲染**：被取代的折不渲染——否则恢复后重折的那一段会出现两次（旧折描述半段、新折描述整段） |
 | `created_at` | timestamptz | not null | 信封时刻 |
 
 **没有 `source`（折叠文本的作者）**：今天代码里它有两个来源值 `llm` / `host`，但**宿主那条零生产者**——
@@ -294,6 +293,11 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 （代码里还有两个字段在这条路上被一并丢掉：`origin`（mechanical/semantic/host，写者）与 `source`
 （statistical/strategy/llm/host，文本来自策略还是摘要器）。它们本来正交；本形状里统计策略与降级都删了，
 两者各自只剩一个真实值，所以都不需要。）
+
+**没有 `superseded_by`**：折叠水位线（`foldedThrough`）**单调前进**，所以「回头重折同一段」不是一条存在的路径
+（代码里 `supersed` 只出现在 notes 的版本栈，折叠域零处）。就算真出现两折覆盖同一段，渲染取
+「每个切点的 `max(seq)`」即可——`DISTINCT ON (cut_round, cut_msg_seq) ... ORDER BY seq DESC`，
+可派生，不进列。
 
 **代码里有、形状里故意没有的四样**（不写清楚就会被当成遗漏，下次有人补回来）：
 
