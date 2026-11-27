@@ -385,8 +385,7 @@ SELECT * FROM messages
 “这段会话到底干了什么”——宿主横幅与人类阅读都要它，但**也不要存**：
 
 ```sql
-SELECT seq, title FROM folds
- WHERE run_id = ? AND superseded_by IS NULL ORDER BY seq;
+SELECT seq, title FROM folds WHERE run_id = ? ORDER BY seq;
 ```
 
 拼出来就是概述；超过一定条数会自动并成分组行（①），再想细就拼 `description`。
@@ -481,7 +480,7 @@ runs 1─┬─N rounds ──── N messages（最小单位，轮内按 msg_s
 | 白板（`runs.board`）vs `notes` | **现状 vs 可查存档**：白板每轮整块注入、整块替换；`notes` 一条一条，按需 `note_read` | `runs.board` / `notes`，不互相派生 |
 | **judge 决策**（done / confidence / reason / evidence / direction） | **控制流证据**，不进上下文、不参与渲染 | **外部账**：`judge.log`，按 `runId` join。形状只收它**注入的那条消息**（`caller='judge'`） |
 | `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的切点查询），不落正文 |
-| `compactionStats[].foldSummary` | 指标 | 诊断面，只放信号 |
+| `folds.tokens_before` / `tokens_after` / `anchors_dropped` | **本折的指标** | `folds` 行上，不另立诊断表 |
 
 **写点后移**：喂给模型的那串字节要在**请求组装处**（所有压缩层定稿之后）写。于是它记的就是"模型真正
 看到的那一串"，不再需要「钉住块对象身份 + 自证」。
@@ -687,7 +686,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 9. **一条信息只住一处**：现状→白板，历史→日志，细节→账本，常量→项目指令；**机械内容各自成列**，不混进 `description`。
 10. **轮行与消息同一事务落盘**：不存在「半行」。崩溃的形状是「这一轮没有行」，而「轮跑到一半」的证据在消息层——
     **悬空的 `tool_use`**（没有对应 `tool_result`），§3.9 的闸门判它。
-11. **顺序靠自然键**：轮内 `msg_seq`，跨轮 `round_no`，折叠 `folds.seq`。没有全局序号，`ts` 不作顺序依据。
+11. **顺序靠自然键**：轮内 `msg_seq`，跨轮 `round_no`，折叠 `folds.seq`。没有全局序号，`created_at` 不作顺序依据（墙钟会回拨）。
 12. **恢复不猜状态**：未结清的工具调用，恢复时不自动重跑，只补一条"状态未知"的桩，判断交给模型。
 
 ---
