@@ -75,7 +75,6 @@
 | `termination_reason` | text | 可空 | **怎么结束的**：`end_turn` / `judge_done` / `no_tool` / `stall` / `max_rounds_cap` / `aborted` / `failed` / `persistence_failed`。**`NULL` = 没结束**（在飞，或崩了）——收口与否由它表达，不另立 `status` |
 | `termination_detail` | text | 可空 | 一句人可读说明。**读者是宿主 UI**（引擎内零读）——错误文本没有第二个家：返回对象宿主不落盘就没了 |
 | `termination_error_code` | text | 可空 | 仅 `reason='failed'` 时：`timeout` / `rate_limited` / `auth` / `unknown` |
-| `state_version` | int | not null | **状态块注入过几次**。计数器，不可派生 |
 | `low_budget_prompted` | boolean | not null default false | **防重复**：低预算提示已经给过 |
 | `guard_extension_used` | boolean | not null default false | **防重复**：扩轮额度已经领过 |
 | `context_recovery_used` | boolean | not null default false | **防重复**：上下文超窗恢复额度已经领过 |
@@ -100,9 +99,9 @@
 
 `guardVerdict` / `guardMetrics` 是诊断面（宿主调试用）——**不占列**：它们的读者只有调试者，而验证结论本身已由 `verification_status` / `verification_reason` 两列表达。
 
-**`state_version` 这个名字是有意的**：代码里叫 `stateVersion`，会被所有人读成"版本号"，而它数的只是
-**注入次数**。它也不是 schema 代次——快照格式的代次随 `state` 一起删掉了（见下），代次属于存储层，
-不属于形状。
+**没有 `state_version`**：它数的是"状态块注入过几次"，读者只有两个——① 笔记目录的 stale 判定、
+② `semantic` 缓存的过期判定。本形状里状态块**每轮现拼**（§2 的 `requestStateBlock` 是派生）、
+`semantic` 缓存整个不存在 ⇒ **没有"版本"这个概念**，计数没有消费者。
 
 **这五个「一次性事实」是列，不是 jsonb**：它们原来住在 `state.deterministic` 里，用**键不存在**表示
 「没发生过」。换成 `default false` 的列之后：① 「缺席 vs false」的歧义消失；② 可以直接查
@@ -114,7 +113,7 @@
 | 键 | 非默认值的快照 | 能不能算出来 |
 |---|---|---|
 | `tools` 非空 | 51（57%） | **能**（数 `tool_use` 块） |
-| `stateVersion > 0` | 28（31%） | 不能（计数器）→ 列 |
+| `stateVersion > 0` | 28（31%） | 计数器，但本形状里没有读者 → **删** |
 | `filesWritten` 非空 | 19（21%） | **能**（扫写工具入参） |
 | `foldedRounds > 0` | 10（11%） | **能**（`max(cut_round)`） |
 | `lowBudgetPrompted` | 8（9%） | 不能（决定）→ 列 |
@@ -284,7 +283,6 @@ msg_seq=3  tool       [tool_result(tu_3)]
 |---|---|---|---|
 | `run_id` / `seq` | text / bigint | **PK(run_id, seq)** | `seq` = 会话内严格递增折叠序 |
 | `cut_round` / `cut_msg_seq` | int | not null | **切点**：这一折吃掉了「≤ 此切点」的全部消息 |
-| `prior_seq` | bigint | FK→folds(run_id, seq)，可空 | 续写基底 = 上一折。**用外键，不用哈希** |
 | `title` | text | 可空，≤ 60 | **模型写的短标题**。模型没给就是 `NULL`——**不许用正文首行顶替**（见 §3.4 ①）。`NULL` 本身就是标记：渲染时这种折不进「遥远的回忆」层 |
 | `description` | text | not null | **模型写的四节**（行动 / 遗留 / 关键词 / 锚点），约 400 token。锚点节的每一条在**写入前已逐条验证**（见 §3.8） |
 | `anchors_dropped` | int | not null default 0 | 模型在 `## 锚点` 里声称、但**在被折走的原文里找不到**的条数。>0 = 模型抄错了（幻觉或笔误），已丢弃。不静默 |
@@ -322,7 +320,7 @@ msg_seq=3  tool       [tool_result(tu_3)]
 | `toolCalls: [{name, argsSummary}]`（每折的工具足迹） | `description` 的 `## 行动`——模型写的比机械足迹有用 |
 | `bytes` / `bytesBefore` / `truncated` | `tokens_before` / `tokens_after`——序列化尺子 vs 预算尺子，只留后者 |
 | `degradeReason` | 不降级：解析不出就是折叠失败 |
-| `fingerprint` | 折叠身份改用三元组 `(cut_round, cut_msg_seq, prior_seq)` |
+| `fingerprint` | 折叠身份改用主键 `(run_id, seq)` |
 
 **没有 `compaction_stats`**：今天的六层压缩里只有 `foldLlm` 是折叠——`slidingWindow` 是**整轮丢弃**
 （新形状里被梯度渲染取代，内容不丢）、`foldStatistical` 新形状里没有、`anchors` 是折叠的附属产物、
@@ -332,8 +330,9 @@ msg_seq=3  tool       [tool_result(tu_3)]
 **没有 `description_tokens`**：`estimateTokens(description)` 对 ≤4000 字符是微秒级，每轮最多算 10 折；
 而这一列连代码里的读点都没有。缓存列的不一致风险（换 tokenizer 就过期）是实的。
 
-**折叠的身份是三元组** `(cut_round, cut_msg_seq, prior_seq)`：切到同一个点先后两次折（恢复前 `prior_seq=NULL`、
-恢复后 `prior_seq=3`）是**两次折叠**，不是一次。哈希身份是为"没有行 id 的存储"发明的，有了主键就没有理由。
+**折叠的身份就是主键 `(run_id, seq)`**。不需要哈希（那是给"没有行 id 的存储"发明的），也不需要
+`prior_seq`——切点严格连续 ⇒ "上一折"恒等于 `seq - 1`；水位线单调 ⇒ "同一切点两次折"这个场景不存在
+（代码里 `prior` / `previousFold` 零命中）。覆盖区间是 `(上一折的切点, 本折的切点]`，由 `seq` 顺序推。
 
 **没有 `stage_no`**：分组是渲染时现算的（§1.6），不在行上。
 
@@ -457,7 +456,6 @@ runs 1─┬─N rounds ──── N messages（最小单位，轮内按 msg_s
        │                     ↑
        │            切点 (cut_round, cut_msg_seq)：折走的就是「≤ 切点」那一段
        ├─N folds ───────────┘   （成员是查询出来的，不建成员表）
-       │    └─ N:1 folds（prior_seq = 续写基底）
        ├─1 board（一列文本，不是表）
        └─N notes（含 superseded 版本栈）
 ```
