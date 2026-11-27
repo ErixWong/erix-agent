@@ -69,8 +69,7 @@ function richInput() {
       cwd: "/work/proj",
       maxRounds: 9,
       timeoutMs: 60_000,
-      // issue #925/#926：内置策略名只剩 `fold-llm`
-      strategy: "fold-llm",
+      // issue #261127-12：`strategy` 选项已删（删名字形态）——不再出现在入参里。
       finalGuardTimeoutMs: 12_345,
     },
     slot: { contextWindowTokens: 200_000, maxOutputTokens: 4_096 },
@@ -182,12 +181,8 @@ function legacyFlatOptions(input) {
       };
     }
   }
-  // #498 S3 (`folding` slice): `context` is retired as a flat option. `params.strategy` here is a
-  // **built-in name** (data), so it belongs to `config.folding.context.strategy` — the object form
-  // would go to `capabilities.ports.strategy` instead. The equivalence claim is unaffected: the
-  // expansion phase writes it back to `effectiveOptions.context.strategy`.
-  // Merged into the **same** `config` tree (a second `config:` key would replace the timing one).
-  if (params.strategy !== undefined) options.config.folding = { context: { strategy: params.strategy } };
+  // issue #261127-12：删名字形态后 `context`/`strategy` 整体退役——引擎只接受策略对象，本层
+  // 不再写 `config.folding.context.strategy`（名字串会被引擎 TypeError 拒）。folding 组不再下发。
   // #498 S3 (`guard` slice): `finalGuardTimeoutMs` is retired as a flat option too — the golden writes
   // it at its canonical home `config.guard.finalGuardTimeoutMs`. Same mechanism as the `timing` /
   // `folding` keys above: the expansion phase writes it back to `effectiveOptions.finalGuardTimeoutMs`,
@@ -344,7 +339,7 @@ test("S6-A2 默认路径一个字节都不多：没开 finalGuard / 没声明判
   });
   assert.equal(Object.hasOwn(options.config.run, "reflection"), false, "reflection 未指定时不下发（引擎缺省）");
   assert.equal(Object.hasOwn(options.config, "guard"), false, "finalGuard 未开时连 guard 组都没有");
-  assert.equal(Object.hasOwn(options.config, "folding"), false, "没传 strategy 时不下发 folding.context");
+  assert.equal(Object.hasOwn(options.config, "folding"), false, "issue #261127-12：harness 永不写 folding 组");
   assert.equal(Object.hasOwn(options.config.metadata, "modelMetadata"), false, "预算元数据不齐时一个字段都不给");
   assert.equal(Object.hasOwn(options, "capabilities"), false, "没有回调也没有判据 ⇒ 连 capabilities 容器都没有");
 });
@@ -559,7 +554,7 @@ test("S6-D 离线 e2e：四件套 / verification.status / sessionDir 产物位�
     const upstream = scriptedFetch([endTurnResponse("任务已完成：改好了 a.js 第 2 行")]);
     const progressLines = [];
     const payload = await core.runErixRun(
-      { task: "修 bug", cwd: dir, maxRounds: 4, strategy: "fold-llm", timeoutMs: 60_000, sessionDir },
+      { task: "修 bug", cwd: dir, maxRounds: 4, timeoutMs: 60_000, sessionDir },
       { ...offlineDeps({ dir, fetchImpl: upstream.fetchImpl, slot: SCRIPTED_SLOT }), onProgress: (line) => progressLines.push(line) },
     );
 

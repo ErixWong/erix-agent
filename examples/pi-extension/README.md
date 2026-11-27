@@ -87,7 +87,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `task` | 派工必填 | — | 交给内层 run 的**自包含**任务描述。内层看不到本次 pi 会话历史，必要上下文必须写进 `task`。⚠ #234 之后它在 schema 层**不再硬 required**（`action:"status"` 这类查询调用不带它），必填性改由运行时守：缺了就当场 `ok:false` + `error.code:"bad_params"` |
 | `cwd` | 派工必填 | — | 内层工作目录，必须是**已存在的绝对路径**（只认 `~/` 前缀：`~/x` → `<home>/x`；`~\x` / `~x` 原样不动，见下方 ⚠）。相对路径直接判 `bad_params` |
 | `maxRounds` | | `8` | 内层工具循环轮数预算（1..100）。**≥16 会自动开启 judge**（与 `bin/cli.js` 同一策略，`ERIX_NO_REFLECTION=1` 可关） |
-| `strategy` | | 引擎缺省 | 压缩策略内置名字：**只有 `fold-llm`**（#925/#926 收口；机械策略仍以对象形态存在于引擎内部，但不再是可选名字）。交给引擎在启动期实例化，见 `docs/host-consumer-contract.md`「Compaction strategy selection」） |
+| `strategy` | | 引擎缺省 | **已删的扁平选项**（#261127-12 删名字形态）：传了不解析、不转发。引擎缺省即内置 `fold-llm`（注入默认 summarizer），折叠不会因此关闭；机械策略（零 LLM）仍以对象形态存在于引擎内部，但本扩展不再按名字暴露。见 `docs/host-consumer-contract.md`「Compaction strategy selection」 |
 | `timeoutMs` | | `600000`（10 分钟） | 硬超时，1000..21600000。到点 `abort` 内层 run 并在返回里标注 `timeout: true` |
 | `model` | | 槽位里的 model | 覆盖 `slots.default` 的模型名（endpoint / apiKey 仍走该槽位） |
 | `sessionDir` | | 不落盘 | **过程落盘目录**（绝对路径，只认 `~/` 前缀展开；不存在则递归创建）。给了它就把内层 transcript 落到 `<sessionDir>/<runId>.jsonl`、judge 决策落到 `<sessionDir>/outputs/<runId>/judge.log`，并在返回的 `artifacts` 里给出真路径。坏目录（指到文件 / 不可写）归一成 `bad_params` 终局 |
@@ -1014,8 +1014,10 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
   审计（intercept）也按频率抽样的 judge 调用。要压住扩轮的花费就 `maxExtensions: 0`（一次也不扩），
   要控住总量就同时传 `maxRoundsCap` / `extensionStep`（扩轮后的总轮数硬顶与步长）。
 - **`fold-llm` 每压缩一次多花一次主力模型调用**（输入约等于被折叠轮次的大小，见契约「Compaction
-  strategy selection」）。本扩展不传 `strategy` 时走**库层默认**：预算溢出时由 `sliding-window` 接手
-  （零 LLM）；要更省就别选语义折叠，在调用侧显式传 `strategy: "fold-statistical"`。
+  strategy selection」）。本扩展删了扁平 `strategy` 选项后**不传策略**，即走引擎内置 `fold-llm`
+  （注入默认 summarizer）；折叠不会因此关闭，要关掉折叠得**不给预算**。零 LLM 机械策略
+  （`sliding-window`）只在「LLM 折完仍超预算」时由引擎作预算兜底接手
+  （`degradeReason = "budget_fallback_mechanical"`）。
 - **`maxRounds ≥ 16` 会自动开 judge**（每轮 end_turn 一次评估 + 可能的扩轮），`ERIX_NO_REFLECTION=1` 关。
   开着的 run 可以用 `maxExtensions` / `maxRoundsCap` / `extensionStep` 调扩轮形状（直传引擎
   `reflection:{…}`，**本层不改引擎默认值**：不传就一个键都不写）；`maxExtensions: 0` 是「一次也不许扩」。

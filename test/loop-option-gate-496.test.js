@@ -344,7 +344,7 @@ test("A② 语义相晚于 assemblyPortOptions、早于能力缺失检查（配�
 
 test("A③ 语义相吃的是**合并后**的表示：装配口的合法值 + 显式 undefined 不覆盖", async () => {
   // 装配口给合法 `maxSummaryTokens`（正例，防过严）：显式 `context: undefined` 不得把它抹掉。
-  const port = makePort({ context: { strategy: "fold-llm", maxSummaryTokens: 900 } });
+  const port = makePort({ context: { maxSummaryTokens: 900 } });
   const result = await runToolLoop(withSeed({
     assemblyPort: port,
     initialUserMessage: "go",

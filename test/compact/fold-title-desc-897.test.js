@@ -112,7 +112,6 @@ async function foldOnce({ runId, summarizeReply, maxBytes }) {
         context: {
           budgetTokens: 1300,
           keepRounds: 0,
-          strategy: "fold-llm",
           ...(maxBytes === undefined ? {} : { maxFoldedFactsBytes: maxBytes }),
         },
       },

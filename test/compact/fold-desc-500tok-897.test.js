@@ -191,7 +191,7 @@ test("#897-6 端到端：800 token description ⇒ 落账 foldedFacts.descriptio
     maxRounds: 20,
     completion: false,
     reflection: false,
-    config: { folding: { context: { budgetTokens: 2400, keepRounds: 0, strategy: "fold-llm" } } },
+    config: { folding: { context: { budgetTokens: 2400, keepRounds: 0 } } },
     store,
     runId,
     seed: `start ${"y".repeat(1500)}`,

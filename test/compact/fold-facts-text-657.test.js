@@ -86,7 +86,7 @@ async function runChain({ runId, provider, budgetTokens = 1700, toolBytes = 600,
     // 全部用规位拼写（不新增扁平写点，否则本文件过去会在 `scripts/compat-pin-allowlist.mjs`（已删）里多出清单外写点而令 `check:inventory`（该闸已删）变红）。
     config: {
       run: { maxRounds: 20, completion: false, reflection: false },
-      folding: { context: { budgetTokens, keepRounds: 0, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens, keepRounds: 0 } },
     },
     seed: `${TASK_MARKER} ${"y".repeat(seedBytes)}`,
     store,
@@ -186,7 +186,7 @@ test("#657-8 反向锁（issue #661 反转）：摘要器失败 ⇒ 根本没有
     executeTool: async ({ id }) => `tool output ${id} ${TOOL_FILLER.repeat(600)}`,
     config: {
       run: { maxRounds: 20, completion: false, reflection: false },
-      folding: { context: { budgetTokens: 1700, keepRounds: 0, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens: 1700, keepRounds: 0 } },
     },
     seed: `${TASK_MARKER} ${"y".repeat(1500)}`,
     store,

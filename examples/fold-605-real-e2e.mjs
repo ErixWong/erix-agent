@@ -1,7 +1,7 @@
 // issue #605 真机复跑（**一次性脚本，不是门禁**）：分段折叠块的「近期给全 / title / 头行」三处修复。
 //
-// ⚠ **本脚本是「统计臂」（`strategy: "fold-statistical"`）的回归，不是默认路径的覆盖。**
-// #614 之后 CLI 的默认策略是 `fold-llm`，所以这里钉死 `fold-statistical` 意味着**它验的不再是默认
+// ⚠ **本脚本是「统计臂」（传 `createFoldStatisticalStrategy()` 对象）的回归，不是默认路径的覆盖。**
+// #614 之后引擎默认策略是 `fold-llm`，所以这里显式传统计策略对象意味着**它验的不再是默认
 // 那条路**。默认臂（`fold-llm`）的覆盖在 `examples/fold-default-real-e2e.mjs`（= `check:release:model-e2e`（该闸已删）
 // 第 ⑥ 步，issue #619），那边断言的是「语义分节在场 / 摘要器请求 ≥1 / 被折轮次 TOK 标记逐字保留 /
 // 摘要器超时降级」——比这里更贴近默认路径。
@@ -18,7 +18,7 @@
 // 脚本会在 `折叠块根本没出现` 上当场红，而不是「静默变成另一个东西」。
 //
 // 复现 issue 正文的现场：30 段逐段翻译（每段一次 `getParagraph(i)`）+ `config.folding.context`
-// `{ budgetTokens: 4000, strategy: "fold-statistical" }` + `maxRounds: 60` + `ERIX_NO_REFLECTION=1`。
+// `budgetTokens: 4000` + `maxRounds: 60` + `ERIX_NO_REFLECTION=1`（策略以对象走 `capabilities.ports.strategy`）。
 //
 // 用法（**只有显式开门才跑**，缺省打印 skip 并退出 0）：
 //   ERIX_E2E_MODEL=1 ERIX_NO_REFLECTION=1 node examples/fold-605-real-e2e.mjs
@@ -34,7 +34,7 @@
 // 隔离：不写任何 `~/.erix` 产物（不给 store）；唯一的输出是 stdout 上的块原文。
 
 import { createOpenAIProvider, runToolLoop } from "../src/index.js";
-import { FOLD_SUMMARY_MARKER } from "../src/compact/fold-statistical.js";
+import { FOLD_SUMMARY_MARKER, createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { formatSkip, printableEndpoint, resolveRealUpstream } from "./e2e-real-gate.mjs";
 
 const SEGMENTS = 30;
@@ -171,8 +171,11 @@ const result = await runToolLoop({
       wrapup: false,
     },
     run: { runId: "fold-605-real", maxRounds: 60, completion: false, reflection: false },
-    folding: { context: { budgetTokens: 4_000, strategy: "fold-statistical" } },
+    folding: { context: { budgetTokens: 4_000 } },
   },
+  // 机械策略以**对象**形态走 `capabilities.ports.strategy`：`config` 子树要过 JSON 往返，带函数的对象
+  // 不能塞进 `config.folding.context.strategy`；名字形态已删（#261127-12），传 `"fold-statistical"` 会启动期 TypeError。
+  capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
 });
 
 console.log(`[605-real] termination=${JSON.stringify(result.termination)} rounds=${result.rounds}`

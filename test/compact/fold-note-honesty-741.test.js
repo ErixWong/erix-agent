@@ -387,7 +387,7 @@ test("③归档夹断丢掉原文 ⇒ droppedMessages/droppedBytes 进 compactio
     // `capabilities.hooks` ⇒ 本文件不写退役的扁平拼写，不会成为 `scripts/compat-pin-allowlist.mjs` 里的清单外写点。
     config: {
       run: { completion: false, reflection: false },
-      folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", maxFoldedPayloadBytes: 600 } },
+      folding: { context: { budgetTokens: 300, keepRounds: 0, maxFoldedPayloadBytes: 600 } },
     },
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     store,
@@ -437,7 +437,7 @@ test("③归档没有丢弃 ⇒ 不写 foldArchive 键（无事实不写键，�
     // 默认归档上限（256 KiB）⇒ 这一折什么都没丢。
     config: {
       run: { completion: false, reflection: false },
-      folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens: 300, keepRounds: 0 } },
     },
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     store,

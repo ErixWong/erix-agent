@@ -52,12 +52,10 @@ function createSummarizingProvider({
 }
 
 // issue #873（MIN_KEEP_ROUNDS=5）：有效保留下限 = max(keepRounds, 5)，`keepRounds: 0` ⇒ 实际按 5 算。
-// 旧注释（keepRounds:0 留 1 轮）是加 MIN_KEEP_ROUNDS 之前的口径，已失效。新口径下：预算太小会被
-// `sliding-window` 兜底层抢先整轮丢，配置策略在 len≤5 时折 0 轮 ⇒ 摘要器从不调、fold-statistical 也不
-// compact（这正是本文件 6 例红的根因）。正解是**让历史先长过 5 轮再由配置策略折**：把 BASE_SCRIPT 扩到
-// **6 个 tool 轮 + 收尾**，并把预算抬到 1100（target=715）：实测第一次超预算时恰有6 轮、策略恰好折
-// 最老那一轮（范围「第 1 轮 - 第 1 轮」）、摘要器恰好调 1 次，与契约断言逐字对齐。
-// 契约断言逐字保留；只把随夹具形状变化的 `result.rounds` 从 3 改 7（6 tool 轮 + 收尾，摘要不占轮）。
+// 预算太小会被 `sliding-window` 兜底层抢先整轮丢，配置策略在 len≤5 时折 0 轮 ⇒ 摘要器从不调。
+// 正解是让历史先长过 5 轮再由策略折：把 BASE_SCRIPT 扩到 6 个 tool 轮 + 收尾，并把预算抬到 1100
+// （target=715）：实测第一次超预算时恰有 6 轮、策略恰好折最老那一轮（范围「第 1 轮 - 第 1 轮」）、
+// 摘要器恰好调 1 次。契约断言逐字保留；`result.rounds` 为 7（6 tool 轮 + 收尾，摘要不占轮）。
 const BASE_SCRIPT = [
   { content: [{ type: "tool_use", id: "work-1", name: "work", input: { path: "src/a.js" } }], stopReason: "tool_use" },
   { content: [{ type: "tool_use", id: "work-2", name: "work", input: { path: "src/b.js" } }], stopReason: "tool_use" },
@@ -83,9 +81,9 @@ async function runWithProvider(provider, context, usageSink, { toolOutputChars =
     maxRounds: 16,
     completion: false,
     // #498 S3: split by **value shape**, not by key name. A strategy **object** is a behaviour
-    // carrier (`capabilities.ports.strategy`); a strategy **name** (`"fold-llm"`) or a bad scalar
-    // (`7`) is data and stays in `config.folding.context` — which is also why the "non-string,
-    // non-object strategy values fail at startup" cell below still goes red at the same place.
+    // carrier (`capabilities.ports.strategy`); a bad scalar (`7`) or the retired strategy **name**
+    // (`"fold-llm"`) is data and stays in `config.folding.context` — both fail at the same startup
+    // place inside `resolveCompactionStrategy`.
     config: { folding: { context: { budgetTokens: 1100, keepRounds: 0, ...dataOnly } } },
     store: createMemoryTranscriptStore(),
     runId: "compaction-strategy-name",
@@ -101,12 +99,8 @@ async function runWithProvider(provider, context, usageSink, { toolOutputChars =
   return { result, events };
 }
 
-// #898-2：删两格（原本钉「内置名字面量在装配期解析成一个共享压缩通道」的三名字矩阵，
-// 与「未知名在第一次 provider 调用前就 TypeError」的装配口路径）：
-//   - `built-in names resolve once at startup and drive the same compaction channel`（原 :104）
-//   - `unknown strategy names fail before the first provider call`（原 :115）
-// 本刀后只剩 `fold-llm` 一个可识别内置名，三名字矩阵与「未知名 TypeError」都不再存在；
-// 数据面只剩 `fold-llm`（见下方 by-name 格），机械折叠只剩显式工厂对象这一条退路。
+// issue #261127-12：折叠策略的**名字形态已删**。`"fold-llm"` 曾是唯一合法名字，写与不写等价
+// ⇒ 纯税。缺省即引擎内置 fold-llm（语义折叠），本文件的「by name」格因此改写为「不配策略」格。
 
 test("non-string, non-object strategy values also fail at startup", async () => {
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT });
@@ -117,10 +111,26 @@ test("non-string, non-object strategy values also fail at startup", async () => 
   assert.equal(provider.mainRequests.length, 0);
 });
 
-test("fold-llm by name summarizes folded rounds with the run provider and books the usage", async () => {
+test("the retired strategy name \"fold-llm\" now fails at startup with a TypeError (issue #261127-12)", async () => {
+  // 判据 3（端到端面）：`context.strategy: "fold-llm"` ⇒ 启动期 TypeError，且不发任何主请求。
+  const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT });
+  await assert.rejects(
+    runWithProvider(provider, { strategy: "fold-llm" }),
+    (error) => {
+      assert.ok(error instanceof TypeError);
+      assert.match(error.message, /strategy object/u);
+      return true;
+    },
+  );
+  assert.equal(provider.mainRequests.length, 0);
+});
+
+test("an unconfigured run folds via the built-in fold-llm with the run provider and books the usage", async () => {
+  // 判据 1：不配任何策略 ⇒ 折叠**照常发生**，摘要来自引擎装配的 LLM summarizer（用假 provider 计数）。
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT });
   const usages = [];
-  const { result, events } = await runWithProvider(provider, { strategy: "fold-llm" }, (usage) => usages.push(usage));
+  // 不传 `strategy`：缺省即引擎内置 fold-llm（与旧名字形态逐字等价）。
+  const { result, events } = await runWithProvider(provider, {}, (usage) => usages.push(usage));
 
   // 1) the summary really happened, once, with no tools attached
   assert.equal(provider.summaryRequests.length, 1);
@@ -158,13 +168,13 @@ test("fold-llm by name summarizes folded rounds with the run provider and books 
 });
 
 test("a failing summarizer fails the run with summarizer_failed instead of degrading", async () => {
-  // issue #661 语义反转：改前这条断言「run 照常 end_turn + 折叠块里是降级标记」。
-  // 降级路径已删 ⇒ 摘要器失败 = 终局错误；反向锁：请求里再也不许出现那条降级标记。
+  // issue #661 语义反转：摘要器失败 = 终局错误；反向锁：请求里再也不许出现那条降级标记。
+  // issue #261127-12：不配策略 ⇒ 缺省 fold-llm，其默认 summarizer 失败同样终局。
   const provider = createSummarizingProvider({
     mainScript: BASE_SCRIPT,
     summaryError: new Error("upstream 503"),
   });
-  const failure = await runWithProvider(provider, { strategy: "fold-llm" }).then(
+  const failure = await runWithProvider(provider, {}).then(
     () => assert.fail("摘要器失败必须让 run 以 failed 终局"),
     (error) => error,
   );
@@ -181,14 +191,12 @@ test("a failing summarizer fails the run with summarizer_failed instead of degra
 });
 
 test("an empty summarizer answer fails the run rather than folding into nothing", async () => {
-  // issue #661：空串 / 空白摘要不再降级（那是「模型什么都没产出」，不是成功的空摘要）。
-  // issue #873 MIN_KEEP_ROUNDS=5：`toolOutputChars: 4000` 每轮（含 framing）远超 1000 token；预算 2500
-  // 下 len 只能到 ~2 轮 <5 ⇒ 策略折 0 轮⇒摘要器不调。预算抬到 7000：实测 6 个 tool 轮时恰在
-  // len=6 超预算⇒策略折最老一轮⇒空摘要⇒failed（6500 仍不折）。断言逐字未动。
+  // issue #661：空串 / 空白摘要不再降级。issue #873 MIN_KEEP_ROUNDS=5：`toolOutputChars: 4000`
+  // 每轮远超 1000 token；预算抬到 7000：实测 6 个 tool 轮时恰超预算⇒策略折最老一轮⇒空摘要⇒failed。
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT, summaryText: "   " });
   const failure = await runWithProvider(
     provider,
-    { strategy: "fold-llm", budgetTokens: 7000 },
+    { budgetTokens: 7000 },
     undefined,
     { toolOutputChars: 4000 },
   ).then(
@@ -203,6 +211,7 @@ test("an empty summarizer answer fails the run rather than folding into nothing"
 });
 
 test("object-form strategies keep working verbatim, including their own summarizer", async () => {
+  // 判据 2：宿主给对象 ⇒ 用宿主那个（含「对象形态不吃引擎 summarizer」这条）。
   const injectedCalls = [];
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT });
   const strategy = createFoldLlmStrategy({
@@ -230,9 +239,7 @@ test("object-form strategies keep working verbatim, including their own summariz
 });
 
 // issue #486 P1-B：宿主 abort run 之后，折叠摘要那一发必须真的被中止。
-// 补丁前 `createProviderSummarizer` 没接 `signal`，而超时恒开 ⇒ `request.signal` 恒是子
-// controller，chat 包装里 `request.signal ?? signal` 把 run 的 signal 永久短路，子 controller
-// 从未接父 abort ⇒ 摘要 HTTP 继续跑到自然完成（token 照扣且不进 engineUsage）。
+// issue #261127-12：不配策略（缺省 fold-llm），摘要器仍由引擎装配，signal 仍须透传。
 test("#486 P1-B 宿主 abort 必须真的中止摘要请求（run 的 signal 不再被短路）", async () => {
   const summaryRequests = [];
   const controller = new AbortController();
@@ -274,7 +281,7 @@ test("#486 P1-B 宿主 abort 必须真的中止摘要请求（run 的 signal 不
       executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
       maxRounds: 16,
       completion: false,
-      config: { folding: { context: { budgetTokens: 1200, keepRounds: 0, strategy: "fold-llm" } } },
+      config: { folding: { context: { budgetTokens: 1200, keepRounds: 0 } } },
       store: createMemoryTranscriptStore(),
       runId: "issue-486-p1b",
     }).catch(() => {}),

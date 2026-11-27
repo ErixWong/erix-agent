@@ -33,7 +33,6 @@ export const DETAILS_DROPPED_KEY = "detailsDropped";
 function diagnosticsLineOf(diagnostics) {
   if (diagnostics === null || typeof diagnostics !== "object") return undefined;
   return `[diagnostics] model=${diagnostics.model ?? "?"}`
-    + ` strategy=${diagnostics.strategy ?? "engine default"}`
     + ` compaction=${diagnostics.compaction?.compactedRounds ?? 0}/${diagnostics.compaction?.events ?? 0}`
     + ` observerErrors=${diagnostics.observerErrors?.count ?? 0}`
     + ` persistenceErrors=${diagnostics.persistenceErrors?.count ?? 0}`

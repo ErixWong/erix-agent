@@ -42,11 +42,11 @@
 // 「默认」从哪里读（**这是本文件最容易写错的一处**）
 //
 // 库层 `resolveCompactionStrategy(undefined)` 返回 `undefined` = **不折叠**：「默认用哪个策略」是
-// **宿主/CLI 的选择**，不是引擎的默认（`src/compact/strategy-resolution.js` 与
-// `bin/config.js#DEFAULT_COMPACTION_STRATEGY` 的注释都写死了这条边界）。所以本文件不传
-// `strategy: "fold-llm"` 字面量（那只是把「写死一条路径」从 605 挪到这里），而是用 CLI 自己的解析器
-// `resolveCompactionStrategyName(undefined)` 取默认值 —— 于是**把 `bin/config.js` 的
-// `DEFAULT_COMPACTION_STRATEGY` 改回 `"fold-statistical"`，默认臂的第 ①② 条断言必红**（反向证见报告）。
+// **宿主/CLI 的选择**，不是引擎的默认（`src/compact/strategy-resolution.js` 的注释也写死了这条
+// 边界）。名字形态删后「默认」只剩一种含义：**不写策略** ⇒ 引擎内置 fold-llm（注入默认
+// summarizer）。所以本文件不传 `strategy: "fold-llm"` 字面量（那只是把「写死一条路径」从 605
+// 挪到这里），而是直接**省略** `strategy`——于是「引擎缺省若变成机械摘要」，默认臂的第 ①②
+// 条断言必红（反向证见报告）。
 //
 // ---------------------------------------------------------------------------
 // 断言各自防什么（issue #619 判据表逐条落地；**测模型的那些已按裁决删掉**）
@@ -88,7 +88,6 @@ import { createOpenAIProvider, runToolLoop } from "../src/index.js";
 import { ANCHOR_SECTION_HEADING, extractAnchors } from "../src/compact/anchors.js";
 import { SUMMARIZER_PROMPT_GUIDE } from "../src/compact/fold-llm.js";
 import { FOLD_SUMMARY_MARKER, createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
-import { DEFAULT_COMPACTION_STRATEGY, resolveCompactionStrategyName } from "../bin/config.js";
 import { estimateMessageTokens } from "../src/tokens.js";
 import { assertGateNotRetired, formatSkip, printableEndpoint, resolveRealUpstream } from "./e2e-real-gate.mjs";
 
@@ -404,7 +403,7 @@ async function gateOrSkip(t) {
     return undefined;
   }
   console.log(`[619] 闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`
-    + `｜CLI 默认压缩策略=${DEFAULT_COMPACTION_STRATEGY}`);
+    + `｜折叠策略=引擎内置 fold-llm（不写策略即此）`);
   return gate;
 }
 
@@ -467,7 +466,7 @@ test("断言集自身的不变量：摘要器分类 / 折叠块定位 / 机械�
 });
 
 // ---------------------------------------------------------------------------
-// 判据 ①②③：默认策略（`bin/config.js#DEFAULT_COMPACTION_STRATEGY`）那一臂
+// 判据 ①②③：默认臂（不写策略 ⇒ 引擎内置 fold-llm，注入默认 summarizer）
 // ---------------------------------------------------------------------------
 
 test("真模型端点 e2e（默认策略臂）：默认 fold-llm ⇒ 块在 + 语义分节 + 摘要器请求 ≥1 + 被折轮次标记逐字保留", {
@@ -476,10 +475,10 @@ test("真模型端点 e2e（默认策略臂）：默认 fold-llm ⇒ 块在 + �
   const gate = await gateOrSkip(t);
   if (gate === undefined) return;
 
-  // 「默认」= CLI 的默认（不传 --compaction 时那个值）。**不写字面量**：写死就等于又钉了一条路径。
-  const strategyName = resolveCompactionStrategyName(undefined);
-  const arm = await runArm({ runId: "fold-default-real-619", gate, strategy: strategyName });
-  reportArm("默认臂", arm, strategyName);
+  // 「默认」= 不写策略 ⇒ 引擎内置 fold-llm（注入默认 summarizer）。名字形态删后这是唯一缺省；
+  // 这里也**不写**字面量策略对象：省略即走引擎缺省（写死就等于又钉了一条路径）。
+  const arm = await runArm({ runId: "fold-default-real-619", gate });
+  reportArm("默认臂", arm, "引擎内置 fold-llm（缺省）");
 
   // 判据 ① 折叠块出现，且含语义分节（`## 阶段` 或 `## 教训与坑`）。
   assertBlockPresent(arm, "默认臂");
@@ -568,14 +567,12 @@ test("真模型端点 e2e（失败路）：摘要器超时 1ms ⇒ 终局 summar
   const gate = await gateOrSkip(t);
   if (gate === undefined) return;
 
-  const strategyName = resolveCompactionStrategyName(undefined);
   const arm = await runArm({
     runId: "fold-summarizer-failed-real-661",
     gate,
-    strategy: strategyName,
     summarizerTimeoutMs: 1,
   });
-  reportArm("失败臂", arm, `${strategyName}（summarizerTimeoutMs=1）`);
+  reportArm("失败臂", arm, "引擎内置 fold-llm（缺省，summarizerTimeoutMs=1）");
 
   // 判据 ⑤-a（#661 反转）：失败是**终局错误**，不是「块里多一段降级标记、run 照常收尾」。
   // 改前这三条断的是 `DEGRADE_PATTERN` 在场 + `termination.reason === "end_turn"` +

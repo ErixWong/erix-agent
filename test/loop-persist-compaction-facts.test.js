@@ -81,12 +81,12 @@ const endTurn = (value) => ({ content: [{ type: "text", text: value }], stopReas
 // issue #873：budget 300 ⇒ 引擎第 1 轮就触发但只有 1 轮⇒新语义 keepRounds:0 留 1 不折
 // ⇒fold-llm 不调摘要器⇒无 foldedSummary。提到 450（>1轮364、<2轮524⇒隔一轮触发）。
 // 各用例 mainScript 同步补到 ≥2 个 tool 轮。断言逐字未动。
-const foldContext = { budgetTokens: 450, keepRounds: 0, strategy: "fold-llm" };
+const foldContext = { budgetTokens: 450, keepRounds: 0 };
 // issue #873 MIN_KEEP_ROUNDS=5：`keepRounds:0` 实际按 5 算，旧夹具的 2 个 tool 轮长不到 6 轮
 // ⇒ 策略折 0 轮、摘要器从不调（下面三个 #326-C 格的根因）。正解：历史先长过 5 轮再由策略折。
 // 实测 7 个 tool 轮 + 预算 1200（target=780）⇒ 首次超发生在 len=7 ⇒ keepFloor=2 ⇒ 恰折最老两轮
 // ⇒ 恰好 1 次摘要、一条 foldedSummary、区间 {from:1,to:2}（与下方逐字断言对齐）。
-const foldContext873 = { budgetTokens: 1200, keepRounds: 0, strategy: "fold-llm" };
+const foldContext873 = { budgetTokens: 1200, keepRounds: 0 };
 const foldMain873 = [
   toolTurn("t1"), toolTurn("t2"), toolTurn("t3"), toolTurn("t4"), toolTurn("t5"), toolTurn("t6"), toolTurn("t7"),
   endTurn("收尾结论"),

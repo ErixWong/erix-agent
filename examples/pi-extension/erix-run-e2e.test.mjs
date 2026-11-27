@@ -952,18 +952,14 @@ test("erix_run 真机 e2e（#654 多会话）：两个会话先注册完（A 先
 });
 
 // ---------------------------------------------------------------------------
-// 抄件与真值的一致性（copilot 验收 nit）：`STRATEGY_NAMES` 是**手抄的一份字面量**，
-// 抄宽了就会放行一个引擎必拒的值（#956：`strategy: "sliding-window"` ⇒ run 以
-// `termination: failed` 收尾、usage 全 0、artifacts 全 null，而本层先放行、事后再报）。
-// 这一格钉「抄件 == 引擎真值」，让下一次引擎收口名字时**本文件当场红**，不必等真机 e2e。
+// issue #261127-12（BREAKING）：名字形态整体删除——引擎侧 `BUILTIN_COMPACTION_STRATEGY_NAMES` /
+// `isBuiltinCompactionStrategyName` 已删，本层 `STRATEGY_NAMES` 与扁平 `strategy` 选项也已删。
+// 这一格反向钉住「两边都不在了」（同于 src/index.js 的入口形状锁）：将来有人又把名字拾回来就当场红。
 // ---------------------------------------------------------------------------
-test("STRATEGY_NAMES 与引擎的内置策略名集合逐字相等（抄件不许漂）", async () => {
+test("删名字形态后两边的名字导出都不在了（反向锁）", async () => {
   const core = await import("./erix-run-core.js");
-  const { BUILTIN_COMPACTION_STRATEGY_NAMES } = await import("../../src/compact/strategy-resolution.js");
-  assert.deepEqual(
-    [...core.STRATEGY_NAMES].sort(),
-    [...BUILTIN_COMPACTION_STRATEGY_NAMES].sort(),
-    "erix_run 的 STRATEGY_NAMES 必须与 src/compact/strategy-resolution.js 的内置名字集合相等"
-      + "（抄宽了会放行引擎必拒的值；抄窄了会拒掉引擎认的值）",
-  );
+  const resolution = await import("../../src/compact/strategy-resolution.js");
+  assert.equal(core.STRATEGY_NAMES, undefined, "本层 STRATEGY_NAMES 必须已删");
+  assert.equal(resolution.BUILTIN_COMPACTION_STRATEGY_NAMES, undefined, "引擎 BUILTIN_COMPACTION_STRATEGY_NAMES 必须已删");
+  assert.equal(resolution.isBuiltinCompactionStrategyName, undefined, "引擎 isBuiltinCompactionStrategyName 必须已删");
 });

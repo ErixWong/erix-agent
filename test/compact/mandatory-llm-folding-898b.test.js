@@ -25,7 +25,7 @@ import { promisify } from "node:util";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
 import { FOLDED_FACTS_RECORD_FIELD } from "../../src/compact/fold-summary-journal.js";
-import { BUILTIN_COMPACTION_STRATEGY_NAMES } from "../../src/compact/strategy-resolution.js";
+import { resolveCompactionStrategy } from "../../src/compact/strategy-resolution.js";
 import { loadCliConfig } from "../../bin/config.js";
 import { runDirect } from "../helpers/run-direct.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
@@ -61,11 +61,11 @@ function toolProvider(rounds) {
  *   strategy?: object, runId: string }} options
  */
 async function runFold(options) {
-  const { budgetTokens, rounds, chars, keepRounds, strategy, runId } = options;
+  const { budgetTokens, rounds, chars, keepRounds, strategy, runId, provider } = options;
   const content = makeContent(chars);
   const store = createMemoryTranscriptStore();
   const result = await runDirect({
-    provider: toolProvider(rounds),
+    provider: provider ?? toolProvider(rounds),
     seed: "Read every docs/mod*.md fully (one readFile each), then summarise.",
     executeTool: async ({ input }) => content(
       Number(input?.path?.match(/mod(\d+)/u)?.[1] ?? 0),
@@ -93,17 +93,40 @@ async function runFold(options) {
   return { result, facts };
 }
 
-// ── ① 没有策略就报错 ────────────────────────────────────────────────────────────────
-test("#898-① 无策略且无 summarizer 时超预算不折叠（不抛错、也不静默退回机械折叠）", async () => {
-  // 修订设计：「必选 LLM」= 不许机械折叠冒充摘要，不是「不给策略就不许跑」。
-  // 现场：预算低到足以触发折叠（若配了策略就会折），但宿主既没给策略也没给 summarizer。
-  // ⇒ 引擎根本不触发折叠：不抛 `compaction_strategy_required`（旧设计），也不落任何机械 fact。
+// ── ① 缺省（不配策略）⇒ 引擎内置 fold-llm 照折 ────────────────────────────────────────────────────────────────
+test("#898-① 不配任何策略时超预算仍照常折叠，摘要来自引擎装配的 LLM summarizer", async () => {
+  // issue #261127-12 反转旧前提：折叠策略**永不为空**，缺省即引擎内置 fold-llm（绑 run 的
+  // provider summarizer）⇒ 不配策略不再「不折」，而是真的发 LLM 摘要请求并落折叠事实。
+  let summaryCalls = 0;
+  let toolIndex = 0;
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    async chat(request) {
+      if (typeof request?.system === "string" && request.system.includes("你是对话历史压缩器")) {
+        summaryCalls += 1;
+        return {
+          content: [{ type: "text", text: `UNCONFIGURED-LLM-MARKER ${"summary word ".repeat(60)}` }],
+          stopReason: "end_turn",
+        };
+      }
+      const step = toolIndex++;
+      return {
+        content: [{ type: "tool_use", id: `t${step}`, name: "readFile", input: { path: `docs/mod${step}.md` } }],
+        stopReason: "tool_use",
+      };
+    },
+  };
   const { facts } = await runFold({
-    budgetTokens: 12_000, rounds: 2, chars: 19_000, runId: "898b-no-strategy",
+    provider,
+    budgetTokens: 2_500, rounds: 12, chars: 700, keepRounds: 2, runId: "898b-default-folds",
   });
-  // 不折 ⇒ 落账里没有任何折叠事实（既没有机械 `sliding-window` 折，也没有别的兜底折）。
-  assert.equal(facts.length, 0,
-    `无策略时不得发生任何折叠，实测落了 ${facts.length} 条 fact（机械兜底回来了？）`);
+  assert.ok(summaryCalls >= 1, `缺省 fold-llm 必须真调摘要器（实际 ${summaryCalls} 次）`);
+  assert.ok(facts.length >= 1, "不配策略也必须真的落折叠事实（缺省即折）");
+  assert.ok(
+    facts.some((fact) => typeof fact.text === "string" && fact.text.includes("UNCONFIGURED-LLM-MARKER")),
+    "折叠替代物里必须出现引擎缺省 summarizer 写的那一份 LLM 摘要",
+  );
 });
 
 // ── ② 有 summarizer 就正常折 ─────────────────────────────────────────────────────────
@@ -199,7 +222,10 @@ test("#898-④b loadCliConfig 传 config.compaction 按未知键报错", async (
   );
 });
 
-// ── 附带：策略名可选项已收口为唯一默认 fold-llm ──────────────────────────────────────
-test("#898 内置可显式选择的策略名只剩 fold-llm（零 LLM 的两个可选项已退）", () => {
-  assert.deepEqual([...BUILTIN_COMPACTION_STRATEGY_NAMES].sort(), ["fold-llm"]);
+// ── 附带：缺省即引擎内置 fold-llm（名字形态已删，策略永不为空） ──────────────────────────────────────
+test("#898 缺省策略解析为内置 fold-llm（永不为空，名字形态已删）", () => {
+  const strategy = resolveCompactionStrategy(undefined, { foldLlmOptions: { summarizer: () => "s" } });
+  assert.equal(strategy.name, "fold-llm");
+  assert.equal(typeof strategy.shouldCompact, "function");
+  assert.equal(typeof strategy.compact, "function");
 });

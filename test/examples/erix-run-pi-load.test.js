@@ -14,7 +14,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { STRATEGY_NAMES } from "../../examples/pi-extension/erix-run-core.js";
+// issue #261127-12：`STRATEGY_NAMES` 已删（删名字形态），不再从 erix-run-core 导入。
 import { SYNC_RESULT_FIELDS } from "../../examples/pi-extension/erix-run-jobs.js";
 import { assertMachineReadableResult } from "./plain-data.js";
 
@@ -81,7 +81,8 @@ test("pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网�
   assert.equal(schema.required, undefined, "#234 之后参数面全可选（必填性移到运行时）");
   assert.equal(schema.properties.task.type, "string");
   assert.equal(schema.properties.cwd.type, "string");
-  assert.deepEqual(schema.properties.strategy.enum, [...STRATEGY_NAMES]);
+  // issue #261127-12（BREAKING）：`strategy` 参数面已删（删名字形态，引擎只接受策略对象）。
+  assert.equal(Object.hasOwn(schema.properties, "strategy"), false, "strategy 已从参数面删除");
   assert.equal(schema.properties.maxRounds.minimum, 1);
   assert.equal(typeof schema.properties.timeoutMs.maximum, "number");
   assert.equal(typeof definition.outputSchema, "object", "结构化结果要有 outputSchema");

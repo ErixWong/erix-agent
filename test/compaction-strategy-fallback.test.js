@@ -1,12 +1,13 @@
-// issue #464 A：库层折叠兜底的可观测性。
+// issue #464 A → #261127-12：库层折叠兑底的可观测性。
 //
-// 背景（票面事实，已复核）：`context.strategy` 未配置时，引擎库层在「超预算兜底」那一格直接
-// `createSlidingWindowStrategy()`（`src/loop/orchestrator.js` 折叠入口），而该策略整轮丢头部、
-// 既不调 `formatFoldSummary` 也不调 `extractAnchors` ⇒ 宿主侧看到 `compaction` 事件却看不出
-// 「跑的是兜底策略、什么替代物都没留」。本文件锁住补齐后的两件事：
-//   ① `compaction` 统计带 `strategyName`（写**实际执行者**，含兜底的 "sliding-window"）；
-//   ② 未配置策略且兜底真的发生时，一次性 `compaction_strategy_fallback` 诊断事件。
-// 判据形状对齐 issue #182 的 `model_metadata_missing`：恰好一条、detail 首句固定原文可断言。
+// 旧设计下 `context.strategy` 未配置时引擎根本不折叠，超预算那一格直接跑库层
+// `createSlidingWindowStrategy()`，并发一条一次性 `compaction_strategy_fallback` 诊断。
+// issue #261127-12 删了策略名字形态后，折叠策略**永不为空**（缺省即引擎内置 fold-llm）：
+//   · 「没配策略⇒不折」⇒ 现在缺省就折（LLM 摘要），那条诊断随情形消失而删除；
+//   · `compaction` 统计仍带 `strategyName`（写实际执行者，预算兑底那一发仍是 "sliding-window"）。
+// 于是本文件把「一次性兑底诊断」的断言改写为反向锁：无论配不配策略，`compaction_strategy_fallback`
+// 都不得再出现（`notices.length === 0`）；预算兑底本身由 `strategyName === "sliding-window"` /
+// `degradeReason === "budget_fallback_mechanical"` 钉住。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -24,11 +25,10 @@ import { FOLDED_FACTS_RECORD_FIELD } from "../src/compact/fold-summary-journal.j
 
 const EVENT_TYPE = "compaction_strategy_fallback";
 // detail 首句是 issue #464 A 约定的固定原文（宿主可直接断言），预算之后才追加真值。
-// issue #643：兜底的行为变了（折到够用就停 + 把机械摘要 prepend 进 head），首句跟着改——
-// 旧句「drops whole head rounds without summary or anchors」已经不是事实（那正是本单修的病）。
-const DETAIL_PREFIX = 'engine compaction fallback in effect: context.strategy is not configured, '
-  + 'the library default "sliding-window" strategy folds only the oldest rounds needed '
-  + 'to fit the budget and prepends a mechanical summary';
+// issue #261127-12：发射点**收窄**（不是删除）——只剩「策略这一轮判否 + `overBudget` ⇒ 引擎自己那层
+// `sliding-window` 折了轮」这一个情形。所以本文件里的 `notices.length === 0` 断言是**有条件的**：
+// 在「配了策略且策略自己折了轮」的那几格里它不得出现；「预算兜底又折」那一格也不发（由
+// `compaction.strategyName` 与 `degradeReason` 报告）。别把它读成「这个事件永不出现」。
 
 /** rounds 轮工具调用 + 一轮收尾文本；工具输出足够肥，稳定越过 budgetTokens。 */
 function toolProvider(rounds) {
@@ -86,9 +86,27 @@ async function run(options = {}) {
 }
 
 
-test("unconfigured context.strategy + budget fallback emits exactly one diagnostic and names the fallback (issue #464 A)", async () => {
-  // issue #898-2：本格删——钉的是「未配策略⇒引擎库层用 sliding-window 兜底并发一条 context.strategy is not
-  // configured 兜底诊断」。新设计「无策略⇒不折叠」后无策略不再进折叠块（连预算兜底也不跑）⇒ 无该诊断。
+test("unconfigured context.strategy still folds via the built-in fold-llm, and the summary comes from the LLM summarizer (issue #464 A, #261127-12)", async () => {
+  // issue #261127-12 改后契约：不写策略 = 引擎内置 fold-llm（注入默认 summarizer），折叠照常发生，摘要来自
+  // LLM summarizer。旧契约里「未配策略 ⇒ 库层 sliding-window 兑底 + 一条 context.strategy is not configured
+  // 诊断」那一格已不存在（策略永不为空 ⇒ 无该诊断；预算兑底那一支是另一回事，见下方 #657 系列格）。
+  const { compactions, provider } = await runFoldLlmChain({
+    runId: "464-unconfigured-folds",
+    budgetTokens: 2500,
+    keepRounds: 0,
+    foldAtRatio: 1,
+    toolTurns: 14,
+    toolBytes: 600,
+    seedBytes: 200,
+    summaryBytes: 200,
+  });
+
+  assert.ok(compactions.length >= 1, "没配策略也必须真的折叠（引擎内置 fold-llm，不是关掉折叠）");
+  assert.ok(provider.summaryCalls() >= 1, "摘要必须来自 LLM summarizer（内置 fold-llm 的注入 summarizer 真跑过）");
+  for (const event of compactions) {
+    assert.equal(event.compaction.strategyName, "fold-llm",
+      "没配策略时这一折由引擎内置 fold-llm 完成，账上写它（名字形态删后缺省即此）");
+  }
 });
 
 test("configured strategy suppresses the diagnostic; strategyName names whoever really folded (issue #464 A, #657)", async () => {
@@ -118,10 +136,10 @@ test("configured strategy suppresses the diagnostic; strategyName names whoever 
   }
 });
 
-test("the fallback notice is run-scoped: repeated folds share one, a second run gets its own (issue #464 A)", async () => {
-  // issue #898-2：本格删——同「unconfigured ... emits exactly one diagnostic」：跨 run 去重的库层兜底诊断，
-  // 无策略不再折叠 ⇒ 该诊断不再产生，钉的是已删行为。
-});
+// issue #261127-12：原「the fallback notice is run-scoped」一格整格删除（连同标题）。它钉的是「未配策略
+// ⇒ 那条 not-configured 兑底诊断」的跨 run 去重；名字形态删后策略永不为空，那条诊断的产生点没了 ⇒ 判据
+// 不再有宿主。现存的 compaction_strategy_fallback 诊断（预算兑底那一支，src/loop/orchestrator.js:4533-4537）
+// 的每-run 至多一条由发射点守卫保证，并由下方 #657 系列格覆盖；本格的跨 run 去重断言因此一并移除。
 
 test("hosts that ignore the additive keys still see the previous compaction shape (issue #464 A)", async () => {
   const { compactions } = await run({ runId: "464-shape" });
@@ -228,7 +246,7 @@ async function runFoldLlmChain({
     },
     config: {
       run: { maxRounds: 20, completion: false, reflection: false },
-      folding: { context: { budgetTokens, keepRounds, foldAtRatio, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens, keepRounds, foldAtRatio } },
     },
     store,
     runId,

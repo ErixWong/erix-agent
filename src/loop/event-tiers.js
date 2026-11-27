@@ -106,7 +106,9 @@ export const EVENT_TIERS = Object.freeze({
   tool_replay_decision_required: EVENT_TIER_FACT,
   compaction: EVENT_TIER_FACT,
   compaction_deferred: EVENT_TIER_FACT,
-  // 与 `compaction_deferred` 同理：它一次性地记下「降级到了哪个策略」，没别的副本可回放。
+  // issue #261127-12：诊断名字形态删了，但 `compaction_strategy_fallback` 作为**契约已发布的事件类型**
+  // 仍在分级表里（契约文档中英两份仍列它）；引擎现在只在「自己退回机械 `sliding-window`
+  // 兑底」那一支真发它（见 orchestrator 折叠入口）——契约不变、发射点收窄。
   compaction_strategy_fallback: EVENT_TIER_FACT,
   continuity_injection_skipped: EVENT_TIER_FACT,
   continuity_written: EVENT_TIER_FACT,

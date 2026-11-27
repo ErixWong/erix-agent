@@ -148,6 +148,7 @@ function toolScript(rounds) {
  * ⇒ 策略折 0、只有安全层丢轮 ⇒ stubFor 的桩不进入折叠摘要。正解：历史先长过 5 轮再由策略折，
  * 同时每轮有实质内容使总量明显超预算）。*/
 function foldingRun(extra = {}) {
+  const extraCaps = extra.capabilities ?? {};
   return runDirect({
     provider: createFakeProvider(toolScript(14)),
     executeTool: async () => `tool output ${"z".repeat(80)}`,
@@ -156,6 +157,14 @@ function foldingRun(extra = {}) {
     maxRounds: 16,
     config: { folding: { context: { budgetTokens: 400, keepRounds: 0 } }, run: { completion: false } },
     ...extra,
+    // issue #261127-12：删了策略名字形态后「没配策略」一律落到引擎默认 fold-llm（要发摘要请求）。
+    // 本夹具只验折叠 hooks（onBeforeFold/onAfterFold/stubFor）的投递，故意用**宿主对象形态**的
+    // 机械策略（sliding-window，经 `ports.strategy`，对象含函数不进 config）⇒ 折叠确定发生、桩文本
+    // 逐字留在摘要里，且不向 provider 多要一发摘要。
+    capabilities: {
+      ...extraCaps,
+      ports: { strategy: createSlidingWindowStrategy(), ...(extraCaps.ports ?? {}) },
+    },
   });
 }
 
@@ -337,13 +346,13 @@ test("C2 capabilities.ports 的形状闸口：拼错子键列可接受值，三�
     ["capabilities.ports.recallProvider must be a function (request) => Promise<response>"
       + " or an object with a chat(request) method (or omitted)"],
   );
-  // `strategy`：策略对象（`shouldCompact` + `compact`）。内置名字是**数据**，不住端口位。
+  // `strategy`：策略对象（`shouldCompact` + `compact`）。#261127-12 后名字形态已全删，字符串一律拒。
   const strategy = { shouldCompact: async () => false, compact: async (messages) => ({ messages }) };
   assert.deepEqual(collectCapabilitiesNamespaceProblems({ ports: { strategy } }), []);
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ ports: { strategy: "sliding-window" } }),
-    ["capabilities.ports.strategy must be a compaction strategy object, not a built-in name"
-      + " (a built-in name is data: pass it as config.folding.context.strategy or the flat context.strategy)"],
+    ["capabilities.ports.strategy must be a compaction strategy object, not a strategy name"
+      + " (the name form was removed in #261127-12: strategies are objects; pass a strategy object)"],
   );
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ ports: { strategy: { shouldCompact: async () => false } } }),
@@ -644,7 +653,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] },
     folding: { context: {
-      budgetTokens: 900, keepRounds: 1, strategy: "fold-llm", ...context,
+      budgetTokens: 900, keepRounds: 1, ...context,
     } },
   });
   // ① 数据形态（`string`）住 config，且**真的生效**：提示进折叠摘要；只给一条腿 ⇒ 零冲突。
@@ -761,7 +770,6 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
       folding: { context: {
         budgetTokens: 900,
         keepRounds: 1,
-        strategy: "fold-llm",
         ...(extra.context ?? {}),
       } },
     },
