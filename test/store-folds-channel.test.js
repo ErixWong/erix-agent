@@ -5,12 +5,13 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { appendFile } from "node:fs/promises";
 
 import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
-import { createFileTranscriptStore } from "../src/store/file.js";
+import { createFileTranscriptStore, foldsPath } from "../src/store/file.js";
 import { buildFoldedFacts } from "../src/compact/fold-summary-journal.js";
 import { FOLD_RECORD_COLUMNS } from "../src/store/folds.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
@@ -332,4 +333,81 @@ test("判据9b：兼容期双写——轮记录仍有 foldedFacts + 通道也有
   const roundIds = foldedRounds.map((record) => record.foldedFacts?.foldId).filter((id) => typeof id === "string");
   assert.ok(roundIds.every((id) => channelIds.has(id)),
     "轮记录里出现的每个折叠都应能在通道里找到（双写同源）");
+});
+
+// ── 判据 11（①崩溃残行）：file store 尾部半行不会粘到下一条 appendFold 上 ─────────────────
+test("判据11（①崩溃残行）：file store 尾部半行 JSON ⇒ 下一次 appendFold 仍成功、loadFolds 读出全部完整行", async () => {
+  const dir = await makeTmp("erix-folds-crash-");
+  const store = createFileTranscriptStore({ dir });
+  const a = await store.appendFold("run-11", richFacts({ foldId: "sha256:a", fingerprint: "sha256:a" }));
+  assert.equal(a.seq, 1);
+  // 模拟一次崩溃：`.folds.jsonl` 尾部留一段**半行 JSON**（无换行收尾）。
+  await appendFile(foldsPath(dir, "run-11"), "{\"foldId\":\"sha256:half\",\"text\":\"崩", "utf8");
+  // 下一次 appendFold 仍成功（修复尾部后才追写），残行被隔离+截断、不会粘成新行前缀。
+  const b = await store.appendFold("run-11", richFacts({ foldId: "sha256:b", fingerprint: "sha256:b" }));
+  assert.equal(b.seq, 2);
+  const loaded = await store.loadFolds("run-11");
+  assert.deepEqual(loaded.map((r) => r.foldId), ["sha256:a", "sha256:b"],
+    "残行不粘到新行：loadFolds 读出全部**完整**行（旧行为会把残行粘成中间行 ⇒ 这里直接抛/少行）");
+  assert.deepEqual(loaded.map((r) => r.seq), [1, 2]);
+});
+
+// ── 判据 12（②合并播种）：通道为空、只有轮记录 foldedFacts ⇒ 新折叠接在旧最大值之后 ─────
+test("判据12（②合并播种）：只有轮记录 foldedFacts(seq=7) 时，新折叠 seq 接在 7 之后（不从头编号）", async () => {
+  const dir = await makeTmp("erix-folds-seed-");
+  const store = createFileTranscriptStore({ dir });
+  // 旧折叠只存在轮记录的 foldedFacts 里（带 seq=7）；通道为空。
+  const oldFold = { ...richFacts({ foldId: "sha256:old", fingerprint: "sha256:old" }), seq: 7 };
+  await store.appendRound("run-12", {
+    round: 1,
+    messages: [{ role: "user", content: [{ type: "text", text: "r1" }] }],
+    foldedFacts: oldFold,
+  });
+  assert.deepEqual(await store.loadFolds("run-12"), [], "前提：folds 通道为空");
+  const created = await store.appendFold("run-12", richFacts({ foldId: "sha256:new", fingerprint: "sha256:new" }));
+  assert.ok(created.seq > 7,
+    `新折叠 seq 必须接在轮记录 foldedFacts 最大值(7)之后，实测 seq=${created.seq}（旧行为只播通道⇒从头编号=1）`);
+});
+
+// ── 判据 13（③无 foldId 也推进分配器）：发号后不与后续折叠撞车 ─────────────────
+test("判据13（③无 foldId 也推进分配器）：两次无 foldId 拿到不同 seq，且与后续有 foldId 的折叠不撞车", async () => {
+  const store = createMemoryTranscriptStore();
+  const s1 = (await store.appendFold("run-13", { text: "无身份折叠一", source: "llm", strategy: "fold-llm", bytes: 1 })).seq;
+  const s2 = (await store.appendFold("run-13", { text: "无身份折叠二", source: "llm", strategy: "fold-llm", bytes: 1 })).seq;
+  const s3 = (await store.appendFold("run-13", richFacts({ foldId: "sha256:z", fingerprint: "sha256:z" }))).seq;
+  assert.notEqual(s1, s2, "连续两次无 foldId 的折叠必须拿到不同 seq");
+  const distinct = new Set([s1, s2, s3]);
+  assert.equal(distinct.size, 3,
+    `三个折叠的 seq 必须两两不同（无 foldId 的发号要记回分配器，否则有 foldId 的会接在被低估的 lastSeq 之后与之撞车），实测 [${s1},${s2},${s3}]`);
+});
+
+// ── 判据 14（④无 listener 的诊断落 run state）：不给 onEvent 仍可事后查 ────────────────
+test("判据14（④无 listener）：不给 onEvent ⇒ run state 的 deterministic.storeFoldsChannelAbsent 仍为 true", async () => {
+  const base = createMemoryTranscriptStore();
+  const store = /** @type {any} */ ({ ...base });
+  delete store.appendFold;
+  delete store.loadFolds;
+  assert.equal(typeof store.appendFold, "undefined", "前提：store 确实没有 appendFold");
+  // 关键：没有 onEvent listener ⇒ 事件会静默丢失，但 run state 里必须留痕。
+  await runDirect({
+    capabilities: { ports: { strategy: foldingStrategy() } },
+    provider: createFakeProvider([
+      ...Array.from({ length: 5 }, (_, index) => toolStep(index + 1)),
+      { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+    ]),
+    seed: "start",
+    runId: "run-14",
+    executeTool: async ({ input }) => `ok:${String(input?.text ?? "")}`,
+    maxRounds: 8,
+    store,
+    config: {
+      input: {},
+      folding: { context: { budgetTokens: 1_000_000, keepRounds: 1 } },
+      run: { completion: false },
+    },
+  });
+  const saved = await store.loadRunState("run-14");
+  assert.ok(saved, "前提：run state 已落盘");
+  assert.equal(saved?.deterministic?.storeFoldsChannelAbsent, true,
+    "无 onEvent 时 run state 里仍要能查到 storeFoldsChannelAbsent（非静默降级）");
 });

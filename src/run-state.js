@@ -371,6 +371,11 @@ export function boundRunState(state) {
       ...(deterministic.contextWindowRecovery === undefined
         ? {}
         : { contextWindowRecovery: deterministic.contextWindowRecovery }),
+      // issue #971 ④：折叠通道降级与 `guardExtension`/`contextWindowRecovery` 同一条纪律——
+      // 最后一级体积兜底也不许丢（丢了这个布尔就「事后查不到」，等于「无 listener 时静默」）。
+      ...(deterministic.storeFoldsChannelAbsent === true
+        ? { storeFoldsChannelAbsent: true }
+        : {}),
       termination: deterministic.termination ?? { reason: "running" },
       errors: deterministic.errors ?? {},
     },
@@ -506,6 +511,7 @@ function normalizeUnpersisted(value) {
  *   compactionStats?: any,
  *   guardExtensionUsed?: boolean,
  *   contextWindowRecoveryUsed?: boolean,
+ *   storeFoldsChannelAbsent?: boolean,
  * }} [options]
  */
 export function createDeterministicRunState({
@@ -534,6 +540,11 @@ export function createDeterministicRunState({
   guardExtensionUsed = false,
   // issue #930：上下文超窗自恢复的一次性配额（同上，跨 resume 不许重置）。
   contextWindowRecoveryUsed = false,
+  // issue #971 ④：`store` 缺折叠通道（`appendFold`/`loadFolds`）的降级事实。与
+  // `contextWindowRecoveryUsed` 同一条纪律：只在真的发生时才出现这个键（没发生过的 run
+  // 的 state.json 逐字不变），且体积兜底也不丢它——因为它是「无 listener 时诊断仍不静默」的
+  // 唯一落盘面。
+  storeFoldsChannelAbsent = false,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   // 双计数器（issue #32 #8）：rounds = 会话累计身份轮号（跨 resume 单调递增）；
@@ -589,6 +600,8 @@ export function createDeterministicRunState({
       ...(guardExtensionUsed === true ? { guardExtension: { used: true } } : {}),
       // issue #930：同上，只在真的用过时才出现这个键（没用过的 run 的 state.json 逐字不变）。
       ...(contextWindowRecoveryUsed === true ? { contextWindowRecovery: { used: true } } : {}),
+      // issue #971 ④：折叠通道降级同样只在真的发生过时才出现（与上面两条同一个「缺席不是歧义」口径）。
+      ...(storeFoldsChannelAbsent === true ? { storeFoldsChannelAbsent: true } : {}),
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),

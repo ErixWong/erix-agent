@@ -491,6 +491,9 @@ export async function restoreResume(ctx) {
     // 旧档没有 `deterministic.contextWindowRecovery`（增量字段）⇒ 读成 `false`，
     // 此时仍由「账本里有没有那条 `trigger` 记录」兜底（见 orchestrator 的判据两条腿）。
     ctx.governorState.contextWindowRecoveryUsed = deterministic.contextWindowRecovery?.used === true;
+    // issue #971 ④：折叠通道降级事实跨 resume 不丢（与 `contextWindowRecovery` 同一条纪律：
+    // 「无 listener 时仍可事后查」不能因一次 resume 而静默重置）。旧档无此键 ⇒ `false`。
+    ctx.governorState.storeFoldsChannelAbsent = deterministic.storeFoldsChannelAbsent === true;
     ctx.governorState.filesWritten = Array.isArray(deterministic.filesWritten)
       ? deterministic.filesWritten.map((path) => ({ path }))
       : [];

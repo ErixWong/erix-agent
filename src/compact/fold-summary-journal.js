@@ -276,6 +276,7 @@ export function foldSummaryFingerprint(input = {}) {
  * @returns {{
  *   allocate: (foldId: unknown) => number|undefined,
  *   seed: (facts: unknown[]) => number,
+ *   record: (key: string, seq: number) => void,
  *   seqOf: (foldId: string) => number|undefined,
  *   lastSeq: () => number,
  *   size: () => number,
@@ -323,9 +324,29 @@ export function createFoldIdentityAllocator() {
     }
     return seeded;
   };
+  /**
+   * 直接登记一个 `key → seq`（并把 `lastSeq` 抬到已见最大值）。
+   *
+   * 为什么需要它（issue #971 ③）：`allocate` 只会「接在自己的 `lastSeq` 之后」发号，
+   * 而「无 `foldId` 的折叠」要发的号是「已存行的最大 `seq` + 1」——那个最大值可能来自
+   * 盘上/轮记录里**没有 `foldId`** 的行，`allocate` 与 `seed` 都看不见它。于是必须有一个
+   * 口子把「已经发出去的号」如实记回分配器：`seqByFoldId` 记下身份、`lastSeq` 抬到位，
+   * 下一次才不会再发同一个号、也不会有 `foldId` 的折叠与它撞车。键可以是 `foldId`，也可以
+   * 是内容身份（`foldIdentityKey`）——分配器只认「一个稳定字符串 → 一个号」。
+   * @param {string} key 稳定身份（`foldId` 或内容哈希）
+   * @param {number} seq 已发放的号（正安全整数）
+   * @returns {void}
+   */
+  const record = (key, seq) => {
+    if (typeof key !== "string" || key === "") return;
+    if (!Number.isSafeInteger(seq) || seq <= 0) return;
+    seqByFoldId.set(key, seq);
+    lastSeq = Math.max(lastSeq, seq);
+  };
   return {
     allocate,
     seed,
+    record,
     seqOf: (foldId) => seqByFoldId.get(foldId),
     lastSeq: () => lastSeq,
     size: () => seqByFoldId.size,

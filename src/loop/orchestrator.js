@@ -184,7 +184,7 @@ import {
   pinFedSummaryBlock,
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
-import { foldIdentityKey, sortFoldsBySeq } from "../store/folds.js";
+import { foldRecordsFromRoundRecords, mergeFoldRecords } from "../store/folds.js";
 import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { foldWithinBudget, prependFoldSummary } from "../compact/budget-fit.js";
 // issue #892：派生预算需要把工具定义这一项扣掉，`computeBudget` 仍是公式的唯一之家。
@@ -1496,6 +1496,9 @@ export async function runToolLoop(options) {
   const notifyFoldsChannelAbsent = () => {
     if (foldsChannelAbsentNotified) return;
     foldsChannelAbsentNotified = true;
+    // ④（非静默降级的真正保证）：先落进 run state 的 `deterministic` 层（`storeFoldsChannelAbsent`），
+    // 再发 `onEvent`。`onEvent` 缺席（宿主没注册 listener）时事件会静默丢失，但 run state 里仍查得到。
+    governorState.storeFoldsChannelAbsent = true;
     try {
       onEvent?.({
         type: "store_folds_channel_absent",
@@ -2122,6 +2125,10 @@ export async function runToolLoop(options) {
     // 为什么不能只靠 `compactionStats` 里那条 `trigger` 记录：那份列表是 32 条**滚动窗口**，
     // 32 次折叠之后记录会被挤掉 ⇒ 配额静默重置（copilot 验收点出来的）。
     contextWindowRecoveryUsed: false,
+    // issue #971 ④：`store` 缺 `appendFold`/`loadFolds` ⇒ 折叠降级只写轮记录。这个标记与
+    // `contextWindowRecoveryUsed` 同一类「事后要能查」的一次性事实：诊断除 `onEvent` 外还落进
+    // run state 的 `deterministic` 层，使「没有 listener 时诊断仍不静默」。
+    storeFoldsChannelAbsent: false,
     // issue #473：`judge_done` 的「无交付物正文」降级配额（见 `JUDGE_DONE_GAP_NUDGE_LIMIT`）。
     judgeDoneGapNudges: 0,
     noToolStreak: 0,
@@ -2368,20 +2375,15 @@ export async function runToolLoop(options) {
       // `foldedFacts`，按身份去重（`foldId ?? fingerprint ?? sha256(from,to,text)`）、**通道行优先**。
       // **不许**「通道空才回退扫旧记录」：迁移中途失败时两处各有一半，回退式读会漏。
       // 拿不到通道（无 `loadFolds`）时 channelRows=[] ⇒ 退回与旧代码等价的「只读轮记录」（不静默丢折）。
+      // 合并读口径唯一（issue #971 ②）：与两侧 store 的 `appendFold` 播种共用 `./folds.js` 的
+      // `mergeFoldRecords` / `foldRecordsFromRoundRecords`——身份去重（`foldIdentityKey`）、**通道行
+      // 优先**、按 `seq` 升序，全部在那一处。拿不到通道（无 `loadFolds`）⇒ `channelRows=[]` ⇒ 退回
+      // 与旧代码等价的「只读轮记录」（不静默丢折）。`cloneState` 逐值副本（与修复前同形）。
       const channelRows = typeof store?.loadFolds === "function"
         ? await store.loadFolds(runId)
         : [];
-      const roundFacts = Array.isArray(records)
-        ? records
-          .map((record) => record?.[FOLDED_FACTS_RECORD_FIELD])
-          .filter((facts) => facts !== null && typeof facts === "object")
-        : [];
-      /** 身份去重：轮记录先占位，通道行后入覆盖 ⇒ 同身份取通道那份。 */
-      const byIdentity = new Map();
-      for (const facts of roundFacts) byIdentity.set(foldIdentityKey(facts), cloneState(facts));
-      for (const row of channelRows) byIdentity.set(foldIdentityKey(row), cloneState(row));
-      // 合并后按 `seq` 升序（两侧共用 `sortFoldsBySeq`），保证下面 `foldIdentity.seed` 按「旧 → 新」灌号。
-      foldRecordLedger = sortFoldsBySeq([...byIdentity.values()]);
+      const roundFacts = foldRecordsFromRoundRecords(records);
+      foldRecordLedger = mergeFoldRecords({ channelRows, roundFacts }).map(cloneState);
       // issue #567：把已入账的折叠身份（`foldId`/`seq`）灌回分配器 ⇒ resume 之后
       // ① 重放同一次折叠拿回**同一个** `seq`（宿主去重不会被 resume 打穿）；
       // ② 新折叠的 `seq` 接在账本最大值之后（严格递增不断档）。#567 之前写的记录没有 `seq`，
@@ -3560,6 +3562,8 @@ export async function runToolLoop(options) {
       guardExtensionUsed: governorState.guardExtensionUsed,
       // issue #930：超窗自恢复配额随 run-state 落盘（同上，跨 resume 不重置）。
       contextWindowRecoveryUsed: governorState.contextWindowRecoveryUsed,
+      // issue #971 ④：折叠通道缺失的降级事实随 run-state 落盘（无 listener 时仍可事后查，不静默）。
+      storeFoldsChannelAbsent: governorState.storeFoldsChannelAbsent,
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {

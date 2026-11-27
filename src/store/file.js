@@ -8,7 +8,7 @@ import { foldMessageRows } from "./message-rows.js";
 import {
   assertSafeRound, dedupConflictError, payloadFingerprint, recordKey,
 } from "./transcript-dedup.js";
-import { createFoldChannelBookkeeping, nextFoldSeq, sortFoldsBySeq } from "./folds.js";
+import { createFoldChannelBookkeeping, foldRecordsFromRoundRecords, mergeFoldRecords, nextFoldSeq, sortFoldsBySeq } from "./folds.js";
 
 const HASHED_RUN_ID_PREFIX = "run-h-";
 
@@ -761,25 +761,45 @@ export function createFileTranscriptStore({ dir }) {
       return await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
         const path = foldsPath(dir, runId);
+        // ①（崩溃安全）：与 recovery 侧车 `appendRecord` / `appendRound` 同法——追加**前**先修复
+        // 文件尾部（完整 JSON 缺 LF ⇒ 补 `\n`；半行残段 ⇒ 隔离 `.corrupt.*` + 截断）。不先修的话，
+        // 一次崩溃留下的尾部残行会被本次 append 粘成「中间行的残骸」，`readRecords` 只会在 EOF
+        // 跳残行、粘在新行前面的残行从此再也读不出 ⇒ 整份 `.folds.jsonl` 解析坏掉。
+        await repairTranscriptTail(path);
         /** @type {object[]} */
         const rows = [];
         for await (const row of readRecords(path)) rows.push(row);
+        // ②（合并播种）：分配器必须从「通道 ∪ 轮记录 `foldedFacts`」播种——与 resume 的合并读
+        // 同一份数据、同一口径（`mergeFoldRecords`）。兼容期同一批折叠**也**在轮记录里；只播
+        // 通道 ⇒ 拿不到通道（旧 transcript）或通道不完整时，新折叠会从头编号、与轮记录里已存在的
+        // `seq` 撞车。读轮记录只为播种 ⇒ 失败时退化为「只播通道」（与修复前同口径，不会更差）。
+        /** @type {object[]} */
+        const roundFacts = [];
+        try {
+          /** @type {object[]} */
+          const roundRecords = [];
+          for await (const rec of readRecords(transcriptPath(dir, runId))) roundRecords.push(rec);
+          roundFacts.push(...foldRecordsFromRoundRecords(roundRecords));
+        } catch {
+          // 轮记录读不动（如中途损坏）：播种退回只播通道，不阻断本次折叠落账。
+        }
+        const merged = mergeFoldRecords({ channelRows: rows, roundFacts });
         /** @type {ReturnType<typeof createFoldChannelBookkeeping>} */
         let channel = foldChannels.get(runId);
         if (channel === undefined) {
           channel = createFoldChannelBookkeeping();
           foldChannels.set(runId, channel);
         }
-        // 首次为该 run 使用 ⇒ 从盘上已存行灌回分配器（seed 幂等，只真正 seed 一次）。
-        channel.seedFromRows(rows);
+        // 首次为该 run 使用 ⇒ 从合并集灌回分配器（seed 幂等，只真正 seed 一次）。
+        channel.seedFromRows(merged);
         const copy = structuredClone(fold);
         const foldId = /** @type {{ foldId?: unknown }} */ (copy ?? {}).foldId;
-        // 幂等：同 foldId 已入账 ⇒ 返回已存那条（同一 seq），不新增行。
+        // 幂等：同 foldId 已在**通道**入账 ⇒ 返回已存那条（同一 seq），不新增行。
         if (typeof foldId === "string" && foldId !== "") {
           const existing = rows.find((row) => (/** @type {{ foldId?: unknown }} */ (row).foldId) === foldId);
           if (existing !== undefined) return structuredClone(existing);
         }
-        const record = { ...copy, seq: nextFoldSeq(channel.allocator, rows, foldId) };
+        const record = { ...copy, seq: nextFoldSeq(channel.allocator, merged, copy) };
         const handle = await open(path, "a+");
         try {
           await handle.write(`${JSON.stringify(record)}\n`, null, "utf8");

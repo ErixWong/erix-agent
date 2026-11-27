@@ -4,7 +4,7 @@ import { foldMessageRows } from "./message-rows.js";
 import {
   assertSafeRound, dedupConflictError, payloadFingerprint, recordKey,
 } from "./transcript-dedup.js";
-import { createFoldChannelBookkeeping, nextFoldSeq, sortFoldsBySeq } from "./folds.js";
+import { createFoldChannelBookkeeping, foldRecordsFromRoundRecords, mergeFoldRecords, nextFoldSeq, sortFoldsBySeq } from "./folds.js";
 
 /**
  * @typedef {{
@@ -251,14 +251,20 @@ export function createMemoryTranscriptStore() {
         foldChannels.set(runId, channel);
       }
       const rows = folds.get(runId) ?? [];
+      // ②（合并播种）：与 file store 同口径——分配器从「通道 ∪ 轮记录 `foldedFacts`」播种
+      // （`mergeFoldRecords`）。只播通道 ⇒ 拿不到通道 / 通道不完整时，新折叠会从头编号、与轮
+      // 记录里已存在的 `seq` 撞车。
+      const roundFacts = foldRecordsFromRoundRecords(transcripts.get(runId) ?? []);
+      const merged = mergeFoldRecords({ channelRows: rows, roundFacts });
+      channel.seedFromRows(merged);
       const copy = copyRecord(fold);
       const foldId = /** @type {{ foldId?: unknown }} */ (copy ?? {}).foldId;
-      // 幂等：同 foldId 已入账 ⇒ 拿回已存的那一条（同一 seq），不新增行。
+      // 幂等：同 foldId 已在**通道**入账 ⇒ 拿回已存的那一条（同一 seq），不新增行。
       if (typeof foldId === "string" && foldId !== "") {
         const existing = rows.find((row) => (/** @type {{ foldId?: unknown }} */ (row).foldId) === foldId);
         if (existing !== undefined) return copyRecord(existing);
       }
-      const record = { ...copy, seq: nextFoldSeq(channel.allocator, rows, foldId) };
+      const record = { ...copy, seq: nextFoldSeq(channel.allocator, merged, copy) };
       rows.push(copyRecord(record));
       folds.set(runId, rows);
       return copyRecord(record);
