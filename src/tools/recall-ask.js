@@ -44,7 +44,7 @@ const PASS_THROUGH_AWAIT = (/** @type {Promise<any>} */ p) => p;
 const RECALL_ASK_DEFINITION = {
   name: "recall_ask",
   description:
-    "对指定轮区间发起一次**单发回忆检索**：把要回忆的那几轮（往往正是被折叠掉的那几轮）的**账本原文**喂给一个回忆模型，让它只指不说——只给答案指针，绝不改写。when-to-use：需要「回忆」某段已折叠历史里写过什么时调用。fromRound/toRound 指定要回忆的轮区间（含端点，轮号 1 起）；引擎从账本原文取这些轮的消息（消息行 + 轮载体行同口径），按切片拼进请求、每片算 sha256 落证据。返回 status：found 拿到回忆结果（answer/nextStep/uncertain/pointers/evidenceRefs/evidenceCount）；unavailable recallProvider 端口未提供（不降级、不调任何 provider）；invalid 入参非法（question 空、轮区间非法）；timeout 回忆端口超时。返回的 evidenceRefs[] 是**收窄子集**（只留与 pointers 轮重叠的，无 pointers 取前 3 条、至多 5 条；evidenceCount 是台账里的指纹总数，落账一条不少），可交给 recall_read({evidenceRef}) 回账本逐字回验。显式挂载（同 recall_read，不进默认工具面）。",
+    "对指定轮区间发起一次**单发回忆检索**：把要回忆的那几轮（往往正是被折叠掉的那几轮）的**账本原文**喂给一个回忆模型，让它只指不说——只给答案指针，绝不改写。when-to-use：需要「回忆」某段已折叠历史里写过什么时调用。fromRound/toRound 指定要回忆的轮区间（含端点，轮号 1 起）；引擎从账本原文取这些轮的消息（消息行 + 轮载体行同口径），按切片拼进请求、每片算 sha256 落证据。返回 status：found 拿到回忆结果（answer/answerUnbacked/nextStep/uncertain/pointers/evidenceRefs/evidenceCount）；unavailable recallProvider 端口未提供（不降级、不调任何 provider）；invalid 入参非法（question 空、轮区间非法）；timeout 回忆端口超时。返回的 evidenceRefs[] 是**收窄子集**（只留与 pointers 轮重叠的，无 pointers 取前 3 条、至多 5 条；evidenceCount 是台账里的指纹总数，落账一条不少），可交给 recall_read({evidenceRef}) 回账本逐字回验。answerUnbacked 是**引擎算的事实**（不是模型自评）：true 表示这条答案没指认任何本次切片区里的轮——指针为空，或指针指的轮不在切片区（幻觉轮号）——即它在账本上核不动；uncertain 才是模型自评的把握。两者相互独立。显式挂载（同 recall_read，不进默认工具面）。",
   inputSchema: {
     type: "object",
     properties: {
@@ -168,10 +168,15 @@ export function createRecallAskTool(options = {}) {
     //    整个账本倒出来）；无 pointers 时取前 3 条；上限 5 条，总数经 `evidenceCount` 告知。
     const pointers = Array.isArray(result?.pointers) ? result.pointers : [];
     const pointerRounds = new Set(pointers.map((/** @type {any} */ p) => p.round));
-    const narrowed = pointers.length > 0
+    const pointed = pointers.length > 0
       ? allRefs.filter((/** @type {any} */ ref) => pointerRounds.has(ref.round))
-      : allRefs.slice(0, 3);
-    const evidenceRefs = narrowed.slice(0, 5);
+      : [];
+    const evidenceRefs = (pointers.length > 0 ? pointed : allRefs.slice(0, 3)).slice(0, 5);
+    // 7b) 「这条答案在账本上有没有落脚点」是**引擎算的**，不是模型自评（#261127-16 真机评测：场景 4 里
+    //     模型答对了却一条指针都没给 ⇒ 影子当事实）。判据是**指针与切片的交集**：模型指了轮、那些轮
+    //     又真在台账里 ⇒ 有落脚点；指针为空、或指针指的轮根本不在本次切片区里（幻觉轮号）⇒ 无落脚点。
+    //     引擎不评价答案**对不对**（它读不懂），只陈述「能不能回账本核」。
+    const answerUnbacked = pointed.length === 0;
 
     // 7) `nextStep` 是「到此为止」信号：两句都是**事实陈述**（陈述「直接用/还能做什么」），
     //    不是命令——不许写成「你必须…」。
@@ -191,6 +196,9 @@ export function createRecallAskTool(options = {}) {
     return JSON.stringify({
       status: "found",
       answer: result?.answer ?? "",
+      // 紧贴 `answer` 之后：这是引擎对「答案有没有落脚点」的**事实陈述**，与模型自评的 `uncertain`
+      // 是两个不同的问题（`uncertain` = 模型自己有多大把握；`answerUnbacked` = 账本上核不核得动）。
+      answerUnbacked,
       nextStep,
       uncertain,
       pointers,
