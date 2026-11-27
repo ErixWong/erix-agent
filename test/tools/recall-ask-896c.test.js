@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 
 import { createRecallAskTool } from "../../src/tools/recall-ask.js";
 import { createBuiltinRecallTools } from "../../src/tools/recall.js";
-import { RECALL_MAX_EVIDENCE_BYTES } from "../../src/loop/recall-runner.js";
+import { RECALL_MAX_EVIDENCE_BYTES, sha256Hex } from "../../src/loop/recall-runner.js";
 import { runDirect } from "../helpers/run-direct.js";
 
 /** 区间内两轮的账本原文（一条消息行 + 一条轮载体行，覆盖 recall_read 的两条口径）。 */
@@ -27,8 +27,11 @@ function makeLedger() {
   /** @type {any[]} */
   const rows = [
     { kind: "message", round: 1, seq: 0, messages: [{ role: "user", content: R1_TEXT }] },
-    { round: 2, messages: [{ role: "user", content: R2_TEXT }] },
-    { round: 9, messages: [{ role: "assistant", content: BAIT_TEXT }] },
+    // 轮载体行**不带 seq**（照真实写侧：orchestrator 的轮 record 只有 round/roundKey/dedupKey/ts…，
+    // 只有消息行带轮内 seq）。evidence 现在按内容寻址（round + textSha256 + occurrence）寻址（PR #973），
+    // 不再依赖行身份 ⇒ 载体行有没有 seq 都不影响定位。
+    { kind: "round", round: 2, roundKey: "run-ask:round:2", messages: [{ role: "user", content: R2_TEXT }] },
+    { kind: "round", round: 9, roundKey: "run-ask:round:9", messages: [{ role: "assistant", content: BAIT_TEXT }] },
   ];
   return { rows, readLedgerRows: () => rows };
 }
@@ -207,7 +210,7 @@ test("#896A-5 e2e：recall_ask 的 evidenceRefs 经 recall_read({evidenceRef}) �
   }
 });
 
-// ─── 格 6（回账本改字⇒stale）：把账本原文改一个字 ⇒ 同一 ref ⇒ stale ────────────
+// ─── 格 6（回账本改字⇒stale）：账本原文改了 ⇒ 同一 evidenceRef ⇒ stale ──────
 test("#896A-6 把账本原文改一个字 ⇒ 同一 evidenceRef ⇒ stale（绝不回一份差不多的）", async () => {
   const { rows, readLedgerRows } = makeLedger();
   const recall = makeRecallProvider();
@@ -217,10 +220,13 @@ test("#896A-6 把账本原文改一个字 ⇒ 同一 evidenceRef ⇒ stale（绝
     input: { question: "q", fromRound: 1, toRound: 2 },
     context: { recallProvider: recall.provider },
   }));
-  const ref = out.evidenceRefs.find((/** @type {any} */ r) => r.round === 1);
-  assert.ok(ref, "应有 round 1 的 ref");
-  // 账本改一个字（等长替换：原文→原纹，字节数不变 ⇒ 走 stale 而非「bytes 对不上」）。
-  rows[0].messages[0].content = R1_TEXT.replace("原文", "原纹");
+  const refOld = out.evidenceRefs.find((/** @type {any} */ r) => r.round === 1);
+  assert.ok(refOld, "应有 round 1 的 ref");
+  // 账本改一个字（等长替换：原文→原纹）。内容寻址下这条消息**仍能被认出**（拿改后正文的 sha256
+  // 仍定位到同轮同正文），但它当初记录的**切片 sha256 是旧正文**的 ⇒ 重算不一致 ⇒ stale（影子对不上原文）。
+  const NEW = R1_TEXT.replace("原文", "原纹");
+  rows[0].messages[0].content = NEW;
+  const ref = { ...refOld, textSha256: sha256Hex(NEW) };
   const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
   const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
   assert.equal(back.status, "stale");
@@ -245,4 +251,111 @@ test("#896A-7 invalid：question 空 / fromRound>toRound / 非正整数 ⇒ inva
 // ─── 格 8（单一真相）：验证侧 2 KiB 常量与生成侧同值 ─────────────────────────
 test("#896A-8 验证侧 2 KiB 上限与 recall-runner 生成侧同值（单一真相 2048）", () => {
   assert.equal(RECALL_MAX_EVIDENCE_BYTES, 2048);
+});
+
+// ─── 格 9 / 10（PR #969 合并后终验的真缺陷）：轮内**位置**漂移不许误报 stale ──────
+// 缺陷：evidence 曾用 `(round, messageIndex)` 寻址，而那个下标是「消息行在前、轮载体行在后」当场
+// 数出来的 ⇒ 同一轮再落一条消息行（resume 补工具结果、普通工具结果入账）或把消息行折进轮载体，
+// 都会把载体行里那条消息的**轮内下标**挪位，而它的文本一个字都没变 ⇒ 重算 sha256 对不上 ⇒ 假 stale。
+// 修法（PR #973）：evidence 改**内容寻址** `(round, textSha256, occurrence)`——用那条消息整段正文的
+// sha256 定正文、轮内同正文第几次出现区分重复；文本未变则身份不变，位置怎么漂都仍 found。
+const CARRIER_TEXT = "载体里的引擎控制正文 CARRIER_MARK";
+const TOOL_RESULT_TEXT = "同轮后补的工具结果 TOOLRESULT_MARK 这条比载体那条长，好让切片不越界";
+const ABSORBED_TEXT = "被折进轮载体的那条消息行 ABSORB_MARK 也比载体那条长，好让切片不越界";
+
+/**
+ * 造一份「轮 1 有一条轮载体行 + 一条消息行」的账本：轮内口径把消息行排在载体行**前面**。
+ * 载体行**不带 seq**（照真实写侧：只有消息行带轮内 seq，轮 record 没 seq）。
+ */
+function makeDriftLedger() {
+  /** @type {any[]} */
+  const rows = [
+    { kind: "round", round: 1, roundKey: "run-ask:round:1", messages: [{ role: "assistant", content: CARRIER_TEXT }] },
+    { kind: "message", round: 1, seq: 0, messages: [{ role: "user", content: R1_TEXT }] },
+  ];
+  return { rows, readLedgerRows: () => rows };
+}
+
+/** 对 round 1 发一次 recall_ask，取回**载体那条**的 evidenceRef（按 sha256 认领，不靠位置下标）。 */
+async function carrierRefFor(readLedgerRows) {
+  const recall = makeRecallProvider();
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 1, toRound: 1 },
+    context: { recallProvider: recall.provider },
+  }));
+  const carrierSha = sha256Hex(CARRIER_TEXT);
+  const ref = out.evidenceRefs.find((/** @type {any} */ r) => r.sha256 === carrierSha);
+  assert.ok(ref, `recall_ask 必须交出载体那条的 ref（实有 ${JSON.stringify(out.evidenceRefs)}）`);
+  return ref;
+}
+
+test("#896D-1 同轮再落一条消息行（轮内下标漂移、文本未变）⇒ 同一 evidenceRef 仍 found（不许假 stale）", async () => {
+  const { rows, readLedgerRows } = makeDriftLedger();
+  const ref = await carrierRefFor(readLedgerRows);
+
+  // resume 往**同一轮**追加一条工具结果消息行：账本只追加、既有行的文本一字未动，
+  // 但轮内位置口径下载体那条从下标 1 被顶到下标 2（copilot 指的就是这一步）。
+  rows.push({ kind: "message", round: 1, seq: 2, messages: [{ role: "user", content: TOOL_RESULT_TEXT }] });
+
+  const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
+  const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
+  assert.equal(back.status, "found", `文本未变、只是位置挪了 ⇒ 必须仍 found（实得 ${back.status}：${back.reason ?? ""}）`);
+  assert.equal(back.text, CARRIER_TEXT, "回验文本必须逐字等于那条没变过的载体正文");
+});
+
+test("#896D-2 消息行被折进轮载体（载体留在原行位、文本未变）⇒ 同一 evidenceRef 仍 found", async () => {
+  const { rows, readLedgerRows } = makeDriftLedger();
+  const ref = await carrierRefFor(readLedgerRows);
+
+  // `foldMessageRows` 的读侧效果：同轮消息行被**吸收**（不再单独出现在 `store.load()` 里），
+  // 正文接到轮载体行尾部（载体行留在原来的行位上）⇒ 载体那条的轮内位置下标又变了，文本照旧没变。
+  const absorbed = rows.filter((/** @type {any} */ r) => r.kind === "message");
+  const carrier = rows.find((/** @type {any} */ r) => r.kind === "round");
+  const foldedRows = [{
+    ...carrier,
+    messages: [...carrier.messages, ...absorbed.map((/** @type {any} */ r) => ({ role: "user", content: ABSORBED_TEXT }))],
+  }];
+  const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows: () => foldedRows });
+  const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
+  assert.equal(back.status, "found", `折进来一条也不会让载体正文变 ⇒ 必须仍 found（实得 ${back.status}：${back.reason ?? ""}）`);
+  assert.equal(back.text, CARRIER_TEXT);
+});
+
+// ─── 格 11（PR #973 拒 PR #973 的根因）：真实形状账本（轮载体行**无** seq）⇒ found ─────
+// 上一版按 `rowSeq` 寻址：轮 record 不带 seq（只有消息行带、且是每轮计数器），而 store.load() 又把
+// 消息行折进轮载体 ⇒ 载体行上的 rowSeq 恒 null ⇒ 真实路径上必 invalid、功能整体不可用。本格钉死这一点。
+test("#896D-7 真实形状账本（轮载体行**无** seq）⇒ recall_ask 交出的每个 evidenceRef 回账本都 found", async () => {
+  const carrierRow = {
+    kind: "round", round: 4, roundKey: "run-ask:round:4",
+    messages: [
+      { role: "assistant", content: CARRIER_TEXT },
+      { role: "user", content: TOOL_RESULT_TEXT },
+    ],
+  };
+  assert.ok(!("seq" in carrierRow), "夹具必须是真实形状：轮载体行没有 seq");
+  const readLedgerRows = () => [carrierRow];
+  const recall = makeRecallProvider();
+  const { executeTool } = createRecallAskTool({ readLedgerRows });
+  const out = JSON.parse(await executeTool({
+    name: "recall_ask",
+    input: { question: "q", fromRound: 4, toRound: 4 },
+    context: { recallProvider: recall.provider },
+  }));
+  assert.equal(out.status, "found");
+  assert.equal(out.evidenceRefs.length, 2, "两条正文各出一个 evidenceRef");
+  const expectedBySha = {
+    [sha256Hex(CARRIER_TEXT)]: CARRIER_TEXT,
+    [sha256Hex(TOOL_RESULT_TEXT)]: TOOL_RESULT_TEXT,
+  };
+  const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
+  for (const ref of out.evidenceRefs) {
+    assert.equal(ref.round, 4, "内容寻址下 round 定位必需");
+    assert.ok(!("rowSeq" in ref), "新 ref 不再带 rowSeq");
+    assert.ok(!("messageIndex" in ref), "新 ref 不再带 messageIndex");
+    const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
+    assert.equal(back.status, "found", `真形状账本的 ref 必须 found（实得 ${back.status}：${back.reason ?? ""}）`);
+    assert.equal(back.text, expectedBySha[ref.sha256], "回验文本必须逐字等于账本原文");
+  }
 });

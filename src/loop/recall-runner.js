@@ -69,25 +69,32 @@ export function sha256Hex(slice) {
 /**
  * 组装单发回忆请求。`folds` 里每一折只贡献它的**归档正文**（截到 ≤2 KiB 的切片），拼成 user 文本；
  * 未被传进来的折（诱饵）不会出现在请求里。同时按「引擎实际读进请求的那段切片」算指纹。
+ * 指纹的身份口径（PR #973 内容寻址）：`textSha256`（那条消息**整段正文** `archivedBody(fold)` 的 sha256）
+ * + `occurrence`（该轮内同正文第几次出现，0 基，由调用方按轮内口径算好透传）+ `round`（定位必需）——
+ * 不再依赖行身份（真实写侧轮载体行无 `seq`、消息行又被 `store.load()` 折进载体，行会漂）。
  * @param {string} question
  * @param {any[]} folds
- * @returns {{ text: string, evidence: Array<{ round: number, messageIndex: number, charRange: [number, number], sha256: string, bytes: number }> }}
+ * @returns {{ text: string, evidence: Array<{ round: number, textSha256: string, occurrence: number, charRange: [number, number], sha256: string, bytes: number }> }}
  */
 export function buildRecallRequest(question, folds) {
-  /** @type {Array<{ round: number, messageIndex: number, charRange: [number, number], sha256: string, bytes: number }>} */
+  /** @type {Array<{ round: number, textSha256: string, occurrence: number, charRange: [number, number], sha256: string, bytes: number }>} */
   const evidence = [];
   const parts = [];
   for (const fold of folds ?? []) {
     const body = archivedBody(fold);
     const { slice, bytes } = prefixWithinBytes(body, RECALL_MAX_EVIDENCE_BYTES);
-    const messageIndex = Number.isInteger(fold?.messageIndex) ? fold.messageIndex : 0;
-    // charRange 单位是 UTF-16 下标（`slice` 是 `body` 的前缀）；recall_read 在同一 (round,
-    // messageIndex) 的原文上按同样的下标切片，两侧口径一致才能比对 sha256。
+    // 内容寻址（PR #973）：`textSha256` 是那条消息**整段正文**的 sha256（不是切片），作为正文身份；
+    // `occurrence` 由调用方（有全轮消息的 recall-ask）按轮内口径算好透传，缺省 0。
+    const textSha256 = sha256Hex(body);
+    const occurrence = Number.isInteger(fold?.occurrence) ? fold.occurrence : 0;
+    // charRange 单位是 UTF-16 下标（`slice` 是 `body` 的前缀）；recall_read 在同一 (round, textSha256,
+    // occurrence) 定位出的整段正文上按同样的下标切片，两侧口径一致才能比对 sha256。
     const charRange = /** @type {[number, number]} */ ([0, slice.length]);
     parts.push(slice);
     evidence.push({
       round: Number.isInteger(fold?.round) ? fold.round : 0,
-      messageIndex,
+      textSha256,
+      occurrence,
       charRange,
       sha256: sha256Hex(slice),
       bytes,
