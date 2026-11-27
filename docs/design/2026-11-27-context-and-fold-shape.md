@@ -72,9 +72,9 @@
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` | text | **PK** | 跨 resume 不变 |
-| `termination_reason` | text | 可空 | **怎么结束的**：`end_turn` / `judge_done` / `no_tool` / `stall` / `max_rounds_cap` / `aborted` / `failed` / `persistence_failed`。**`NULL` = 没结束**（在飞，或崩了）——收口与否由它表达，不另立 `status` |
+| `termination_reason` | text | 可空 | **怎么结束的**：`end_turn` / `judge_done` / `no_tool` / `stall` / `max_rounds_cap` / `continuation_exhausted`（续写预算用完）/ `final_guard_unverified`（guard 判不过且不再重试）/ `budget_below_working_set`（预算装不下工作集）/ `aborted` / `failed` / `persistence_failed`。**`NULL` = 没结束**（在飞，或崩了）——收口与否由它表达，不另立 `status` |
 | `termination_detail` | text | 可空 | 一句人可读说明。**读者是宿主 UI**（引擎内零读）——错误文本没有第二个家：返回对象宿主不落盘就没了 |
-| `termination_error_code` | text | 可空 | 仅 `reason='failed'` 时：`timeout` / `rate_limited` / `auth` / `unknown` |
+| `termination_error_code` | text | 可空 | 仅 `reason='failed'` 时。**透传错误对象上的 `code`，不是闭集**（`timeout` / `rate_limited` / `auth` / `server` / `invalid_request` / …；没有 code 时 `unknown`）——引擎不维护枚举，宿主按需分流 |
 | `low_budget_prompted` | boolean | not null default false | **防重复**：低预算提示已经给过 |
 | `guard_extension_used` | boolean | not null default false | **防重复**：扩轮额度已经领过 |
 | `context_recovery_used` | boolean | not null default false | **防重复**：上下文超窗恢复额度已经领过 |
@@ -137,18 +137,25 @@
 | `response_usage` | jsonb | | **最后一发的原始 provider usage**。实测 25 轮里 13 轮与 `usage` 完全相等、12 轮只差 `reasoningTokens`——它不是「另一个事实」，是 `usage` 的桶里没有的 provider 特有字段（`bin/reasoning-effort.js` 读它做推理强度校准） |
 | `engine_usage` | jsonb | 可空 | **本轮引擎自发起的调用**（round judge / 收尾归一化 / 折叠摘要）的用量。缺键 = 本轮没有这类调用。`usage` 只装主模型桶——只留 `usage` 会把引擎用量藏进主账 |
 | `wrapup` | jsonb | | 收尾那一次的结构化产物（**真状态**：模型输出的规范化结果，不可重算）。只有最后一轮有值 |
-| `created_at` | timestamptz | not null | **轮行写成的那一刻** = 这一轮收口。上一轮的 `created_at` 就是本轮的 start（所以 `started_at` 不需要）。实测 906/906 轮都有 |
+| `created_at` | timestamptz | not null | **轮行创建的那一刻** = 这一轮开始（行先建，消息才有 FK 可指） |
+| `closed_at` | timestamptz | 可空 | **这一轮收口的时刻**。`NULL` = 没跑完（在飞 / 崩了）——**这是「轮跑到一半」的直接证据**，比从悬空 `tool_use` 反推更硬 |
 
-**没有 `status` / `started_at` / `closed_at`**：它们是 append-only 文件的补丁，不是业务事实。
+**没有 `status` / `started_at`**：`closed_at IS NULL` 已经表达「没跑完」，不需要再有一个三值枚举去说同一件事；
+`started_at` 就是 `created_at`。
 
-| 字段 | JSONL 里为什么需要 | 关系模型里为什么不需要 |
+**轮行先建、消息逐条落盘、轮末收口**——这三步是崩溃可见性的前提：
+
+| 步 | 做什么 | 崩溃在这里会留下什么 |
 |---|---|---|
-| `status` | 先追加轮行再追加消息行，崩溃可能只写半行 | 轮行与消息**同一事务**提交，不存在半行 |
-| `started_at` | 记「什么时候开的」 | 上一轮的 `created_at` 就是本轮的 start |
-| `closed_at` | 记「什么时候收的口」 | 就是本轮的 `created_at` |
+| 1 | 建轮行 `(run_id, round_no, created_at)` | 轮行在，`closed_at` 空 |
+| 2 | 每完成一条消息就落一行 | 已完成的工具结果不丢 |
+| 3 | 轮末 `UPDATE` 填 `provider_stop_reason` / `usage` / `wrapup` / `closed_at` | — |
 
-而「崩溃在轮中」这个业务事实，**消息层已经看得见**：有 `tool_use` 没有对应 `tool_result` = 那一轮没跑完。
-§3.9 的折叠闸门判的就是它。`status='open'` 不提供任何消息层拿不到的信息。
+**这不是「同一事务」**：一条长轮次（20 次工具调用）如果攒到轮末才一起提交，崩溃就会把 20 次已完成的结果全丢掉，
+而重跑会重复它们的副作用（写文件、commit）。所以必须逐条可见——代价是「半行」确实存在，
+而 `closed_at IS NULL` 就是它的标记。
+
+**崩溃的形状**：轮行在、`closed_at` 空、可能有悬空的 `tool_use`（没有对应 `tool_result`）——两者都在账本上。
 
 **没有 `summary`（单轮自述）**：生产者协议（`<erix-summary>` 内联标记）**在任何提示词里都不存在**
 ⇒ 实测 1,021 轮里 885 轮是兜底串 `"missing"`。三个读点，一个都不受益：
@@ -174,8 +181,7 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 **没有 `text_preview`**：它是"过滤本轮 `caller='assistant'` 的 `text` 块再拼接"——一条 `GROUP BY` 就能算。
 缓存列的不一致风险是实的（消息补写了、预览不更新，两边对不上时你不知道信谁）。
 
-**轮行与消息同一事务落盘**：不存在「半行」。崩溃的形状是「这一轮没有行」，而「轮跑到一半」的证据在
-消息层——悬空的 `tool_use`（没有对应 `tool_result`），§3.9 的闸门判它。
+**轮行先建、消息逐条落、轮末收口**（细节见上）：`closed_at IS NULL` 就是「半行」的标记。
 
 ### 1.3 `messages` —— 一行一条消息
 
@@ -342,10 +348,11 @@ msg_seq=3  tool       [tool_result(tu_3)]
 折叠永远从最老的往前吃一段**前缀**，所以只需要一个**切点**，不需要成员表，也不需要例外表：
 
 ```sql
--- 这一折吃掉了什么：所有 (round_no, msg_seq) ≤ 切点的消息
+-- 这一折吃掉了什么：切点之前、且【进折叠】的那些消息
 SELECT * FROM messages
  WHERE run_id = ?
-   AND (round_no, msg_seq) <= (?, ?);
+   AND (round_no, msg_seq) <= (?, ?)
+   AND caller IN ('assistant', 'tool');   -- user / engine / judge 不进折叠（§1.3）
 ```
 
 | 为什么不需要例外 | |
@@ -366,7 +373,7 @@ SELECT * FROM messages
 折数一多，`title` 也是线性增长的（1000 折 × 20 token = 20k）。需要把最老的那些并成一行——
 但这件事**不需要存储**：
 
-> 按 `seq` 每 10 折一组，渲染时现算。组标签 = `第 a–b 折 · <组内第一折（跳过已作废的）的 title>`。
+> 按 `seq` 每 10 折一组，渲染时现算。组标签 = `第 a–b 折 · <组内第一折的 title>`。
 
 三点理由：
 
@@ -560,8 +567,8 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 
 | 情况 | 行为 |
 |---|---|
-| 估算与真实 tokenizer 不一致 | 按 **0.9B** 渲染；provider 报超窗 ⇒ 记一行 `budget_verdict`、**降一档重试一次** |
-| 窗口极小（装不下一条 description + 一条 title） | 降级顺序：最新一条 description → 只给 title → 只给阶段线 |
+| 估算与真实 tokenizer 不一致 | 按 **0.9B** 渲染；provider 报超窗 ⇒ 把实际超出的量写进 `runs.termination_detail`、**降一档重试一次** |
+| 窗口极小（装不下一条 description + 一条 title） | 降级顺序：最新一条 description → 只给 title → 只给分组行 |
 | 连一条分组行都装不下 | **`cannot_fit` 显式失败**。不许静默只给保留区——模型会以为自己是从头开始的 |
 | 任何一档装不下整条 | **降档，不夹断**。半条 description 比没有更坏：模型会补全不存在的细节 |
 
@@ -600,7 +607,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 
 ### 3.8 两种文本的固定节
 
-**`description`（本折日志）—— 模型写的四节 + 一个机械抄的节，约 400 token**
+**`description`（本折日志）—— 模型写的三节，约 400 token**
 
 | 节 | 写什么 | 谁写 |
 |---|---|---|
@@ -670,7 +677,10 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 增量日志 + 白板漏记 = 那条信息永久离开上下文，而账本上看不出异常（折叠本身没错）。所以需要一道闸门，
 但**只取机械可判的那一半**：
 
-> 本折切点之前存在**没有 `tool_result` 的 `tool_use`** ⇒ 拒绝折。
+> 本折切点之前存在**`closed_at IS NULL` 的轮**，或**没有 `tool_result` 的 `tool_use`** ⇒ 拒绝折。
+
+前者是「这一轮没跑完」的直接标记（轮行在、没收口），后者是它的消息层表现——两条都查，因为
+崩溃可能发生在两者之间（轮行已建、消息还没落）。
 
 "白板有没有对应条目"**不做闸**（无法机械判定）——改为折叠 prompt 强制产出"本折遗留事项"清单，
 写进 `description` 的 `## 遗留`。
@@ -680,7 +690,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 分层的目的只是"保留可追溯的骨架"，而骨架用**分组行 + 指针**表达：200 token，零调用，不失真。
 再叠一层摘要要一次 LLM 调用 + 一份独立预算 + 自己也会膨胀，且每层都改写一遍，越往上越不准。
 
-**层数上限 2（白板 + 日志）**。想加第三层，先回答"这一层的信息能不能压成 200 token 的阶段线"。
+**层数上限 2（白板 + 日志）**。想加第三层，先回答"这一层的信息能不能压成 200 token 的分组行"。
 能，就不加层；不能，说明要的是"回忆细节"，那是账本的活，不是上下文的活。
 
 ---
@@ -697,8 +707,9 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 6. **每一折可单独编码**：拎出 `title` + `description` + `(run_id, seq)` 就够，不依赖同一会话的其它行。
 7. **停要说清**：终局必须写 `termination_reason`（+ `termination_detail`），不许静默降级；验证跑没跑、为什么没跑写 `verification_status` / `verification_reason`。（预算/实测/超出多少这几个数今天**不存在**，它们是落地要求，不是形状已承诺的字段。）
 8. **一条信息只住一处**：现状→白板，历史→日志，细节→账本，常量→项目指令；**机械内容各自成列**，不混进 `description`。
-9. **轮行与消息同一事务落盘**：不存在「半行」。崩溃的形状是「这一轮没有行」，而「轮跑到一半」的证据在消息层——
-    **悬空的 `tool_use`**（没有对应 `tool_result`），§3.9 的闸门判它。
+9. **轮行先建、消息逐条落、轮末收口**：崩溃的形状是 `closed_at IS NULL`（轮行在、没跑完），
+    加上可能的**悬空 `tool_use`**（没有对应 `tool_result`）。不是「同一事务」——长轮次攒到轮末提交
+    会把已完成的工具结果全丢掉，重跑还会重复副作用。
 10. **顺序靠自然键**：轮内 `msg_seq`，跨轮 `round_no`，折叠 `folds.seq`。没有全局序号，`created_at` 不作顺序依据（墙钟会回拨）。
 11. **恢复不猜状态**：未结清的工具调用，恢复时不自动重跑，只补一条"状态未知"的桩，判断交给模型。
 
