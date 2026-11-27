@@ -111,8 +111,13 @@ CREATE INDEX ON runs ((state->'deterministic'->'guardExtension'->>'used'));
 | `tool_use_count` | int | not null default 0 | 本轮发起几个工具 |
 | `usage` | jsonb | | 本轮**累计**用量（截断续写时是多次之和） |
 | `response_usage` | jsonb | | **最后一发**的用量（历史形状） |
-| `summary` | text | | 本轮自身摘要 |
 | `wrapup` | jsonb | | 收尾那一次的结构化产物（**真状态**：模型输出的规范化结果，不可重算）。只有最后一轮有值 |
+
+**没有 `summary`（单轮自述）**：生产者协议（`<erix-summary>` 内联标记）**在任何提示词里都不存在**
+⇒ 实测 1,021 轮里 885 轮是兜底串 `"missing"`。唯一的落点是 `governorState.runningLog`，而它只被
+裁剪器读（决定丢哪条），从不渲染；judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。
+要保证质量就得每轮多一次 LLM 调用，而**当前上下文里没有它的读者**——所以先删，要的时候再加。
+按轮标签今天能现算（过滤本轮 `caller='assistant'` 的 `text` 块拼接）。
 
 **没有 `l0facts`**：98.7% 的行存的是 `{exitOk:true}`——它认的失败口径是「工具抛异常」（`is_error`），
 而真实失败是「命令退出码非 0」，两者在 1,021 轮实测里几乎不相交（`is_error` 只在一个合成 fixture 里出现）。
