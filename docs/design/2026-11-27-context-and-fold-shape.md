@@ -692,6 +692,53 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 另一个数：按本形状的预算（200k 窗口、历史层 5k），**10 次折叠（约 6000 轮）全部能按完整
 description 放下**——梯度降级在这个规模上用不到，它是给 10 万轮准备的。
 
+### 5.1 两种存储的查询成本
+
+形状只承诺「能按自然键排序」，不承诺「毫秒级随机查询」——后者是索引的事。但两条实现路径的成本差一个量级，
+落地时要心里有数。
+
+**DB（以 Postgres 为例）**
+
+| 查询 | 计划 | 成本 |
+|---|---|---|
+| 按 run + 区间取原文（recall 主路径） | PK 范围扫描 `(run_id, round_no, msg_seq)` | **O(命中行数)**，毫秒级 |
+| 本 run 内关键词过滤 | 扫该 run 的 `content` + jsonb→text 转换 | O(该 run 字节)，11 MB ≈ 100 ms |
+| 跨 run 全文搜索 | 全表扫 | 线性——需要生成列 + `pg_trgm` |
+
+```sql
+-- 生成列让 DB 自己维护可搜索文本（零同步纪律），三元组索引对中文子串同样有效
+ALTER TABLE messages ADD COLUMN search_text text
+  GENERATED ALWAYS AS (
+    coalesce(jsonb_path_query_array(content, '$[*].text')::text, '')
+    || coalesce(jsonb_path_query_array(content, '$[*].content')::text, '')
+  ) STORED;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX messages_search_trgm ON messages USING gin (search_text gin_trgm_ops);
+```
+
+**JSONL**
+
+实测（Python，page cache 命中）：**~96 MB/s**，成本几乎全在 `json.loads`，不在 I/O
+（10.8 MB / 585 行 = 107 ms，其中读文件约 2 ms）。
+
+| 会话大小 | 一次全扫 |
+|---|---|
+| 0.65 MB（本机最大真实会话） | 7 ms |
+| 11 MB（约 2000 轮） | ~110 ms |
+| 55 MB（约 1 万轮） | ~550 ms |
+
+**JSONL 没有索引 ⇒ 每次查询都是全文件解析。** 三个补法都在存储层，不进形状：
+
+1. **侧车偏移索引** `<runId>.idx`：`fseek` 到起点再顺序读，文件多大都是毫秒级
+2. **每轮一个文件**：目录列表就是索引（代价是文件数多、跨轮查询多次 open）
+3. **内存索引**：`load()` 时顺手建 offset map——引擎本来就要全量加载，搭便车
+
+**为什么自然键让这件事可行**：`msg_seq` / `round_no` / `folds.seq` 都是自然键 ⇒ **追加顺序 = 逻辑顺序**
+⇒ 偏移索引单调，追加时顺手记即可。若改用全局自增序号，序号由存储分配，偏移索引立刻失效。
+
+**判据**：JSONL 不是检索引擎，是账本格式（零依赖 / 可 grep / 可 diff / 追加即落盘）。
+跨 run 全文搜索不是它的活。
+
 ---
 
 ## 6. 刻意不做
