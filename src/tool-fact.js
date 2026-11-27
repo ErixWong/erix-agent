@@ -7,7 +7,8 @@
 //   1. **同一个 tool_result 事实只由 `buildToolResultFact()` 构造一次**（引擎事实在 `erix.*`，
 //      宿主扩展在 `metadata.*`，`is_error` 留在顶层是 wire 字段）；构造器**不**把 metadata 摊平到顶层；
 //   2. **「谁是某个字段的拥有者」写进导出的 `TOOL_RESULT_CONTRACT`**，由三方消费同一份：
-//      构造器（按它写路径）、`docs-drift-check`（契约文档的字段清单与该常量双向比成员）、
+//      构造器（按它写路径）、契约文档的字段清单（原由 `docs-drift-check` 与该常量双向比成员，
+//      该闸已随门禁删除，现在只有人工对账）、
 //      `test/contract/tool-result-envelope.js`（从常量生成期望字段集合）。
 //
 // T1 是 additive 双写期；**T2（工单 261014）结束双写**：引擎不再写顶层摊平的宿主键，也不再写顶层
