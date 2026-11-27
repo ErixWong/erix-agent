@@ -74,9 +74,11 @@
 | `prior_seq` | bigint | FK→folds(run_id, seq)，可空 | 续写基底 = 上一折。**用外键，不用哈希** |
 | `title` | text | not null | **模型写的短标题**，≤ 60 字符 |
 | `title_src` | text | not null | `model` / `first_line`（回退，见 §3.4 ①） |
-| `description` | text | not null | **本折日志正文**（§3.8 的三段过去时） |
+| `description` | text | not null | **模型写的三节**（行动 / 遗留 / 关键词），约 400 token |
 | `description_tokens` | int | not null | 渲染时按它算预算 |
-| `intent` | jsonb | not null | **折叠前白板的待办快照**（机械抄，不是模型写的） |
+| `vector` | jsonb | 可空 | **`description` 的向量**（派生，可丢可重算）：`{model, sha, dims, v}`。`sha` 是 `description` 的指纹——对不上就作废重算；缺省 ⇒ 该折不参与相关度排序 |
+| `intent` | jsonb | not null | **折叠前白板的待办快照**（机械抄）——渲染成 `## 意图` |
+| `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空 |
 | `stage_no` | int | 可空，FK→stages | 归属的阶段线（§3.2 第三档） |
 | `source` | text | not null | `llm` / `host`（**没有 `statistical`**） |
 | `origin` | text | not null | `semantic` / `host`（**没有 `mechanical`**） |
@@ -226,9 +228,12 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
   ① 60% B 给 description（每条 ≤ 500 token）
   ② 30% B 给 title（每条 ≤ 20 token）
   ③ 剩下给阶段线（每 10 折一行）
+  ④ 可选：装不下时，按 `vector` 与当前任务的相关度挑几折给 description
 ```
 
-同一批记录 + 同一个预算 ⇒ 同一输出。
+同一批记录 + 同一个预算 ⇒ 同一输出。第 ④ 档是**可选的**：没有向量就退回纯时间序，行为与没有它时逐字一致。
+它只影响「历史层里放哪几折」，**不碰白板、不碰保留区、不碰折叠的写入路径**——
+白板的准入是"不记住会导致可观测的失败"，不是"和当前问题相似"。
 
 ### 3.3 预算
 
@@ -359,7 +364,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 5. **永远不出现"零历史"**：至少一条阶段线。
 6. **机械填的节不许模型写**：`## 意图` 逐字等于 `intent` 的渲染结果；`## 提交` 的 sha 来自工具结果。
 7. **装不下要说清**：失败时 `budget_verdict` 给出 budget / measured / over_by / layers_tried。
-8. **一条信息只住一处**：现状→白板，历史→日志，细节→账本，常量→项目指令。
+8. **一条信息只住一处**：现状→白板，历史→日志，细节→账本，常量→项目指令；**机械内容各自成列**，不混进 `description`。
 
 ---
 
@@ -395,3 +400,5 @@ description 放下**——梯度降级在这个规模上用不到，它是给 10
 - **不把 `payload` 拆到块一级**：原子单位是**消息**。
 - **不做"无限保留历史原文"**：原文在账本里，上下文只放骨架。
 - **不给白板加时间维度**：退场靠状态（done / 被推翻 / 被证伪），不靠"多久没用到"。
+- **引擎侧不实现 embedding**：`vector` 只由宿主注入（零依赖红线），引擎只负责存、比对 `sha`、用它排序。
+  它只是 `folds` 的一个**派生列**，不是一张表，也不进真相层。
