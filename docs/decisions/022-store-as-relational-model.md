@@ -49,6 +49,10 @@ resume 之后 `runRounds` 从 0 重算，而 `rounds` 继续递增。第二版�
 | `reason` | text | not null，`fresh` / `resume` |
 | `started_at` / `ended_at` | timestamptz | |
 
+**它的真实读者**（否则这张表不该存在）：`rounds.segment_no` 把每一轮挂到产出它的那次拉上，
+于是「这次 resume 从第 800 轮开始、跑了 300 轮、花了多少 token、死在哪里」变成一条可查的账。
+成本归因与失败归属都需要这个边界；没有它，`runRounds` 只是一个内存变量，账本上查不到。
+
 `recovery_rows` 的「代际」与 segment **不是一回事**：代际只在 `fresh_start` 且持久化开着时换代
 （`clearRecoveryRows`），resume 不换。两者都要，别合并。
 
@@ -58,10 +62,11 @@ resume 之后 `runRounds` 从 0 重算，而 `rounds` 继续递增。第二版�
 |---|---|---|---|
 | `run_id` | text | **PK₁**, FK→runs | |
 | `seq` | bigint | **PK₂** | run 内严格递增（落盘序） |
+| `segment_no` | int | not null, FK→segments | 这一行是哪次拉起写的（§1.2 的读者靠它） |
 | `round` | int | not null | 轮号 ≥ 0；`0` 是 seed 行 |
 | `kind` | text | not null | `round` / `message` / `control` / `fact` |
 | `dedup_key` | text | not null | 口径**逐字照** `recordKey`：`dedupKey ?? roundKey ?? "<runId>:round:<round>"` |
-| `payload_sha256` | text | not null | `payloadFingerprint(record)` 的值 |
+| `payload_fingerprint` | text | not null | `payloadFingerprint(record)` 的值，形状是 **`sha256:<24 hex>`**（不是 64 位摘要；列名跟着这个形状，不叫 `payload_sha256`） |
 | `payload` | jsonb | not null | 该行内容（`kind='message'` 时是一条消息，content 块留在 payload 里） |
 | `created_at` | timestamptz | not null | |
 
@@ -70,8 +75,8 @@ resume 之后 `runRounds` 从 0 重算，而 `rounds` 继续递增。第二版�
 
 > ⚠ **唯一约束本身不等于现有的幂等契约。** 现有口径是：同 key **同 payload** ⇒ 幂等 no-op 返回 false；
 > 同 key **异 payload** ⇒ 抛 `TranscriptDedupConflictError`。单纯 `ON CONFLICT DO NOTHING` 会把后者
-> **静默吞掉**。所以 `appendRound` 的 DB 实现必须写成「插入；冲突时比较 `payload_sha256`：相等 ⇒
-> 返回 false；不等 ⇒ 抛」——`payload_sha256` 列就是为这一步存在的。
+> **静默吞掉**。所以 `appendRound` 的 DB 实现必须写成「插入；冲突时比较 `payload_fingerprint`：相等 ⇒
+> 返回 false；不等 ⇒ 抛」——这一列就是为这一步存在的。
 
 `payload` 不拆到块一级：原子单位是**消息**（`foldMessageRows` 的口径）。只有需要
 `tool_use ↔ tool_result ↔ 执行证据` 三向 join 时才拆出 `content_block`，本版不做（§7）。
@@ -184,7 +189,7 @@ PK(run_id, key)；`note_history(run_id, key, version, payload, state, created_at
 | `run_id` / `seq` | text / bigint | **PK** |
 | `event` | text | `tool-executed` / `tool-result-unledgered` / `partial-text` |
 | `round` | int | 槽事件按轮定界 |
-| `dedup_key` / `payload_sha256` / `payload` / `created_at` | | 同 §1.3 的冲突判定 |
+| `dedup_key` / `payload_fingerprint` / `payload` / `created_at` | | 同 §1.3 的冲突判定 |
 
 **两族语义必须在表上分开**：
 
@@ -211,7 +216,7 @@ runs 1─┬─N segments
 
 | 端口方法 | 落到 | 语义要点（不能只靠约束的地方写在这里） |
 |---|---|---|
-| `appendRound(runId, record)` | `rounds` | 冲突时比 `payload_sha256`：相等 ⇒ no-op(false)；不等 ⇒ 抛 `TranscriptDedupConflictError` |
+| `appendRound(runId, record)` | `rounds` | 冲突时比 `payload_fingerprint`：相等 ⇒ no-op(false)；不等 ⇒ 抛 `TranscriptDedupConflictError` |
 | `load(runId)` | `rounds` ORDER BY seq → `foldMessageRows` | |
 | `loadRawRows(runId)` | 同上不折 | |
 | `loadByDedupKey` / `loadMaxRound` | 索引 | 可选快路径 |
@@ -234,7 +239,7 @@ runs 1─┬─N segments
 | 东西 | 真实身份 | 归属 |
 |---|---|---|
 | `folds.title` / `folds.description` | **折叠事实**（本折日志） | §1.4 的新表 |
-| 实际喂给模型的那串字节（今天的 `fedSummaryText`） | **某一轮的请求事实**：它含任务原文与安全层插的 `[已修剪]`，且只在"能被验证"时才落账 | 留在**该轮的记录**上，不从 `folds` 派生 |
+| 实际喂给模型的那串字节 | **某一轮的请求事实**。今天字段名有两个，**别混**：`foldedSummary.text` 是折叠后**整条消息**的投影（含原任务正文与安全层插的 `[已修剪]`）；`foldedSummary.fedSummaryText` 才是「写侧当场证得的那一块」逐字副本，只在证得过时才落账 | 留在**该轮的记录**上，不从 `folds` 派生 |
 | `requestStateBlock` | run 状态块的渲染 | run-state |
 | `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的行集合查询），不落正文 |
 | `compactionStats[].foldSummary` | 指标 | 诊断面，只放信号 |
@@ -375,13 +380,23 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 2. **迁移完成标记**：`runs.migration_folds_complete`。迁移在一个事务里写完再置 true；`loadFolds`
    在该标记为 true 之后才可以只读 `folds`。中途失败 ⇒ 标记为 false ⇒ 继续走合并读。
 3. **写新**：新折叠只写 `folds` + `fold_round_rows`；轮记录不再写 `foldedFacts`。
-4. **旧记录没有 `title` / `description`**：迁移时从旧的 `text` 取首行当 `title`（`title_src='first_line'`），
+4. **旧记录里的退役枚举值**（迁移必须交代，否则读侧会丢行）：
+
+| 旧值 | 去哪 |
+|---|---|
+| `origin = 'mechanical'` | 原样保留（不改写历史），但该折 **不进第一、二层**，只进阶段线；渲染时标 `legacy=true` |
+| `source = 'statistical'` / `'strategy'` | 同上 |
+| `degradeReason = 'budget_fallback_mechanical'` | 原样保留，仅作审计；新代码不再产出该值 |
+| 旧的 `text`（累计体） | 只用于生成 `description`（整段）与 `title`（首行），`title_src='first_line'`，标 `migrated=true` |
+
+   规则是「**写侧收窄，读侧宽容**」：新行不可能再出现这些值，旧行读得回来、只是不冒充日志。
+5. **旧记录没有 `title` / `description`**：迁移时从旧的 `text` 取首行当 `title`（`title_src='first_line'`），
    整段当 `description` 并标 `migrated=true`。这类记录只进第二层，不进第一层（§4.5 ①）。
-5. **`foldedPayload` 退役**：从落盘字段变成派生查询（§1.5）。宿主若在读它，升级指南要给替代查询。
-6. **版本**：`appendFold` / `loadFolds` / `appendStage` **先做成可选**（缺失 ⇒ 退回写轮记录字段 + 发一次
+6. **`foldedPayload` 退役**：从落盘字段变成派生查询（§1.5）。宿主若在读它，升级指南要给替代查询。
+7. **版本**：`appendFold` / `loadFolds` / `appendStage` **先做成可选**（缺失 ⇒ 退回写轮记录字段 + 发一次
    `store_folds_channel_absent` 诊断），与 #769 恢复行、#157 快路径探针的既有做法一致；
    **下一主版本**才改成必需。
-7. **宿主横幅的替代映射**（宿主今天读的四个字段都要有去处）：
+8. **宿主横幅的替代映射**（宿主今天读的五个字段都要有去处）：
 
 | 今天宿主读 | 之后读 |
 |---|---|
