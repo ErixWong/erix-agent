@@ -98,12 +98,11 @@
 前两个可派生，**第三个不可派生**（guard 跑没跑过不是任何字段的函数）。所以 `status` 删掉，三个维度各自成列：
 清理判据读 `termination_reason`，UI 读 `verification_status`，审计读 `verification_reason`，各读各的，没有"同一个派生表达式必须写在一处"的纪律要求。
 
-`guardVerdict` / `guardMetrics` 是诊断面（宿主调试用），进 `compaction_stats` 之外的诊断位——**不占列**。
+`guardVerdict` / `guardMetrics` 是诊断面（宿主调试用）——**不占列**：它们的读者只有调试者，而验证结论本身已由 `verification_status` / `verification_reason` 两列表达。
 
-**为什么 `state_schema_version` / `state_epoch` 不是列**：它们是快照里的 `schemaVersion` / `stateVersion`。
-一个事实只住一处——列和 jsonb 各存一份，就多了一条"必须同步"的纪律，而没有读者需要按它们查询。
-快照里的 `stateVersion` 数的是**注入次数**，不是版本号（这个名字会被所有人读错，但它住在快照 schema 里，
-名字由那边决定）。
+**`state_version` 这个名字是有意的**：代码里叫 `stateVersion`，会被所有人读成"版本号"，而它数的只是
+**注入次数**。它也不是 schema 代次——快照格式的代次随 `state` 一起删掉了（见下），代次属于存储层，
+不属于形状。
 
 **这五个「一次性事实」是列，不是 jsonb**：它们原来住在 `state.deterministic` 里，用**键不存在**表示
 「没发生过」。换成 `default false` 的列之后：① 「缺席 vs false」的歧义消失；② 可以直接查
@@ -118,8 +117,8 @@
 | `stateVersion > 0` | 28（31%） | 不能（计数器）→ 列 |
 | `filesWritten` 非空 | 19（21%） | **能**（扫写工具入参） |
 | `foldedRounds > 0` | 10（11%） | **能**（`max(cut_round)`） |
-| `lowBudgetPrompted` | 8（9%） | 不能（决定）→ `quotas` |
-| `compactionStats` 非空 | 1（1%） | 不能（实测）→ 列 |
+| `lowBudgetPrompted` | 8（9%） | 不能（决定）→ 列 |
+| `compactionStats` 非空 | 1（1%） | 不能（实测）→ 挂到 `folds.tokens_before/after` |
 | `semantic` / `errors` / `guardExtension` / `contextWindowRecovery` | **0** | 能 / 能 / 决定 / 决定 |
 | `rendered` | 每次保存都写 | **纯投影，写进去再没人读**：全仓 3 处读点全读内存对象，`resume` 直接重渲染（`resume-manager.js` / `run-state.js` 里 grep `rendered` 零命中） |
 | `stateStatus` / `stateAvailability` | 恒 `available` | **读者对快照的观测，被写进作者的产物**——能不能用是读的时候判的 |
@@ -132,7 +131,7 @@
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `run_id` | text | **PK₁**, FK→runs | |
+| `run_id` | text | **PK₁**, FK→runs | 会话归属 |
 | `round_no` | int | **PK₂** | ≥ 0；`0` 是 seed |
 | `provider_stop_reason` | text | | **provider 给的结束原因**：`tool_use` / `end_turn` / `max_tokens`。**不是「本轮为什么停」**——那是 `runs.termination_reason`。实测 906 轮只有前两个值，且与「本轮有没有工具调用」完全相关；`max_tokens` 是续写门的输入（读的是内存里的 response，不是这一列） |
 | `usage` | jsonb | | 本轮**累计**用量（截断续写时是多次之和） |
@@ -184,7 +183,7 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `run_id` | text | **PK₁** | |
+| `run_id` | text | **PK₁** | 会话归属 |
 | `round_no` | int | **PK₂**, FK→rounds | 它属于哪一轮 |
 | `msg_seq` | int | **PK₃** | 轮内单调，从 0 起 |
 | `caller` | text | not null | **谁写的**：`user` / `assistant` / `tool` / `judge` / `engine` |
@@ -243,8 +242,8 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 顺带一条：Node 22+ 内置 `node:sqlite`（本机 v22 可用，带 ExperimentalWarning），所以"CLI 自建 SQLite"
 在零依赖红线内是可行的。但它是**宿主的一种可选实现**，不是形状的一部分——形状只要求"能按自然键排序"。
 
-**哪些消息进折叠**：`caller IN ('assistant','tool')`。`user` 不进——宿主的幂等判据要求
-`load()` 能看见自己那条 `dedup_key`；`engine` 不进——它在轮记录落盘之后才产生。
+**哪些消息进折叠**：`caller IN ('assistant','tool')`。`user` 不进——宿主写提问后要能立刻 `load()` 看见自己那条；
+`engine` 不进——它在轮记录落盘之后才产生。
 
 **切片（`part_of_msg_seq`）—— 一行一条消息，但一条消息可以是多行**：
 
@@ -284,7 +283,7 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `source` | text | not null | `llm` / `host`。**没有 `statistical`，也没有 `mechanical`**：后者今天存在，专指「LLM 摘要失败后的降级」；本形状里解析不出就是**折叠失败**（§3.7），不降级 |
 | `trigger` | text | not null | `budget` / `context_window_recovery` / `manual`。**今天零对应**（代码里只有 `strategy` 和 `degradeReason`）。读者是**调参的人**：「我们为什么一直在折——预算还是超窗恢复？」记的是当时的决定，不从 `tokens_before` 反推 |
 | `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行**。读者是**渲染**：被取代的折不渲染——否则恢复后重折的那一段会出现两次（旧折描述半段、新折描述整段） |
-| `created_at` | timestamptz | not null | |
+| `created_at` | timestamptz | not null | 信封时刻 |
 
 **代码里有、形状里故意没有的四样**（不写清楚就会被当成遗漏，下次有人补回来）：
 
@@ -383,7 +382,7 @@ SELECT seq, title FROM folds
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `run_id` | text | **PK₁** | |
+| `run_id` | text | **PK₁** | 会话归属 |
 | `key` | text | **PK₂** | 稳定标识：≤24 字符，`[a-z0-9-]`。**不是标题**——改标题不该换笔记 |
 | `title` | text | not null, ≤60 | 目录显示的那一行。写侧上限 = 显示上限，否则模型写的后半截永远看不到 |
 | `content` | text | not null, ≤4000 | 正文 |
