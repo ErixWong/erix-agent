@@ -227,7 +227,7 @@ test("#643-③ 兜底也产摘要：模型请求里有 marker、轮记录 folded
   assert.match(String(facts[0].text), /上下文折叠/u, "替代物正文必须是机械摘要");
 });
 
-test("#643-③ 没配策略 ⇒ 不折叠（模型请求里不出现折叠摘要；issue #898 修订设计）", async () => {
+test("#643-③ 缺省（没配策略）⇒ 引擎内置 fold-llm 照折（issue #261127-12 反转旧前提）", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createFakeProvider([
     ...Array.from({ length: 4 }, (_unused, index) => ({
@@ -236,27 +236,28 @@ test("#643-③ 没配策略 ⇒ 不折叠（模型请求里不出现折叠摘要
     })),
     { content: [{ type: "text", text: "收尾结论" }], stopReason: "end_turn" },
   ]);
-  await runDirect({
+  const result = await runDirect({
     provider,
     seed: "read all modules",
     executeTool: async ({ input }) => roundContent(Number(input?.path?.match(/mod(\d+)/u)?.[1] ?? 0), 12000),
     store,
     runId: "643-unconfigured",
-    // #898-2 修订设计：这格刻意验「没配策略 ⇒ 不折叠」⇒ 关掉夹具隐式注入。
+    // #261127-12：这格测「不配策略」⇒ 关掉夹具隐式注入，让**引擎默认** fold-llm 接管。
     implicitStrategy: false,
     config: {
       folding: { context: { budgetTokens: BUDGET, keepRounds: 6 } },
       run: { maxRounds: 7, completion: false, outputHygiene: { limit: 100_000 } },
     },
   });
-  // issue #898 修订：以前这一格靠引擎库层的机械 `sliding-window` 兜底（“库层兜底独自干活”）。
-  // 新设计：没配策略 ⇒ 引擎**不触发折叠**，也不再静默塞一段机械摘要。
-  const afterFold = provider.requests.find((request) => JSON.stringify(request).includes(FOLD_MARKER));
-  assert.equal(afterFold, undefined,
-    "没配策略时引擎不得折叠：模型请求里不应出现任何折叠摘要 marker（机械兜底已退）");
+  // 旧前提「没配策略 ⇒ 不折叠」已被反转：折叠策略**永不为空**，缺省即引擎内置 fold-llm ⇒ 照折、照落账。
+  // （每轮 12000 字符 ≫ BUDGET ⇒ 必然超预算；缺省策略触发折叠，兜底层把轮次折掉并落 foldedFacts。）
+  assert.ok(
+    result.compactionStats.some((stat) => stat.compacted === true),
+    "缺省（没配策略）也必须真的折叠（缺省即折，不再「没配策略就不折」）",
+  );
   const records = await store.load("643-unconfigured");
   const factCount = records
-    .filter((r) => r[FOLDED_FACTS_RECORD_FIELD] !== undefined)
-    .reduce((n, r) => n + r[FOLDED_FACTS_RECORD_FIELD].length, 0);
-  assert.equal(factCount, 0, "没配策略 ⇒ 不得落任何折叠 fact");
+    .flatMap((r) => r[FOLDED_FACTS_RECORD_FIELD] ?? [])
+    .length;
+  assert.ok(factCount > 0, "缺省折叠必须在轮记录上留下 foldedFacts（缺省即折、照落账）");
 });

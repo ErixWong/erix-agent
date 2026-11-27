@@ -494,7 +494,7 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"compaction_strategy_fallback"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -4525,6 +4525,23 @@ export async function runToolLoop(options) {
         : 0;
       foldedRounds = strategyFoldedRounds;
       compacted = result.compacted === true;
+      // issue #261127-12：`compaction_strategy_fallback`（#464 A）发射点收窄。旧条件是「`context.strategy`
+      // 未配 + 预算触发」；名字形态删后策略永不为空，那个情形没了。新发射点只对应契约仍描述的
+      // 真事实——**引擎自己**把这一折交给内置机械 `sliding-window` 兑底（`strategyRequestsCompaction` 为假
+      // ⇒ 下方 `createSlidingWindowStrategy()` 那一发）且真折了轮。宿主自带策略（配了 ports.strategy
+      // 或对象）走 `strategyRequestsCompaction` 为真那一支 ⇒ 不发。每 run 至多一条（契约口径）。
+      if (!strategyRequestsCompaction && compacted && foldedRounds > 0
+        && runLoopState.compactionStrategyFallbackNoticeEmitted !== true) {
+        runLoopState.compactionStrategyFallbackNoticeEmitted = true;
+        emitEvent({
+          type: "compaction_strategy_fallback",
+          round,
+          detail: 'engine compaction fallback in effect: the engine\'s own "sliding-window" strategy '
+            + "folds only the oldest rounds needed to fit the budget and prepends a mechanical summary",
+          ...(budgetTokens === undefined ? {} : { budgetTokens }),
+          estimatedTokens: tokensBefore,
+        });
+      }
       let tokensAfter = estimateMessageTokens(compactedMessages);
       if (selectedLayer !== undefined && foldedRounds > 0) {
         observeCompactionLayer(layers, selectedLayer.id, {

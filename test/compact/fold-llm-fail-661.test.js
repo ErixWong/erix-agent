@@ -106,7 +106,9 @@ async function runFoldLlm({
   provider,
   store = createMemoryTranscriptStore(),
   budgetTokens = 1050,
-  strategy = "fold-llm",
+  // issue #261127-12：策略名字形态已删——旧默认 `"fold-llm"` 现在会启动期 TypeError。
+  // 省略即等价（引擎默认就是内置 fold-llm，绑 provider 的摘要器）⇒ 名字改成省略，语义逐字不变。
+  strategy = undefined,
   seedLedger = false,
   resume = false,
   events = [],
