@@ -430,8 +430,10 @@ test("#261127-13-3 上限：pointers 命中 8 片 ⇒ 返回 ≤5 条（实为 5
 });
 
 // ─── 格 15（nextStep 两态）：钉字面、互不相同、非命令式 ────────────────────
-const NEXT_CALM = "这段历史里的事实就是上面那条 answer；直接用它，再问一遍不会多出信息。";
-const NEXT_ASK = "答案不确定：可以缩小 fromRound/toRound 再问一次，或用 recall_read({pattern}) 逐字核。";
+const NEXT_CALM = "模型自报 uncertain=false（引擎不校验答案内容）：需要逐字核对时用 "
+  + "recall_read({evidenceRef}) 或 recall_read({pattern})。";
+const NEXT_ASK = "模型自报 uncertain=true（引擎不校验答案内容）：可缩小 fromRound/toRound 再问一次，"
+  + "或用 recall_read({pattern}) 逐字核。";
 
 test("#261127-13-4 nextStep 两态：uncertain false/true 各钉一句字面，互不相同且都不是命令式", async () => {
   const { readLedgerRows } = makeWideLedger(3);
@@ -450,7 +452,10 @@ test("#261127-13-4 nextStep 两态：uncertain false/true 各钉一句字面，�
   assert.equal(un.nextStep, NEXT_ASK, "uncertain:true ⇒ 那句「还能怎么核」必须逐字对得上");
   assert.notEqual(calm.nextStep, un.nextStep, "两态必须互不相同");
   for (const s of [calm.nextStep, un.nextStep]) {
+    // 事实陈述 ≠ 命令：除了「你应当…」这类，**替模型背书**的话（"直接用它"/"这就是事实"）也不许出现——
+    // 引擎不校验答案内容，`uncertain` 只是模型自评（copilot 复审点出来的）。
     assert.ok(!/你(必须|务必|不许|禁止|应该|应当)/.test(s), `nextStep 是事实陈述不是命令：${s}`);
+    assert.ok(!/直接用它|这就是事实|放心使用/.test(s), `nextStep 不许替模型背书：${s}`);
   }
 });
 

@@ -176,9 +176,13 @@ export function createRecallAskTool(options = {}) {
     // 7) `nextStep` 是「到此为止」信号：两句都是**事实陈述**（陈述「直接用/还能做什么」），
     //    不是命令——不许写成「你必须…」。
     const uncertain = result?.uncertain === undefined ? true : result.uncertain;
+    // 两句都是**事实陈述**，不是命令：引擎不校验答案内容，`uncertain` 是**模型自评**，
+    // 所以这里不许写「直接用它」「这就是事实」这类替模型背书的话（copilot 复审点出来的）。
     const nextStep = uncertain
-      ? "答案不确定：可以缩小 fromRound/toRound 再问一次，或用 recall_read({pattern}) 逐字核。"
-      : "这段历史里的事实就是上面那条 answer；直接用它，再问一遍不会多出信息。";
+      ? "模型自报 uncertain=true（引擎不校验答案内容）：可缩小 fromRound/toRound 再问一次，"
+        + "或用 recall_read({pattern}) 逐字核。"
+      : "模型自报 uncertain=false（引擎不校验答案内容）：需要逐字核对时用 "
+        + "recall_read({evidenceRef}) 或 recall_read({pattern})。";
 
     // 键顺序就是模型读到的顺序（#261127-13）：`answer` 紧跟 `status` 第一眼看到，
     // `evidenceRefs` / `evidenceCount` 沉底——答案不被埋在一片指纹底下。
