@@ -65,7 +65,7 @@ const RECALL_ASK_DEFINITION = {
  *
  * @param {{
  *   readLedgerRows: () => Promise<any[]> | any[],
- *   recordEvidence?: (entry: {rowSeq:number|null, round:number, messageIndex:number, charRange:[number,number], sha256:string, bytes:number}) => void,
+ *   recordEvidence?: (entry: {round:number, textSha256:string, occurrence:number, charRange:[number,number], sha256:string, bytes:number}) => void,
  * }} options
  *   - `readLedgerRows`：只读访问器，返回该 run 的账本行（`store.load(runId)` 的输出）。
  *   - `recordEvidence`：可选。每片指纹经它落 `record.recallEvidence`；不提供就只在返回里给 `evidenceRefs`。
@@ -123,9 +123,10 @@ export function createRecallAskTool(options = {}) {
     }
     if (!Array.isArray(rows)) rows = [];
     const slices = collectRoundMessagesInRange(rows, fromRound, toRound).filter((s) => s.text.length > 0);
-    // 身份透传（PR #969 终验缺陷）：每片带 `rowSeq`（那条消息所在账本行的 seq）+ 行内 `messageIndex`，
-    // 而不是轮内位置下标——位置会同轮追加 / 折叠而漂，行身份与行内下标只追加、不会漂。
-    const folds = slices.map((s) => ({ rowSeq: s.rowSeq, round: s.round, messageIndex: s.messageIndex, text: s.text }));
+    // 内容寻址透传（PR #973）：每片带 `textSha256`（那条消息整段正文的 sha256）+ `occurrence`（该轮内
+    // 同正文第几次出现，0 基）+ `round`（定位必需），而不是行身份 rowSeq——真实写侧轮载体行无 seq、
+    // 消息行又被 store.load() 折进载体，行会漂；内容不变则身份不变。
+    const folds = slices.map((s) => ({ round: s.round, textSha256: s.textSha256, occurrence: s.occurrence, text: s.text }));
 
     // 4) 单发回忆调用：端口、用量、abort、超时全部**每次调用**经 deps 传入（缺省走安全默认）。
     /** @type {any} */
