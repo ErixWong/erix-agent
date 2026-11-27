@@ -514,7 +514,8 @@ test("#261127-16-3 指针命中切片区 ⇒ answerUnbacked=false，且 refs 就
   const desc = createRecallAskTool({ readLedgerRows }).definitions[0].description;
   assert.match(desc, /反过来不成立/, "描述必须写明 false 只表示轮号交集");
   assert.match(desc, /不证明答案内容被那些切片支持/, "描述必须写明 false 不证明内容被支持");
-  assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round), [3, 7]);
+  // 地址口径是行主键（#261127-15）：`round` 已不在 ref 上，改看 `round_no`。
+  assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round_no), [3, 7]);
   assert.equal(out.uncertain, true, "自评仍原样透传（与 answerUnbacked 相互独立）");
 });
 
