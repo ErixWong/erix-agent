@@ -106,12 +106,14 @@ CREATE INDEX ON runs ((state->'deterministic'->'guardExtension'->>'used'));
 | `status` | text | not null | `open` / `closed` / `crashed` |
 | `started_at` / `closed_at` | timestamptz | | |
 | `stop_reason` | text | | |
-| `text_preview` | text | | 本轮正文的预览 |
 | `tool_use_count` | int | not null default 0 | 本轮发起几个工具 |
 | `usage` | jsonb | | 本轮**累计**用量（截断续写时是多次之和） |
 | `response_usage` | jsonb | | **最后一发**的用量（历史形状） |
 | `summary` | text | | 本轮自身摘要 |
 | `l0facts` / `wrapup` | jsonb | | |
+
+**没有 `text_preview`**：它是"过滤本轮 `caller='assistant'` 的 `text` 块再拼接"——一条 `GROUP BY` 就能算。
+缓存列的不一致风险是实的（消息补写了、预览不更新，两边对不上时你不知道信谁）。
 
 **轮行先建后收口**：`open` → 消息落盘 → `closed`。这样消息的外键永远有主，而"崩溃在轮中"这个
 形状由 `status='open'` 表达，不再靠"行缺失"。
