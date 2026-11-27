@@ -435,64 +435,6 @@ function sectionedBody(fillerBytes = 400) {
     + section(DROPPED_SECTION_TWO);
 }
 
-/**
- * 从预算闸自己的源码里现读它给某份指令页允许的字节数。
- *
- * 为什么现读而不是抄一个数：本单修的正是「两道闸互不知情」，测试里再手抄一份预算就是把第三个副本
- * 塞进来。（不能 `import` 那份脚本：它**被 import 时也会跑一遍 CLI**，会把测试进程的诊断搅乱。）
- *
- * @param {string} file 预算表里的键（如 `AGENTS.md`）
- * @returns {number}
- */
-function budgetGateAllowance(file) {
-  const text = readFileSync(new URL("../scripts/agents-directive-scan.mjs", import.meta.url), "utf8");
-  const block = text.match(/export const LENGTH_BUDGETS = Object\.freeze\(\{([\s\S]*?)\n\}\);/u);
-  assert.ok(block !== null, "预算闸的 LENGTH_BUDGETS 读不到 ⇒ 这道交叉对账在空跑");
-  const entry = String(block[1]).match(new RegExp(`"${file}":\\s*(\\d+)`, "u"));
-  assert.ok(entry !== null, `预算闸的 LENGTH_BUDGETS 里没有 "${file}" 这一格 ⇒ 交叉对账在空跑`);
-  return Number(entry[1]);
-}
-
-test("#721 上限 64 KiB：预算闸允许的单页正文必须整份注入，不得切尾", async () => {
-  const dir = await makeTmp("erix-721-limit-");
-  try {
-    // 预算闸给本仓这一页允许的上限（现读，不在这里抄一份）：注入面必须装得下它。
-    // 261109 指令面瘦身后这一格从 33,792 降到 18,432（由 `--sync` 从实测推出），所以这里只断链子关系：
-    // 「预算闸说合法」⇒「注入面装得下」，反向证把上限改到比允许值小 1 字节（旧上限 32 KiB 那一刀已
-    // 被页面瘦身跨过去，不再是可用的反向证）。
-    const allowance = budgetGateAllowance(PROJECT_INSTRUCTIONS_FILENAME);
-    assert.ok(allowance > 0 && allowance < PROJECT_INSTRUCTIONS_MAX_BYTES,
-      `预算闸那一格（${allowance}）必须是止于注入上限的正数：漂了就红，别手改本用例`);
-    const body = syntheticBody(allowance);
-    assert.equal(Buffer.byteLength(body, "utf8"), allowance, "夹具字节数必须逐字等于预算闸的允许值");
-    writeAgents(dir, body);
-
-    assert.equal(PROJECT_INSTRUCTIONS_MAX_BYTES, 64 * 1024, "缺省上限就是 64 KiB = 65,536 字节");
-    const discovery = discoverProjectInstructions({ cwd: dir });
-    assert.equal(discovery.limit, PROJECT_INSTRUCTIONS_MAX_BYTES);
-    assert.equal(discovery.truncated, false, "预算闸说合法的正文，注入面必须装得下");
-    assert.equal(discovery.files[0].bytes, allowance);
-    assert.equal(discovery.totalBytes, allowance);
-    assert.deepEqual(discovery.droppedSections, [], "没截断就没有丢弃的小节");
-    const section = buildProjectInstructionsSection(discovery);
-    assert.ok(section.includes(TAIL_SENTINEL_721), "尾哨兵不在场 = 被切了尾");
-    assert.ok(section.trimEnd().endsWith(TAIL_SENTINEL_721), "整份注入 ⇒ 文件最后一行也在提示末尾");
-    assert.ok(!section.includes(DECLARATION_MARKER), "没截断就别往提示词里塞声明");
-
-    // 反向证（这一例不是恒真格）：同一份文件在「比允许值小 4 KiB」的上限下**确实**被切尾（切掉的量必须盖过尾哨兵那一行，否则切尾切不到它）
-    // ⇒ 判据考的就是上限本身。
-    const legacy = discoverProjectInstructions({ cwd: dir, maxBytes: allowance - 4096 });
-    assert.equal(legacy.truncated, true, "反向证失败：旧上限下这份本该被切尾");
-    const legacySection = buildProjectInstructionsSection(legacy);
-    const legacyAt = legacySection.indexOf(DECLARATION_MARKER);
-    assert.ok(legacyAt !== -1, "旧上限下也会被切尾 ⇒ 那半巧合今天不会重现：截断必然留下声明");
-    assert.ok(!legacySection.slice(0, legacyAt).includes(TAIL_SENTINEL_721),
-      "反向证：旧上限下尾哨兵不在正文里（那正是「静默切尾」的形状）");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("#721 截断时注入正文里出现声明：三个字节数 + 被丢弃的小节名都在提示词内，不是只在 stderr", async () => {
   const dir = await makeTmp("erix-721-declaration-");
   try {
@@ -576,19 +518,4 @@ test("#721 今天两页实测合计（63,197 字节）在上限内 ⇒ truncated
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test("#721 两道闸互相知道：预算闸允许的最坏两页组合装得进注入上限（旧上限装不下 = 缺陷本体）", () => {
-  // 全局页那一格在**外仓**（`pi-tools:scripts/check-agents-budget.sh` 的 `BUDGET_BYTES`，
-  // 注释逐字写着「预算 30 KB = 30*1024 = 30720 字节」）；干净检出里没有那份脚本，所以现抄并点名坐标。
-  const globalPageAllowance = 30720;
-  const repoPageAllowance = budgetGateAllowance(PROJECT_INSTRUCTIONS_FILENAME);
-  const worstCase = globalPageAllowance + repoPageAllowance;
-  assert.ok(worstCase <= PROJECT_INSTRUCTIONS_MAX_BYTES, "最坏组合不得超过注入上限（下面一条把它当缺陷本体报）");
-  assert.ok(PROJECT_INSTRUCTIONS_MAX_BYTES >= worstCase,
-    `注入上限 ${PROJECT_INSTRUCTIONS_MAX_BYTES} 装不下预算闸允许的最坏组合 ${worstCase}：`
-    + "预算闸说合法的正文注入面装不下 = issue #721 的缺陷本体回来了");
-  assert.ok(PROJECT_INSTRUCTIONS_MAX_BYTES - worstCase >= 1024,
-    "余量不得少于裁决里写的那 1,024 字节（页面瘦身只会把它抬更高，降低 = 预算闸又长长了）");
-  assert.ok(32 * 1024 < worstCase, "反向证：旧上限本来就装不下这个组合 ⇒ 本判据不是恒真格");
 });

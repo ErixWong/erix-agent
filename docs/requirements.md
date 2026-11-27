@@ -124,7 +124,6 @@ benchmark runs remain external acceptance work.
 |  |  | Public surface: `README.md` and `docs/host-consumer-contract.md` |
 |  |  | Locked by `node --test` and `erix-agent/contract-tests` |
 |  |  | Releases are versioned in `CHANGELOG.md` |
-|  |  | `check:docs` aligns documented versions, defaults, and files |
 |  |  | Consumer migrations remain host-side acceptance work. |
 | **v1.0 candidate — not shipped** | A touwaka migration, initially limited to token utilities and the history compactor, with the full `AgentLoop` migration left as a separate decision | No touwaka migration is part of this repository at the current release. Consumer-side regression and behavior checks must be run by the host project. |
 | **v2 candidate — deferred** | Cold-loop distillation plus L3 fact injection for the context-shaping idea, and native Gemini support if a future provider-layer reassessment justifies it | No `psyche` or Gemini-native provider is present in `src/` at the current release. This remains separately scoped work. |

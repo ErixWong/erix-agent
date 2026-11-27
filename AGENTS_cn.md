@@ -2,8 +2,6 @@
 
 > 英文版：[AGENTS.md](AGENTS.md)。本机共享约定：`~/projects/AGENTS.md`。
 > **本页是 system prompt 的一部分：每一轮全额重发，上下文折叠也不会动它**（字节预算由
-> `npm run check:agents-directives` 持有，issue #726）。它只留「会改变在这里做什么」的事实；历史、政策演变、
-> 事故复盘、逐文件数字都在冷层 `docs/maintenance/command-reference_cn.md`。本页出现的数字要么归门禁持有
 > （当场对账），要么是一个指针——绝不当手抄件。
 
 ## 1. 这个项目是什么
@@ -22,94 +20,58 @@
 
 ## 2. 代码结构住在哪里
 
-`README.md` 的「Module map」一节就是那棵结构树，也是 `check:docs` 当场对账的那一份（树有多大：
-`find src -name '*.js' -not -name '*.d.ts' | wc -l`）。**绝不要把那棵树抄到本页**：手抄在这页的树会一边每轮
-收费一边静默腐烂。
+`README.md` 的「模块地图」就是那棵树。**已经没有闸对账它了**（对账的那批闸随 #967 全删），所以它是手工维护的：
+**保持简短，新增模块就在创建它的同一个 PR 里加进去。**
+**绝不要把那棵树抄到本页**：手抄在这页的树会一边收费一边静默腐烂。
 
 - 唯一一条属于规则而不是属于地图的结构事实：**mock MCP server 留在 `fixtures/`，绝不放进 `test/`**——
   `node --test` 会跑 `test/` 下的每一个文件，那些 server 会把它挂住。
 
 ## 3. 开发命令
 
-清单归 `package.json`，本节不再复述。每道闸判什么、改它所管的东西之前先读哪个锚点，都在
-[`docs/maintenance/command-reference_cn.md`](./docs/maintenance/command-reference_cn.md)——从它顶部的索引进。
-
-一道闸会在冷层以它的 `npm run` 脚本名和它指向的锚点小节被点名（如 `npm run check:docs`）；
-
-- **CI 只在 `workflow_dispatch` 上跑**：`main` 的门禁由 ruleset 承担（现值用
-  `gh api repos/<owner>/<repo>/rulesets` 现查；今天它要求走 PR、且没有配任何 status check），所以唯一自动门禁是
-  发版前必跑的 `npm run release:day -- --stage preflight`。**没有事件触发的步骤是仪表盘，不是闸；一条判据若只在
-  CI 里跑，它就是哪儿都没跑**（issue #908 R2）。工作流只留干净检出 / 第二个 node 大版本才证得动的东西；秒级的
-  代码面判据在 `npm test` 里跑（`test/gate-self-tests.test.js`），文档闸住在版本边界与 `docs:pass` 周期检查里。
-  `ci.yml` 留了哪些步骤、撤走的每一步去了哪 ⇒ `#ci`。恢复自动触发 ⇒ 先读 `#ci`，并按 ruleset 现值决定要不要配
-  `required_status_checks`。`npm run soak` 仍然留在 CI 之外。
-- **闸的可复现性**：`check:docs` 与 `check:docs:strict` 必须在开发工作树里**和**在全新克隆里都 exit 0。需要
-  `node_modules` 的闸在裸克隆里以 `Cannot find module 'typescript'` 失败，含义是**这道闸没能跑**，
-  永远不是回归 ⇒ `#gate-reproducibility`。
-- 测试隔离：碰 `~/.erix` 或 `~/.pi` 的测试必须注入 `home` / `cwd`（skills/mcp/config 测试是先例），否则它会污染真实
-  用户配置。
-- 类型面规则（issue #213）：`src/**/*.d.ts` 是**生成物、永不入库**；`prepack` 重新生成它们且**只能往 stderr 打日志**。
+- **本仓没有门禁。** 所有 `check:*` npm 脚本、CI 工作流与冷层门禁手册都已删除（issue #961 / #967）：
+  一道「在合法改动上变红、修法是重抄一个常量」的判据不承载任何信息。**`npm test` 是唯一的自动判据。**
+  `npm run soak` 与 `*-experiment.mjs` / `bench-*.mjs` 是工具不是闸：要量东西的时候才跑。
+- 清单归 `package.json`，本节不再复述。
+- 开 PR 之前：`find src -name '*.d.ts' -delete && npm test`。声明文件是生成物、就住在源码旁边，
+  它在场时 `tsc` 会把 `./x.js` 解析到同目录的声明，查的是声明而不是实现。
+- 测试隔离：碰 `~/.erix` 或 `~/.pi` 的测试必须注入 `home` / `cwd`（skills/mcp/config 测试是先例），
+  不许污染真实用户配置。
+- 类型面规则（issue #213）：`src/**/*.d.ts` 是**生成物、永不入库**；`prepack` 重新生成它们且**只写 stderr**。
   有两种 JSDoc 形状会**静默**把参数退化成 `any` ⇒ `#type-surface`。
-- **类型棘轮**（`check:types` / `check:types:strict`，issue #214 / #417）：root 档不追求清零，对着
-  `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT` 比——**数值去脚本里读，本页不留手抄件**：超过 ⇒ exit 1，等于 ⇒ 绿，低于 ⇒ 绿 + 「可下调至 N」提示，
-  所以这个数只减不增；逐文件承载量与是否宿主可及都由 `--verbose` 打印。`--with-tools` 把并集扩到 `./tools`，
-  它有自己那条基线，同一条规矩；`check:types:strict` 在同一条命令上追加
-  `--strict`、对着脚本里它自己那对基线，它阻塞，且**两档在同一笔提交里一起降**。⚠ **跑棘轮之前先删掉生成物**
-  （`find src -name '*.d.ts' -delete`）：生成物在场时 `tsc` 会把 `./x.js` 解析到同目录的声明，查的是声明而不是实现。
-- **量数纪律**（issue #653，对本文提到的每一道棘轮和每一张派生表都成立）：派生数与基线**只在最终树上取**；基点落后
-  `main` 就先 rebase 再取数；降下的债与它对应的基线 / 派生表更新**在同一个 PR 里**一起进。
 - 新增文件首行开 `// @ts-check`（它声明意愿，不是范围开关——范围是入口的 import 图）。
-- 文档规则（issue #164）：改 `README*.md`、`docs/requirements*.md`、任何默认值或 `files`/`exports` 清单，必须保持
-  `npm run check:docs` 绿。「当前版本」这类句子的规定写法写在 `scripts/docs-drift-check.mjs` 的文件头注释里。
-  中英成对文档必须同步（本页配 `AGENTS.md`）。
 - 引用**另一个仓库**的文件：写成 `<仓名>:<那个仓里的路径>`——例如
-  `pi-subagents:src/runs/background/async-execution.js:4`——且仓名必须在 `scripts/docs-drift-check.mjs` 的
-  `EXTERNAL_REPO_PREFIXES` 里登记过（没登记的名字红，登记了却没人引用也红）。**不带前缀的路径就是本仓内的路径，
-  必须在这里解析得到。**
+  `pi-subagents:src/runs/background/async-execution.js:4`。**不带前缀的路径就是本仓的路径，必须在这里解析得到。**
 - **锚点**：指位置优先写符号 + 它的文件（`` `符号`（`路径`） ``），而不是 `路径:123`。
-  自 #908 起裸行号**不再阻塞**——`check:docs` 会统计并打一行 `BARE-LINES-ADVISORY` 提示，但不再因它压红
-  （三条锚点地板已随 #908 拆除，测量日志 `docs/maintenance/symbol-anchor-ledger*.md` 已删除）。
-  但行号仍须**为真**：指到文件末尾之外、或点名的符号在 `src/` 里已不存在，照旧红。
-  加锚点或搬锚点之前先读 `#docs-anchors`。
+  行号仍须**为真**：指到文件末尾之外、或点名的符号在 `src/` 里已不存在，就是缺陷——
+  只是现在没有任何自动判据会告诉你。
+- 文档规则（issue #164）：改 `README*.md`、`docs/requirements*.md`、任何默认值或 `files`/`exports` 清单，
+  中英成对文档必须在**同一个 PR** 里同步（本页配 `AGENTS.md`）。
 
 ## 4. 发版日
 
-四条命令，按这个顺序。下面四行清单与 `scripts/release-day.mjs` 里的 `PREFLIGHT_STEPS` 逐行对账；每一步判什么
-写在 `#release-day`：
+三条命令，按这个顺序（`preflight` 那一段随门禁一起删掉了）：
 
 ```bash
-npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/4] check:changelog                           每个公共面合并都在本版段落里有名字
-#   [2/4] CHANGELOG [Unreleased] carry              还停在 `## [Unreleased]` 下的条目
-#   [3/4] ERIX_E2E_MODEL=1 check:release:model-e2e  真模型端点；没带那个环境变量 ⇒ 什么都没跑 = 未判定
-#   [4/4] check:release                             离线：包形状 / 装好的包 / TS 宿主 / CLI 假上游
 npm run release:day -- --stage publish       # 打印操作单，exit 3；`npm publish` 由你自己在终端跑
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
-npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → 两侧各验一次 → 文档闸
+npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → 两侧各验一次
 ```
 
-- `writeback` 重写发布态并重跑 `check:docs`；`finalize` 在那个状态不在盘上、或工作树不干净时**拒绝**打 tag。
-  `writeback` 永远不许跳过。
-- **宿主消费者那一步答的是覆盖度，不是否决权**：本仓就是上游，所以宿主 import 了一个被标记待删的名字，
-  意思是「升级指南必须写清拿什么替换」，而不是「所以把那个名字留着」。
+- `writeback` 回写发布态；`finalize` 只在发布态已落盘且工作树干净时才打 tag。**`writeback` 永远不许跳过。**
 - npm 12 在 `~/.npm-global/bin/npm`，而 `PATH` 里 `/usr/bin/npm`（10.x）盖住它 ⇒ 用绝对路径调它。
-- 认证是 device flow（`npm login --auth-type=web`），而且**每一次 publish 都各自认证一次**。非 TTY 下 URL 会被打成
-  `***`，所以**抓到它的那条消息里就要交给用户**（几分钟就过期）；**不要在「Press ENTER to open in the browser」
-  上按 ENTER**——没有浏览器时会触发 `xdg-open`，失败并杀掉 npm（code 3），让它继续轮询。预发布版本必须显式带
-  `--tag`。
-- publish 会烧掉那个版本号；`+ erix-agent@<ver>` 那一行不等于可用（registry 有延迟）⇒ 先轮询
-  `npm view erix-agent version --prefer-online`，再用 `--prefer-online` 安装，然后跑
-  `erix --version && erix chat "…"`。
-- 当前版本：`package.json` 写 `0.34.0`；npm 的 `dist-tags.latest` 是 `0.34.0`。
-  `check:docs` 每次运行都拿 `package.json` 与 registry **当场**对这两个数，所以两句都不带测量日期。改版本用
+- 认证是设备流（`npm login --auth-type=web`），**每次发布都要重新认证**。非 TTY 下 URL 会被打码成 `***`，
+  所以要在**捕获它的同一条消息里**把它发出来（几分钟就过期）；在 "Press ENTER to open in the browser" 处
+  **绝不要按 ENTER**——没有浏览器时它会触发 `xdg-open`，失败并把 npm 杀掉（code 3），让它继续轮询。
+  预发布版本要显式给 `--tag`。
+- 发布**烧掉版本号**；`+ erix-agent@<ver>` 这行不代表可用（registry 有延迟）⇒ 轮询
+  `npm view erix-agent version --prefer-online`，再用 `--prefer-online` 安装并跑 `erix --version && erix chat "…"`。
+- 当前版本：`package.json` 是 `0.34.0`；npm 的 `dist-tags.latest` 是 `0.34.0`。用
   `npm version <x.y.z> --no-git-tag-version`。
-- `package.json` 那一面：去掉 `private`、`repository.url` 用 `git+https://…` 形态、`files` 是一份很长的显式
-  白名单（读 `package.json`，别抄）；用 `npm publish --dry-run` 看产物 ⇒
-  `docs/maintenance/command-reference_cn.md#publish-prerequisites` 与 `#npm-policy`。随包安装有多少个 `.d.ts` 是**量出来的，任何一页都不抄**：`prepack` 生成它们，条数由
-  `npm run check:pack-links` 现报（issue #923）。
-- **打 tag 之前有两步是人工的**（锚点只覆盖有人登记过的维度）：① 手工走一遍**默认值**、**数字**与**名称集合**
-  这三类声称，范围是两份 README、两份 AGENTS 与两份契约文档；② 如果 `check:changelog` 打了 `unattributed` 提示，
-  就把里面每个短 sha 的 first-parent diff 读一遍 ⇒ `#unattributed-merges`。
+- `package.json` 的对外面：`private` 不出现、`repository.url` 是 `git+https://…` 形态、`files` 是一长串显式白名单
+  （读 `package.json`，绝不复述它）；用 `npm publish --dry-run` 看实际面。
+- **打 tag 之前两趟人肉过**：① 把声称的**默认值**、**数字**与**名字集合**在两份 README、两份 AGENTS 与两份契约
+  文档之间逐条走一遍；② 读本版 CHANGELOG 段里每一条 merge 的 first-parent diff。这两趟现在都没有任何自动判据。
 
 ## 5. Git 与远端
 

@@ -457,7 +457,6 @@ createToolRegistry({ executors, schemas }) => {
 
 上面那份清单是**登记过的清单**，不是「所有提示位都已干净」：第 4 条那个宿主位点（`examples/pi-extension/erix-run-core.js` 的 `buildSystemPrompt` 调 `buildCliToolsSystemPrompt` 时不传 `notes`）**已知仍未接工具面门**——它的内层 run 可以 `notes: false`，那条提示词于是仍会提到场上不存在的 `note_*`。修法是一行（把内层工具面推成 `notes` 传进去），但宿主不在 `src/` 与 `bin/` 的出口面上，本支没动它；坐标与后果记在 issue #746 的工作报告里。## 4. 源码布局
 
-权威、最新的源码树在 `README_cn.md` 的**模块地图**一节里：`npm run check:docs` 会逐条
 拿那份清单与 `src/` 对账，所以本文只留一个指针，不再画第二棵会过期的树。各区域的职责在上面的
 接口章节里描述（Providers、runToolLoop、压缩、TranscriptStore，以及 tool-provider /
 registry 那节）。下面这些结构性事实稳定、不随单个文件的增删而失效。

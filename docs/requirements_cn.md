@@ -121,7 +121,6 @@
 |  |  | 公共表面见 `README.md` 与 `docs/host-consumer-contract.md` |
 |  |  | 由 `node --test` 和 `erix-agent/contract-tests` 锁定 |
 |  |  | 版本发布记录在 `CHANGELOG.md` |
-|  |  | `check:docs` 对齐版本、默认值和文件清单 |
 |  |  | 消费方迁移仍由宿主验收。 |
 | **v1.0 候选 — 未交付** | touwaka 迁移，初步仅限 token 工具和 history compactor，完整 `AgentLoop` 迁移留作单独决策 | 本仓库在当前发布版本不包含 touwaka 迁移。消费方回归和行为检查必须由宿主项目运行。 |
 | **v2 候选 — 延后** | 面向上下文塑形理念的冷循环蒸馏加 L3 fact 注入，以及未来 provider 层重新评估认为合理时的原生 Gemini 支持 | 当前发布版本的 `src/` 中没有 `psyche` 或 Gemini-native provider。这仍是单独划定范围的工作。 |

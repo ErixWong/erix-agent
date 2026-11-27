@@ -75,12 +75,9 @@ async function writeEmptyMcpConfig(dir) {
   return path;
 }
 
-test("派生真模型端点件已接进 check:release:model-e2e 步骤表（始终跑，不联网）", () => {
-  // 反向证：把本文件从步骤表里摘掉 ⇒ 这一格红。否则「补了 e2e 但没进门禁」会静默存活，
-  // 而发版清单是唯一会真的跑它的地方。
-  const script = readFileSync(new URL("../scripts/release-real-check.mjs", import.meta.url), "utf8");
-  assert.match(script, /examples\/delegate-real-e2e\.test\.mjs/u, "步骤表里必须点名本文件");
-  // 临时目录前缀唯一（残留可认领）。
+test("临时目录前缀唯一（残留可认领）；派生真模型端点件的跳闸口径在位（不联网）", () => {
+  // 旧的那一半是「本文件已写进 `check:release:model-e2e` 的步骤表」；门禁已全删（#961/#967）⇒ 步骤表不在了，
+  // 那一格跟着删，只留下与门禁无关的那一半（前缀唯一性）。
   const prefixes = Object.values(TMP_PREFIX);
   assert.equal(new Set(prefixes).size, prefixes.length, "TMP_PREFIX 的值必须互不相同");
   assert.ok(prefixes.includes(TMP_PREFIX.delegateReal));

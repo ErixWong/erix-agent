@@ -18,19 +18,12 @@
 一条命令收齐机械那一半；agent 读输出，但不信它：
 
 ```bash
-npm run docs:pass
 ```
 
-它依次跑：`check:docs`（漂移 + 中英骨架 + 版本声称 + 引用路径）、`check:docs:strict`、`check:docs-examples`、
-`check:agents-directives`。（`check:docs-spelling` 从前夹在那两条 strict 步之间，已由 issue #961 删除——代价写在
-`.github/workflows/ci.yml` 的注记里。）
 **它的退出码是关于脚本的证据，不是关于文档的证据**——脚本看不见「看起来对但其实错了」的句子。
 
-自 issue #908 R2（261126）起 **CI 里一条文档闸都没有**——`check:changelog` 与文档向自测都不再是流水线步骤。
 所以机械那一半只剩两个主人：这趟检查，与版本边界（`PREFLIGHT_STEPS[0]`、`release:day --stage writeback`）。
-**`docs-drift-check --self-test` 已经不存在了**（任务 261126-59）：它唯一的主顾就是这一趟，一次约 8.5 分钟，
 而它**已经红了 23 例却没人发现**——一个没有事件触发的步骤是仪表盘，不是闸。它原先覆盖的东西，现在由判据
-本体（`check:docs` / `check:docs:strict`）与代码套件各自负责。秒级的**代码面**判据也不归这趟管：它们在
 `npm test` 里跑（`test/gate-self-tests.test.js`）。
 
 ## agent 必须手工判的（这才是检查本体）
@@ -41,14 +34,12 @@ npm run docs:pass
 3. **名称集合**——策略名、工具名、旗标名、选项键。一个改过名的旋钮留在散文里，是代价最高的过期句。
 4. **版本声称**——「当前版本」「发布行」「从未发布」这类句子，对着 `package.json`、
    `npm view <pkg> dist-tags.latest` 与 `git tag` 核。
-5. **引用完整性**——活文档里每个 `path/to/file` 与每个 `#anchor`：解析得到吗？（`check:docs` 在它扫的那一面
    覆盖了文件那一半；agent 覆盖其余部分，包括跨仓的 `<repo>:<path>` 引用。）
 6. **退役语义**——代码已经不做了、文档还在承诺的事。读最近两个版本的 CHANGELOG Breaking 段，逐条确认它已经
    反映在宿主会看的地方。
 7. **CHANGELOG 成对条目**——在**中英两侧同时**消失的条目。配对判据只证「每条中文都有英文对应」与其反向，
    它不登记任何计数（那个 `CHANGELOG_PAIR_FLOOR` 已在 PR #826 删掉，因为它每开一个发布窗口就作废一次），
    所以「一整对被删掉」是这一遍要判的，不是机器能判的。把该节与它本该点名的合并号对照着看
-   （`npm run check:changelog` 兜的是「点名过的合并号」那一半）。
 
 ## 怎么报
 
@@ -61,10 +52,3 @@ npm run docs:pass
 
 | 闸 | 为什么留着 |
 |---|---|
-| `check:agents-directives` 的字节预算 + 状态句/过期抄件/裸坐标三类 | 指令面每轮全额重发：**长度**就是成本，而写在上面的状态句会被当成事实执行。棘轮数字一律 `--sync` 刷，不许手写。 |
-| `check:config-leaf-values` | `check:config-leaf-values` 由探针重生成一张入库的表再与树对。两者判的都是**派生值**、不判散文；动派生态只有生成器这一条合法路径（不许手改）。 |
-| `check:pack-links` | 随包 Markdown 的链接必须解析得到；随包 README 里一条死链是坏产物，不是过期句。 |
-| `check:changelog` | 碰到公开面的合并没有 CHANGELOG 条目是**缺记录**，不是措辞问题。 |
-
-以前挂在「docs」名下的其余一切——`check:docs` 的散文要求、中英处数普查、「这句必须存在」那几族——已由
-issue #802 删除。`check:docs` 仍然存在，作为**手动工具**（`npm run docs:pass`），只是不再拦任何东西。

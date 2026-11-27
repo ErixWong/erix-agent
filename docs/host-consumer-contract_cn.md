@@ -12,7 +12,6 @@
 展示投影增量变更的迁移步骤见
 [host-upgrade-guide-0.16.0.md](host-upgrade-guide-0.16.0.md)。
 
-
 装配口产出的选项：端口的 `session.id` 与 `session.initialMessages` 以配置叶子 `config.run.runId`、`config.input.messages` 的形态进入选项树，**永不**以已退役的扁平名 `runId` / `initialMessages` 出现——名称闸口如今也校**合并后的表示**，所以引擎不可能产出一个「宿主写了会被拒」的拼写（#544）。值与读侧一字未动；派生叶子只补洞，因此宿主在 `policy.config` 里逐叶给过的值照旧赢，调用级 `config` 也照旧整棵覆盖那棵树。
 ## `runToolLoop` 选项与工具执行契约
 
@@ -638,7 +637,6 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   `JSON.parse(JSON.stringify(cfg))` 逐叶比）。两条闸口守着它：上面那条函数拒绝，以及「值必须是函数的
   叶子根本不在配置面上」。
 
-
   **`runId` / `cwd` 也是配置**（issue #497 复审第二轮——上一轮给判据加的那条「身份/环境注入」腿
   **取消**），所以它们是 `config.run.runId` / `config.run.cwd`；顶层扁平键一字未动（这是新增别名，
   不是迁移）。两条理由：
@@ -1097,7 +1095,6 @@ round 行上的 `runId` **字段**（`src/store/*.js` 的 `appendRound(runId, �
 实测红格：单删 **307**、夹具翻译拼写之后 **88**、迁完手写点 **0**（14 个测试文件里的 47 个
 `runToolLoop` 直连写点、内联白名单镜像、两形态等价样本、`C1` 的冲突通道、A12 / A14 / A15 / A19 的
 邻接清单、随包发布契约套件的信封格、装配口套件，以及两个观察脚本 `scripts/soak.mjs` /
-`scripts/message-journal-golden.mjs` 与 `scripts/final-guard-probe.mjs`）。钉子文件是
 `test/loop-run-slice-498s3a20.test.js`（`P` 拒绝文案逐字且早于任何宿主端口被调用；`G` 上面那张取值
 矩阵；`F` 函数值两个拼写都被拒；`R` 真 run 的账本仍按规位值取回；`N` 四向账目与「`run` 组还剩三个
 配置家键」的派生计数；`S` 夹具翻译点；`T` 反向钉——任何拒绝文案都不许把已退役的顶层名当建议，
@@ -1141,7 +1138,6 @@ DEFAULT_REFLECTION_MIN_ROUNDS` 的 judge 闸门、以及 `Math.max(8, Math.floor
 A15 / A20 的邻接清单、随包发布契约套件（`assembly-port` / `boundary-parity` / `termination-payload` /
 `tool-result-envelope`；`doc-examples` 当时也在其中，现已搬到 `test/doc-examples.js`（发布面之外，
 #549 S8）），以及三个观察脚本 `scripts/soak.mjs` /
-`scripts/message-journal-golden.mjs` / `scripts/final-guard-probe.mjs`）。钉子文件是
 `test/loop-run-slice-498s3a21.test.js`（`P` 拒绝文案逐字且早于任何宿主端口被调用；`G` 上面那张取值
 矩阵；`F` 函数值两个拼写都被拒、两条理由分开；`R` 真 run 里轮预算仍然咬合、解构默认值未动，以及
 扩轮闸门 / `max_rounds_cap` / `maxRounds >= 16` 自动开 judge 的 as-is 钉子；`N` 四向账目与「`run`
@@ -1875,9 +1871,7 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 因为测试仍钉住它们的形状。
 
 下面两列坐标写的是每格实现所在的**文件**（写点、以及承载读取证据的那个文件）——**不抄**源码行号。
-真相基准是 `scripts/cell-axes-anchors.mjs` 里的锚点登记表：给每一格每一轴钉一个源码形状（赋值那一行、
 那个 guard、返回那一处——不是键名），每条锚点必须在目标文件里唯一命中，且命中那行必须提到该格的键名。
-`test/contract-snapshot-cell-axes-767.test.js` 与 `npm run check:docs` 都按这份登记表逐格复核：格子里点名的
 文件必须等于登记条目的 `codePath`、锚点必须唯一命中，「引用漂到一句只提了键名的注释上」在文档闸这里就红，
 不必等到跑测试。行号由锚点现算、从不写进这张表（在源码里加一行注释不再把抄件拖到过期）。这张表本身也被
 同一份测试当数据读：漏一格、两轴取一个表外的取值、或中英两份的轴不一致 ⇒ 红。
@@ -2162,7 +2156,6 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
     （`guardedMessages`，`src/loop/orchestrator.js`），所以想展示“这个标了 safe”的宿主只能从自己的
     `tools` 数组里读，不能从事件里读。
 
-**尚未锁定。**`docs-drift-check` 没有哪条规则会去读工具源码里该标注的存在与否，所以本表
 两个方向都可能默默飘：将来出厂侧真标了，与这一小节必须在同一个 PR 里。
 
 ## 模型元数据与预算推导（issue #182）
@@ -3008,7 +3001,6 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `user_turn_guard_unrecoverable` 事件 | `onEvent`，每个退到守卫最后一格的请求视图一条（也就是每次 provider attempt 一条） | **additive（issue #296）。** `{ type: "user_turn_guard_unrecoverable", runId?, parentRunId?, round, channel: "chat" \| "chatStream", reason: "empty_view" \| "no_user_turn" \| "invalid_view", detail: string }`——请求视图的 user 轮不变量退完了所有退让格：`ensureUserTurnView` (`src/loop/request-user-view.js`) 在请求视图里找不到可用的 user 轮，**并且**未折叠的源视图里也没有可回补的 user 轮，于是这个请求**原样发出**——引擎既不伪造一条 user 轮，也不抛错。要求 user query 的上游会回 `400`；本事件在**那个请求发出之前**就到，因此它是「失败」与「原因」之间的 join 键（#296 之前这一格被滤掉，对外完全无痕）。`reason` 是子原因：`empty_view`（视图空了）、`no_user_turn`（非空但没有真 user 轮——纯 `tool_result` 载体不算）、`invalid_view`（有 user 轮但 `tool_use`/`tool_result` 配对非法）。`detail` 首句是宿主可直接断言的固定原文。另外两个守卫动作（`preserved_latest_user_turn` / `abandoned_fold`）照旧落进 `compactionStats.userTurnGuard`、永不发本事件；本事件**刻意不写进** `compactionStats`——它可能在一轮**完全没有压缩**时触发，写进去会让「这一轮到底有没有折叠」不可判读。 |
 | `host_steer_injected` 事件 | `onEvent`，轮边界注入成功一次一条 | **additive（issue #753 C1）。** `{ type: "host_steer_injected", runId?, parentRunId?, round: number, chars: number }`——`capabilities.hooks.nextUserTurn` 回了非空字符串，引擎把它当成**轮边界**上的一条真 `role: "user"` 轮追加：在 `throwIfAborted(signal)` 之后、轮切片（`const roundStart = messages.length`）开窗之前。这个位置就是契约本身：注入那条落进**下一轮**的轮记录，因此不需要另开一行 `:control:`，resume 后也当作普通 user 轮读得到（`store.load()` 读得到正文；账本行是带 `seq` 的 `kind: "message"`，不是 `:control:` 行）。`round` 是被问的那个轮边界（正文由紧接着开启的那一轮消费，那一轮的 `round_start` 带的是 `round + 1`）；`chars` 是注入文本的长度。档位 `fact`——见事件分级表。静默回绝是设计：`null` / `undefined` ⇒ 无事件、无行、账本逐字不变；抛错或返回非字符串记进 `diagnostics.steer.rejected`，并走 `reportObserverError(..., { channel: "nextUserTurn" })`，口径同 `finalGuard` 校验失败——**绝不**改终局。 |
 | `finalTextShape` 结果键 + `final_text_textualized_tool_call` 事件 | 每一条**非抛错的 `finish()` 路径**上的 `result.finalTextShape`——凡经 `finish()` 收尾的终局都带：`end_turn` *以及* `max_rounds_cap` / `final_guard_unverified` / `no_tool` / `stall` 同样带键、同样发事件（`test/loop-final-text-shape-862.test.js` 钉住了 `max_rounds_cap`）；`failed` / `aborted` 走 `fail()` / 中止，既无该键也无该事件；`onEvent` 每次终局至多一条（resume 重跑是新的终局，会再发一条） | **additive（issue #862，修法 A）。** 有些上游/网关把 tool call 编进了 `content`，引擎最后一轮看到的就是「无 `tool_use` + `end_turn` + 正文非空」，于是被判 `completed`，而它交付的其实是一次**被文本化的调用**。**终稿正文**命中共享特征集时 `result.finalTextShape` = `{ textualizedToolCall: true, marker: string }`；**缺席就是未命中** —— 这个键绝不写成 `false`，与 `finalTextFallback` 同一条「没事实就没键」的口径。`marker` 是命中的那条特征**原文**（按清单顺序取第一条 = 优先级）。配套事件带 `{ type: "final_text_textualized_tool_call", runId?, round, marker }`。**两者都不改任何终态语义**：`termination.reason` 仍是 `end_turn`，`rounds` / `usage` / `verification` 一个字节都不动。（「把这种正文挡在终局门外」是修法 B，而修法 B 已以 issue #865 落地——它拒的是 **`judge_done` 那道停门**，不是终局：普通 `end_turn` 的 run 仍会把这段正文当终稿收下，所以 `termination.reason` 仍是 `end_turn`、本键的含义也不变。）特征集以 `DEFAULT_TOOLCALL_MARKERS` 出口 （`src/loop/final-text-shape.js`，包根再导出一份），正是为了让宿主删掉**自己那份特征集与匹配口径** —— 两个真相源是那张票写死的禁止项。宿主**必须留下的**：`parseToolCallMarkers`（env 解析期那道形状闸）与 `TEXTUALIZED_MARKER_MAX_CHARS` 上界截断 —— kit 版两者都无对应（没有 env 面、没有 120 字符上界，且 `detectTextualizedToolCall` 返回 `string|null` 而不是宿主那个 `{ hit, marker, chars }`）。匹配前先跑 `stripCode`，所以 **围栏代码块或行内码里**引用的标记**不算命中**。 |
-| `deliverable_blind` 事件 | `onEvent`，**一个 run 至多一条**（one-shot 旗标 `runLoopState.deliverableBlindEmitted`，与 `finalTextShapeEmitted` 同族） | **additive（issue #881）。**「交付物判据这次判不了」现在被说出来了。发射点在 `callFinalGuard`（`src/loop/termination.js`），**紧接在** `buildFinalGuardPayload` 返回之后、宿主 `deliverables` 判据之前，载荷 `{ type: "deliverable_blind", runId?, round, execWriteCount?, execWriteUnresolvedCount? }`。判定条件**直读 payload 自己的三个盲区键**——任一成立即可：`fileWritesBlind === true` \|\| `fileWritesBlindToExec === true` \|\| `(execWriteUnresolvedCount ?? 0) > 0`（只有一个真相源：发射处不另推一份「盲不盲」）。数字键只在 payload 真带着时才写（`0` 从不写，与 payload 同口径），`runId` 只在宿主传了时才写。**故意不在 `buildFinalGuardPayload` 里发**：它是导出的**纯构造器**，测试与 `scripts/final-guard-probe.mjs` 直接当纯函数调，在里面发事件会把副作用漏给探针。**不改任何裁决**：`createDeliverableChecks` 仍返回 `ok: true` + 一句「无法判定」的 detail（#711 的语义保留 —— 改成 fail-closed 会把所有 shell 落盘的 run 全判红），`termination.reason` 与退出码也不动。档位 `fact`——三个计数只在载荷里，本事件是那条事实唯一的 durable 副本。**两条边界都是故意的：** (1) 它**只在配了 `finalGuard` 时**才可能发——`callFinalGuard` 本身就在 `typeof finalGuard === "function"` 那道闸后面，而交付物判据本来就挂在 guard 上，没配 guard 就没有「判不了」这回事；(2) 它**不覆盖**「模型一个写都没声明」——但注意这个前提：**只在根本没跑过 `exec` 时才成立**。跑过**只读** `exec`（`ls -la`）的 run 仍会踩到 #386 的粗旗 `fileWritesBlind`（跑过 exec + 台账空）⇒ 本事件**会**发，载荷也确实在说「判不了」。只有「既没有声明、也没跑过任何 `exec`」的 run 才是台账空 + 判据集空（空集恒真）、三个盲区键一个都不出现、**静默通过**；那是 issue #391 的另一半，**本单明确不做**。人眼面：`bin/run-event-handlers.js` 出口 `formatDeliverableBlindLine(event)`（与 `formatTextualizedToolCallLine` 同一形状、同一通道：命中⇒一行中性 stderr，否则 `null`），点名两个数字——请把它读成「别把‘台账没东西’当成‘没写文件’」，要确定交付某几个文件就声明 `deliverablePaths`（或在命令里用能解析出目标的写形态）。 |
 | `run_outcome` 事件 | `onEvent`，一次 run 恰好一条——judge 从未运行的 run 同样发 | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`。成功路径在持久化落地后发，抛错路径在 `fail()` 里发；去重门保证一个 run 恰好一条。`termination` / `verification` 是 `runToolLoop` 返回值（或 `fail()` 构造出的终局）的副本。 |
 
 **事件在本文档里住哪张表（issue #641）。** 上面那张表是**加法**事件表：只列本契约已经存在之后新增的事件，
@@ -3173,7 +3165,6 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    可观测面与提示词也按同一条口径保持纯加法：计数不为 0 时评审提示词才多那一段，而 `facts` 入参是
    #865 之前形状的调用方，拿到的 `judgeDoneBlocker` 文案与 #473 **逐字相同**。
    前后对照实测（fake provider + fake judge 恒判 `done:true / 0.85`，每组 5 个 run，
-   `scripts/probe-865-stopgate-comparison.mjs` 在两棵树上各跑一遍）：终稿泄漏那一轮从「均 2 轮 /
    0 次 nudge」变成「均 3 轮 / 5 次 nudge」，而之后真的补出交付的那组从「终稿仍是标记 5/5」变成 0/5，
    正常交付那一组一格未动。
 7. **停止后验证**——stop reason 定下来后，可能多一次强制收尾的 provider 调用。
@@ -3245,7 +3236,6 @@ resume）投递——同一套策略、同一个槽。宿主可见的保证：
   judge 调用；
 - 已知毛刺（本单刻意不修）：待投递的 advisory 不属于 run snapshot，因此若在一次 flush 发生之前
   resume，这条意见会丢失。
-
 
 ## Reflection 决策解析（issue #305）
 
@@ -3770,7 +3760,6 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
   `fileWritesBlindToExec`（这个未解析数 > 0 ⇒ 举旗；即使混合命令留下了已知条目也照样举，因为未解析的那一半仍是未知）。
   **下「这个 run 什么都没写」的结论之前，三个键要一起读**：空台账 + `execWriteCount: 3`
   与空台账 + 两个键都没有，**不是同一个事实**。
-- **开销有上限且已实测。** `node scripts/final-guard-probe.mjs` 离线跑「30 轮 × 4KB 工具输出」：
   `messages` 257,618 字节、加法键 4,789 字节 = **1.86%**（`fileWrites` 落地前是 2,242 字节），
   预算上限是 < 2%。所以宿主可以整包落盘/入队
   而不用怕体积，guard 也可以读事实而不是重解析 transcript（小 run 的 `messages` 是 611 字节，真实 run
@@ -3798,7 +3787,6 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
 只看 `finalText.trim() !== ""` 的 guard，会为一个交付物**根本不存在**的 run 返回 `verified`；而同一份撒谎
 脚本交给查磁盘的 guard，在 `attempt: 1` 被抓住、`attempt: 2` 被补救。这个反例现在还多了一格（`S6b`）：同一个
 橡皮章 guard 加上宿主声明的 `deliverables` 判据之后，终局是 `unverified` / `deliverables_failed`——拦住它的是
-机器闸门，不是一段更好的 prompt（见下一节）。全部都在 `node scripts/final-guard-probe.mjs` 里、零模型调用
 可复现——不是口口相传的经验。
 
 ### 交付物机器判据：宿主声明、引擎执行的闸门（issue #386 切片 2）
@@ -3884,7 +3872,6 @@ deliverables?: [
 **没有声明 `deliverables` 的宿主完全不受影响。** 没有判据就没有「机器结论」可以压过任何东西：
 guard `skip` 仍然产出 `{ status: "skipped", reason: <guard 自己的 skip 原因> }`，CLI 仍然退 **4**，
 payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟也属于这一类——
-`npm run check:release` 跑的那次 `chat` **不带**判据并断言退出 **4**；它必须继续退 4，事实上也仍然退 4。
 
 四条边界是刻意的：
 
@@ -4991,7 +4978,6 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
   （`ERR_PACKAGE_PATH_NOT_EXPORTED`），所以「自己实现一套折叠」是当时唯一可选项。自己重实现折叠——例如按内容
   指纹给消息去重——会把**合法的重复**静默丢掉：两条前 400 字符相同的长消息会被并成一条，
   而任何基于那个数组的计数都会错，且错不错取决于负载文本（「CLI 是不是真跑了 ≥2 次工具」
-  这种计数可能读成 1）。仓内先例：`scripts/cli-real-smoke.mjs` 的工具结果计数取自
   `createFileTranscriptStore({ dir }).load(runId)`。
 
 ### 落盘行形状 ≠ `load()` 之后的形状（issue #361）
@@ -5051,7 +5037,6 @@ store——必须按 `round` 归并、按 `dedupKey` 去重，不得假设记录
 引擎产出的每一条 `tool_result` 都是一个**事实对象**，只在一个构造点产生：
 `src/tool-fact.js` 的 `buildToolResultFact()`，与下面的常量一起从包根导出。「谁拥有哪个
 字段」本身是一个导出常量 `TOOL_RESULT_CONTRACT`，由**三方消费同一份**：构造器按它写路径，
-`test/contract/tool-result-envelope.js` 从它生成期望字段集合，`check:docs` 锚点把本节下面
 这份字段清单与它**双向**比成员（并核对中英两侧的声明点处数）。因此任何一个引擎字段改名
 或新增，另外两方会立即变红，而不是各说各话。
 
@@ -5813,9 +5798,7 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 随包发布十个套件文件、共**十二个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
 现行形状与迁移形状；`notes-store.js` 自 issue #183 起也有两个：通用套件与可选的 CAS
 子套件）。每一个的签名都是 `xxxContract(label, factory)`：调用它即注册一批以
-`label` 命名的断言，在 `node --test` 跑起来之前什么都不会执行。`npm run check:docs:strict`
 会对「被 `test/contract/index.js` 再导出、但 `files` 白名单漏掉」的套件直接失败（在普通的
-`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。十二个里最新的是
 `toolResultEnvelopeContract`（issue #284 / #285），其次是 `skillsLoaderContract`（issue #197），
 再是 `fileToolsContract`（issue #184）：装在已发布的 0.18.0 上的宿主只有九个套件文件、
 十一个注册函数，不是十个文件、十二个函数。
@@ -5944,7 +5927,6 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
   注册，换来的是接住「上游重命名了我忘记 grep 的东西」这一类事故。
 - 宿主自己发明的行为留在宿主所有的测试里。如果某个随包套件与一条宿主需求冲突，提 issue
   反馈，而不是 fork 套件：fork 掉就丢掉了哨兵。
-
 
 ## 恢复行 —— 每本 run 多出两份 `.jsonl`（issue #769、#827 第 3 刀）
 
