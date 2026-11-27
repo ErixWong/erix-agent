@@ -38,6 +38,7 @@ export function createSummarizerPromptGuide(recoveryHint) {
 之后严格使用以下分节：
 ## 行动
 实际做了什么、结果如何。**验证结论写在这里**（跑了什么测试 / 检查、结论是什么），不另开一节。
+改到哪些文件就在句子里点出文件名（**不列清单**——Git 才是文件清单的权威）。
 ## 遗留
 只列出尚未完成的动作，并明确写出"已完成项禁止重做"。若这一折只是讨论/设想/没有可执行事务，写「本折无具体事务」，不要编造待办。
 ## 关键词
@@ -156,18 +157,23 @@ function prependSummary(head, summary, summaryRole = "user", anchorsEnabled = tr
 }
 
 function priorityForHeading(heading) {
-  // issue #469（宿主审计 C 片）：主题词必须优先保。它排第 3 档时，预算一紧就先被剪，
-  // 而它恰恰是「下次按什么搜回来」的唯一线索（比「已改文件」更不可重建）。
-  if (heading.includes("下一步")) return 0;
+  // issue #469（宿主审计 C 片）：关键词必须优先保。它排后档时，预算一紧就先被剪，
+  // 而它恰恰是「下次按什么搜回来」的唯一线索（比文件清单更不可重建）。
+  //
+  // issue #261127-18（六节 → 四节）：**这张表必须跟着节名改**。它按节名子串匹配，节名一改而表不改，
+  // 新节名就全部落进兜底档 4 ⇒ 预算紧时先剪 `## 行动`，与契约/CHANGELOG 写的优先级**正好相反**
+  //（copilot 复审抓到的阻塞项：文档说已更新，代码没动）。`test/compact/fold-llm.test.js` 的
+  // 「priority map covers every section the prompt asks for」那格是这张表的机器判据。
+  if (heading.includes("遗留")) return 0;
   if (heading.includes("恢复提示")) return 0;
-  if (heading.includes("主题词")) return 1;
-  if (heading.includes("已验证项")) return 2;
-  if (heading.includes("已改文件")) return 3;
-  // issue #873 修复① 的配套：机械保真层节（锚点索引 / 用户逐字引用）现在**在**摘要预算内，
-  // 它必须排在五节合同**之后**被剪：它是机械可重抽的（原文还在归档里），而合同节是模型写的、
-  // 剪了就没了。不给这一档的话，它与「阶段」同为第 4 档、按 index 先后反而让合同节先死
-  //（#469-C ①「默认预算装得下五节」会因此破防）。
-  if (heading.includes("锚点索引")) return 5;
+  if (heading.includes("关键词")) return 1;
+  // `## 行动` 是模型写的事实正文（剪了就没了），保真层是机械可重抽的（原文还在归档里）⇒
+  // 行动排在保真层**之前**被保。两档之间不再有「已验证项 / 已改文件」这两个更低的档：它们已并入
+  // `## 行动`。
+  if (heading.includes("行动")) return 2;
+  if (heading.includes("教训与坑")) return 2;
+  // issue #873 修复① 的配套：机械保真层节（用户逐字引用 / 反向信号）现在**在**摘要预算内，
+  // 它必须排在合同节**之后**被剪，否则 #469-C ①「默认预算装得下全部合同节」会破防。
   if (heading.includes("用户最新未解决输入")) return 5;
   return 4;
 }

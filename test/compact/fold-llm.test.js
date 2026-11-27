@@ -558,3 +558,43 @@ test("a long failure reason is truncated inside the summarizer_failed message", 
   assert.match(error.message, /^fold-llm 摘要失败（error）：ex{1,119}$/u);
   assert.ok(error.message.length < 200, `异常消息必须短（实测 ${error.message.length}）`);
 });
+
+// ── issue #261127-18：裁剪优先级表必须跟着节名一起改 ──────────────────────
+// copilot 复审抓到的阻塞项：节名从六节改成四节时，`priorityForHeading` 那张按子串匹配的表没跟着改，
+// 新节名全部落进兜底档 4 ⇒ 预算紧时先剪 `## 行动`，与契约/CHANGELOG 写的优先级**正好相反**，
+// 而当时没有任何测试覆盖这张表（`fold-llm-summary-budget-469` 的夹具用的是手工赋值的 priority）。
+//
+// 判据取「同尺寸四节 + 只装得下两节的预算」：谁活下来就是谁排在前档。
+// 契约写的是 `## 遗留`（0）/ `## 恢复提示`（0）/ `## 关键词`（1）先保，`## 行动`（2）随后 ⇒ 活下来的
+// 必须是**遗留 + 关键词**。任何一节掉进兜底档 4 都会把它挤进被剪的那一半，于是这条必红。
+test("#261127-18-3 裁剪优先级表覆盖新四节：紧预算下活下来的是「遗留」+「关键词」", async () => {
+  const titles = ["行动", "遗留", "关键词", "教训与坑（不要重犯的）"];
+  const summary = titles.map((title) => `## ${title}\n${"字".repeat(200)}`).join("\n");
+  const strategy = createFoldLlmStrategy({
+    summarizer: async () => summary,
+    // 四节 ≈ 1,392 token，单节 ≈ 348，预算 900 ⇒ 装得下两节、装不下三节（保真层先让位，再按档位从高到低剪）。
+    maxSummaryTokens: 900,
+  });
+  const result = await strategy.compact([
+    { role: "user", content: `R1-USER ${"x".repeat(400)}` },
+    { role: "assistant", content: [{ type: "text", text: "R1-ASSISTANT" }] },
+    { role: "user", content: [{ type: "text", text: "RETAINED-LIVE-MARKER" }] },
+    { role: "assistant", content: [{ type: "text", text: "retained answer" }] },
+  ], { keepRounds: 1 });
+  const text = result.messages
+    .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+    .filter((block) => block?.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+  const trimmed = titles.filter((title) => {
+    const at = text.indexOf(`## ${title}`);
+    assert.ok(at >= 0, `裁剪只剪正文、不删标题：「${title}」的骨架必须还在`);
+    const next = text.indexOf("## ", at + 3);
+    return text.slice(at, next < 0 ? text.length : next).includes("[已修剪]");
+  });
+  assert.deepEqual(
+    trimmed, ["行动", "教训与坑（不要重犯的）"],
+    `被剪的必须是第 2 档的那两节（实得 ${trimmed.join("、")}）——`
+    + "掉进兜底档 4 的节会挤到这里来（priorityForHeading 没跟上节名改名）",
+  );
+});

@@ -37,7 +37,8 @@
   ("no separate section — a verification section is a second spelling of the action's result"). `## 下一步` is
   now `## 遗留` and `## 主题词面包屑` is now `## 关键词`, whose body additionally demands **the literal words**
   from the source (file names, tool names, error text, identifiers) — a breadcrumb rewritten into synonyms cannot
-  be grepped back out of the ledger, which is the only thing that section is for. `## 教训与坑` is **kept**: the
+  be grepped back out of the ledger, which is the only thing that section is for. The retired `## 已改文件` (file list) is not replaced by a section — `## 行动` asks for the file names
+  **in prose**, since git is the authority on what changed. `## 教训与坑` is **kept**: the
   shape design (`docs/design/2026-11-27-context-and-fold-shape.md` §3.8) moves it to the whiteboard
   (`runs.board`), and that does not exist yet, so deleting the section today would lose the information rather
   than relocate it. The prompt guide went from 1602 to 1061 tokens; the pruning priority that names sections is
