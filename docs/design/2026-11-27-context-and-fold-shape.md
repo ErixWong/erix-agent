@@ -187,8 +187,6 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 | `round_no` | int | **PK₂**, FK→rounds | 它属于哪一轮 |
 | `msg_seq` | int | **PK₃** | 轮内单调，从 0 起 |
 | `caller` | text | not null | **谁写的**：`user` / `assistant` / `tool` / `judge` / `engine` |
-| `role` | text | not null | **协议要求它装成谁**：`user` / `assistant` / `system` |
-| `part_of_msg_seq` | int | 可空，自引用 | **切片归属**：这条是某条逻辑消息的一个分片，指向**首片** |
 | `content` | jsonb | not null | 块数组（`text` / `tool_use` / `tool_result` / `image`），保序 |
 | `ts` | timestamptz | | 信封时刻（不是顺序依据） |
 
@@ -199,22 +197,22 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 | `dedup_key` | `<runId>:msg:<round>:<seq>` 这类字符串 | **就是复合主键的字符串编码**——主键已经承担幂等身份 |
 | `payload_fingerprint` | 整行 payload 的 `sha256[:24]` | 一行是不透明 blob 时才需要哈希比内容；关系模型里「同一份 payload」就是**非主键列全相等**，精确比较。存成列还会自指（行里存着这一行的摘要），任何字段变了都要重算 |
 
-**`role` 为什么留着（虽然它是 `caller` 的函数）**：因为它记的是**决定**，不是投影。
-引擎在组装请求时决定这一条装成谁；重算等于用**今天的映射规则**重新解释**当时的决定**——
-规则一变（例如引擎注入改用 `system`），历史行就被读成另一件事。而且 `role` 属于 §2 说的
-「实际喂给模型的那串字节」：渲染时重算，渲染结果就可能与当时真正发出去的不一致。
-（今天的映射是满的——`role='system'` 只出现在请求组装里，从不落盘——所以「今天重算」不会错；
-风险全在规则变更与「渲染/发送两份实现」这两处，而那正是这份文档要消灭的东西。）
+**没有 `role`**：它是 `caller` 的函数，而且**会跟 `caller` 打架**。
 
-**`caller` 与 `role` 是两个维度，别合并**：
-
-| `caller` | 是什么 | `role` |
+| `caller` | 是什么 | 推出来的 role |
 |---|---|---|
 | `user` | 人 / 宿主提问（`steer` 也走这里） | user |
 | `assistant` | 模型返回（可同时带 text 和 tool_use） | assistant |
 | **`tool`** | **工具结果** | **user** ← 协议把它塞进 user 消息，但作者不是用户 |
 | `judge` | **judge 模型的评审意见**（引擎只是转述） | user |
-| `engine` | 引擎自己的模板注入（“已到预算上限，请收尾” / guard revise） | user |
+| `engine` | 引擎自己的模板注入（"已到预算上限，请收尾" / guard revise） | user |
+
+实测账本里只有 `user` / `assistant` 两种 role（`role='system'` 只出现在**请求组装**时合成的
+摘要消息里，从不落盘），且完全由上表决定。存下来只会多一条"必须同步"的纪律：写侧写错一个
+（`caller='tool'` 但 `role='assistant'`），**你不知道信谁**——而这个矛盾可以从形状里彻底消除。
+
+（`role` 不是任何人做的决定，它是协议对 `caller` 的投影。协议变了——比如 OpenAI 的
+`role:"tool"`——要改的是**渲染器**，不是历史行；历史行本来就只该记 `caller`。）
 
 一致性约束：`caller='tool'` ⇔ 含 `tool_result` 块；`caller='assistant'` 可含 `tool_use` 块；
 `caller='user'` 只含 text（提问）；`caller IN ('judge','engine')` 不含 `tool_result`。
@@ -245,23 +243,23 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 **哪些消息进折叠**：`caller IN ('assistant','tool')`。`user` 不进——宿主写提问后要能立刻 `load()` 看见自己那条；
 `engine` 不进——它在轮记录落盘之后才产生。
 
-**切片（`part_of_msg_seq`）—— 一行一条消息，但一条消息可以是多行**：
+**切片——一行一条消息，但一条消息可以是多行**：
 
-模型一次调 3 个工具，结果**每完成一个就落一行**（崩溃时不丢已完成的），靠 `part_of_msg_seq` 标
-"我属于同一条逻辑消息"：
+模型一次调 3 个工具，结果**每完成一个就落一行**（崩溃时不丢已完成的）：
 
 ```
-msg_seq=0  assistant  [text, tool_use(tu_1), tool_use(tu_2), tool_use(tu_3)]   ← 首片
-msg_seq=1  tool       [tool_result(tu_1)]   part_of=null                        ← 首片
-msg_seq=2  tool       [tool_result(tu_2)]   part_of=1
-msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
+msg_seq=0  assistant  [text, tool_use(tu_1), tool_use(tu_2), tool_use(tu_3)]
+msg_seq=1  tool       [tool_result(tu_1)]
+msg_seq=2  tool       [tool_result(tu_2)]
+msg_seq=3  tool       [tool_result(tu_3)]
 ```
+
+**没有 `part_of_msg_seq`**：分片只发生在 `tool_result` 上（代码里没有 assistant 分片），而一轮只有
+一个 assistant 回合、也就只有一组工具结果 ⇒ **同一轮的所有 `caller='tool'` 行就是一条逻辑消息**，
+`GROUP BY run_id, round_no WHERE caller='tool'` 即可。今天账本里全库只有 6 行带 `partOf`，机制极少被用到。
 
 **折叠与渲染必须拼回一条**：协议要求一条 `tool_use` 由**紧随其后的那一条** user 消息结清；
 拆成三条 user 消息发出去，provider 直接 400。
-
-⚠ **`part_of` 只能指首片，不许链式指上一片**。链式会让"每隔一片落一次"（首片 → 指向它 →
-指向分片），配对永久失败，而且坏形状是**静默的**：不报错、不丢块，只是工具结果再也配不上。
 
 **“段”（人的一次提问 → 它引发的所有轮）是一条查询**：按 `caller='user'` 的消息切，不建表。
 
