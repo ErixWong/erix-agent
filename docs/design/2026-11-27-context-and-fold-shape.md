@@ -112,7 +112,12 @@ CREATE INDEX ON runs ((state->'deterministic'->'guardExtension'->>'used'));
 | `usage` | jsonb | | 本轮**累计**用量（截断续写时是多次之和） |
 | `response_usage` | jsonb | | **最后一发**的用量（历史形状） |
 | `summary` | text | | 本轮自身摘要 |
-| `l0facts` / `wrapup` | jsonb | | |
+| `wrapup` | jsonb | | 收尾那一次的结构化产物（**真状态**：模型输出的规范化结果，不可重算）。只有最后一轮有值 |
+
+**没有 `l0facts`**：98.7% 的行存的是 `{exitOk:true}`——它认的失败口径是「工具抛异常」（`is_error`），
+而真实失败是「命令退出码非 0」，两者在 1,021 轮实测里几乎不相交（`is_error` 只在一个合成 fixture 里出现）。
+它的两个消费者（judge 的「最近错误」、resume 的 `errorRepeat` 重建）在实测里都是空转，而活着的重复错误
+守卫本来就从 `messages` 现算、不读这一列。留下的只有 `errorText` 那份 500 字原文副本，违反不变量 #1。
 
 **没有 `text_preview`**：它是"过滤本轮 `caller='assistant'` 的 `text` 块再拼接"——一条 `GROUP BY` 就能算。
 缓存列的不一致风险是实的（消息补写了、预览不更新，两边对不上时你不知道信谁）。
