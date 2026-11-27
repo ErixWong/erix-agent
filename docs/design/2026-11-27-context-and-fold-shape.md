@@ -413,7 +413,6 @@ SELECT seq, title FROM folds WHERE run_id = ? ORDER BY seq;
 | `key` | text | **PK₂** | 稳定标识：≤24 字符，`[a-z0-9-]`。**不是标题**——改标题不该换笔记 |
 | `title` | text | not null, ≤60 | 目录显示的那一行。写侧上限 = 显示上限，否则模型写的后半截永远看不到 |
 | `content` | text | not null, ≤4000 | 正文 |
-| `superseded` | jsonb | not null | **版本栈**：被覆盖掉的历史版本，最多 3 条（`MAX_SUPERSEDED`），最近的在最前。契约面：数组顺序是值的一部分 |
 | `state` | text | not null | `active` / `revoked` |
 | `created_at` / `updated_at` | timestamptz | not null | 保留期只看 `updated_at`。`created_at` 的读者是**审计**（「这条事实什么时候第一次记下」）——它**不可派生**：一旦更新过，创建时间就再也算不回来，所以它不适用「能算出来的不进列」 |
 
@@ -430,10 +429,20 @@ SELECT seq, title FROM folds WHERE run_id = ? ORDER BY seq;
 **没有 `current` JSONB**：`title` 有专门读者（目录渲染）和长度约束，JSONB 里只能靠触发器；
 `content` 是正文。两者都不需要"任意扩展"。
 
-**历史就是 `superseded`（行内，≤3 版），不另立事件表**。唯一的读者是 `note_read` 返回给模型的
-"已作废条目，不得当作当前值使用"——它要的是**以前的值**，不是"谁在何时改了什么"。
-一个 `note_ops(before, after, op, ts, fold_seq)` 事件表被设计过又删掉了：`after` 就是当前行、
-`ts` 就是 `updated_at`、`revoke` 已由 `state` 表达、`fold_seq` 在白板改成一块文本之后没有来源。
+**没有 `superseded`（版本栈）**：一条笔记被覆盖时，旧值进 `superseded`（≤3 版），`note_read` 返回时
+标 `invalid: true`。**实测它一次都没被读过**：
+
+| 指标 | 数 |
+|---|---|
+| `note_read` 调用总数 | **16** |
+| 返回非空 `superseded` 的结果 | **0** |
+| 全库写过的笔记 key | 44 |
+| 其中被写过 >1 次（唯一能产生 `superseded` 的途径） | **3（6.8%）** |
+
+删掉只丢「改之前是什么」——而「改过没有」由 `updated_at` 表达（它变了就是改过）。
+一个 6.8% × 0 的组合，不值得一列 + 一条截断规则 + 一段 `invalid` 提示语 + 一条契约承诺。
+有真实场景再加。
+
 
 **发现面只有一个：`note_list`**
 
