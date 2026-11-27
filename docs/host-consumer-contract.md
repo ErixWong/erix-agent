@@ -1698,7 +1698,12 @@ second hand-copied list to drift. The two values mean exactly:
 | `call` | this call's data: what to send, this request's identity and context, whether this call resumes or streams | `agent.run({ <leaf>: … })` |
 
 The per-call leaves are `messages` and `initialUserMessage` (`config.input.*`), `runId` / `resume` /
-`stream` (`config.run.*`) and all seven of `metadata.*`; every other leaf is `init`. The machine
+`stream` (`config.run.*`) and all seven of `metadata.*`; **`input.*` is read only when the call does
+not resume** — and "resume" means the conversation was actually rebuilt from the ledger (persistence
+required and records found). A `resume: true` call that cannot reach a ledger keeps the input it was
+given: with `persistence: "none"` it simply runs, and with an empty ledger it fails loudly instead of
+silently dropping the turn. When the rebuild does happen, both fields are ignored and the call reports
+one `resume_input_dropped` event naming what it threw away (issue #261127-17). To add a turn to an existing session, call `appendUserTurn` **before** resuming; every other leaf is `init`. The machine
 answer is `configLeafNamesForBinding` (`src/loop/config-namespace.js`) — read it instead of trusting
 this sentence. Three of them are grey and were ruled on deliberately: `run.stream` is per-call
 because it only answers "how is **this** request transported" (the engine keeps no state across
@@ -6684,6 +6689,7 @@ at the emission site, and two of them were wrong in the first draft of this sect
 | `run_outcome` | `fact` | no | The terminal run-level aggregate (`runOutcomeRecord()`), appended after `markRunState`; the host joins it to the judge records by `runId`. |
 | `judge` | `fact` | no | The decision record on the `onJudge` channel. It is **not** a `LoopEvent` type — the record carries no `type` field at all (`emitJudge` spreads `{ ...correlation, ...info }`) — so the tier is keyed by the channel name the host stores it under. |
 | `resume_journal_skipped` | `fact` | no | A durability decision: the journal was skipped. The event is the record. |
+| `resume_input_dropped` | `fact` | no | A resume call passed `initialUserMessage` / `initialMessages`, which a resume does **not** read (the ledger is the only source of the conversation). The event names the dropped fields (`fields[]`, names only — it never stores the text); nothing else records that the turn was dropped, so this is the only trace. Feed the new turn with `appendUserTurn` instead. |
 | `continuity_written` | `fact` | no | The handoff write landed — the only record of which handoff is recallable. |
 | `continuity_write_failed` | `fact` | no | The handoff write failed while the run still succeeded. Nothing else survives it. |
 | `continuity_injection_skipped` | `fact` | no | Why the handoff was not injected this time. |

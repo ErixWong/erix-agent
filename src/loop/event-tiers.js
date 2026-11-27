@@ -125,6 +125,12 @@ export const EVENT_TIERS = Object.freeze({
   final_guard: EVENT_TIER_FACT,
   final_guard_extend: EVENT_TIER_FACT,
   resume_journal_skipped: EVENT_TIER_FACT,
+  // issue #261127-17（新格）：续跑只认账本 ⇒ 调用方这次递进来的 `initialUserMessage` /
+  // `initialMessages` 不进上下文。**行为是设计，静默是缺陷**：宿主把新问题塞进 `initialUserMessage`
+  // 再续跑时，模型只会回应「【恢复运行】」告示（真机评测 `scripts/recall-eval.mjs` 就踩了这一格）。
+  // 为什么是 `fact`：这条事件是「你的输入被丢了」的**唯一**副本——请求体里根本不含那段文本，
+  // 事后无法从账本反推，只有这里说了一句。
+  resume_input_dropped: EVENT_TIER_FACT,
   user_turn_guard_unrecoverable: EVENT_TIER_FACT,
   // issue #862（新格）：终稿正文是一段**被文本化的工具调用**（上游把 tool call 编进了
   // `content`）——引擎认出它并发一条告警。
