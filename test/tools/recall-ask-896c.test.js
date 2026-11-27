@@ -498,6 +498,11 @@ test("#261127-16-3 指针命中切片区 ⇒ answerUnbacked=false，且 refs 就
   const { readLedgerRows } = makeWideLedger(20);
   const out = await ASK({ readLedgerRows, pointers: pointersFor([3, 7]), uncertain: true });
   assert.equal(out.answerUnbacked, false, "指针指到的轮真在台账里 ⇒ 有落脚点");
+  // 单向判据：false 不等于「答案被支撑」，只等于「有轮号交集」——工具描述必须这么说，否则 `false`
+  // 会被读成「已核实」（copilot 复审点出来的）。
+  const desc = createRecallAskTool({ readLedgerRows }).definitions[0].description;
+  assert.match(desc, /反过来不成立/, "描述必须写明 false 只表示轮号交集");
+  assert.match(desc, /不证明答案内容被那些切片支持/, "描述必须写明 false 不证明内容被支持");
   assert.deepEqual(out.evidenceRefs.map((/** @type {any} */ r) => r.round), [3, 7]);
   assert.equal(out.uncertain, true, "自评仍原样透传（与 answerUnbacked 相互独立）");
 });
