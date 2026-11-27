@@ -138,6 +138,7 @@
 | `response_usage` | jsonb | | **最后一发的原始 provider usage**。实测 25 轮里 13 轮与 `usage` 完全相等、12 轮只差 `reasoningTokens`——它不是「另一个事实」，是 `usage` 的桶里没有的 provider 特有字段（`bin/reasoning-effort.js` 读它做推理强度校准） |
 | `engine_usage` | jsonb | 可空 | **本轮引擎自发起的调用**（round judge / 收尾归一化 / 折叠摘要）的用量。缺键 = 本轮没有这类调用。`usage` 只装主模型桶——只留 `usage` 会把引擎用量藏进主账 |
 | `wrapup` | jsonb | | 收尾那一次的结构化产物（**真状态**：模型输出的规范化结果，不可重算）。只有最后一轮有值 |
+| `ts` | timestamptz | not null | **信封**：这一轮什么时候收口。删除 `started_at` / `closed_at` 的论证靠它（上一轮的 `ts` 就是本轮的 start）。实测 906/906 轮都有 |
 
 **没有 `status` / `started_at` / `closed_at`**：它们是 append-only 文件的补丁，不是业务事实。
 
@@ -188,7 +189,6 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 | `msg_seq` | int | **PK₃** | 轮内单调，从 0 起 |
 | `caller` | text | not null | **谁写的**：`user` / `assistant` / `tool` / `judge` / `engine` |
 | `content` | jsonb | not null | 块数组（`text` / `tool_use` / `tool_result` / `image`），保序 |
-| `ts` | timestamptz | | 信封时刻（不是顺序依据） |
 
 **没有 `dedup_key` / `payload_fingerprint`**：两个都是 JSONL 的产物。
 
@@ -196,6 +196,10 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 |---|---|---|
 | `dedup_key` | `<runId>:msg:<round>:<seq>` 这类字符串 | **就是复合主键的字符串编码**——主键已经承担幂等身份 |
 | `payload_fingerprint` | 整行 payload 的 `sha256[:24]` | 一行是不透明 blob 时才需要哈希比内容；关系模型里「同一份 payload」就是**非主键列全相等**，精确比较。存成列还会自指（行里存着这一行的摘要），任何字段变了都要重算 |
+
+**没有 `ts`（消息级）**：写入时刻落在这一轮的窗口内，`rounds.ts` 加下一轮的 `ts` 就是区间；
+单个工具的耗时由 `tool_result.erix.durationMs` 记。消息级时间戳今天**没有读者**——唯一的读点
+`stampRowTs` 只是把它从行拷到 message 对象上，之后再没人读。
 
 **没有 `role`**：它是 `caller` 的函数，而且**会跟 `caller` 打架**。
 
