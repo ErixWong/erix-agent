@@ -76,7 +76,7 @@
 | `title_src` | text | not null | `model` / `first_line`（回退，见 §3.4 ①） |
 | `description` | text | not null | **模型写的三节**（行动 / 遗留 / 关键词），约 400 token |
 | `description_tokens` | int | not null | 渲染时按它算预算 |
-| `vector` | jsonb | 可空 | **`description` 的向量**（派生，可丢可重算）：`{model, sha, dims, v}`。`sha` 是 `description` 的指纹——对不上就作废重算；缺省 ⇒ 该折不参与相关度排序 |
+| `vector` | jsonb | 可空 | **`description` 的 1024 维向量**：`{model, sha, dims:1024, v:[1024 个浮点数]}`。`sha` 是 `description` 的指纹——对不上就作废重算；`model` 记 embedding 模型，查询侧必须用**同一个**；缺省 ⇒ 该折不参与相关度排序 |
 | `intent` | jsonb | not null | **折叠前白板的待办快照**（机械抄）——渲染成 `## 意图` |
 | `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空 |
 | `stage_no` | int | 可空，FK→stages | 归属的阶段线（§3.2 第三档） |
@@ -234,6 +234,9 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 同一批记录 + 同一个预算 ⇒ 同一输出。第 ④ 档是**可选的**：没有向量就退回纯时间序，行为与没有它时逐字一致。
 它只影响「历史层里放哪几折」，**不碰白板、不碰保留区、不碰折叠的写入路径**——
 白板的准入是"不记住会导致可观测的失败"，不是"和当前问题相似"。
+
+第 ④ 档的查询侧：把**当前任务**（最近一条 user 消息）用**同一个** embedding 模型编成 1024 维，
+与各折的 `vector` 算余弦相似度，取 top-K。`model` 不一致的两边不可比——这一条要当判据。
 
 ### 3.3 预算
 
