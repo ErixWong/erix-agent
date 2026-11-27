@@ -76,7 +76,7 @@ test("injects a one-line warning when the user cancelled or undid work", () => {
   assert.deepEqual(detection.messageIndexes, [2, 3]);
   assert.match(section, new RegExp(REVERSE_SIGNAL_WARNING_LEAD));
   assert.match(section, /命中：取消、never mind、算了/u);
-  assert.match(section, /上方「下一步」里早于该信号的旧待办不得直接照做，需先向用户确认/u);
+  assert.match(section, /上方「遗留」里早于该信号的旧待办不得直接照做，需先向用户确认/u);
   assert.match(section, /旧待办只标记为需确认，不从待办数据中删除/u);
   // 警告在引用之前；待办数据本身不被改写。
   assert.ok(section.indexOf(REVERSE_SIGNAL_WARNING_LEAD)

@@ -109,13 +109,14 @@ test("token truncates an unsectioned summary and marks the truncation", async ()
 });
 
 test("publishes note-first recovery guidance requirements", () => {
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 阶段/);
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 已改文件/);
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 已验证项/);
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 下一步/);
+  // issue #261127-18（六节 → 四节）：`## 阶段` / `## 已改文件` / `## 已验证项` 合成 `## 行动`，
+  // `## 下一步` → `## 遗留`，`## 主题词面包屑` → `## 关键词`。逐节判据见
+  // test/compact/fold-summary-lessons-611.test.js（那里还钉着「旧节名一个不剩」）。
+  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 行动/);
+  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 遗留/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /已完成项禁止重做/);
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 主题词面包屑/);
-  // issue #611：五节之后、「恢复提示」之前多一节「教训与坑」（位置判据见
+  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 关键词/);
+  // issue #611：三节之后、「恢复提示」之前多一节「教训与坑」（位置判据见
   // test/compact/fold-summary-lessons-611.test.js，这里只把钉子补齐）。
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 教训与坑（不要重犯的）/);
   // issue #741：提示分两种口径 —— 无证据时（默认那份）不得宣称「查看持久笔记」，

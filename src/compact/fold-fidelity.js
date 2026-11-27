@@ -158,7 +158,7 @@ export function detectReverseSignals(messages) {
  */
 export function reverseSignalWarningLine(detection) {
   const hits = detection.signals.slice(0, MAX_REVERSE_SIGNAL_HITS).join("、");
-  return `${REVERSE_SIGNAL_WARNING_LEAD}（命中：${hits}）：上方「下一步」里早于该信号的旧待办`
+  return `${REVERSE_SIGNAL_WARNING_LEAD}（命中：${hits}）：上方「遗留」里早于该信号的旧待办`
     + "不得直接照做，需先向用户确认；旧待办只标记为需确认，不从待办数据中删除。";
 }
 

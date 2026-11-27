@@ -30,17 +30,21 @@ const LESSONS_CLAUSES = [
   "没有就写「无」",
 ];
 
-const CRUMBS_TITLE = "## 主题词面包屑";
-const CRUMBS_BODY = "列出后续检索原文所需的项目、文件、工具、错误和未结事项关键词。";
+// issue #261127-18：六节 → 四节后，原来的「主题词面包屑」改名「关键词」（位置仍是「教训与坑」的锚点：
+// 新节必须排在它之后）。正文另加一句「用原文里的字面词」——面包屑的唯一用途是**按字面** grep 回原文，
+// 模型把 `recall_ask` 改写成「回忆检索」就再也搜不到了。
+const CRUMBS_TITLE = "## 关键词";
+const CRUMBS_BODY = "列出后续检索原文所需的项目、文件、工具、错误和未结事项关键词。**用原文里的字面词**（文件名、工具名、报错原文、标识符），不要改写成同义词。";
 const RECOVERY_LABEL = "恢复提示：";
 const NO_REDO = "已完成项禁止重做";
 
-// 既有五节：标题 + 正文逐字（#611 的硬要求是「一字不动」）。
+// issue #261127-18（六节 → 四节）：`## 阶段` / `## 已改文件` / `## 已验证项` 三节合并成 `## 行动`
+// （三节都在答「这一折做了什么」，分开写就是同一件事说三遍）；`## 下一步` 改名 `## 遗留`；
+// `## 主题词面包屑` 改名 `## 关键词`（见上）；`## 教训与坑` 原样保留。
+// 下面两张表钉住**改后**的四节：标题 + 正文逐字相邻、顺序升序。
 const EXISTING_SECTIONS = [
-  ["## 阶段", "说明已发生的工作阶段与关键转折。"],
-  ["## 已改文件", "列出实际修改或新增的文件。"],
-  ["## 已验证项", "列出已经运行并确认的测试、检查或其他证据。"],
-  ['## 下一步（含"已完成项禁止重做"）', '只列出尚未完成的动作，并明确写出"已完成项禁止重做"。'],
+  ["## 行动", "实际做了什么、结果如何。**验证结论写在这里**（跑了什么测试 / 检查、结论是什么），不另开一节。"],
+  ["## 遗留", '只列出尚未完成的动作，并明确写出"已完成项禁止重做"。若这一折只是讨论/设想/没有可执行事务，写「本折无具体事务」，不要编造待办。'],
   [CRUMBS_TITLE, CRUMBS_BODY],
 ];
 
@@ -87,9 +91,11 @@ function existingSectionsProblems(guide) {
     if (index < previousIndex) problems.push(`「${title}」的顺序被改动`);
     previousIndex = index;
   }
+  // #261127-18：`已完成项禁止重做` 从标题括注挪进正文（标题就是 `## 遗留`），所以只要求出现 1 次。
+  // 这一格仍在防「删掉那句话」：判据 4B 把整串删掉 ⇒ 这里必红。
   const noRedoCount = countOf(guide, NO_REDO);
-  if (noRedoCount < 2) {
-    problems.push(`「${NO_REDO}」应至少出现 2 次（标题 + 正文），实测 ${noRedoCount} 次`);
+  if (noRedoCount < 1) {
+    problems.push(`「${NO_REDO}」一次都没出现（它必须在「## 遗留」的正文里），实测 ${noRedoCount} 次`);
   }
   return problems;
 }
@@ -120,8 +126,8 @@ test("#611 判据 1：新节在场、三条要求在场，且位置在「主题�
 test("#611 判据 2：既有五节的标题/正文/顺序逐字仍在，`已完成项禁止重做` 逐字仍在", () => {
   assertGreen(existingSectionsProblems(SUMMARIZER_PROMPT_GUIDE), "判据 2");
   assert.ok(
-    SUMMARIZER_PROMPT_GUIDE.includes('## 下一步（含"已完成项禁止重做"）'),
-    "「下一步」的标题里那句括注必须逐字保留",
+    !SUMMARIZER_PROMPT_GUIDE.includes("## 下一步"),
+    "旧节名 `## 下一步` 必须彻底消失（#261127-18 改名 `## 遗留`）",
   );
   assert.ok(
     SUMMARIZER_PROMPT_GUIDE.includes(`并明确写出"${NO_REDO}"。`),
@@ -228,4 +234,31 @@ test("#611 判据 4C：把新节整块删掉 ⇒ 判据 1 必须红（判据 2 �
     existingSectionsProblems(SUMMARIZER_PROMPT_GUIDE),
     "删节不许影响判据 2",
   );
+});
+
+// ── issue #261127-18：六节 → 四节 ──────────────────────────────────
+// 判据是**双向**的：旧节名必须一个不剩（否则模型仍可能照着旧习惯写两遍同一件事），
+// 新四节必须按顺序齐备（否则「合并」会变成「悄悄少一节」）。
+const RETIRED_SECTION_TITLES = ["## 阶段", "## 已改文件", "## 已验证项", "## 下一步", "## 主题词面包屑"];
+const CURRENT_SECTION_TITLES = ["## 行动", "## 遗留", "## 关键词", "## 教训与坑（不要重犯的）"];
+
+test("#261127-18-1 旧节名一个不剩（六节 → 四节）", () => {
+  for (const retired of RETIRED_SECTION_TITLES) {
+    assert.equal(
+      SUMMARIZER_PROMPT_GUIDE.includes(retired), false,
+      `旧节名必须彻底消失：${retired}`,
+    );
+  }
+});
+
+test("#261127-18-2 新四节按顺序齐备（行动 → 遗留 → 关键词 → 教训与坑）", () => {
+  const indexes = CURRENT_SECTION_TITLES.map((title) => SUMMARIZER_PROMPT_GUIDE.indexOf(title));
+  for (const [i, index] of indexes.entries()) {
+    assert.notEqual(index, -1, `缺新节：${CURRENT_SECTION_TITLES[i]}`);
+  }
+  assert.deepEqual(
+    [...indexes].sort((a, b) => a - b), indexes,
+    `四节顺序必须如此（实得下标 ${indexes.join(",")}）`,
+  );
+  assert.equal(new Set(indexes).size, indexes.length, "四个标题各出现一次");
 });
