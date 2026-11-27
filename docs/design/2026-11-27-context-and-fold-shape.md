@@ -50,7 +50,7 @@
 >
 > 本形状里没有通用 `events(type, payload jsonb)` 表：那是无类型、无约束的黑洞，
 > 而且会诱导"同一件事发生两次"变成合法数据。每类事件都有它自己的**事实表**
-> （`note_ops` / `folds` / `runs.termination_detail` / `judge.log`），列与读者各自明确。
+> （`folds` / `notes.superseded` / `runs.termination_reason` / `judge.log`），列与读者各自明确。
 
 ### 1.1 `runs` —— 会话（session）
 
@@ -338,7 +338,7 @@ SELECT seq, title FROM folds
 即使只存“最新一份”，那也是一次**不可审计的重写**：模型每折压一遍，丢掉了什么账本上看不出来，
 而它能提供的信息量，十条 title 已经给了。
 
-### 1.7 `notes` / `note_ops` —— 小抄本
+### 1.7 `notes` —— 小抄本
 
 **白板不在这张表里。** 它是 `runs.board` 一列（§1.1）。理由是两个读者集合不相交：
 
@@ -358,6 +358,7 @@ SELECT seq, title FROM folds
 | `key` | text | **PK₂** | 稳定标识：≤24 字符，`[a-z0-9-]`。**不是标题**——改标题不该换笔记 |
 | `title` | text | not null, ≤60 | 目录显示的那一行。写侧上限 = 显示上限，否则模型写的后半截永远看不到 |
 | `content` | text | not null, ≤4000 | 正文 |
+| `superseded` | jsonb | not null | **版本栈**：被覆盖掉的历史版本，最多 3 条（`MAX_SUPERSEDED`），最近的在最前。契约面：数组顺序是值的一部分 |
 | `state` | text | not null | `active` / `revoked` |
 | `created_at` / `updated_at` | timestamptz | not null | 保留期只看 `updated_at` |
 
@@ -374,16 +375,10 @@ SELECT seq, title FROM folds
 **没有 `current` JSONB**：`title` 有专门读者（目录渲染）和长度约束，JSONB 里只能靠触发器；
 `content` 是正文。两者都不需要"任意扩展"。
 
-**历史只有一套**：`note_ops` 的 `before` / `after` 就是历史，`notes` 行只存当前值。
-ADR-018 的 `superseded`（保留 3 版）表达的是同一件事，合并。
-
-| `note_ops` 列 | 说明 |
-|---|---|
-| `(run_id, log_seq)` | PK，事件序号 |
-| `key` | 哪一条 |
-| `op` | `write` / `revoke` / `purge` |
-| `before` / `after` | 变更前后的整条记录（jsonb） |
-| `ts` | 信封时刻 |
+**历史就是 `superseded`（行内，≤3 版），不另立事件表**。唯一的读者是 `note_read` 返回给模型的
+"已作废条目，不得当作当前值使用"——它要的是**以前的值**，不是"谁在何时改了什么"。
+一个 `note_ops(before, after, op, ts, fold_seq)` 事件表被设计过又删掉了：`after` 就是当前行、
+`ts` 就是 `updated_at`、`revoke` 已由 `state` 表达、`fold_seq` 在白板改成一块文本之后没有来源。
 
 **发现面只有一个：`note_list`**
 
@@ -407,7 +402,7 @@ runs 1─┬─N rounds ──── N messages（最小单位，轮内按 msg_s
        ├─N folds ───────────┘   （成员是查询出来的，不建成员表）
        │    └─ N:1 folds（prior_seq = 续写基底）
        ├─1 board（一列文本，不是表）
-       └─N notes ── N note_ops
+       └─N notes（含 superseded 版本栈）
 ```
 
 **五张表**：`runs` / `rounds` / `messages` / `folds` / `notes`。
