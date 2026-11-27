@@ -42,12 +42,12 @@
 //     必须真的产生了新轮（轮号严格前进）且写下了 `:input:` 行（`appendUserTurn`，只有续跑路径才写），
 //     并且 `--dir` 里的 `store.load()` 折叠输出包含被杀前的正文——只看退出码不够。
 //     模型可见面（终稿里说出被杀前那个 token）只作**旁证**：前提（续跑那次没再读 a.txt）不成立
-//     就只记备注，不判红——真模型端点照不照抄标记是模型自由（同 `scripts/cli-real-smoke.mjs` 的 C2）。
+//     就只记备注，不判红——真模型端点照不照抄标记是模型自由（同 `cli-real-smoke.mjs`（随门禁删除） 的 C2）。
 //
 // 反向证（报告里贴实测）：把「续跑只从账本重建」破坏掉（临时让 resume 无视账本里已结清的结果，
 // 见报告）⇒ A / C 必须红。`src/` 的产品逻辑本单**零改动**。
 //
-// 隔离纪律（照 `scripts/cli-real-smoke.mjs` 的 C8）：
+// 隔离纪律（照 `cli-real-smoke.mjs`（随门禁删除） 的 C8）：
 // - `--dir` 一律指临时目录；真实 `~/.erix` 只**读**（配置）。开跑前取 `~/.erix` 快照 + 选中配置
 //   哈希，跑完硬断言「选中配置一字节没变」且「真实 `~/.erix/transcripts` 下没有本次 runId 的任何
 //   产物」——后一条有牙齿：`--dir` 若被丢掉，CLI 会把 `<runId>.jsonl` 写进真实目录。
@@ -368,7 +368,7 @@ async function killAtFirstToolResult({ child, done, dir, timeoutMs = 180_000, in
   }
 }
 
-/** 真实 `~/.erix` 的快照（**只读**，用于污染对账；与 `scripts/cli-real-smoke.mjs` 同一口径）。 */
+/** 真实 `~/.erix` 的快照（**只读**，用于污染对账；与 `cli-real-smoke.mjs`（随门禁删除） 同一口径）。 */
 function snapshotDir(dir) {
   if (!existsSync(dir)) return { exists: false, files: 0, newest: 0 };
   let files = 0;
@@ -844,7 +844,7 @@ test("真模型端点 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账�
       // 硬判据在 E1/E2/E3（账本结构）。这一条是**模型可见面**的旁证：被杀前 a.txt 的 token 只在账本里，
       // 续跑进程若**没有**再读 a.txt，模型能说出它就只能是从历史里看到的。
       // 前提不成立（模型又调了一次 readFile a.txt）时不判红，只记备注——`examples/tool-fact-e2e.test.mjs`
-      // 与 `scripts/cli-real-smoke.mjs` 的 C2 同一条纪律：真模型端点是否照抄标记是模型自由，拿它判红会把门禁
+      // 与 `cli-real-smoke.mjs`（随门禁删除） 的 C2 同一条纪律：真模型端点是否照抄标记是模型自由，拿它判红会把门禁
       // 跑成随机假红。注意「新结果」要按 tool_use_id 排掉杀点之前就落盘的那一份（它本身就含 tokenA）。
       const preKillIds = new Set(preKillResults.map((block) => String(block?.tool_use_id)));
       const reread = resultsAfter.filter((block) => !preKillIds.has(String(block?.tool_use_id))

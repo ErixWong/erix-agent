@@ -44,10 +44,10 @@
 //     ⇒ 5 红：A1 / A2 / A3 / B1 / F1——自检与枚举两侧同时红；
 //   · M7（R4）把逐叶事件降级成 `void collectConfigSourceConflicts(…)`（算而不发）
 //     ⇒ 1 红：C6（「冲突事件恰一条」实测 0 !== 1）；
-//   · M8（R3）把 JSDoc 的 `tuning?:` 改成假组名 `reflection?:` ⇒ `npm run check:release` 第 4 步
+//   · M8（R3）把 JSDoc 的 `tuning?:` 改成假组名 `reflection?:` ⇒ `npm run check:release`（该闸已删）第 4 步
 //     （真实 TS 宿主）红：宿主 `config.tuning` 报 `TS2353: … 'tuning' does not exist in type …`。
-//     **但那条锁以前只在 node 22 那一档跑**（CI 里 `check:release` 只跑一档），`npm test` 与
-//     `check:types-build` 都不红；第二轮复审补了 **H1**（默认套件里扫 `config?:` 的 JSDoc 文本，
+//     **但那条锁以前只在 node 22 那一档跑**（CI 里 `check:release` 过去只跑一档，该闸已删），`npm test` 与
+//     `check:types-build` 过去都不红；第二轮复审补了 **H1**（默认套件里扫 `config?:` 的 JSDoc 文本，
 //     组名集合必须恰等于 `Object.keys(CONFIG_NAMESPACE_SCHEMA)`），同一个变异现在 `npm test` 就红。
 //
 // 零真实 LLM（fake provider），不写盘、不碰真实 `~/.erix`。
@@ -1166,9 +1166,9 @@ test("G2 expandConfigNamespace 不改入参：返回新对象，原 options 原�
 
 // ================================================================ H. 类型面锁进默认套件（第二轮复审 T2）
 //
-// R3 把 `config` 的 JSDoc 类型面改成八组真名，但那条锁只活在 `check:release` 第 4 步（真实 TS
-// 宿主）——CI 里 `check:release` 只在 node 22 一档跑。实测：把 JSDoc 的 `tuning?:` 写成假组名
-// `reflection?:`，`npm test` 与 `check:types-build` **都不红**，只有 `check:release` 红。
+// R3 把 `config` 的 JSDoc 类型面改成八组真名，但那条锁过去只活在 `check:release`（该闸已删）第 4 步（真实 TS
+// 宿主）——CI 里 `check:release` 过去只在 node 22 一档跑（该闸已删）。实测：把 JSDoc 的 `tuning?:` 写成假组名
+// `reflection?:`，`npm test` 与 `check:types-build` **过去都不红**，只有 `check:release` 红（该闸已删）。
 // H1 把同一条性质搬进默认套件：直接扫 `src/loop/orchestrator.js` 的 `config?:` JSDoc 文本，
 // 断言其中出现的组名集合**恰等于** `Object.keys(CONFIG_NAMESPACE_SCHEMA)`（缺组、多组、假组名、
 // 重复组名都红，报错点名是哪个名字）。

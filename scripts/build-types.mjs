@@ -4,7 +4,7 @@
 // 干什么：
 //   1. 用 devDependency `typescript` 跑 `tsc --declaration --emitDeclarationOnly`，把声明**生成到
 //      `src/**/*.d.ts`**（`package.json` 的 `files` 已含 `src`，所以生成物自动进包，白名单不用改）。
-//   2. `--check` 模式（`npm run check:types-build`）额外断言四件事，然后**清理生成物**保持工作树干净：
+//   2. `--check` 模式（`node scripts/build-types.mjs --check`）额外断言四件事，然后**清理生成物**保持工作树干净：
 //      tsc exit 0 / 生成的 `.d.ts` 文件数 > 0 / `src/index.d.ts` 含 `runToolLoop` /
 //      `src/tools/index.d.ts` 含 `createFileTools`。**只防「某天产不出声明」，不做类型质量评判**
 //      （质量抽查在 #213 R4 与宿主消费侧；`--checkJs` 是另一张单）。
@@ -90,7 +90,7 @@ const tsc = resolveTsc();
 if (!tsc) {
   // 清晰报错而不是堆栈：tsc 是 devDependency，没装（或 npm 跳过了 dev 安装）是这个门禁最常见的红法。
   console.error(
-    "check:types-build: 找不到 TypeScript 编译器（tsc）。\n"
+    "build-types: 找不到 TypeScript 编译器（tsc）。\n"
     + "  tsc 是 devDependency（issue #213：运行时零依赖红线只约束 import，dev 工具链不进包），\n"
     + "  先在本仓库根目录装依赖再重跑：\n"
     + `    ${npmCommand} install --include=dev\n`
@@ -110,11 +110,11 @@ const tscRun = spawnSync(process.execPath, cmd, { cwd: ROOT, encoding: "utf8" })
 const tscOutput = `${tscRun.stdout ?? ""}${tscRun.stderr ?? ""}`.trim();
 
 if (tscRun.error) {
-  console.error(`check:types-build: 启动 tsc 失败：${tscRun.error.message}`);
+  console.error(`build-types: 启动 tsc 失败：${tscRun.error.message}`);
   process.exit(1);
 }
 if (tscRun.status !== 0) {
-  console.error(`check:types-build: tsc 退出码 ${tscRun.status}（期望 0）`);
+  console.error(`build-types: tsc 退出码 ${tscRun.status}（期望 0）`);
   if (tscOutput) console.error(tscOutput);
   else console.error("（tsc 无输出）");
   process.exit(1);
@@ -147,7 +147,7 @@ for (const [rel, symbol] of REQUIRED_SYMBOLS) {
 }
 
 if (failures.length) {
-  console.error(`check:types-build: 失败 — ${failures.length} 项断言不成立`);
+  console.error(`build-types: 失败 — ${failures.length} 项断言不成立`);
   for (const f of failures) console.error(`  ✗ ${f}`);
   console.error(`  （本次生成 ${generated.length} 个 .d.ts，共 ${all.length} 个在 src/ 下）`);
   // 失败时把生成物清掉，避免把半套生成物留在工作树里迷惑人（--keep 除外）
@@ -174,10 +174,10 @@ if (CHECK && !KEEP) {
   const removed = cleanup(generated);
   const leftovers = dtsFiles(path.join(ROOT, "src")).length;
   log(
-    `check:types-build: OK — 断言全过，已清理 ${removed} 个本次生成物`
+    `build-types --check: OK — 断言全过，已清理 ${removed} 个本次生成物`
     + (leftovers ? `；src/ 下仍留有 ${leftovers} 个**先前**生成的 .d.ts（不是本次产物，本脚本不删别人建的文件；`
       + "它们被 .gitignore 忽略，所以工作树按 git 口径仍是干净的）" : "，工作树保持干净"),
   );
 } else if (CHECK) {
-  log("check:types-build: OK — 断言全过（--keep：生成物保留在 src/ 下，已被 .gitignore 忽略）");
+  log("build-types --check: OK — 断言全过（--keep：生成物保留在 src/ 下，已被 .gitignore 忽略）");
 }

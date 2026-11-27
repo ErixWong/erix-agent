@@ -16,7 +16,7 @@
 
 import { createHash } from "node:crypto";
 
-// 单一真值的保留期常量住在 src/store/notes.js（那里是 check:docs 的「notes 统一
+// 单一真值的保留期常量住在 src/store/notes.js（那里过去是 check:docs（该闸已删）的「notes 统一
 // 保留期」默认值锚点所在文件，scripts/** 在本单改动面外）；本模块只拥有读取与
 // 应用它的语义。运行时循环无害：retentionMs() 只在调用期访问该绑定。
 import { DEFAULT_RETENTION_MS } from "./notes.js";

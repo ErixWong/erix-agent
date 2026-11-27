@@ -82,7 +82,7 @@ function summarizeArgument(name, input, { writeToolNames, writeToolPathKeys } = 
  * 为什么只有一处：`writeToolNames` 的默认值在三个地方被读到（本文件的 timeline 回退、
  * `orchestrator.js` 的参数默认值、`normalizeToolNameSet` 的回退），此前它们是三份相同的字面量——
  * 新增一个写工具时漏改任一处，judge 的 `filesWritten` 就会**静默少报**（不是错报，是“没看见”）。
- * 共享常量后只有一个可改点；`scripts/docs-drift-check.mjs` 的默认值锚点也从这里抽真值。
+ * 共享常量后只有一个可改点；原 `scripts/docs-drift-check.mjs` 的默认值锚点（该闸已删）也从这里抽真值。
  * 宿主显式传入时仍以宿主为准（本常量只做缺省）。
  */
 export const DEFAULT_WRITE_TOOL_NAMES = ["writeFile", "edit"];

@@ -15,10 +15,10 @@
 //   · `ERIX_E2E_MODEL` 不是 `1` ⇒ 本文件**一步都不跑**，`t.skip()` 打印分类原因（`GAP_CODES`）。
 //     真模型端点永远不是默认门禁的硬依赖（AGENTS 测试隔离条）。
 //   · 闸门**开着**但配置/凭据/端点不可用 ⇒ **`assert.fail`**，不是 skip。理由与
-//     `scripts/release-real-check.mjs` 的预检同一条：「没跑成」不许报成绿——发版清单里的必跑项
-//     被「跳过」冒充成「通过」，正是 PR #289 阻断 1 的镜像错误。`check:release:model-e2e` 那侧另有一道
+//     原 `scripts/release-real-check.mjs`（已删）的预检同一条：「没跑成」不许报成绿——发版清单里的必跑项
+//     被「跳过」冒充成「通过」，正是 PR #289 阻断 1 的镜像错误。原 `check:release:model-e2e`（该闸已删）那侧另有一道
 //     闸（子进程里出现 `[gate_*]` / `[config_*]` / `[api_key_*]` / `[endpoint_unreachable]` 类 skip
-//     同样判红），两层都要在。
+//     同样判红），那一层随门禁删除后只剩本文件这一道。
 //
 // 隔离：临时目录（`makeTmp` 同源的 `os.tmpdir()`）、`--dir` / notes / 名册全部指到它下面，
 // 不碰真实 `~/.erix`；模型名从 `slots.default` 解析（`ERIX_E2E_CONFIG` 可覆盖），源码零硬编码。

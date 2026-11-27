@@ -2,7 +2,7 @@
 //
 // 病根（#551 落地时实测撞上，属 #511「文档声称归属」那一族）：契约中英两份里有**用代码块 / 行内代码
 // 逐字引用**的引擎判词。#551 把运行时判词换成"点名载荷新家"的句子之后，文档里那段还是旧的一句，
-// 而 `npm run check:docs` 与 `check:docs:strict` **全绿**——`paths` / `markers` 这类锚点只问
+// 而 `npm run check:docs` 与 `check:docs:strict` 当时**全绿**（该闸已删）——`paths` / `markers` 这类锚点只问
 // 「这串在文档里存在吗」，**不问它是否还等于运行时真值**。宿主照文档抄到的是引擎早就不说的句子。
 //
 // 本文件把那条缺口钉成机器判据。三条纪律（工单 §要求 2 / §不许）：
@@ -368,7 +368,7 @@ export async function auditCapabilityVerdicts(text) {
 //      一个顶层容器」，证明被拒的原因只能是那个名字，不是端口不完整。
 //   ② `{ ...base, ...null }` 展开成**空对象** ⇒ 非对象入参必须**直接**传 `null`。
 //   ③ 端口成员表用 `Map` 而不是对象字面量写：`test/**` 里 `session` / `tools` 这类字面量属性名
-//      会被 `npm run check:inventory` 计成**扁平写点**（清单外的文件出现扁平写点会令 `scripts/compat-pin-allowlist.mjs` 白名单判据变红；本片零新增写点，见工单 §地盘与禁改）。
+//      过去 `npm run check:inventory`（该闸已删）会把它计成**扁平写点**（清单外的文件出现扁平写点会令 `scripts/compat-pin-allowlist.mjs`（已删）白名单判据变红；本片零新增写点，见工单 §地盘与禁改）。
 
 const PORT_MEMBERS = new Map([
   ["modelConfig", () => ({ resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) })],

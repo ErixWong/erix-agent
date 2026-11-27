@@ -51,7 +51,7 @@ const SAFE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 // 状态字段只服务模型可见性（note_list 默认 active）与语义标签，与清理无关。
 // 复活窗口 = 最后写入后 30 天；健康任务长期不写某条笔记的理论误杀已被维护者
 // 显式接受。默认 30 天。读取/env 语义在 src/store/notes-port.js 的 retentionMs()。
-// ⚠ 声明留在本文件：scripts/docs-drift-check.mjs 的「notes 统一保留期」默认值
+// ⚠ 声明留在本文件：原 docs-drift-check 的「notes 统一保留期」默认（该闸已删）值
 // 锚点按 srcRe 在本文件里抽真值（docs-drift 脚本不在 #265 改动面内）。
 export const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 

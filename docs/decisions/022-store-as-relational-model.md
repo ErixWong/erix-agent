@@ -77,7 +77,7 @@
 | `bytes` | int | `bytes` = **`text` + `summary`** 的字节数（第一版写成 `body + description` 是错的） |
 | `truncated` / `bytes_before` | bool / int | `truncated` / `bytesBefore` |
 | `degrade_reason` | text | `degradeReason`（≤120 字符） |
-| `trigger` | text | `#930` 的 `trigger`（`budget` / `context_window_recovery` / `manual`）；旧记录缺席 |
+| `trigger` | text | `#930` 的 `trigger`。**取值以代码为准**：`budget` / `context_window_exceeded` / 其余（`orchestrator.js:278`）。⚠ `trigger` **不在** `buildFoldedFacts` 的返回里（它记在 `compactionStats` 上，`orchestrator.js:4180-4182,5047-5049`）⇒ 它是**本 ADR 新增的列**，不是"从 foldedFacts 搬过来" |
 | `created_at` | timestamptz | |
 
 索引：`PK(run_id, seq)`；`UNIQUE(run_id, fold_id)`；`(run_id, from_round, to_round)`。
@@ -113,8 +113,13 @@ DO NOTHING` 后再 `SELECT seq WHERE fold_id` ⇒ 同 `fold_id` 重投拿回**�
 
 **两族语义必须在表上分开**：
 
-- `event = 'partial-text'`：**槽**——同 `(run_id, round)` 只留一条、原子替换，且替换时**跨轮自剪枝**
-  （旧轮的 partial 行一并删；读侧只认崩溃轮，`file.js:429-432`）⇒ 约束 `UNIQUE(run_id, round) WHERE event='partial-text'`；
+- `event = 'partial-text'`：**槽**——**整个 run 只留一条**（不是每轮一条）、原子替换，且替换时**跨轮自剪枝**
+  （旧轮的 partial 行一并删；读侧只认崩溃轮，`file.js:429-432,486-517`）
+  ⇒ 约束**应当**是 **`UNIQUE(run_id) WHERE event='partial-text'`**（第二版写成 `(run_id, round)` 是错的：那样会
+  允许每轮各留一条，而实现是把旧轮的行一起剪掉）。
+  ⚠ 但**现有实现只是逻辑上唯一**：合并冲突重试若干次后它会**退回追加**，可能留下重复行
+  （`file.js:583-586`）。所以 DB 侧的条件唯一约束是**收紧**，不是"把现状照搬"——迁移时要先按 `(run_id)`
+  去重（保留最后一条），否则建约束会失败；
 - 其余事件：**只追加、永不替换、一行不丢**。
 
 文件侧今天已经是两个文件分流（`.partial.jsonl` 整文件重写 / `.recovery.jsonl` 只追加，`file.js:687-688`），

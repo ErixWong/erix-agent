@@ -6,7 +6,7 @@
 // 第 1 项那个「进度行静默丢耗时」的缺陷正是在这块空白里活过了 T2 停写。
 //
 // 用法：ERIX_E2E_MODEL=1 node --test examples/pi-extension/erix-run-e2e.test.mjs
-// 闸门与配置解析与 examples/tool-fact-e2e.test.mjs、scripts/cli-real-smoke.mjs 共用
+// 闸门与配置解析与 examples/tool-fact-e2e.test.mjs、已删的 `scripts/cli-real-smoke.mjs`（原先例）共用
 // examples/e2e-real-gate.mjs（`ERIX_E2E_MODEL=1` 才跑；模型名从配置 slots.default 读，不硬编码；
 // 闸门关着 / 无配置 / 无 key / 端点不可达**分别**报 skip 原因）。
 //
@@ -626,7 +626,7 @@ test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skippe
 // 早于 B 注册，于是「最后注册的句柄 = B」与「owner = A」在任何时序下都可区分 ⇒ 假绿不可能。
 // 下面紧跟的那条**离线反向自证**用「派工后立即结算」的假 provider 把这件事量出来（不联网、始终跑）。
 //
-// 闸门口径（与 `check:release:model-e2e` 同一套）：闸门**没开**一律 skip（`npm test` 必须离线可重复）；
+// 闸门口径（与 `check:release:model-e2e`（该闸已删）同一套）：闸门**没开**一律 skip（`npm test` 必须离线可重复）；
 // 闸门**开着**而配置/凭据/端点不可用时**红**——发版清单不能把「没跑成」报成绿（PR #289 阻断 1 的镜像）。
 // ---------------------------------------------------------------------------
 

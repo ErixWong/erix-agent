@@ -413,7 +413,7 @@ test("readFile 的 marker 不带裸字节数，且长路径下仍守住 max_byte
 // ---------------------------------------------------------------------------
 
 // #264 把 marker 加了 `（文件 …）` 段，但两份契约文档当时禁改、停在旧字面（CHANGELOG 的 #264 条目
-// 已写明「待另单同步」）。`check:docs` 不钉这条字面量（它钉的是 NEXT_STEP_CLAUSE 与 formatSize 档位），
+// 已写明「待另单同步」）。`check:docs`（该闸已删）当时不钉这条字面量（它钉的是 NEXT_STEP_CLAUSE 与 formatSize 档位），
 // 所以这里补上「文档说的 == 源码产出的」：文档用占位符，实例化后必须逐字等于 toolMarker 的产出。
 // 反向证①：任一侧改回旧字面 → 该侧当场红。
 const CONTRACT_DOCS = ["docs/host-consumer-contract.md", "docs/host-consumer-contract_cn.md"];
@@ -488,7 +488,7 @@ const READ_DESC_ALLOWED_FIGURES = new Map([
   ["1", "结果行号是 `1-based` 的 1（语义事实）"],
   ["200", "`limit` 默认行数，以及 `offset=200` 那句续读示例（默认值事实）"],
   ["8", "`UTF-8` 这个名字里的 8（编码名，不是测量值）"],
-  ["262144", "`max_bytes` 默认字节数——`scripts/docs-drift-check.mjs` 拿它当真值锚点，**不许改值**"],
+  ["262144", "`max_bytes` 默认字节数——`scripts/docs-drift-check.mjs`（已删）过去拿它当真值锚点，**不许改值**"],
   ["256", "同一个默认值的可读写法 `256KB`（同一个事实的第二种拼写）"],
   ["3", "「一个 CJK 字符 3 个 UTF-8 字节」（UTF-8 编码事实）"],
   ["3.5", "估算器常数 `charsPerToken = 3.5`（`src/tokens.js`）"],
@@ -692,7 +692,7 @@ test("readFile 描述的 token 区间 == 估算器现算的区间（#628 守卫 
 test("readFile 描述只给机制事实：字节上限 / 换算式 / offset 与 limit 语义 / marker 续读（#628 守卫 3）", () => {
   const description = readFileDescription();
   assert.match(description, /at most `max_bytes` UTF-8 bytes \(default 262144 = 256KB\)/u,
-    "字节硬上限与默认值必须在场：262144 同时是 `scripts/docs-drift-check.mjs` 的真值锚点，**不许改值**");
+    "字节硬上限与默认值必须在场：262144 过去同时是 `scripts/docs-drift-check.mjs`（已删）的真值锚点，**不许改值**");
   assert.match(description, /the budget is counted in BYTES/u,
     "必须写明预算按 **UTF-8 字节** 计（#628 明确排除「把字节上限换成 token 上限」：字节是确定边界，估算值不是）");
   assert.match(description, /max_bytes \u00f7 average bytes per line/u,

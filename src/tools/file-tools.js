@@ -65,7 +65,7 @@ export const EDIT_HIT_COUNT_CAP = 100;
 export const EDIT_MAX_EDITS = 64;
 // 搜索上限硬顶：防爆输出（2026-09-20 基准：无上限搜索曾单次返回数千行拖慢主循环）。
 export const GREP_MAX_RESULTS_HARD_CAP = 200;
-export const FILE_READ_MAX_BYTES_DEFAULT = 262_144; // 256 KiB；scripts/docs-drift-check.mjs 的真值锚点
+export const FILE_READ_MAX_BYTES_DEFAULT = 262_144; // 256 KiB（原由 docs-drift-check 对账，该闸已删）
 const FILE_READ_MAX_BYTES_MIN = 1_024;
 const FILE_READ_MAX_BYTES_CEILING = 4 * 1024 * 1024;
 // 搜索命中行的行宽上限：`grep` 与 `rg` **共用这一个数**（#184 追加轮 A 收口第三条：此前只有 `grep`
@@ -81,7 +81,7 @@ const READ_BLOCK_BYTES = 64 * 1024;
 // 结果尾部 marker 的字节预留：保证「单次返回不超过 max_bytes」对整段文本成立。
 const READ_MARKER_RESERVE = 512;
 // 「下一步」子句的统一前缀（issue #196 R1）：所有截断 marker 都以它收尾，措辞只在这里定义一次
-// （与「marker 文案只在 toolMarker 里」是同一条纪律）。scripts/docs-drift-check.mjs 的锚点取
+// （与「marker 文案只在 toolMarker 里」是同一条纪律）。原 docs-drift-check 的锚点取
 // **这一行的真值**：改前缀 = 模型可见的承诺变了 → 检查变红 → 必须同步中英契约文档两处。
 // ⚠ 子句里允许出现的工具名只有 `readFile` / `searchText`（理由见 toolMarker 的文档注释）。
 const NEXT_STEP_CLAUSE = "下一步：";
@@ -252,7 +252,7 @@ function compileNamePattern(namePattern) {
  *
  * 为什么不给默认：本工具的存在理由就是「入口名字不带先验，所以不给任何默认」——#184 之前
  * `rg` 字面量 / `grep` 正则两个默认相反就是同一族缺陷，「默认 literal」只是把歧义留给调用方。
- * `scripts/docs-drift-check.mjs` 的「searchText mode 必填」规则以这一行为锚点。
+ * 原 docs-drift-check 的「searchText mode 必填」规则曾以这一行为锚点（该闸已删）。
  */
 const SEARCH_MODES = new Set(["literal", "regex"]);
 
@@ -266,7 +266,7 @@ function searchModeError(mode) {
  * `rg`/`grep` 别名的 `mode` 映射（issue #195 R3）：入参形状不变，继续吃 `is_regex`。
  * 不传 `is_regex` = 正则（真实 `rg` / `grep -E` 的默认，也是 #184 追加轮 A 定下的口径），
  * `is_regex === false` 才是字面量（`rg --fixed-strings` / `grep -F`）。
- * `scripts/docs-drift-check.mjs` 的「rg 默认搜索模式为正则」规则以这一行为锚点。
+ * 原 docs-drift-check 的「rg 默认搜索模式为正则」规则曾以这一行为锚点（该闸已删）。
  */
 function aliasSearchMode(input) {
   return input?.is_regex === false ? "literal" : "regex";

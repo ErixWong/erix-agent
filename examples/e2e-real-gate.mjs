@@ -1,8 +1,8 @@
 // 真模型端点 e2e 的「闸门 + 配置解析」——工单 docs/tasks/261015-e2e-harness.md（T5）第 2/3/4 项共用。
 //
-// 为什么单独一个文件：三处消费点（`examples/tool-fact-e2e.test.mjs`、
-// `examples/pi-extension/erix-run-e2e.test.mjs`、`scripts/cli-real-smoke.mjs`）必须对
-// 「什么时候允许打真模型端点、模型名从哪来」口径一致。三处各写一份 = 最松的那一份说了算。
+// 为什么单独一个文件：消费点（`examples/tool-fact-e2e.test.mjs`、
+// `examples/pi-extension/erix-run-e2e.test.mjs`）必须对（原第三处 `scripts/cli-real-smoke.mjs` 已删）
+// 「什么时候允许打真模型端点、模型名从哪来」口径一致。各处各写一份 = 最松的那一份说了算。
 //
 // 闸门：`ERIX_E2E_MODEL=1` 才跑；缺省**一律跳过**——`npm test` 必须离线可重复（AGENTS.md 测试隔离条），
 // 真模型端点不许变成 `npm test` 的硬依赖（同 `examples/exec-demo.test.mjs` 的 LLM_KIT_E2E 先例）。

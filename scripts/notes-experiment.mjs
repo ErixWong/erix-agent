@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 import { safeRunId } from "../src/store/file.js";
 // 真模型实验的闸口与真模型端点 e2e 共用**一个**读取点（`examples/e2e-real-gate.mjs`，issue #817 把旧名
-// 旧名 `ERIX_E2E_REAL` 已退役：设了判红，不再开闸）：先例是 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`，
+// 旧名 `ERIX_E2E_REAL` 已退役：设了判红，不再开闸）：先例原是 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`（两者均已删），
 // 它们也是从这里读的。旧名只在闸门里读，本脚本不自己拄一份——别名下一版要删，两处拄就得多改一处。
 import { REAL_GATE_ENV, readRealGate, retiredGateMessage } from "../examples/e2e-real-gate.mjs";
 import {
@@ -1002,7 +1002,7 @@ async function runJob(job, context) {
 }
 
 /**
- * 真模型实验的**闸口**（#546）：照 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`
+ * 真模型实验的**闸口**（#546）：照 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`（两者均已删）
  * 的先例，`ERIX_E2E_MODEL=1` 才跑，否则**退出码 0 + 分类说明**——真模型端点不许变成任何默认门禁的硬依赖。
  *
  * 闸门读取走 `examples/e2e-real-gate.mjs#readRealGate()`（issue #817：旧名 `ERIX_E2E_REAL` 已退役 ⇒ 设了不开闸而是判红）
