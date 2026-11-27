@@ -136,18 +136,18 @@ test("parseRunParams：默认值、~ 展开、逐项校验", async () => {
   assert.equal(withHome.cwd, path.join(fakeHome, "somewhere"));
 
   const tuned = core.parseRunParams({
-    task: "t", cwd: "/tmp", maxRounds: 12, timeoutMs: 5_000, strategy: "fold-llm", model: " other ",
+    task: "t", cwd: "/tmp", maxRounds: 12, timeoutMs: 5_000, model: " other ",
   });
   assert.equal(tuned.maxRounds, 12);
   assert.equal(tuned.timeoutMs, 5_000);
-  assert.equal(tuned.strategy, "fold-llm");
+  // issue #261127-12：删名字形态后 `strategy` 选项已删——传了也不解析、不转发。
+  assert.equal(Object.hasOwn(tuned, "strategy"), false);
   assert.equal(tuned.model, "other");
 
   for (const [raw, code] of [
     [{ cwd: "/tmp" }, "bad_params"],
     [{ task: "t" }, "bad_params"],
     [{ task: "t", cwd: "relative/dir" }, "bad_params"],
-    [{ task: "t", cwd: "/tmp", strategy: "nope" }, "bad_params"],
     [{ task: "t", cwd: "/tmp", maxRounds: 0 }, "bad_params"],
     [{ task: "t", cwd: "/tmp", maxRounds: 9999 }, "bad_params"],
     [{ task: "t", cwd: "/tmp", timeoutMs: -1 }, "bad_params"],
@@ -309,7 +309,7 @@ test("buildLoopOptions：参数 → runToolLoop 选项装配（策略名/预算�
 
   const options = core.buildLoopOptions({
     params: {
-      task: "修 bug", cwd: "/work/proj", maxRounds: 9, timeoutMs: 60_000, strategy: "fold-llm",
+      task: "修 bug", cwd: "/work/proj", maxRounds: 9, timeoutMs: 60_000,
     },
     slot: fakeSlot().slot,
     provider,
@@ -338,7 +338,8 @@ test("buildLoopOptions：参数 → runToolLoop 选项装配（策略名/预算�
   assert.equal(at(options, "config.input.wrapup"), false, "对话型宿主不收 JSON 信封");
   assert.equal(at(options, "config.run.stream"), false);
   assert.equal(at(options, "config.run.reflection"), false);
-  assert.equal(at(options, "config.folding.context.strategy"), "fold-llm", "#898-2：内置名只剩 fold-llm，宿主原样转交引擎实例化");
+  // issue #261127-12：删名字形态后 harness 不再下发 `config.folding.context`（名字串会被引擎 TypeError 拒）。
+  assert.equal(Object.hasOwn(options.config, "folding"), false, "harness 不再写 folding 组");
   assert.deepEqual(at(options, "config.metadata.modelMetadata"), { contextWindowTokens: 200_000, maxOutputTokens: 4_096 });
   assert.equal(typeof at(options, "capabilities.hooks.onEvent"), "function");
   assert.equal(typeof at(options, "capabilities.hooks.onObserverError"), "function");
@@ -359,7 +360,7 @@ test("buildLoopOptions：参数 → runToolLoop 选项装配（策略名/预算�
     signal: controller.signal,
     runId: "run-2",
   });
-  assert.equal(Object.hasOwn(bare.config, "folding"), false, "没传 strategy ⇒ 连 folding 组都没有");
+  assert.equal(Object.hasOwn(bare.config, "folding"), false, "issue #261127-12：harness 永不写 folding 组");
   assert.equal(Object.hasOwn(bare.config.metadata, "modelMetadata"), false);
   assert.equal(Object.hasOwn(bare.config.run, "reflection"), false, "reflection 未指定时交给引擎缺省");
   assert.equal(Object.hasOwn(bare, "capabilities"), false, "没有回调 ⇒ 连 capabilities 容器都没有");
@@ -377,7 +378,7 @@ test("runErixRun：正常路径产出结构化载荷（finalText/rounds/usage/te
   const captured = {};
   const progressLines = [];
   const payload = await core.runErixRun(
-    { task: "修 bug", cwd: repoRoot, maxRounds: 6, strategy: "fold-llm" },
+    { task: "修 bug", cwd: repoRoot, maxRounds: 6 },
     makeDeps({
       provider,
       captured,
@@ -398,14 +399,16 @@ test("runErixRun：正常路径产出结构化载荷（finalText/rounds/usage/te
   assert.equal(payload.diagnostics.observerErrors.count, 0);
   assert.equal(payload.diagnostics.modelMetadataMissing, null);
   assert.equal(payload.diagnostics.model, "slot-model");
-  assert.equal(payload.diagnostics.strategy, "fold-llm");
+  // issue #261127-12：`strategy` 选项已删 ⇒ diagnostics 不再带 strategy 字段。
+  assert.equal(Object.hasOwn(payload.diagnostics, "strategy"), false);
   assert.equal(payload.diagnostics.libSource, "fake://lib");
   assert.equal(payload.diagnostics.timeoutMs, core.DEFAULT_TIMEOUT_MS);
   assert.equal(payload.diagnostics.compaction.events, 0);
 
   // 装配确实落到 runToolLoop 手上
   assert.equal(at(captured.options, "config.run.maxRounds"), 6);
-  assert.equal(at(captured.options, "config.folding.context.strategy"), "fold-llm");
+  // issue #261127-12：harness 不再下发 folding.context（名字串会被引擎 TypeError 拒）。
+  assert.equal(Object.hasOwn(captured.options.config ?? {}, "folding"), false);
   assert.deepEqual(at(captured.options, "config.metadata.modelMetadata"), { contextWindowTokens: 200_000, maxOutputTokens: 4_096 });
   assert.match(at(captured.options, "config.input.system"), /TOOLS\(todo=off\)/u);
   assert.match(at(captured.options, "config.input.system"), /工作目录 /u);

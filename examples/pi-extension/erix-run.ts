@@ -47,7 +47,6 @@ import {
   MAX_MAX_ROUNDS,
   MAX_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
-  STRATEGY_NAMES,
 } from "./erix-run-core.js";
 import {
   FINAL_GUARD_TIMEOUT_MS,
@@ -93,13 +92,7 @@ const parameters = Type.Object({
       description: `内层工具循环的轮数预算，默认 ${DEFAULT_MAX_ROUNDS}；≥16 会自动开启 judge（额外模型调用）。`,
     }),
   ),
-  strategy: Type.Optional(
-    StringEnum([...STRATEGY_NAMES], {
-      description:
-        "上下文压缩策略（引擎内置名）。不传就走引擎缺省；缺预算元数据时压缩整轮关闭。"
-        + "fold-llm 每压缩一次多花一次主力模型调用。",
-    }),
-  ),
+  // issue #261127-12：`strategy` 参数面已删（引擎只接受策略对象，名字形态没了；引擎缺省即 fold-llm）。
   timeoutMs: Type.Optional(
     Type.Integer({
       minimum: MIN_TIMEOUT_MS,

@@ -89,20 +89,7 @@ export const RESUME_REASON_MEMORY = "没有可续跑的账本：这次 run 没�
 export const RESUME_REASON_NO_TRANSCRIPT = "没有可续跑的账本：transcript 没写出来（装配期就失败 / 落盘失败），artifacts.transcriptPath 为 null";
 /** provider 单次请求/流的超时（对齐 bin/cli.js 的 300s，非 run 级超时）。 */
 export const PROVIDER_TIMEOUT_MS = 300_000;
-/**
- * 可选压缩策略名（与引擎 `context.strategy` 的内置名字同一集合，
- * `src/compact/strategy-resolution.js`；引擎自己会在启动期再校验一次）。
- *
- * issue #925/#926：内置名字收口到**唯一一项** `fold-llm`——`sliding-window` / `fold-statistical`
- * 两个机械策略仍以**对象**形态可达（引擎的预算兜底还在用其中一个），但不再是可选的**名字**。
- * 这个常量必须跟着源码走：本层把它抄成一份字面量，抄宽了就会**放行一个引擎必拒的值**
- * （`erix_run` 传 `strategy: "sliding-window"` 会在 run 启动期以
- * `context.strategy must be a strategy object or one of the built-in names (fold-llm)` 失败，
- * 而本层先放行、事后再报——真机 e2e 就是这么抓到的）。
- */
-export const STRATEGY_NAMES = Object.freeze([
-  "fold-llm",
-]);
+/** issue #261127-12：策略名形态已删，本层不再有 STRATEGY_NAMES / 扁平 strategy 选项。 */
 /** diagnostics 里各类样本的保留条数。 */
 const SAMPLE_LIMIT = 10;
 
@@ -424,17 +411,8 @@ export function parseRunParams(raw = {}, { home = homedir() } = {}) {
     ...(resumeSpec === undefined ? {} : { resume: resumeSpec }),
   };
 
-  const strategy = raw?.strategy;
-  if (strategy !== undefined && strategy !== null && strategy !== "") {
-    const name = textOf(strategy).trim();
-    if (!STRATEGY_NAMES.includes(name)) {
-      throw new ErixRunError(
-        "bad_params",
-        `strategy 只能是 ${STRATEGY_NAMES.join(" | ")}，收到 ${JSON.stringify(strategy)}`,
-      );
-    }
-    params.strategy = name;
-  }
+  // issue #261127-12：`strategy` 扁平选项已删（删名字形态后引擎只接受对象，扁平参数面承载不了）。
+  // 传了也不解析、不转发；引擎缺省即 fold-llm。
 
   const model = raw?.model;
   if (model !== undefined && model !== null && model !== "") {
@@ -1667,8 +1645,8 @@ export function buildLoopOptions(input) {
     },
     // 契约「#1.3 硬注意」/task 选项：判官/收尾的简报取显式 task，多轮宿主必须显式传。
     metadata: { task: params.task },
-    // #167：内置策略名是**数据**（引擎在启动期实例化），所以走配置面的 `folding.context`。
-    ...(params.strategy === undefined ? {} : { folding: { context: { strategy: params.strategy } } }),
+    // issue #261127-12：删名字形态后不再写 folding.context.strategy（名字串会被引擎 TypeError 拒）；
+    // 引擎缺省即 fold-llm。`strategy` 参数面已删。
     // #314 R1：只有调用方给了 `finalGuard` 才下发它的超时（默认关时 options 对象上**一个字节都不多**，
     // 这正是 C6「默认路径不回归」的硬约束）。`finalGuardTimeoutMs` 必须**显式给**：
     // 引擎默认 30_000 × 最多 3 次等待（1 + 2 次 revise）会撑爆宿主自己那根硬 abort（坑 ①）。
@@ -2234,7 +2212,6 @@ function buildDiagnostics(input, source) {
     configPath: context.configPath,
     cwd: context.cwd,
     libSource: context.libSource,
-    strategy: context.strategy,
     runId: context.runId,
     maxRounds: context.maxRounds,
     timeoutMs: context.timeoutMs,
@@ -2333,8 +2310,8 @@ export async function runErixRun(rawParams = {}, deps = {}) {
   // 后者只为「没进循环 ⇒ 一个事件也没收」时把计数渲染成 unknown，而不是假称 0。
   const noteToolCalls = createNoteCallTally();
   let eventStreamObserved = false;
-  /** @type {{model?:string, configPath?:string, cwd?:string, libSource?:string, strategy?:string, runId?:string, maxRounds?:number, timeoutMs?:number, elapsedMs?:number, metadataMissing?:object}} */
-  const context = { cwd: textOf(rawParams?.cwd), strategy: textOf(rawParams?.strategy) || undefined };
+  /** @type {{model?:string, configPath?:string, cwd?:string, libSource?:string, runId?:string, maxRounds?:number, timeoutMs?:number, elapsedMs?:number, metadataMissing?:object}} */
+  const context = { cwd: textOf(rawParams?.cwd) };
 
   const recordObserverError = (error, info = {}) => {
     observerErrors.push({
@@ -2422,7 +2399,6 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       };
     }
     context.cwd = params.cwd;
-    context.strategy = params.strategy;
     context.maxRounds = params.maxRounds;
     context.timeoutMs = params.timeoutMs;
 
@@ -2598,7 +2574,7 @@ export async function runErixRun(rawParams = {}, deps = {}) {
 
     progress(
       `erix_run 启动：model=${context.model ?? "?"} cwd=${params.cwd} maxRounds=${params.maxRounds}`
-      + ` strategy=${params.strategy ?? "（未配置，走引擎缺省）"} timeoutMs=${params.timeoutMs}`
+      + ` timeoutMs=${params.timeoutMs}`
       // #314：开了 guard 就把「多给了多少硬 abort 余量」当面说出来，别让开销隐形。
       + (guardHeadroomMs > 0
         ? ` finalGuard=on（硬 abort 余量 +${guardHeadroomMs}ms，等待上限 ${params.finalGuardTimeoutMs}ms）`
@@ -2871,7 +2847,6 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
   const diagnostics = payload?.diagnostics;
   if (diagnostics) {
     lines.push(`[diagnostics] model=${diagnostics.model ?? "?"}`
-      + ` strategy=${diagnostics.strategy ?? "engine default"}`
       + ` compaction=${diagnostics.compaction?.compactedRounds ?? 0}/${diagnostics.compaction?.events ?? 0}`
       // #313 R2：这一对比数就是 `compactedRounds`/`events`，**不是**「压缩有没有生效」：
       // 整轮折叠 / 逐条 TTL 削减 / 输出钳制在下一段分开命名分别渲染（事故现场正是被它盖掉的）。
