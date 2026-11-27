@@ -1084,8 +1084,10 @@ The shared CLI flags are:
   when the budget still cannot be met *after* LLM folding, the engine's last resort is the mechanical
   `slidingWindow` layer — it leaves a detectable mark in the fold record
   (`degradeReason = "budget_fallback_mechanical"`) rather than pretending to be a summary (the
-  one-shot `compaction_strategy_fallback` diagnostic still fires for this budget-fallback case; only
-  the old "no strategy configured" branch was removed). An over-budget run that still cannot fit fails
+  one-shot `compaction_strategy_fallback` diagnostic fires only when the **strategy declined the round**
+  (`shouldCompact` said no while `overBudget` held) and the engine's own `sliding-window` folded instead;
+  the budget-fallback case above is reported by `compaction.strategyName` and that `degradeReason`, not by
+  the event. Only the old "no strategy configured" branch was removed by #261127-12). An over-budget run that still cannot fit fails
   through the existing `cannot_fit` / `budgetUnreachable` path. Since issue #673 `erix chat`
   also **shows** which layer really folded: each real fold prints one stderr line
   (`[compaction] round=… strategy=… foldedRounds=… tokensBefore=… tokensAfter=…`), the run ends

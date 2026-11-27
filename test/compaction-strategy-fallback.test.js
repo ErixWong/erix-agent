@@ -25,8 +25,10 @@ import { FOLDED_FACTS_RECORD_FIELD } from "../src/compact/fold-summary-journal.j
 
 const EVENT_TYPE = "compaction_strategy_fallback";
 // detail 首句是 issue #464 A 约定的固定原文（宿主可直接断言），预算之后才追加真值。
-// issue #261127-12：该诊断已删（策略永不为空）——`notices.length === 0` 断言因此变成反向锁：
-// 这个事件类型再也不得出现。原先可断言的 `DETAIL_PREFIX` 固定原文随诊断一并删除。
+// issue #261127-12：发射点**收窄**（不是删除）——只剩「策略这一轮判否 + `overBudget` ⇒ 引擎自己那层
+// `sliding-window` 折了轮」这一个情形。所以本文件里的 `notices.length === 0` 断言是**有条件的**：
+// 在「配了策略且策略自己折了轮」的那几格里它不得出现；「预算兜底又折」那一格也不发（由
+// `compaction.strategyName` 与 `degradeReason` 报告）。别把它读成「这个事件永不出现」。
 
 /** rounds 轮工具调用 + 一轮收尾文本；工具输出足够肥，稳定越过 budgetTokens。 */
 function toolProvider(rounds) {
