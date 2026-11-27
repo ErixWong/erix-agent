@@ -93,6 +93,7 @@ resume 之后 `runRounds` 从 0 重算，而 `rounds` 继续递增。第二版�
 | `source` | text | not null | `llm` / `host`（**没有 `statistical`**：折叠必须由 LLM 完成） |
 | `origin` | text | not null | `semantic` / `host`（**没有 `mechanical`**） |
 | `trigger` | text | not null | `budget` / `context_window_recovery` / `manual` |
+| `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 这一折的日志被后来的某一折取代（模型编错了、或白板已吸收）。**只加指针，不改行**——append-only |
 | `created_at` | timestamptz | not null | |
 
 索引：`PK(run_id, seq)`；**`UNIQUE(run_id, from_round, to_round, prior_seq)`**；`(run_id, stage_no)`。
@@ -137,6 +138,10 @@ SELECT r.* FROM fold_round_rows m JOIN rounds r ON r.run_id = m.round_run_id AND
 | `label` | text | not null，≤ 40 字符；模型给或机械拼 |
 
 分组可以是机械的（按区间），阶段名让 LLM 每 10 折起一次名——**很便宜，不需要"摘要的摘要"**。
+
+生成时机：每新增 10 折，把**最老**的 10 折并进一个新 stage。`label` 由同一次折叠调用顺带产出
+（§4.10 的第 ③ 件事），拿不到就机械拼「第 a–b 折」并标 `label_src='mechanical'`。
+已并进 stage 的折**不再出现在第一、二层**——第三档独占它们（§4.2 的 ③）。
 
 ### 1.7 `notes` / `note_history` / 白板（ADR-018 + 第三版）
 
@@ -318,6 +323,49 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 **层数上限 2（白板 + 日志）**。想加第三层，先回答"这一层的信息能不能压成 200 token 的阶段线"。
 能，就不加层；不能，说明要的是"回忆细节"，那是账本的活，不是上下文的活。
 
+### 4.8 渲染的边界与退化
+
+| 情况 | 行为 |
+|---|---|
+| 估算与真实 tokenizer 不一致 | 按 **0.9B** 渲染（留 10% 余量）；provider 报 `context_window_exceeded` ⇒ 按 §1.8 记一行、**降一档重试一次**，同一档不许重试两次 |
+| 窗口极小（装不下一条 description + 一条 title） | 降级顺序：最新一条 description → 只给 title → 只给阶段线 |
+| 连一条阶段线都装不下 | **`cannot_fit` 显式失败**。不许静默只给保留区——模型会以为自己是从头开始的，然后重复劳动 |
+| 任何一档装不下整条 | **降档，不夹断**。半条 description 比没有更坏：模型会补全不存在的细节 |
+
+**永远不出现"零历史"**：至少留一条阶段线，让模型知道"你看到的历史是被折过的"。
+
+### 4.9 白板与日志的边界
+
+同一条信息只能住一处：
+
+| 说的是 | 住哪 |
+|---|---|
+| "现在是什么"（约束、待办、已知的坑、当前阶段） | 白板 |
+| "这一折发生了什么"（改了什么、验证了什么、为什么这么改） | 日志 |
+
+两处都写的后果不是浪费 token，是模型读到**两份略有出入的版本**，然后按其中一份行动。
+
+这条边界靠 prompt 约束 + 人工评审守，**不做脚本闸**——措辞类判定写 `if/else` 只会把注意力换成改常量
+（本仓的既有纪律：脚本只判可机械判定的事实）。
+
+### 4.10 折叠时一次调用产出三件事
+
+折叠那次 LLM 调用同时产出：
+
+1. `description`（本折日志）
+2. `title`（短标题）
+3. **白板更新指令**（`add` / `update` / `drop` 的结构化清单）
+
+分开调用是两次付费、两次延迟，而且第二次看不到第一次的输入。
+
+失败语义（必须写死，否则实现时一定被写成"静默忽略"）：
+
+| 哪一步失败 | 行为 |
+|---|---|
+| `description` / `title` 解析不出 | 折叠失败（`summarizer_failed`）——没有日志的折叠等于没折 |
+| 白板更新指令解析不出 | **折叠照常落账**，白板保持不变，记一条 `error_event`。**不许**写空的 `note_ops`（没发生操作就不留操作记录） |
+| 某条 `add` 超过白板上限 | 该条不进，记一条 `op='drop'` 说明是被上限挡的（不是模型没提） |
+
 ---
 
 ## 5. 兼容与迁移
@@ -333,6 +381,18 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 6. **版本**：`appendFold` / `loadFolds` / `appendStage` **先做成可选**（缺失 ⇒ 退回写轮记录字段 + 发一次
    `store_folds_channel_absent` 诊断），与 #769 恢复行、#157 快路径探针的既有做法一致；
    **下一主版本**才改成必需。
+7. **宿主横幅的替代映射**（宿主今天读的四个字段都要有去处）：
+
+| 今天宿主读 | 之后读 |
+|---|---|
+| `record.foldedFacts.text`（累计替代物） | 最新一折的 `folds.description`；要累计语义就按 `seq` 自己拼 |
+| `record.foldedFacts.title` | `folds.title` |
+| `record.foldedFacts.toolCalls` | 由 `fold_round_rows` 现查（不落表） |
+| `record.foldedPayload` | §1.5 的派生查询 |
+| `record.foldedRoundRange` | `folds.from_round` / `to_round` |
+
+   `migration_folds_complete` 置 true 之后，旧字段一律为空——读旧字段的宿主会**静默拿到空横幅**，
+   所以升级指南必须把这张表抄进去，并在迁移期同时写新旧两处。
 
 ---
 
@@ -355,6 +415,13 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 12. **超预算显式失败**：`cannot_fit` 终局时 `budget_verdict` 最后一行给出 budget / measured / over_by /
     layers_tried 四个数；
 13. 内存 / 文件两种实现对同一操作序列产出逐字节相同的 `loadFolds()`。
+14. **渲染留余量**：按 0.9B 渲染；provider 报超窗 ⇒ 降一档重试**一次**（同一档重试两次即红）。
+15. **退化顺序**：把预算压到极小，断言顺序是「最新一条 description → 只给 title → 只给阶段线 →
+    `cannot_fit`」，且**任何一步都不产出"零历史"**（判据：渲染结果里至少有一条阶段线或一折 title）。
+16. **渲染不夹断**：输出里不存在半条 `description`（整条进或降一档）。
+17. **合并调用的失败语义**：白板更新指令解析失败 ⇒ 折叠照常落账、白板不变、有一条 `error_event`，
+    且 `note_ops` **零新增**。
+18. **作废**：`superseded_by` 指向的那一折不再出现在渲染里，但行还在、`seq` 还在（append-only 不破）。
 
 ---
 
