@@ -437,3 +437,21 @@ test("判据15：轮记录读不动 ⇒ appendFold 抛 FOLD_SEED_UNAVAILABLE，�
     // makeTmp 的目录由 helpers/tmp.js 负责（与其它用例同口径）
   }
 });
+
+// ─── 判据16（PR #971 终验 2）：通道写失败必须真的进 run state（序列化器不许把它丢掉）──────────
+test("判据16：storeFoldsChannelWriteFailed 进得了 run state（序列化白名单 + 解构 + 渲染三处都接上）", async () => {
+  const { createDeterministicRunState } = await import("../src/run-state.js");
+  const withoutFlag = createDeterministicRunState({ runId: "r1", rounds: 1, terminationReason: "running" });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(withoutFlag, "storeFoldsChannelWriteFailed"),
+    false,
+    "没发生过就不许出现这个键（与 guardExtension / contextWindowRecovery 同一「缺席不是歧义」口径）",
+  );
+  const withFlag = createDeterministicRunState({
+    runId: "r1",
+    rounds: 1,
+    terminationReason: "running",
+    storeFoldsChannelWriteFailed: true,
+  });
+  assert.equal(withFlag.deterministic.storeFoldsChannelWriteFailed, true, "发生过就必须出现在序列化结果里");
+});

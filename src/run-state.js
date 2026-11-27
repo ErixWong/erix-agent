@@ -376,6 +376,10 @@ export function boundRunState(state) {
       ...(deterministic.storeFoldsChannelAbsent === true
         ? { storeFoldsChannelAbsent: true }
         : {}),
+      // issue #971 终验：「宿主没实现」与「这次写不成」是两件事 ⇒ 各自一个键，同样只在发生时出现。
+      ...(deterministic.storeFoldsChannelWriteFailed === true
+        ? { storeFoldsChannelWriteFailed: true }
+        : {}),
       termination: deterministic.termination ?? { reason: "running" },
       errors: deterministic.errors ?? {},
     },
@@ -512,6 +516,7 @@ function normalizeUnpersisted(value) {
  *   guardExtensionUsed?: boolean,
  *   contextWindowRecoveryUsed?: boolean,
  *   storeFoldsChannelAbsent?: boolean,
+ *   storeFoldsChannelWriteFailed?: boolean,
  * }} [options]
  */
 export function createDeterministicRunState({
@@ -545,6 +550,7 @@ export function createDeterministicRunState({
   // 的 state.json 逐字不变），且体积兜底也不丢它——因为它是「无 listener 时诊断仍不静默」的
   // 唯一落盘面。
   storeFoldsChannelAbsent = false,
+  storeFoldsChannelWriteFailed = false,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   // 双计数器（issue #32 #8）：rounds = 会话累计身份轮号（跨 resume 单调递增）；
@@ -602,6 +608,8 @@ export function createDeterministicRunState({
       ...(contextWindowRecoveryUsed === true ? { contextWindowRecovery: { used: true } } : {}),
       // issue #971 ④：折叠通道降级同样只在真的发生过时才出现（与上面两条同一个「缺席不是歧义」口径）。
       ...(storeFoldsChannelAbsent === true ? { storeFoldsChannelAbsent: true } : {}),
+      // issue #971 终验：与上一条同族但**不是同一件事**（「宿主没实现」vs「这次写不成」）⇒ 独立键。
+      ...(storeFoldsChannelWriteFailed === true ? { storeFoldsChannelWriteFailed: true } : {}),
       termination: { reason: safeText(terminationReason, 48) || "running" },
       errors: {
         tool: safeInteger(toolErrorCount),
