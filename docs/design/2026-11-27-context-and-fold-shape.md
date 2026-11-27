@@ -80,7 +80,7 @@
 | `context_recovery_used` | boolean | not null default false | **防重复**：上下文超窗恢复额度已经领过 |
 | `store_folds_channel_absent` | boolean | not null default false | **降级事实**：store 没实现折叠通道（`appendFold` / `loadFolds`） |
 | `store_folds_channel_write_failed` | boolean | not null default false | **降级事实**：这次折叠写不成（与上一条不是同一件事：「宿主没实现」vs「写失败」） |
-| `max_rounds` | int | | 本次运行的轮数预算（输入配置） |
+| `max_rounds` | int | 可空 | 本次运行的轮数预算（输入配置）。**`NULL` = 无上限** |
 | `verification_status` | text | 可空 | **验证结论**：`verified` / `unverified` / `skipped` / `error`。**不可派生**——guard 真的跑过才有这个值 |
 | `verification_reason` | text | 可空 | `deliverables_failed` / `machine_only` / guard 给的 reason |
 | `board` | text | | **白板：一整块现状文本**（≤1500 token），整块覆盖写。不是表——渲染时整块拼进上下文，没有按条目查询的读者（§1.7） |
@@ -131,9 +131,9 @@
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` | text | **PK₁**, FK→runs | 会话归属 |
-| `round_no` | int | **PK₂** | ≥ 0；`0` 是 seed |
-| `provider_stop_reason` | text | | **provider 给的结束原因**：`tool_use` / `end_turn` / `max_tokens`。**不是「本轮为什么停」**——那是 `runs.termination_reason`。实测 906 轮只有前两个值，且与「本轮有没有工具调用」完全相关；`max_tokens` 是续写门的输入（读的是内存里的 response，不是这一列） |
-| `usage` | jsonb | | 本轮**累计**用量（截断续写时是多次之和） |
+| `round_no` | int | **PK₂**, CHECK `>= 0` | `0` 是 seed |
+| `provider_stop_reason` | text | 可空 | **provider 给的结束原因**：`tool_use` / `end_turn` / `max_tokens`。**不是「本轮为什么停」**——那是 `runs.termination_reason`。实测 906 轮只有前两个值，且与「本轮有没有工具调用」完全相关；`max_tokens` 是续写门的输入（读的是内存里的 response，不是这一列）。**`NULL` = provider 没给（不知道）**——不填默认值，假值比空值坏 |
+| `usage` | jsonb | 可空 | 本轮**累计**用量（截断续写时是多次之和）。**`NULL` = 拿不到**，不填 0 |
 | `response_usage` | jsonb | | **最后一发的原始 provider usage**。实测 25 轮里 13 轮与 `usage` 完全相等、12 轮只差 `reasoningTokens`——它不是「另一个事实」，是 `usage` 的桶里没有的 provider 特有字段（`bin/reasoning-effort.js` 读它做推理强度校准） |
 | `engine_usage` | jsonb | 可空 | **本轮引擎自发起的调用**（round judge / 收尾归一化 / 折叠摘要）的用量。缺键 = 本轮没有这类调用。`usage` 只装主模型桶——只留 `usage` 会把引擎用量藏进主账 |
 | `wrapup` | jsonb | | 收尾那一次的结构化产物（**真状态**：模型输出的规范化结果，不可重算）。只有最后一轮有值 |
@@ -281,7 +281,7 @@ msg_seq=3  tool       [tool_result(tu_3)]
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
-| `run_id` / `seq` | text / bigint | **PK(run_id, seq)** | `seq` = 会话内严格递增折叠序 |
+| `run_id` / `seq` | text / bigint | **PK(run_id, seq)**, CHECK `seq >= 1` | 会话内严格递增折叠序 |
 | `cut_round` / `cut_msg_seq` | int | not null | **切点**：这一折吃掉了「≤ 此切点」的全部消息 |
 | `title` | text | 可空，≤ 60 | **模型写的短标题**。模型没给就是 `NULL`——**不许用正文首行顶替**（见 §3.4 ①）。`NULL` 本身就是标记：渲染时这种折不进「遥远的回忆」层 |
 | `description` | text | not null | **模型写的三节**（行动 / 遗留 / 关键词），约 400 token |
@@ -410,7 +410,7 @@ SELECT seq, title FROM folds WHERE run_id = ? ORDER BY seq;
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` | text | **PK₁** | 会话归属 |
-| `key` | text | **PK₂** | 稳定标识：≤24 字符，`[a-z0-9-]`。**不是标题**——改标题不该换笔记 |
+| `key` | text | **PK₂**, CHECK `~ '^[a-z0-9-]{1,24}$'` | 稳定标识。**不是标题**——改标题不该换笔记 |
 | `title` | text | not null, ≤60 | 目录显示的那一行。写侧上限 = 显示上限，否则模型写的后半截永远看不到 |
 | `content` | text | not null, ≤4000 | 正文 |
 | `state` | text | not null | `active` / `revoked` |
