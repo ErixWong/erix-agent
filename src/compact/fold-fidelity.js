@@ -1,11 +1,10 @@
-// 折叠摘要的机械保真层（#10 锚点索引 + #11 用户最新未解决输入 / 反向信号）。
+// 折叠摘要的机械保真层（用户最新未解决输入 / 反向信号）。
 //
 // 这一层的内容全部由引擎机械抽取，不经 LLM 改写。issue #873 修复①起它被拼在尺寸截断
 // **之前**（`src/compact/fold-llm.js` 的 `appendFoldFidelity` → `enforceSummarySize`），整份摘要
 // 一起受 `summaryBudget` 约束——预算紧时本节会被修剪到只剩标题，而不是像旧顺序那样躲在
 // 预算外。来源是 foldedPayload 的原文——被折轮次里已经离开上下文的那部分。
 
-import { extractAnchors } from "./anchors.js";
 import { isRealUser } from "./helpers.js";
 
 export const USER_INPUT_SECTION_HEADING = "## 用户最新未解决输入（逐字引用，未经 LLM 改写）";
@@ -180,11 +179,9 @@ function userInputSection(quote, warningLine) {
  * (before the size enforcement — issue #873 fix ①).
  *
  * @param {object[]} foldedPayload Raw folded messages (before summarization).
- * @param {{anchors?: false | {maxPerKind?: number, maxChars?: number}}} [options]
- *   `anchors: false` 时跳过锚点节（其余保真层不变，向后兼容 0.7.0 关闭形态）。
  * @returns {string|undefined} `undefined` when nothing was extracted (no empty sections).
  */
-export function buildFoldFidelitySection(foldedPayload, options = {}) {
+export function buildFoldFidelitySection(foldedPayload) {
   const sections = [];
   const latestUserInput = extractLatestUserInput(foldedPayload);
   const reverseSignals = detectReverseSignals(foldedPayload);
@@ -194,14 +191,6 @@ export function buildFoldFidelitySection(foldedPayload, options = {}) {
       ? undefined
       : reverseSignalWarningLine(reverseSignals);
     sections.push(userInputSection(latestUserInput, warningLine).join("\n"));
-  }
-
-  if (options?.anchors !== false) {
-    const anchorOptions = options?.anchors && typeof options.anchors === "object"
-      ? options.anchors
-      : {};
-    const anchors = extractAnchors(foldedPayload, anchorOptions);
-    if (anchors.text !== "") sections.push(anchors.text);
   }
 
   return sections.length === 0 ? undefined : sections.join("\n\n");
