@@ -4358,12 +4358,14 @@ export async function runToolLoop(options) {
       const strategy = strategyRequestsCompaction
         ? configuredStrategy
         : createSlidingWindowStrategy();
-      // issue #464 A：旧兜底诊断曾钉「`context.strategy` 未配置而预算兜底触发⇒库层 `sliding-window`」；
-      // issue #261127-12 起该诊断已删（策略永不为空）。预算兜底仍走 `sliding-window`（折到够用就停 +
-      // 把机械摘要 prepend 进 head），可观测面改由 `degradeReason = "budget_fallback_mechanical"` 承担。
-      // issue #261127-12：`compaction_strategy_fallback` 诊断（#464 A）已删——它讲的是「没配
-      // 策略⇒引擎退回 sliding-window」，那个情形随名字形态删除后**不再存在**（策略永不为空）。
-      // 预算兑底仍可观测——不是这条诊断，而是折叠定稿处的 `degradeReason = "budget_fallback_mechanical"`。
+      // issue #464 A 的 `compaction_strategy_fallback` 事件**没有删**，只是**收窄到剩下的那个真情形**：
+      // 「策略说这一轮不用折（`shouldCompact` 为假）、但 `overBudget` 成立 ⇒ 引擎直接交给自己的
+      // `sliding-window`，而它真折了轮」。旧条件里「`context.strategy` 未配置」那一半随名字形态删除
+      // 后不再存在（策略永不为空）。
+      // 另一个「机械兜底真折了」的情形——策略折了、预算仍超、预算兜底又折——**不走这个事件**：
+      // 它由 `compaction.strategyName`（报真正干活的那个策略名）与
+      // `foldedFacts.degradeReason = "budget_fallback_mechanical"` 报告。两条可观测面互不重叠，
+      // 契约里逐条写明（issue #261127-12）。
       // issue #608：**工作集**（最近 `WORKING_SET_RECENT_ROUNDS` 个带 `tool_result` 的轮次里的
       // tool_result 总量）。现算、不留新状态：折叠决策要的就是「模型当下手里有多少原文」。
       // 口径与 `estimatedTokens` 同一把尺子（`estimateMessageTokens`）。
