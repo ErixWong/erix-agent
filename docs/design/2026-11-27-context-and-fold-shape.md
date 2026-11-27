@@ -33,8 +33,8 @@
 ## 1. 表
 
 > **表的划分依据是读者集合，不是数据的相似性。** 两张表该不该合并，看"谁读它"：
-> `messages` 的读者是渲染 / 折叠 / token 估算 / resume；`tool_executions` 的读者只有 resume。
-> 读者集合不相交就不合表——合表等于让 4 个读者替 1 个读者的需求买单（每个都要带白名单），
+> `messages` 的读者是渲染 / 折叠 / token 估算 / resume；`notes` 的读者是渲染（白板）、note 工具与恢复。
+> 读者集合不相交就不合表——合表等于让多个读者替一个读者的需求买单（每个都要带白名单），
 > 而 `messages` 会重新长成 tag-union。
 >
 > 反过来说：如果一条事实**只有**某一类读者，它就该独立成表，哪怕每行只有 3 列。
@@ -75,6 +75,7 @@
 | `state` | jsonb | | run-state 载荷（预算 / 工具统计 / 折叠计数 / 终止原因） |
 | `state_schema_version` | int | not null | 格式代次 |
 | `state_epoch` | int | not null | **「状态块注入过几次」的计数**，用来判派生缓存（`semantic` 小抄目录）是否过期。不是版本号：只在注入轮 +1，失败收尾那次会用同一个号重写 |
+| `termination_detail` | jsonb | | 为什么死、差多少：`{reason, budget_tokens, measured_tokens, over_by, layers_tried}`。每次 run 只死一次 ⇒ 一列，不是一张表 |
 | `created_at` / `updated_at` | timestamptz | not null | |
 
 `state_epoch` 这个名字是有意的：`stateVersion` 会被所有人读成"版本号"，而它数的只是注入次数。
@@ -135,7 +136,6 @@
 | 轮内消息 | `msg_seq` |
 | 跨轮 | `round_no` |
 | 折叠之间 | `folds.seq`（§1.4） |
-| 执行证据之间 | 不需要排序（PK 就是 `tool_use_id`） |
 
 全局 `seq` 是**单文件 JSONL 的产物**（一个文件里没有类型，只有行序）。拆成表之后，行序由自然键承担，
 `ts` 只作记录、不作顺序依据（墙钟会回拨，同一毫秒还可能有多条）。
@@ -182,7 +182,7 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` / `seq` | text / bigint | **PK(run_id, seq)** | `seq` = 会话内严格递增折叠序 |
-| `from_round` / `to_round` | int | not null | 本折吃掉的轮区间 |
+| `cut_round` / `cut_msg_seq` | int | not null | **切点**：这一折吃掉了「≤ 此切点」的全部消息 |
 | `prior_seq` | bigint | FK→folds(run_id, seq)，可空 | 续写基底 = 上一折。**用外键，不用哈希** |
 | `title` | text | not null | **模型写的短标题**，≤ 60 字符 |
 | `title_src` | text | not null | `model` / `first_line`（回退，见 §3.4 ①） |
@@ -195,37 +195,31 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行** |
 | `created_at` | timestamptz | not null | |
 
-**折叠的身份是三元组** `(from_round, to_round, prior_seq)`：同一区间先后两次折（恢复前 `prior_seq=NULL`、
+**折叠的身份是三元组** `(cut_round, cut_msg_seq, prior_seq)`：切到同一个点先后两次折（恢复前 `prior_seq=NULL`、
 恢复后 `prior_seq=3`）是**两次折叠**，不是一次。哈希身份是为"没有行 id 的存储"发明的，有了主键就没有理由。
 
 **没有 `stage_no`**：分组是渲染时现算的（§1.6），不在行上。
 
 **没有 `text`（累计体）**：累计体每折被重写一次，同一段内容会被压缩两遍、三遍（§5 有实测）。
 
-### 1.5 `fold_exclusions` —— 区间内的例外（**不记成员**）
+### 1.5 折叠的成员是**推导的**，不建表
 
-第二版为"这一折吃掉了哪些行"专门记了一张成员表，理由是 `(run_id, round)` 不唯一——同一轮在
-崩溃重跑 / restore / 重折之后可能有多代行。**拆成 `rounds` + `messages` 之后这个问题消失了**：
-消息的主键是 `(run_id, round_no, msg_seq)`，一条消息只有一行，不存在"第几代"。
-
-所以折叠的成员是**可推导的**：区间内的全部消息，减去例外。
-
-| 列 | 约束 |
-|---|---|
-| `fold_run_id`, `fold_seq` | FK → `folds(run_id, seq)`，**PK₁₂** |
-| `run_id`, `round_no`, `msg_seq` | FK → `messages`，**PK₃₄₅** |
-| `reason` | `clamped` / `safety_removed`（`deduped` 随"不存副本"一起消失） |
-
-**原文一条都不复制。** 「被折走的原文」是派生查询：
+折叠永远从最老的往前吃一段**前缀**，所以只需要一个**切点**，不需要成员表，也不需要例外表：
 
 ```sql
-SELECT m.* FROM messages m
- WHERE m.run_id = ?
-   AND m.round_no BETWEEN ? AND ?
-   AND NOT EXISTS (SELECT 1 FROM fold_exclusions e
-                    WHERE e.fold_seq = ? AND e.run_id = m.run_id
-                      AND e.round_no = m.round_no AND e.msg_seq = m.msg_seq);
+-- 这一折吃掉了什么：所有 (round_no, msg_seq) ≤ 切点的消息
+SELECT * FROM messages
+ WHERE run_id = ?
+   AND (round_no, msg_seq) <= (?, ?);
 ```
+
+| 为什么不需要例外 | |
+|---|---|
+| 折叠之后才追加到已折轮里的消息 | 它的 `(round_no, msg_seq)` **天然 > 切点** ⇒ 自动不算被折 |
+| 被安全层删掉的消息 | 那属于"离开上下文"的另一个问题，不是"被折走" |
+| 字节上限夹断 | 那是 `description` 自己的预算（§3），与成员无关 |
+
+**原文一条都不复制**：被折走的正文只在 `messages` 里存一份。
 
 实测依据：一份真机归档里，被归档的副本 940,278 字节，而它拷贝的那些行自己合计 941,379 字节
 ——**差 0.1%，等于纯冗余**。
@@ -280,58 +274,21 @@ SELECT seq, title FROM folds
 **准入判据**：不记住的后果必须是一次**可观测的失败**（重复劳动 / 违反约束 / 重跑已失败的路）。
 写不出这个后果的条目，说明它只是"看起来重要"。
 
-### 1.8 `budget_verdict` —— 装不下的证据
-
-「超预算就显式失败」只有在**说清差多少**时才成立。
-
-| 列 | 类型 | 说明 |
-|---|---|---|
-| `run_id` / `round` / `check_idx` | text / int / int | **PK** |
-| `source` | text | `estimate`（引擎本地数）/ `provider`（真实 tokenizer 报超窗） |
-| `fold_seq` | bigint | 哪一折之后数的，可空 |
-| `budget_tokens` / `measured_tokens` | bigint | not null |
-| `over_by` | bigint | 生成列：`greatest(measured - budget, 0)` |
-| `layers_tried` | jsonb | 按尝试顺序：`["ttl","aggregate","stub"]` |
-| `outcome` | text | `ok` / `degraded` / `failed` |
-| `ts` | timestamptz | |
-
-### 1.9 `tool_executions` —— 执行证据（写点在执行**之前**）
-
-| 列 | 约束 | 说明 |
-|---|---|---|
-| `run_id`, `tool_use_id` | **PK** | 一个 `tool_use` 最多一行（重放幂等） |
-| `round_no` | FK→rounds | |
-| `started_at` | timestamptz not null | **开始执行**的时刻 |
-
-**写点必须在执行之前**，这是这张表全部的价值所在：
-
-| 写点 | 覆盖什么 | 覆盖不到什么 |
-|---|---|---|
-| **执行前**（本形状） | 执行到一半崩溃（副作用可能已部分发生）+ 执行完但结果没写成 | — |
-| 执行后（今天的代码） | 只覆盖“执行完、结果没写成” | **执行期间崩溃**——而长跑工具（`npm test` / `deploy.sh`）的崩溃窗口就是整段执行时长 |
-
-为什么宁可早写——**代价不对称**：
-
-- 误判“跑过”（其实没跑）⇒ 跳过这次调用、补一条“结果未知”的桩 ⇒ 任务停住，**看得见**；
-- 误判“没跑”（其实跑了）⇒ 重跑 ⇒ 副作用重复（又发一次请求 / 又改一次数据库），**可能静默损坏**。
-
-**它只回答“开始了没有”，不回答“结果是什么”**：结果在 `messages` 的 `tool_result` 里。
-两处都有 ⇒ 正常；只有证据没有结果 ⇒ 执行过但结果丢了，补桩（`caller='settle'`）。
-
-**它是唯一允许裁剪的表**：`tool_result` 落账之后，这条记录的事实可从消息推出 ⇒ 裁掉的是可推导的行，
-不是账。
-
-### 1.10 关系总图
+### 1.8 关系总图
 
 ```
-runs 1─┬─N rounds ──── N messages（消息是最小单位，每轮内按 msg_seq 排）
-       ├─N folds ───────────┐
-       │                    └─ fold_exclusions（区间内的例外，成员可推导）
-       ├─N tool_executions
-       ├─N budget_verdict
+runs 1─┬─N rounds ──── N messages（最小单位，轮内按 msg_seq 排）
+       │                     ↑
+       │            切点 (cut_round, cut_msg_seq)：折走的就是「≤ 切点」那一段
+       ├─N folds ───────────┘   （成员是查询出来的，不建成员表）
+       │    └─ N:1 folds（prior_seq = 续写基底）
        └─N notes 1─N note_history
                 └─N note_ops
 ```
+
+**五张表**：`runs` / `rounds` / `messages` / `folds` / `notes`。
+没有 `fold_exclusions`（切点推导）、没有 `tool_executions`（恢复不猜状态）、没有 `budget_verdict`
+（`runs.termination_detail` 一列）、没有 `stages` / `segments` / `vector`（都是渲染时算的）。
 
 ---
 
@@ -345,7 +302,7 @@ runs 1─┬─N rounds ──── N messages（消息是最小单位，每轮
 | 实际喂给模型的那串字节 | **请求事实**。今天字段名有两个，别混：`foldedSummary.text` 是折叠后**整条消息**的投影（含原任务正文与安全层插的 `[已修剪]`）；`foldedSummary.fedSummaryText` 才是「写侧当场证得的那一块」逐字副本 | 留在**该轮的记录**上，不从 `folds` 派生 |
 | `requestStateBlock` | 会话状态块的渲染 | run-state |
 | **judge 决策**（done / confidence / reason / evidence / direction） | **控制流证据**，不进上下文、不参与渲染 | **外部账**：`judge.log`，按 `runId` join。形状只收它**注入的那条消息**（`caller='judge'`） |
-| `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的区间 + 例外查询），不落正文 |
+| `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的切点查询），不落正文 |
 | `compactionStats[].foldSummary` | 指标 | 诊断面，只放信号 |
 
 **写点后移**：喂给模型的那串字节要在**请求组装处**（所有压缩层定稿之后）写。于是它记的就是"模型真正
@@ -492,7 +449,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 增量日志 + 白板漏记 = 那条信息永久离开上下文，而账本上看不出异常（折叠本身没错）。所以需要一道闸门，
 但**只取机械可判的那一半**：
 
-> 区间内存在**没有 `tool_result` 的 `tool_use`** ⇒ 拒绝折。
+> 本折切点之前存在**没有 `tool_result` 的 `tool_use`** ⇒ 拒绝折。
 
 "白板有没有对应条目"**不做闸**（无法机械判定）——改为折叠 prompt 强制产出"本折遗留事项"清单，
 与白板的差异记进 `note_ops`，供人复核。
@@ -509,7 +466,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 
 ## 4. 形状的不变量
 
-这十一条是"形状对不对"的判据，不是测试用例：
+这十二条是"形状对不对"的判据，不是测试用例：
 
 1. **原文不复制**：被折走的正文只在 `messages` 里存一份。
 2. **旧日志不重写**：每次折叠只追加一行，历史行永不被改写。
@@ -518,10 +475,11 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 5. **永远不出现"零历史"**：至少一条分组行。
 6. **机械填的节不许模型写**：`## 意图` 逐字等于 `intent` 的渲染结果；`## 提交` 的 sha 来自工具结果。
 7. **每一折可单独编码**：拎出 `title` + `description` + `(run_id, seq)` 就够，不依赖同一会话的其它行。
-8. **装不下要说清**：失败时 `budget_verdict` 给出 budget / measured / over_by / layers_tried。
+8. **装不下要说清**：失败时 `runs.termination_detail` 给出 budget / measured / over_by / layers_tried。
 9. **一条信息只住一处**：现状→白板，历史→日志，细节→账本，常量→项目指令；**机械内容各自成列**，不混进 `description`。
 10. **轮行先建后收口**：`open` → 消息落盘 → `closed`。消息的外键永远有主，崩溃形状是 `status='open'`，不是行缺失。
 11. **顺序靠自然键**：轮内 `msg_seq`，跨轮 `round_no`，折叠 `folds.seq`。没有全局序号，`ts` 不作顺序依据。
+12. **恢复不猜状态**：未结清的工具调用，恢复时不自动重跑，只补一条"状态未知"的桩，判断交给模型。
 
 ---
 
@@ -559,6 +517,10 @@ description 放下**——梯度降级在这个规模上用不到，它是给 10
 - **不要求存储提供自增 / 序列**：序号由写入方（引擎）分配、账本只播种（§1.3）。形状只要求
   "能按自然键排序"。
 - **不把 `content` 拆到块一级**：原子单位是**消息**。
+- **不记录"工具执行过"的证据**：引擎能确定的只有两种——有 `tool_result`（跑过）/ 没有（**不知道**）。
+  "不知道"如实告诉模型（补一条状态未知的桩），由它去查实际状态再决定要不要重来。
+  为省一轮而记一行证据，等于为少见事件付每次工具调用的成本；而且猜错的方向都是坏的
+  （猜"没跑"⇒重跑⇒副作用重复；猜"跑过"⇒撒谎⇒模型以为文件写好了）。
 - **不做"无限保留历史原文"**：原文在账本里，上下文只放骨架。
 - **不给白板加时间维度**：退场靠状态（done / 被推翻 / 被证伪），不靠"多久没用到"。
 - **不在 `folds` 里存向量**：会话内它永远不会触发——200k 窗口下 10 折（约 6000 轮）全部能按完整
