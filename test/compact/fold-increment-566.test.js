@@ -121,7 +121,7 @@ async function runFoldLlmChain({
     maxRounds: 20,
     completion: false,
     reflection: false,
-    config: { folding: { context: { budgetTokens, keepRounds: 0, strategy: "fold-llm", ...(maxSummaryTokens !== undefined ? { maxSummaryTokens } : {}) } } },
+    config: { folding: { context: { budgetTokens, keepRounds: 0, ...(maxSummaryTokens !== undefined ? { maxSummaryTokens } : {}) } } },
     store,
     runId,
     seed: `start ${"y".repeat(seedBytes)}`,

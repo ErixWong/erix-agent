@@ -1,12 +1,13 @@
-// issue #464 A：库层折叠兜底的可观测性。
+// issue #464 A → #261127-12：库层折叠兑底的可观测性。
 //
-// 背景（票面事实，已复核）：`context.strategy` 未配置时，引擎库层在「超预算兜底」那一格直接
-// `createSlidingWindowStrategy()`（`src/loop/orchestrator.js` 折叠入口），而该策略整轮丢头部、
-// 既不调 `formatFoldSummary` 也不调 `extractAnchors` ⇒ 宿主侧看到 `compaction` 事件却看不出
-// 「跑的是兜底策略、什么替代物都没留」。本文件锁住补齐后的两件事：
-//   ① `compaction` 统计带 `strategyName`（写**实际执行者**，含兜底的 "sliding-window"）；
-//   ② 未配置策略且兜底真的发生时，一次性 `compaction_strategy_fallback` 诊断事件。
-// 判据形状对齐 issue #182 的 `model_metadata_missing`：恰好一条、detail 首句固定原文可断言。
+// 旧设计下 `context.strategy` 未配置时引擎根本不折叠，超预算那一格直接跑库层
+// `createSlidingWindowStrategy()`，并发一条一次性 `compaction_strategy_fallback` 诊断。
+// issue #261127-12 删了策略名字形态后，折叠策略**永不为空**（缺省即引擎内置 fold-llm）：
+//   · 「没配策略⇒不折」⇒ 现在缺省就折（LLM 摘要），那条诊断随情形消失而删除；
+//   · `compaction` 统计仍带 `strategyName`（写实际执行者，预算兑底那一发仍是 "sliding-window"）。
+// 于是本文件把「一次性兑底诊断」的断言改写为反向锁：无论配不配策略，`compaction_strategy_fallback`
+// 都不得再出现（`notices.length === 0`）；预算兑底本身由 `strategyName === "sliding-window"` /
+// `degradeReason === "budget_fallback_mechanical"` 钉住。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -24,11 +25,8 @@ import { FOLDED_FACTS_RECORD_FIELD } from "../src/compact/fold-summary-journal.j
 
 const EVENT_TYPE = "compaction_strategy_fallback";
 // detail 首句是 issue #464 A 约定的固定原文（宿主可直接断言），预算之后才追加真值。
-// issue #643：兜底的行为变了（折到够用就停 + 把机械摘要 prepend 进 head），首句跟着改——
-// 旧句「drops whole head rounds without summary or anchors」已经不是事实（那正是本单修的病）。
-const DETAIL_PREFIX = 'engine compaction fallback in effect: context.strategy is not configured, '
-  + 'the library default "sliding-window" strategy folds only the oldest rounds needed '
-  + 'to fit the budget and prepends a mechanical summary';
+// issue #261127-12：该诊断已删（策略永不为空）——`notices.length === 0` 断言因此变成反向锁：
+// 这个事件类型再也不得出现。原先可断言的 `DETAIL_PREFIX` 固定原文随诊断一并删除。
 
 /** rounds 轮工具调用 + 一轮收尾文本；工具输出足够肥，稳定越过 budgetTokens。 */
 function toolProvider(rounds) {
@@ -228,7 +226,7 @@ async function runFoldLlmChain({
     },
     config: {
       run: { maxRounds: 20, completion: false, reflection: false },
-      folding: { context: { budgetTokens, keepRounds, foldAtRatio, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens, keepRounds, foldAtRatio } },
     },
     store,
     runId,

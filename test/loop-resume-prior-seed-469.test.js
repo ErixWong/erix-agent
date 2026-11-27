@@ -141,7 +141,7 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
     maxRounds: 14,
-    config: { folding: { context: { budgetTokens: 1200, keepRounds: 0, strategy: "fold-llm" } }, run: { completion: false } },
+    config: { folding: { context: { budgetTokens: 1200, keepRounds: 0 } }, run: { completion: false } },
     store,
     runId,
   });
@@ -164,7 +164,7 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
       // #530：`reflection` 也退役了扁平写法（家 `config.run.reflection`），同样并进这棵 `run` 子树。
       run: { resume: true, runId, maxRounds: 6, completion: false, reflection: false },
       metadata: { task: "继续" },
-      folding: { context: { budgetTokens: 1200, keepRounds: 1, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens: 1200, keepRounds: 1 } },
     },
   });
 

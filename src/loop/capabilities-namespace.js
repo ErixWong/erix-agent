@@ -431,13 +431,13 @@ const CAPABILITIES_GROUP_VALIDATORS = Object.freeze({
     }
     // `strategy`: an object is passed through verbatim to `resolveCompactionStrategy`
     // (`src/compact/strategy-resolution.js`), after which the engine unconditionally calls
-    // `shouldCompact(messages, budgetTokens)` and `compact(messages, options)`. A built-in **name**
-    // (`"sliding-window"`, …) is data and therefore not a port value — its home is
-    // `config.folding.context.strategy` / the flat `context.strategy`.
+    // `shouldCompact(messages, budgetTokens)` and `compact(messages, options)`. issue #261127-12:
+    // the strategy **name** form was removed everywhere — a strategy is an object, and a name string
+    // is rejected here AND at `config.folding.context.strategy` (there is no name slot left to route to).
     if (typeof value === "string") {
       return [
-        `${path} must be a compaction strategy object, not a built-in name`
-        + " (a built-in name is data: pass it as config.folding.context.strategy or the flat context.strategy)",
+        `${path} must be a compaction strategy object, not a strategy name`
+        + " (the name form was removed in #261127-12: strategies are objects; pass a strategy object)",
       ];
     }
     if (!isPlainObject(value)) {

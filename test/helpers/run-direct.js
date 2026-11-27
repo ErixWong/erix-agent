@@ -42,7 +42,6 @@
 // 零真实 LLM、不写盘、不碰 `~/.erix`：夹具只做对象合并，run 的隔离仍由调用方负责。
 
 import { runToolLoop } from "../../src/loop/orchestrator.js";
-import { createSlidingWindowStrategy } from "../../src/compact/sliding-window.js";
 
 /**
  * 把「种子首轮消息」并进唯一的 `config` 容器，返回**可以直接喂给 `runToolLoop`** 的选项对象。
@@ -278,26 +277,19 @@ function withInputFamily(options) {
 }
 
 /**
- * #898-2：折叠恒由 LLM/策略驱动后，「无策略 ⇒ 不折叠」让一批**只想验证折叠会发生**
- * （不关心用哪个策略）的格子失去隐式默认。这里为「配了折叠预算、但既未给 ports.strategy
- * 也未给 config 策略名」的 run **隐式注入一个机械策略**（`createSlidingWindowStrategy()`），
- * 把旧引擎库层默认的那层兑底搬到夹具层，语义与基线一致。刻意测「无策略 ⇒ 不折」的格子传
- * `implicitStrategy: false` 退出。策略对象的 canonical 家是 `capabilities.ports.strategy`。
+ * issue #261127-12：折叠策略**永不为空**——宿主没给对象时，引擎自己注入内置 fold-llm
+ * （`resolveCompactionStrategy(undefined)` 展 `foldLlmOptions`，绑定 run 的 provider summarizer）。
+ * 旧引擎「没配策略 ⇒ 不折」时，本夹具替「只想验证折叠会发生」的格子隐式注入一个机械
+ * `createSlidingWindowStrategy()` 兜底；那条退路已随名字形态一并删除，夹具不再注入，
+ * 「没配策略」一律落到引擎默认 fold-llm（语义与宿主显式写 fold-llm 逐字一致）。
+ * 仍保留 `implicitStrategy` 形参（`false` 与缺省同义：都不注入），既有调用点零改动。
  *
  * @param {Record<string, any>} options
  * @returns {Record<string, any>}
  */
 function injectImplicitStrategy(options) {
-  const { implicitStrategy = true, ...rest } = options;
-  if (implicitStrategy === false) return rest;
-  const ctx = rest.config && rest.config.folding && rest.config.folding.context;
-  if (!ctx || ctx.budgetTokens === undefined) return rest;
-  const hasStrategy = (rest.capabilities && rest.capabilities.ports && rest.capabilities.ports.strategy !== undefined)
-    || ctx.strategy !== undefined;
-  if (hasStrategy) return rest;
-  const caps = rest.capabilities ?? {};
-  const ports = caps.ports ?? {};
-  return { ...rest, capabilities: { ...caps, ports: { ...ports, strategy: createSlidingWindowStrategy() } } };
+  const { implicitStrategy: _implicitStrategy, ...rest } = options;
+  return rest;
 }
 
 export function withSeed(options = {}) {

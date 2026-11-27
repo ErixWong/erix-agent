@@ -154,7 +154,6 @@ test("#470-3 下界锁（issue #661 反转）：summarizer 必然失败 ⇒ run 
   const failure = await runToolLoop(withSeed(runOptions("470-degrade", store, provider, {
     budgetTokens: 1050,
     keepRounds: 0,
-    strategy: "fold-llm",
   }, { maxRounds: 10 }))).then(
     () => assert.fail("摘要器失败必须让 run 以 failed 终局"),
     (error) => error,

@@ -122,7 +122,7 @@ export function pickCoveringFoldSummary(records, foldedThrough) {
  * ① `record.foldedSummary` 事实行（`pickCoveringFoldSummary`）—— 模型当时真的在上下文里见过它，
  *    裁正文后回填它，续跑形状与崩溃前**逐字一致** ⇒ 有它就用它，行为与今天一字不变。
  * ② `record.foldedFacts`（#470-B 投影到轮记录的**策略替代物**）—— 机械摘要 / 宿主注入文本。
- *    这条路（`context.strategy = "sliding-window"` 尤其）永远不 prepend 进消息流 ⇒
+ *    这条路（宿主注入的机械策略，如 sliding-window 对象）永远不 prepend 进消息流 ⇒
  *    **永远写不出** ①，守卫的等待条件对它逻辑上不可能满足 ⇒ 只落账不给裁用，
  *    不调 LLM 摘要器的宿主每次续跑仍从第 1 轮重折。这里接受它，裁的判据（覆盖水位线）
  *    一条不放宽，只放宽「替代物从哪来」。

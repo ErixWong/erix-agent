@@ -79,7 +79,7 @@ function runFolding(provider, context, extra = {}) {
     completion: false,
     wrapup: false,
     config: {
-      folding: { context: { budgetTokens: 1500, keepRounds: 0, strategy: "fold-llm", ...context } },
+      folding: { context: { budgetTokens: 1500, keepRounds: 0, ...context } },
       ...(tuning === undefined ? {} : { tuning }),
     },
     store: createMemoryTranscriptStore(),
@@ -103,7 +103,7 @@ test("#469-B1 装配期：未知 context 子键报错（不再静默丢弃，#33
   // issue #493：强校验只对**旋钮家族**的拼错生效（`summar*` / `maxPriorSummary*`）。
   for (const key of ["maxPriorSummaryByte", "summarizerTimeouts", "summarizeBudgetMs", "maxSummarizerInputByte"]) {
     assert.throws(
-      () => assembleWithContext({ strategy: "fold-llm", [key]: 1024 }),
+      () => assembleWithContext({ [key]: 1024 }),
       (error) => {
         assert.ok(error instanceof TypeError);
         assert.match(error.message, /unknown assembly policy context option/u);
@@ -114,7 +114,6 @@ test("#469-B1 装配期：未知 context 子键报错（不再静默丢弃，#33
   }
   // 已知键（含四个新旋钮与既有键）放行。
   assert.doesNotThrow(() => assembleWithContext({
-    strategy: "fold-llm",
     budgetTokens: 8000,
     keepRounds: 2,
     maxFoldedFactsBytes: 512,
@@ -136,7 +135,7 @@ test("#469-B1 装配期：四个键的非法值一律 TypeError，文案照既�
   for (const key of keys) {
     for (const value of [0, -1, 1.5, "30000", null]) {
       assert.throws(
-        () => assembleWithContext({ strategy: "fold-llm", [key]: value }),
+        () => assembleWithContext({ [key]: value }),
         (error) => {
           assert.ok(error instanceof TypeError, `${key}=${String(value)} 必须是 TypeError`);
           assert.match(error.message, new RegExp(`${key} must be a positive integer`, "u"));
@@ -250,7 +249,6 @@ test("#493 业务元数据键不再被打成 TypeError：toolContext/expert/user
     policy: {
       context: {
         budgetTokens: 8000,
-        strategy: "fold-llm",
         // 引擎自己在 budget.js 里读的五个键（白名单漏列过一次，导致装配期直接 TypeError）。
         toolContext: { repo: "demo" },
         expert: "backend",
@@ -271,7 +269,7 @@ test("#493 业务元数据键不再被打成 TypeError：toolContext/expert/user
 test("#493 maxSummaryTokens 也是 context 旋钮：非法值装配期抛，传了就同时约束摘要预算与那一发的 maxTokens", async () => {
   for (const value of [0, -1, 1.5, "1400", null]) {
     assert.throws(
-      () => assembleWithContext({ strategy: "fold-llm", maxSummaryTokens: value }),
+      () => assembleWithContext({ maxSummaryTokens: value }),
       (error) => error instanceof TypeError
         && /maxSummaryTokens must be a positive integer/u.test(error.message),
     );
@@ -315,7 +313,7 @@ test("#493 家族判定只认「旋钮名手滑」：summaryStyle / summarizerNo
   // 上游现场实测过：旧的 /summar/i 判据把它们判成旋钮 ⇒ 等于悄悄立了「context 里不许有含 summar 的键」。
   for (const key of ["summaryStyle", "summarizerNote", "summary", "summarizationMode"]) {
     assert.equal(isSummarizerKnobKey(key), false, `${key} 不该被当成旋钮`);
-    assert.doesNotThrow(() => assembleWithContext({ strategy: "fold-llm", [key]: "x" }));
+    assert.doesNotThrow(() => assembleWithContext({ [key]: "x" }));
   }
   // 真正的手滑仍必须被认出。
   for (const key of ["maxPriorSummaryByte", "summarizerTimeouts", "summarizeBudgetMs", "maxSummarizerInputByte"]) {
@@ -324,5 +322,5 @@ test("#493 家族判定只认「旋钮名手滑」：summaryStyle / summarizerNo
 });
 
 test("#493 maxSummaryTokens 在装配口真的可用：给对值不再被当成未知键", () => {
-  assert.doesNotThrow(() => assembleWithContext({ strategy: "fold-llm", maxSummaryTokens: 900 }));
+  assert.doesNotThrow(() => assembleWithContext({ maxSummaryTokens: 900 }));
 });

@@ -124,7 +124,6 @@ const options = (runId, store, provider, {
         keepRounds: 0,
         // `fold-llm` 走**内置名**那一档：摘要器由引擎装配，`lastFoldSummaryOutcome` 才在场
         //（宿主自带策略对象时 `.summary` 那一格本来就不写，见决策报告的读者表）。
-        strategy: "fold-llm",
         summarizerSystem: SUMMARY_SYSTEM,
       },
     },

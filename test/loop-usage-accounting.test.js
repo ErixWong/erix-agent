@@ -344,7 +344,7 @@ test("#438 ⑥ 折叠摘要那一发（900/50）落在**当轮** `record.engineU
     executeTool: async () => `tool output ${"z".repeat(4000)}`,
     config: {
       input: { messages: initialMessages },
-      folding: { context: { budgetTokens, keepRounds: 0, strategy: "fold-llm" } },
+      folding: { context: { budgetTokens, keepRounds: 0 } },
     },
   });
 
