@@ -18,7 +18,7 @@
 //      已经试过一句泛泛的「确保产物可判定」，没用——那两个 run 根本没得到收尾那一轮）。
 //
 // 反向证（工单 ④）：把机器证据那一行写成 `=== false`（即「判据全过才补」）⇒ ① 与 ② 两格都红；
-// 还原 ⇒ 绿。这条变异常驻在 `scripts/mutation-samples.mjs`（M12），`npm run check:mutation:run` 会
+// 还原 ⇒ 绿。这条变异曾常驻在 `scripts/mutation-samples.mjs`（M12，随门禁删除），原 `check:mutation:run` 会
 // 逐条真跑「写进真文件 → 捕获者必须红在该条断言上 → 还原 → 必须绿」。
 //
 // 口径说明：本单**不改写** `termination.reason`（与 #435 同一条契约边界）。补齐轮之后模型真补上
