@@ -15,7 +15,6 @@ store-fidelity, same-round ordering, and additive display-projection migration
 steps are in
 [host-upgrade-guide-0.16.0.md](host-upgrade-guide-0.16.0.md).
 
-
 Assembly-derived options: the port's `session.id` and `session.initialMessages` reach the option tree as the config leaves `config.run.runId` and `config.input.messages` — never as the retired flat names `runId` / `initialMessages`, which the name gate now rejects on the **merged** representation as well, so the engine cannot emit a spelling a host would be refused for writing (#544). Values and the read side are unchanged; derived leaves only fill holes, so a leaf the host set in `policy.config` still wins, and a call-level `config` still overrides that tree wholesale.
 ## `runToolLoop` options
 
@@ -801,7 +800,6 @@ message names the payload's home `config.folding.context.session` (issue #551) �
   refusal above, and the fact that a leaf whose value must be a function is simply not on the config
   surface.
 
-
   **`runId` / `cwd` are configuration too** (issue #497 review, second round — the "identity /
   environment injection" leg that the first round added to the criterion is **cancelled**), so
   they are `config.run.runId` / `config.run.cwd`; the flat top-level keys are untouched (this is
@@ -1350,7 +1348,6 @@ Measured red cells: **307** on the single delete, **88** once the fixture transl
 files, the inline allowlist mirror, the two-shape equivalence sample, the `C1` conflict channel, the
 adjacency lists in A12 / A14 / A15 / A19, the shipped contract suite's envelope cells, the assembly
 port suite, and the two observation scripts `scripts/soak.mjs` / `scripts/message-journal-golden.mjs`
-plus `scripts/final-guard-probe.mjs`). The pin file is `test/loop-run-slice-498s3a20.test.js` (`P`
 rejection text verbatim and before any host port is called; `G` the data-value matrix above; `F` the
 function value rejected on both spellings; `R` a real run whose records are still keyed by the
 canonical value; `N` the four-way account and the derived "`run` group still has three config-home
@@ -1403,7 +1400,6 @@ priority-and-conflict channels, the adjacency lists in A11 / A13 / A14 / A15 / A
 contract suites (`assembly-port`, `boundary-parity`, `termination-payload`, `tool-result-envelope`;
 `doc-examples` was among them at the time and has since moved to `test/doc-examples.js`, outside the
 publish surface — #549 S8), and the three observation scripts `scripts/soak.mjs` /
-`scripts/message-journal-golden.mjs` / `scripts/final-guard-probe.mjs`). The pin file is
 `test/loop-run-slice-498s3a21.test.js` (`P` rejection text verbatim and before any host port is
 called; `G` the data-value matrix above; `F` the function value rejected on both spellings, with the
 two reasons kept apart; `R` a real run whose round budget still bites, the untouched destructure
@@ -2321,9 +2317,7 @@ issue #735 slice 1, machine absence assertion in `test/loop-snapshot-write-side-
 
 The two coordinate columns below name the **file** each cell is implemented in (the write site, and the file
 that carries the read evidence) — they do **not** copy a source line number. The base of truth is the anchor
-registry in `scripts/cell-axes-anchors.mjs`: it pins one code shape per cell and per axis (the assignment line,
 the guard, the return site — never the key name), each anchor must hit its file exactly once, and the line it
-hits must mention the cell's key name. `test/contract-snapshot-cell-axes-767.test.js` **and** `npm run check:docs`
 re-check each cell against that registry: the file named in a cell must equal the entry's `codePath`, the anchor
 must resolve unambiguously, and a citation that drifted onto a comment that merely mentions the key name goes
 red in the docs gate, not only in the test. Line numbers are derived from the anchor on demand and are never
@@ -2695,7 +2689,6 @@ that shape) cannot carry a single blanket verdict, and `unsafe` is the honest an
     to display "this one was labelled safe" reads it from its own `tools` array, not from
     an event.
 
-**Not anchored yet.** No `docs-drift-check` rule reads the presence or absence of the
 annotation in the tool sources, so this table can drift silently in either direction: a
 future factory-side labelling change and this subsection must ship in the same PR.
 
@@ -3799,7 +3792,6 @@ limit, and `compacted` keeps its existing meaning (it may be `false`).
 | `user_turn_guard_unrecoverable` event | `onEvent`, one per request view that reaches the guard's last resort (i.e. per provider attempt) | **Additive (issue #296).** `{ type: "user_turn_guard_unrecoverable", runId?, parentRunId?, round, channel: "chat" \| "chatStream", reason: "empty_view" \| "no_user_turn" \| "invalid_view", detail: string }` — the request-view user-turn invariant ran out of fallbacks: `ensureUserTurnView` (`src/loop/request-user-view.js`) found no usable user turn in the request view **and** no donatable user turn in the unfolded source, so the request is sent **unchanged** — the engine neither fabricates a user turn nor throws. An upstream that requires a user query answers `400`; this event is emitted **before** that request goes out, so it is the join key between the failure and its cause (until #296 the case was filtered out and left no trace anywhere). `reason` names the sub-case: `empty_view` (nothing left in the view), `no_user_turn` (non-empty, no real user turn — a pure `tool_result` carrier does not count), `invalid_view` (a user turn exists but the `tool_use`/`tool_result` pairing is illegal). The first sentence of `detail` is fixed text hosts can assert on. The two other guard actions (`preserved_latest_user_turn` / `abandoned_fold`) keep landing in `compactionStats.userTurnGuard` and never emit this event; this one is deliberately **not** written into `compactionStats`, because it can fire in a round that compacted nothing and would make "did this round compact" unreadable. |
 | `host_steer_injected` event | `onEvent`, one per successful turn-boundary injection | **Additive (issue #753 C1).** `{ type: "host_steer_injected", runId?, parentRunId?, round: number, chars: number }` — `capabilities.hooks.nextUserTurn` answered with a non-empty string and the engine appended it as a real `role: "user"` turn **at the turn boundary**: after `throwIfAborted(signal)`, before the round slice (`const roundStart = messages.length`) opens. That placement is the whole contract: the injected turn sits inside the **next** round's record, so it needs no `:control:` line and a resume reads it as an ordinary user turn (`store.load()` shows its prose; the row is `kind: "message"` with a `seq`, never a `:control:` line). `round` is the boundary the hook was asked about (the text is consumed by the round that starts next, whose `round_start` carries `round + 1`); `chars` is the length of the injected text. Tier `fact` — see the event tier table. Declines are silent by design (`null` / `undefined` ⇒ no event, no row, byte-identical ledger); a throw or a non-string answer is counted in `diagnostics.steer.rejected` and reported through `reportObserverError(..., { channel: "nextUserTurn" })`, the same accounting as a `finalGuard` verification failure — **never** a different terminal state. |
 | `finalTextShape` result key + `final_text_textualized_tool_call` event | `result.finalTextShape` on every **non-throwing `finish()` path** — i.e. every terminal that finalizes via `finish()`: `end_turn` *and* `max_rounds_cap` / `final_guard_unverified` / `no_tool` / `stall` all carry the key and emit the event the same way (the test `test/loop-final-text-shape-862.test.js` pins `max_rounds_cap`); `failed` / `aborted` go through `fail()` / abort and carry **neither** the key nor the event; `onEvent` at most once per terminal (a resume re-run is a new terminal and emits one again) | **Additive (issue #862, fix A).** Some upstreams/gateways encode the tool call *into* `content`, so the engine's last round legitimately looks like "no `tool_use` + `end_turn` + non-empty text" and the run is judged `completed` while what it delivered is a textualized call, not a conclusion. `result.finalTextShape` = `{ textualizedToolCall: true, marker: string }` when the **final text** matches the shared marker set; **absence means no match** — the key is never written as `false`, the same "no fact, no key" rule as `finalTextFallback`. `marker` is the matched pattern verbatim (first hit in list order = priority). The companion event carries `{ type: "final_text_textualized_tool_call", runId?, round, marker }`. **Neither one changes any terminal semantics**: `termination.reason` stays `end_turn`, and `rounds` / `usage` / `verification` are untouched. (Refusing to *finalize* such a text was fix B, and fix B landed as issue #865 — what it refuses is the **`judge_done` stop**, not finalization: a plain `end_turn` run still accepts this text as its final text, so `termination.reason` stays `end_turn` and this key keeps its meaning.) The marker set is exported as `DEFAULT_TOOLCALL_MARKERS` (`src/loop/final-text-shape.js`, re-exported from the package root) so the host can drop **its own copy of the feature set and matching rule** — two sources of truth were the forbidden outcome of that ticket. What the host must **keep** is its `parseToolCallMarkers` (the shape gate at env-parse time) and the `TEXTUALIZED_MARKER_MAX_CHARS` upper-bound truncation: the kit version has no equivalent for either (no env surface, no 120-char cap, and `detectTextualizedToolCall` returns `string|null` rather than the host's `{ hit, marker, chars }`). `stripCode` runs before matching, so a marker quoted inside a fenced code block or `inline code` is not a hit. |
-| `deliverable_blind` event | `onEvent`, **at most one per run** (one-shot flag `deliverableBlindEmitted` in `runLoopState`, same family as `finalTextShapeEmitted`) | **Additive (issue #881).** "The deliverable criterion could not decide this run" is now said out loud. Emitted by `callFinalGuard` (`src/loop/termination.js`) **right after** `buildFinalGuardPayload` returns and **before** the host's `deliverables` checks, with `{ type: "deliverable_blind", runId?, round, execWriteCount?, execWriteUnresolvedCount? }`. The condition reads the payload's **own** three blind-spot keys — any one of them is enough: `fileWritesBlind === true` \|\| `fileWritesBlindToExec === true` \|\| `(execWriteUnresolvedCount ?? 0) > 0` (one source of truth: the emitter does not re-derive blindness). Numeric keys are written only when the payload carries them (`0` is never written, same rule as the payload), `runId` only when the host supplied one. **The event is deliberately NOT emitted inside `buildFinalGuardPayload`**: that is an exported **pure** constructor called directly by tests and `scripts/final-guard-probe.mjs`, and a side-effecting emitter would leak events into the probe. **No verdict changes**: `createDeliverableChecks` still answers `ok: true` with a "cannot decide" detail (#711's semantics kept — fail-closing would judge every shell-writing run red), and `termination.reason` / exit code are untouched. Tier `fact` — the three counters live only in the payload, so this event is the fact's only durable copy. **Two boundaries, both deliberate:** (1) it can only fire when a **`finalGuard` is configured** — `callFinalGuard` is reached only behind `typeof finalGuard === "function"`, and the deliverable criterion hangs off that guard, so with no guard there is no "cannot decide" to report; (2) it does **not** cover "the model declared no write at all" — and note the precondition: that only holds when **no `exec` ran at all**. A run that ran a *read-only* `exec` (`ls -la`) still trips the coarse flag `fileWritesBlind` (#386: exec ran + empty ledger), so this event **does** fire and the payload genuinely says "cannot decide". Only a run with neither a declaration nor any `exec` has an empty ledger and an empty criterion set (vacuously true), with none of the three keys present, and it still passes **silently**; that half belongs to issue #391 and is explicitly **not** part of this one. On the human-facing side `bin/run-event-handlers.js` exports `formatDeliverableBlindLine(event)` (same shape and channel as `formatTextualizedToolCallLine`: one neutral stderr line, or `null`) naming both counts — read it as "do not mistake 'the ledger has nothing' for 'no file was written'", and declare `deliverablePaths` (or use parseable write targets) when specific files must be delivered. |
 | `run_outcome` event | `onEvent`, exactly once per run — including runs where the judge never ran | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`. Emitted on the success path after persistence settles, and on the throwing path from `fail()`; a latch guarantees exactly one per run. `termination` / `verification` are copies of what `runToolLoop` returned (or what `fail()` built). |
 
 **Where an event lives in this document (issue #641).** The table above is the **additive** event
@@ -4021,7 +4013,6 @@ Within one round, exactly one mechanism gets to decide, in this order
    clause only when the count is non-zero, and `judgeDoneBlocker` keeps its #473 wording
    byte-for-byte for a caller whose `facts` object predates the key.
    Measured before/after (fake provider + fake judge pinned at `done:true / 0.85`, 5 runs per
-   scenario, `scripts/probe-865-stopgate-comparison.mjs` on both trees): a leaking final round
    went from mean 2 rounds / 0 nudges to 3 rounds / 5 nudges, and a run that then really delivered
    went from "final text was still the markers in 5/5 runs" to 0/5, while the normal-delivery
    scenario did not move one cell.
@@ -4122,7 +4113,6 @@ as one synthetic `user` text message, built by `judgeDoneAdvisoryText`
   boolean` at startup, and no extra judge call is made;
 - known gap (deliberately not fixed here): the pending advisory is not part of
   the run snapshot, so a resume before the first flush drops it.
-
 
 ## Reflection decision parsing (issue #305)
 
@@ -4707,7 +4697,6 @@ Cost and observability:
   settled, so the run reports `invalid_messages` exactly as before. A host that treats
   `failed` (or exit code 1) as "retryable" must re-read those runs: they now finish.
 
-
 The engine has no separate "delivery authentication" or "completion
 authentication" layer. It reports facts such as rounds, tools, file calls,
 archives, termination, and verification. Whether the task is complete,
@@ -4775,7 +4764,6 @@ host is most likely to get wrong:
   when a mixed command left a known entry behind, because the unresolved half is still unknown).
   Read the three together before concluding "this run wrote nothing": an empty ledger plus
   `execWriteCount: 3` is **not** the same fact as an empty ledger with neither key.
-- **The overhead is bounded and measured.** `node scripts/final-guard-probe.mjs` runs a
   30-round × 4 KB-tool-output scenario offline: `messages` is 257,618 bytes, the additive
   keys are 4,789 bytes — **1.86%** (2,242 B before `fileWrites` was added in issue #388),
   against a budget of < 2%. A host can therefore log or
@@ -4810,7 +4798,6 @@ whose declared deliverable **does not exist**, while the identical lying script 
 disk-checking guard is caught at `attempt: 1` and remediated at `attempt: 2`. The trap now has
 a second cell (`S6b`): the same rubber-stamp guard plus a declared `deliverables` criterion
 returns `unverified` / `deliverables_failed` — the machine gate, not a better prompt, is what
-stops it (see the next section). All of it runs in `node scripts/final-guard-probe.mjs` with
 zero model calls, so the trap is reproducible rather than folklore.
 
 ### Deliverable checks: the host-declared machine gate (issue #386 slice 2)
@@ -5015,7 +5002,6 @@ fix is `4` / `4` (criteria passing / failing); after it, `0` / `2`.
 machine verdict to outrank anything: a guard `skip` still yields
 `{ status: "skipped", reason: <the guard's own skip reason> }`, the CLI still exits **4**, and
 no payload key, metric key or event field appears. That is also the class the engine's own
-release smoke belongs to — `npm run check:release` runs a `chat` **without** criteria and
 asserts exit **4**; it must keep exiting 4, and it does.
 
 Four boundaries are deliberate:
@@ -5670,7 +5656,6 @@ const edited = await fileTools.executeTool({
 const denied = await createFileTools({ cwd, allowWrite: () => false })
   .executeTool({ id: "toolu_edit_2", name: "edit", input: { path: "a.js", edits: [{ oldText: "const a = 2;", newText: "const a = 3;" }] }, context: {} });
 ```
-
 
 What a host can code against:
 
@@ -6382,7 +6367,6 @@ Consequences for a host store and for host readers:
   content fingerprint, say — silently drops legitimate repeats: two long messages that
   share their first 400 characters collapse into one, and any census derived from that
   array is wrong in a way that depends on the payload text (a “did the CLI really run ≥2
-  tools” check can read 1). In-repo precedent: `scripts/cli-real-smoke.mjs` takes its
   tool-result census from `createFileTranscriptStore({ dir }).load(runId)`.
 
 ### The row shape on disk is not the shape after `load()` (issue #361)
@@ -6465,7 +6449,6 @@ construction point: `buildToolResultFact()` in `src/tool-fact.js`, re-exported f
 package root together with the constant below. “Who owns which field” is itself a
 published constant, `TOOL_RESULT_CONTRACT`, and three parties consume that one copy: the
 constructor writes its paths from it, `test/contract/tool-result-envelope.js` generates
-its expected field sets from it, and the `check:docs` anchors compare the field lists of
 this section against it in both directions (including the EN/CN statement counts). Add or
 rename an engine field anywhere and the other two go red instead of quietly disagreeing.
 
@@ -7408,9 +7391,7 @@ Host rules:
 the migration shape; `notes-store.js` carries two since issue #183: the general
 suite and the optional CAS sub-suite). Every one is shaped `xxxContract(label, factory)`:
 calling it registers assertions titled with `label`, and nothing executes until
-`node --test` runs them. `npm run check:docs:strict` fails on any suite that
 `test/contract/index.js` re-exports but the packaged `files` list omits (it is a
-warn under the plain `npm run check:docs`), so the shipped set cannot shrink
 unnoticed. **What ships is those files one by one**: `package.json`'s `files`
 enumerates `test/contract/*.js` entry by entry — it does **not** take the
 directory — so a `node --test` suite in the same folder is deliberately left
@@ -7578,7 +7559,6 @@ case is added, so recount rather than trusting the printed figure.
 - Keep host-invented behaviour in host-owned tests. If a shipped suite disagrees
   with a host requirement, file it (issue tracker) rather than forking the
   suite: the fork loses the sentinel.
-
 
 ## Ledger recovery rows — two extra `.jsonl` files per run (issue #769, #827 slice 3)
 

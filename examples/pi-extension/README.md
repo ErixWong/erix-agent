@@ -731,8 +731,6 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 ## 模型配置
 
-
-
 读 `~/.erix/config.json`（可用 `ERIX_CONFIG_PATH` 指定别的路径；XDG：`$XDG_CONFIG_HOME/erix/config.json`
 优先，与 `bin/config.js` 同口径）的 `slots.default`：
 
@@ -789,7 +787,6 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - **写错不是静默忽略，是整单硬失败**：`high` / `minimal` / `auto` 被 **400 拒**，抛的是 `KitError code=invalid_request status=400 `**`retryable=false`**——因为不可重试，本扩展传的 `retry: { attempts: 2 }`（`erix-run-core.js`，grep `attempts`）**根本不触发**，**第 1 轮就死单**。
 - **与 pi 侧的对应关系**（同一个 relay，解释了两边为什么可比）：pi 的 `models.json` 里 `thinkingLevelMap: {"high":"xhigh","max":null,"xhigh":null}` —— pi 的 high 上线就是 `xhigh`，medium/low 原样透传（relay 认这两个）。**所以「pi 的 high」与「erix 不设」是同一档**，不是两档。
 - **代价参考**（pi 侧会话日志的 usage，两张同规模单）：`xhigh` 平均 **671** reasoning token/请求、单次请求中位 **12.5s**；`medium` 平均 **294**、中位 **8.9s**。**要不要降是宿主的选择，本扩展不代替你定。**
-
 
 ## 内层工具集
 
@@ -1173,8 +1170,6 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
 
 ### 红线：其它面一律没动
 
-- CLI 默认值不变：`erix chat` 不带 `--final-guard` 仍是 `skipped` + 退出码 4（`scripts/cli-real-smoke.mjs` 与
-  `scripts/release-check.mjs` 的断言一字未改）。
 - 引擎一字未改：`src/loop/termination.js`、`src/loop/orchestrator.js`（`finalGuardMaxRetries` 默认 2、
   `finalGuardTimeoutMs` 默认 30000、`FINAL_GUARD_NON_CONTINUABLE_REASONS` 三个原因）。
 - **#797 同样一字未改引擎**：`src/` 与 `bin/` 零字节（账本读口与 `not_in_ledger` 的改写全在宿主）。

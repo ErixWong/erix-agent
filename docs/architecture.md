@@ -771,7 +771,6 @@ and the consequence are recorded in the issue #746 work report.
 ## 4. Source layout
 
 The authoritative, current source tree lives in the **Module map** section of
-`README.md`: `npm run check:docs` reconciles that inventory item-by-item against
 `src/`, so this document keeps a single pointer instead of a second tree that
 would drift out of date. The responsibilities of each area are described in the
 interface sections above (Providers, runToolLoop, compaction, TranscriptStore,

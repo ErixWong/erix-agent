@@ -320,24 +320,17 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 声明是生成物、不入库：`npm run types:build` 把它们写到 `src/**/*.d.ts`（`files` 白名单里
 本来就有 `src`，因此不用改白名单），`prepack` 钩子在 `npm pack` / `npm publish` 之前跑同一个
 生成器——消费者从 registry 安装时不跑，这正是「tarball 里有声明而仓库里没有」的原因——而
-`npm run check:types-build` 断言仍能生成、且产物里含 `runToolLoop` / `createFileTools`，
 跑完把生成物删掉以保持工作树干净。
 
-发布包本身由一条命令验收（issue #257 T5）：`npm run check:release` 先打包并断言 tarball 的形状（声明文件在、
 当前版本的中英两份升级指南都在、随包的 `test/contract/` 文件一个不少、`files` 白名单之外没有杂物——Markdown
-链接闭合仍归 `npm run check:pack-links`，不在这里重写），再把这份 tarball 装进一个一次性临时项目，用**装好的包**
 跑随包契约套件，用 `tsc --strict --skipLibCheck` 编译一个真 TypeScript 宿主（退 0，且未知的 `runToolLoop` option
 键必须被 `TS2353` 拒掉——这就是「类型面不是 `any`」的证据）并把编译产物真跑一遍，最后拿本地假上游冒烟装好的
 命令行。它全程离线（一次性 npm cache 与 userconfig、假 `HOME`）、跑完把临时目录和生成的声明一并清掉，红的时候点名第几步。
 
 真模型端点那一半也是一条命令（工单 261021-13；闸门是 `ERIX_E2E_MODEL=1`，旧名 `ERIX_E2E_REAL` 已退役：设了不开闸，
-而是带着两个名字判红）：`npm run check:release:model-e2e` 按顺序跑四条同闸门的真模型端点 e2e 套件
 （`examples/tool-fact-e2e.test.mjs`、`examples/resume-real-e2e.test.mjs`、
 `examples/cross-version-real-e2e.test.mjs`、`examples/pi-extension/erix-run-e2e.test.mjs`），
-再跑 `npm run check:cli:model-e2e`；每条单独 900 秒硬超时，跑完整张清单才判红并点名是哪几条。
 不带 `ERIX_E2E_MODEL=1` 时它一步都不跑、exit 0 并打分类原因，因此永远不会变成默认门禁的硬依赖——
-但闸门开着而配置不可用是**错误**，不是跳过。它和文档审计（`npm run check:docs` /
-`npm run check:docs:strict`）都是每次发布前**必跑**的。
 
 ## 工程约束
 
@@ -345,15 +338,11 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   依赖是**仅 dev** 的工具链（`typescript` + `@types/node`，issue #213）：它们只为生成随包发布
   的 `.d.ts` 声明而存在，`src/` 与 `bin/` 从不 import 它们（那里只允许 `node:` 内置与相对路径）。
 - 测试使用 `node --test`；类型信息通过 JSDoc typedef 表达。
-- 文档事实受机器校验，陈旧的 README 不可能静默过线：`npm run check:docs` 将版本声明、
   引用的 `files`/`exports` 清单、模块地图、文中路径与命令，以及关键默认值白名单逐个比对
   `package.json` 与源码，并对齐本文与 [README.md](README.md) 的标题骨架；
-  `npm run check:docs-examples` 真实执行契约里的 js 围栏；`npm run check:pack-links` 检查随包
-  Markdown 的链接闭合；`npm run check:types-build` 断言随包声明仍能从源码生成，跑完把生成物清掉。
 - 包以 `erix-agent` 发布到 npm，代码托管于 GitHub 的 `ErixWong/erix-agent`。
 - 永远不要提交 token、API key 或其他凭据。
 
-权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
 发布行）。当前发布版本：**v0.34.0**（2026-11-23；
 **0.27.0 从未发布**）。下面引用的 `files` 清单以
 `package.json` 为权威：
@@ -692,14 +681,10 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ### 文档家族与真值口径
 
-本仓不是每份 Markdown 都在声明同一件事，门禁也按不同的口径筛（`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`）。三类：
-
 - **活文档——有门禁，必须「今天为真」。** `README*.md`、`AGENTS*.md`、中英契约（`docs/host-consumer-contract.md` /
-  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（按目录实扫；现测份数由 `check:docs` 的 `ref-scan-claims` 提示打印），再加上
   工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
   （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）、
   `erix_run` 的 README（`examples/pi-extension/README.md`）。份数就是锚点覆盖面：文件改名、
-  行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
 - **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
   `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行
   `> 快照档案（<日期>）`：里面的路径、数字与结论按**当时**为真，“现在是什么”由中英契约与 `CHANGELOG.md` 回答而不是由它们
@@ -714,7 +699,6 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 ## 状态与版本历史
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，
-`npm run check:docs` 会校验下面这行发布声明。
 当前发布版本：**v0.34.0**（2026-11-23；**0.27.0 从未发布**，
 已发布线是 0.26.0 → 0.30.0）。
 完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出
@@ -746,9 +730,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - **v0.22.0 (2026-10-21)**：持久化真相专场（issue #322 / #323 / #326）——引擎在**轮记录已经落盘之后**才注入给模型的文本（judge 评审意见、扩轮提示、guard 返工意见、强制收尾指令与它的终稿 assistant）从此在同一轮里就写进档案；折叠摘要与 TTL 降级结果同样落账，并在 resume 时**复用而不是重算**，于是「模型当时到底看见了什么」变成可以从档案里回答的问题。宿主必须处理的两处后果：同 `dedupKey` 却换内容的写入从此抛 `code === "dedup_payload_conflict"`，不再悄悄消失；`load()` 返回的**行数多于轮数**（其中一些 `messages` 为空）——按 `round` 归组、按 `dedupKey` 去重、跳过 `meta.source === "judge-control"`。新增可选 `reflection.judgeDoneAdvisory`，把「治理凭什么说目标已达成」说给模型听（默认关，终止语义一字未改）。**0.21.0 从来没发出去过**，因此本版把它一并带上：迁移见 [docs/host-upgrade-guide-0.22.0_cn.md](docs/host-upgrade-guide-0.22.0_cn.md)，那份指南是 0.20.0 → 0.22.0 一跳到位。
 - **v0.21.0 (2026-10-16)**：模型 JSON 专场——`parseModelJson`（`src/text/parse-model-json.js`，从包根导出）成为「从模型文本里抠 JSON」的唯一入口：失败三态可分（`no_candidate` / `unparsable` / `shape_mismatch`）、失败结果**不带** `value` 键、**没有任何 repair**、`topOnly` 两档扫描。`parseReflectionDecision` 不再把模型明确写下的布尔值翻向（贪婪花括号正则换成顶层平衡扫描），返回体新增 `via: "json" | "prose_fallback"`（随包声明里是字面量联合）。把 `context.budgetTokens` 配得很小的宿主从此不再收到 `400 No user query found in messages`：发给上游的请求视图始终保留一条真 user 轮（run 就是能跑了；守卫真生效时才多出两个 additive 的 `compactionStats` 键）。本版**没有任何一处会打断调用点**。迁移见 [docs/host-upgrade-guide-0.21.0.md](docs/host-upgrade-guide-0.21.0.md)。
 - **v0.20.0 (2026-10-15)**：工具事实专场——引擎拥有的每一条 `tool_result` 事实从此只落 `erix.*` 命名空间（`toolCallKey` / `round` / `durationMs` / `executionStatus` / `success`），宿主扩展只落 `metadata.*`；顶层摊平别名（`erixRound`、`duration`、`executionStatus`、`success`，以及过去被摊到顶层的任意宿主键）**停写**，升级前落盘的记录保留**一代读兼容**。「停止」从此压过 end-turn judge 与 final guard（终局 `reason` 是 `aborted`，不再是 `judge_done`），且 `termination.partial: true` 只担保终局载荷、对 store 不作断言（issue #283，裁决 = β）。`createFileTools().executeTool()` 的四种成功形态由随包契约套件逐工具钉死，并新增从 `erix-agent/tools` 导出的判别式 `classifyFileToolResult`。迁移见 [docs/host-upgrade-guide-0.20.0.md](docs/host-upgrade-guide-0.20.0.md)。
-- **v0.19.0 (2026-10-13)**：随包类型面专场——npm 包从此携带包根与 `erix-agent/tools` 的 `.d.ts` 声明（`package.json` 新增顶层 `types`，这两个 `exports` 各加 `types` 条件；声明由 `prepack` 钩子生成、不入库，干净检出里一个都没有、tarball 里有；`exports["./contract-tests"]` 刻意不带 `types`）；`classifyHttpError` 补上 400/422 → `invalid_request`、404 → `not_found`、409 → `conflict`，不再落 `unknown`（既有映射、`retryable` 取值与重试行为逐字未动——按 `code === "unknown"` 分支的宿主需把新 code 列进「改请求而不是重试」的分支）；CLI 的 `chat --session <id>` 在该 id 没有非空 transcript 时报错退出（此前是静默新开会话），会话索引状态文件退役，`-c`/`-r` 改为现扫现算。内部：`runToolLoop` 内的两项**限定范围**重构——选项规范化整块逐字外提到 `src/loop/option-normalization.js`、循环闭包 `let` 折成单个 `runLoopState` 对象字面量；已对 v0.18.0 逐行对账，**残留 0 行、无可观察行为变化**（新增的 `src/loop/state-view.js` 目前没有任何文件 import，它**不是**上面那个统一状态对象；同窗口的 `#213` JSDoc 大重组不在本条声称范围内），仓库新增仅 dev 的 `--checkJs` 棘轮门禁 `npm run check:types`。2026-10-13 并入同一版的改动**是 additive（不必改调用点），但其中两处宿主可观测**（`readFile` 续读 marker 新增了文件大小、`runToolLoop` 返回值的 typedef 由单行改成多行块——见该指南第 6 节与 issue #293）：`src/index.js` 新增导出 `createMemoryNotesStore`；pi extension `erix_run` 交回**完整**终稿正文（宿主层截断已删）、异步 `action: "result"` 从此真能取到 `finalText`、其 `outputSchema` 补声明 `verification` 与 `error`（引擎自己的验证结论首次能到宿主手上）、文件读取工具描述带上实测额度事实。`erix_run` 与本包**同一版本号**，且**不进 tarball**。全量清单见 CHANGELOG。
 - **v0.18.0 (2026-10-09)**：宿主集成面专场——观察者回调从此杀不掉 run（九通道一律经 `onObserverError` 记账后继续，终止 run 走 `signal.abort()`，抛出的错误携带 `usage`/`rounds`/`finalText`）；failed 终局携带 `termination.errorCode`；`context.strategy` 可按名选内置策略（`"fold-llm"` 开箱自带主力 provider summarizer，每次压缩多一次调用、usage 计入总账）；新增一次性 `model_metadata_missing` 与终局 `run_outcome` 事件，judge 记录增补 `model` 归因；provider 新增 `defaultHeaders`/`extraBody` 注入口；token 估算热路径优化（逐字节同值，每轮估算 CPU 约 −88%）。0.17 宿主无必改的 API 适配，但三种宿主习惯各需要查一次——judge 的 `writeToolNames`（显式传是整体替换，`edit` 不会被并入）、被钉死的文件工具名清单（现为七项）、以及对 `rg`/`grep` 输出的逐字匹配（每次调用尾部多一行弃用提示）：见 [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md)，全量清单见 CHANGELOG。
-- **v0.17.0 (2026-10-08)**：`appendUserTurn` 新增成对可选快路径探针 `loadByDedupKey`/`loadMaxRound`（DB 宿主预写 user 轮不再每轮全量读），契约文档的 js 围栏改为可执行测试（`npm run check:docs-examples`）。
 - **v0.15.0–v0.16.0 (2026-10-07/08)**：「transcript 即真相」的宿主侧接口——读侧 `projectTranscriptForDisplay`、写侧 `appendUserTurn`（多轮续跑契约）、投影稳定 `key`，以及 store 保真义务（保留完整 `RoundRecord`、同轮记录按追加顺序 `load()`）。
 - **v0.14.0 (2026-10-03)**：run-state 终态改由 `markRunState`/`loadRunStateStatus` 承载（latest-only 快照不再写 `state`）、工具可声明 `replay: "safe"|"unsafe"` 并配合 `replayPolicy`、新增可选 partial 落盘，删除 `src/loop.js` 转发 shim。
 - **v0.13.0 (2026-09-30)**：run snapshot 更名与 `TranscriptStore` capability 分级公开，CLI 会话索引（`~/.erix/sessions.json`，已于 #168 退役成无状态扫描）。

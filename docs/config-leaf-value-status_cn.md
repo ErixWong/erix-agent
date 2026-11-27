@@ -1,10 +1,5 @@
 # 配置叶子的「值类型 / 值域」现状表（issue #586）
 
-> ⚠ **本表由探针生成，手改数字算伪造。** 生成器：`scripts/config-leaf-value-probe.mjs`
-> 复现（一条命令重出全表）：`node scripts/config-leaf-value-probe.mjs`；
-> 刷表（唯一合法姿势）：`node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md`；
-> 验表（CI 阻塞步 `npm run check:config-leaf-values`）：`node scripts/config-leaf-value-probe.mjs --verify docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md`。
-
 ## 1. 探针口径（这张表到底测了什么）
 
 **错值矩阵**：每个叶子逐字喂同一组 8 个值 —— `"8"`（字符串数字）、`"bogus"`（枚举式字符串）、`-1`（负数）、`0.5`（小数（小于一））、`true`（布尔）、`null`（null）、`[]`（数组）、`{}`（对象）。矩阵不假装知道「每个叶子的正确类型是什么」：每个格子只是「宿主可能写出来的一个值」，结局由引擎自己说。
@@ -353,4 +348,3 @@
 - **矩阵面**：8 个错值不是「全部错值」。每个叶子都可能有这张矩阵没喂到的错型（比如 `NaN`、形状对但语义错的对象）；
 - **时间面（`config.timing.*`）**：小数那一格是 `0.5` 不是 `3.7` —— `3.7` / `1000.5` 落在治理层的「剩余预算 < 2×单轮耗时 ⇒ 收尾提示」阈值附近，同一格在一台忙机器上会在 `A` 与 `·` 之间抖动（实测 8 次里 2 次不同）；`0.5` 把剩余预算直接压成负值，判定不再依赖机器负载（实测 20 次 + 8 路并发同值）。读表时把这两行当「阈值附近的抖动被消掉了」，不是「时间叶子已经测全了」；
 - **判词稳定性**：明细表记的是**今天的**判词原文。引擎改一句话就会让 `--verify` 红——那是**设计如此**（表是量出来的），刷表姿势是 `--sync`，不是手改。
-

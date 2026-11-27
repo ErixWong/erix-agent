@@ -387,19 +387,14 @@ handles legacy `function_call` streams.
   or `bin/`, where imports stay on `node:` built-ins and relative paths.
 - Tests use `node --test`; type information is expressed with JSDoc typedefs.
 - Documentation facts are machine-checked, so a stale README cannot pass CI
-  silently: `npm run check:docs` compares version claims, the quoted
   `files`/`exports` blocks, the module map, referenced paths and commands, and a
   whitelist of key defaults against `package.json` and the source, and aligns
-  the [README_cn.md](README_cn.md) heading skeleton; `npm run check:docs-examples`
-  executes the contract's JavaScript fences; `npm run check:pack-links` verifies
-  links inside packaged Markdown; `npm run check:types-build` asserts that the
   published declarations can still be generated and cleans the artifacts up again.
 - The package is published as `erix-agent` on npm and hosted at
   `ErixWong/erix-agent` on GitHub.
 - Never commit tokens, API keys, or other credentials.
 
 The npm tarball is controlled by the `files` allowlist in `package.json`
-(`package.json` is the authoritative list; `npm run check:docs` verifies the
 quoted blocks below against it):
 
 ```json
@@ -501,15 +496,12 @@ into `src/**/*.d.ts` (the `files` allowlist already ships `src`, so no allowlist
 change was needed), the `prepack` hook runs that same generator before
 `npm pack` / `npm publish` — and not when a consumer installs from the registry,
 which is why the tarball carries declarations the repository does not — and
-`npm run check:types-build` asserts generation plus the presence of
 `runToolLoop` / `createFileTools` in the emitted surface, then deletes the
 artifacts so the working tree stays clean.
 
 The release artifact is verified by one command (issue #257 T5): `npm run
-check:release` packs the tarball and asserts its shape (declarations present,
 both current-version upgrade guides, the shipped `test/contract/` files, nothing
 outside the `files` allowlist — Markdown link closure stays with
-`npm run check:pack-links`), installs that tarball into a throwaway temporary
 project, runs the shipped contract suites **through the installed package**,
 compiles a real TypeScript host with `tsc --strict --skipLibCheck` (exit 0, and
 an unknown `runToolLoop` option key must be rejected with `TS2353` — proof the
@@ -520,15 +512,12 @@ declarations again, and names the failing step when it goes red.
 
 The real model endpoint half is one command as well (ticket 261021-13; the gate is
 `ERIX_E2E_MODEL=1`, whose pre-#817 name `ERIX_E2E_REAL` is retired -- setting it no longer opens the gate, it
-fails the run with a line naming both names): `npm run check:release:model-e2e` runs the four gated real model endpoint e2e suites
 (`examples/tool-fact-e2e.test.mjs`, `examples/resume-real-e2e.test.mjs`,
 `examples/cross-version-real-e2e.test.mjs`, `examples/pi-extension/erix-run-e2e.test.mjs`)
-and then `npm run check:cli:model-e2e`, in that order, each with its own 900 s hard timeout; it
 exits non-zero only after the whole list is done and names the steps that went red. Without
 `ERIX_E2E_MODEL=1` it runs nothing and exits 0 with a categorized reason, so it never becomes
 a hard dependency of a default gate — but the gate being open with an unusable
 configuration is an error, not a skip. It and the documentation audit
-(`npm run check:docs` / `npm run check:docs:strict`) are mandatory before every publish.
 
 ## `runToolLoop` API
 
@@ -1316,15 +1305,12 @@ library-level controls
 ### Documentation family and truth levels
 
 Not every Markdown file in this repository claims the same thing, and the gate knows the difference
-(`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`). Three levels:
 
 - **Live documentation — gated, must be true *today*.** `README*.md`, `AGENTS*.md`, the consumer contract pair
   (`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`), **every** `docs/host-upgrade-guide*.md`
-  (discovered from the directory; the live count is printed by `check:docs` as a `ref-scan-claims` note), plus — since 工单 261021-03 B1 — the architecture pair
   (`docs/architecture.md` / `docs/architecture_cn.md`), the chart pair (`docs/charts.md` / `docs/charts_cn.md`),
   the requirements pair (`docs/requirements.md` / `docs/requirements_cn.md`), the `erix_run` README
   (`examples/pi-extension/README.md`). That is the anchor face: a renamed file, a moved
-  line or a symbol that no longer exists in `src/` turns `npm run check:docs` red.
 - **Snapshot archives — true at the date in their own header.** `docs/v0.0-contracts*.md` /
   `docs/v0.1-contracts*.md` / `docs/v0.2-contracts*.md`, `docs/design/`, `docs/research/`, `docs/harness-comparison/`
   (28 files). Each opens with a `> 快照档案（<date>）` line: its paths, numbers and conclusions were true **then**,
@@ -1342,7 +1328,6 @@ current contract. And a path that points into **another** repository is written 
 ## Status and version history
 
 The authoritative version is the `version` field of
-[`package.json`](package.json), and `npm run check:docs` verifies the release
 line below against it. Current release: **v0.34.0** (2026-11-23). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
@@ -1425,7 +1410,6 @@ migration steps remain in
   `src/loop/state-view.js` is not yet imported anywhere and is *not* that state object;
   the `#213` JSDoc restructuring that shipped in the same window is outside this claim);
   a dev-only `--checkJs` ratchet gate
-  `npm run check:types` is part of the repo checks. Folded into this same release on
   2026-10-13 (additive — no call-site change, though two of them are host-observable strings
   and comments: the `readFile` continuation marker gained the file size, and `runToolLoop`'s
   return typedef moved from one line to a multi-line block — see that guide's section 6,
@@ -1457,7 +1441,6 @@ migration steps remain in
 - **v0.17.0 (2026-10-08)**: `appendUserTurn` gains the paired
   `loadByDedupKey`/`loadMaxRound` fast path (a DB-backed store no longer reads
   the whole transcript per pre-write), and contract code fences became
-  executable tests (`npm run check:docs-examples`).
 - **v0.15.0–v0.16.0 (2026-10-07/08)**: the transcript-as-truth host surface —
   `projectTranscriptForDisplay` (read side), `appendUserTurn` (write side of the
   multi-turn resume contract), stable projection keys, and the store fidelity

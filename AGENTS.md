@@ -2,9 +2,7 @@
 
 > Chinese version: [AGENTS_cn.md](AGENTS_cn.md). Machine-wide conventions: `~/projects/AGENTS.md`.
 > **This page is part of the system prompt: re-sent in full every turn, and context folding does not touch it**
-> (its byte budget is owned by `npm run check:agents-directives`, issue #726). It carries only facts that change what
 > an agent does here; history, policy evolution, postmortems and per-file numbers live in the cold layer
-> `docs/maintenance/command-reference.md`. A number on this page is either owned by a gate (reconciled live) or a
 > pointer — never a hand-made copy.
 
 ## 1. What this repository is
@@ -25,7 +23,6 @@
 
 ## 2. Where the code layout lives
 
-`README.md` → the "Module map" section is the tree, and it is the copy `check:docs` reconciles (the tree's size is
 `find src -name '*.js' -not -name '*.d.ts' | wc -l`). **Never copy that tree onto this page**: a hand-copied tree
 rots silently while still costing every turn.
 
@@ -34,33 +31,29 @@ rots silently while still costing every turn.
 
 ## 3. Development commands
 
+There are **no gates in this repo**: every `check:*` npm script and the CI workflow were deleted (#961/#967). The only automated criterion is `npm test`.
+
+
 `package.json` is the list of scripts; this section no longer repeats it. Every gate, the judgement it makes,
 and the anchor to read before editing what it owns live in
-[`docs/maintenance/command-reference.md`](./docs/maintenance/command-reference.md) — start at its top index.
 
 A gate you have to answer to is named in the cold layer by its `npm run` script name and by the anchor section it
-points at (e.g. `npm run check:docs`);
 
 - **CI runs only on `workflow_dispatch`**: `main` is gated by a ruleset (measure it live with
   `gh api repos/<owner>/<repo>/rulesets`; today it requires a PR and configures no status check), so the only
   automatic gate is `npm run release:day -- --stage preflight`, run before every release. **A step no event
   triggers is a dashboard, not a gate; if a judgement runs only in CI, it runs nowhere** (issue #908 R2). The
   workflow keeps only clean-checkout / second-node truth; second-scale code gates run inside `npm test`
-  (`test/gate-self-tests.test.js`), doc gates at the version boundary and on the `docs:pass` schedule.
   Which steps `ci.yml` keeps and where each removed step went ⇒ `#ci`. Restoring auto-triggers ⇒ read `#ci`
   first and decide `required_status_checks` from the live ruleset. `npm run soak` stays out of CI.
-- **Gate reproducibility**: `check:docs` and `check:docs:strict` must exit 0 in a development worktree *and* on a
   fresh clone. A gate that needs `node_modules` failing with `Cannot find module 'typescript'` in a bare checkout
   means **the gate could not run**, never a regression ⇒ `#gate-reproducibility`.
 - Test isolation: a test touching `~/.erix` or `~/.pi` must inject `home` / `cwd` (skills/mcp/config tests are the
   precedents) so it cannot contaminate real user configuration.
 - Type surface (issue #213): `src/**/*.d.ts` are **generated, never committed**; `prepack` regenerates them and logs
   to **stderr only**. Two JSDoc shapes silently degrade a parameter to `any` ⇒ `#type-surface`.
-- **Type ratchets** (`check:types` / `check:types:strict`, issues #214 / #417): the root tier accepts debt against
-  `BASELINE_ROOT` in `scripts/type-check-ratchet.mjs` (**read the value there — page-header rule: no hand-made
   copies**): above it ⇒ exit 1, equal ⇒ green, below ⇒ green plus a "you may lower the baseline" hint, so the total never rises;
   per-file counts and host reachability come from `--verbose`. `--with-tools` widens the union to `./tools` and has
-  its own baseline, same rule; `check:types:strict` re-runs it with `--strict` against its own baselines, blocks,
   and **both tiers drop in one commit**. ⚠ **Delete the generated declarations before running a ratchet**
   (`find src -name '*.d.ts' -delete`): while they sit next to their sources, `tsc` resolves `./x.js` to the sibling
   declaration and checks declarations instead of implementations.
@@ -69,15 +62,11 @@ points at (e.g. `npm run check:docs`);
   with its baseline / derived-table update in **one** PR.
 - New files open with `// @ts-check` on line 1 (intent, not scope control — the entry's import graph is the scope).
 - Documentation rule (issue #164): changing `README*.md`, `docs/requirements*.md`, a default value or the
-  `files`/`exports` list must keep `npm run check:docs` green. The required phrasing for "current version" claims is
-  in the header comment of `scripts/docs-drift-check.mjs`. EN/CN document pairs stay in sync (this file pairs with
   `AGENTS_cn.md`).
 - Referring to a file in **another repository**: write `<repo-name>:<path inside that repo>` — e.g.
   `pi-subagents:src/runs/background/async-execution.js:4` — and the repo name must be registered in
-  `EXTERNAL_REPO_PREFIXES` in `scripts/docs-drift-check.mjs` (unregistered names are red; registered names nobody
   references are red too). **An unprefixed path is a path in this repository and must resolve here.**
 - **Anchors**: prefer pointing at a symbol with its file (`` `symbol` (`path`) ``) over `path:123`.
-  Since #908 a bare line number is **no longer a blocker** — `check:docs` counts them and prints a
   `BARE-LINES-ADVISORY` note, but it does not turn red over them (the three anchor floors were removed by
   #908 and the measurement log `docs/maintenance/symbol-anchor-ledger*.md` was deleted). The line-number
   still has to be *true*: a reference that points past the end of a file, or a named symbol that no longer
@@ -90,16 +79,12 @@ Four commands, in this order. The four checklist rows are reconciled row by row 
 
 ```bash
 npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/4] check:changelog                           every public merge named in this version's section
 #   [2/4] CHANGELOG [Unreleased] carry              entries still parked under [Unreleased]
-#   [3/4] ERIX_E2E_MODEL=1 check:release:model-e2e  real model endpoint; without the env nothing ran
-#   [4/4] check:release                             offline: tarball / installed package / TS host / CLI fake upstream
 npm run release:day -- --stage publish       # prints the operation sheet, exits 3; run `npm publish` yourself
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 npm run release:day -- --stage finalize      # tag the version cut → dual push → verify both sides → doc gates
 ```
 
-- `writeback` rewrites the release state and re-runs `check:docs`; `finalize` refuses to tag unless that state is on
   disk and the worktree is clean. Never skip `writeback`.
 - **The host-consumer step answers with coverage, not a veto**: this repository is the upstream, so a host import of
   a name marked for removal means the upgrade guide must say what replaces it — not that the name stays.
@@ -112,15 +97,11 @@ npm run release:day -- --stage finalize      # tag the version cut → dual push
   `npm view erix-agent version --prefer-online`, then install with `--prefer-online` and run
   `erix --version && erix chat "…"`.
 - Current version: `package.json` says `0.34.0`; npm's `dist-tags.latest` — is `0.34.0`.
-  `check:docs` reconciles both numbers **live** against `package.json` and the registry on every run, so neither
   carries a measurement date. Use `npm version <x.y.z> --no-git-tag-version`.
 - `package.json` face: `private` absent, `repository.url` in `git+https://…` form, `files` a long explicit allowlist
   (read `package.json`, never transcribe it); inspect with `npm publish --dry-run` ⇒
-  `docs/maintenance/command-reference.md#publish-prerequisites` and `#npm-policy`. how many `.d.ts` a packed install carries is **measured, never copied into a page**: `prepack` generates
-  them and `npm run check:pack-links` prints the count live (issue #923).
 - **Two human passes before the tag** (an anchor only covers the dimensions somebody registered): ① walk the claimed
   **defaults**, **numbers** and **name sets** by hand across both READMEs, both AGENTS files and both contract
-  documents; ② if `check:changelog` prints an `unattributed` note, read the first-parent diff of every short sha in
   it ⇒ `#unattributed-merges`.
 
 ## 5. Git and remotes
