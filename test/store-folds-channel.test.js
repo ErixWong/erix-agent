@@ -443,9 +443,9 @@ test("判据16：storeFoldsChannelWriteFailed 进得了 run state（序列化白
   const { createDeterministicRunState } = await import("../src/run-state.js");
   const withoutFlag = createDeterministicRunState({ runId: "r1", rounds: 1, terminationReason: "running" });
   assert.equal(
-    Object.prototype.hasOwnProperty.call(withoutFlag, "storeFoldsChannelWriteFailed"),
+    Object.prototype.hasOwnProperty.call(withoutFlag.deterministic, "storeFoldsChannelWriteFailed"),
     false,
-    "没发生过就不许出现这个键（与 guardExtension / contextWindowRecovery 同一「缺席不是歧义」口径）",
+    "没发生过就不许出现这个键（查的是 deterministic 那一层，不是顶层）",
   );
   const withFlag = createDeterministicRunState({
     runId: "r1",

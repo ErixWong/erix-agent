@@ -510,6 +510,12 @@ function mergeFoldedRoundRanges(first, second) {
  *   **出现写形态的 exec 命令条数**，与 finalGuard payload 的同名键**同源同口径**（解析不出目标也
  *   算）：说的是「这里有写、我不全知道」，不是「写了几次文件」。只在 payload 里有值时才写键
  *   （0 不写，同 payload 口径）；其余事件不写该键。
+ * @property {string} [code] issue #971（additive）：`store_folds_channel_absent` 这一族用 `code` 区分
+ *   两种**不同**情形——`store_folds_channel_absent`（宿主没实现端口）与
+ *   `store_folds_channel_write_failed`（实现了，但这次写不成，见 `FoldSeedUnavailableError`）。
+ *   只在带 `code` 的那几条诊断上出现；其余事件不写该键。
+ * @property {string} [error] issue #971（additive）：同上——失败原因的一句话（`Error.message` 或
+ *   `String(error)`），只在该族事件上出现。它**不是**给模型看的，是给宿主排障的。
  * @property {number} [execWriteUnresolvedCount] issue #881（additive）：`deliverable_blind` 专用——
  *   上述写形态里**没进台账**的目标个数（目标解析不出 / 结构读不懂 / 被截断 / 来自不透明包装如
  *   `bash -c '… > …'`；不透明包装处是**下界**，口径同 payload 同名键）。三个盲区键就是本事件的
