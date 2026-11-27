@@ -477,3 +477,19 @@ test("#896D-6 文本真的改了 ⇒ 仍 stale（仍能定位，但记录的切�
   assert.equal(out.expectedSha, ref.sha256);
   assert.notEqual(out.actualSha, ref.sha256, "改字后 sha 必须对不上");
 });
+
+// ─── copilot 终验（PR #981）：schema 必须**告知** `row_key`，不能只靠 additionalProperties 允许 ───
+test("#261127-15-8 recall_read 的 evidenceRef schema 里必须写明 row_key（运行时强制它）", () => {
+  const { definitions } = createBuiltinRecallTools({ readLedgerRows: () => [] });
+  const def = definitions.find((/** @type {any} */ d) => d.name === "recall_read");
+  assert.ok(def, "recall_read 必须在工具面上");
+  const evidence = def.inputSchema.properties.evidenceRef;
+  for (const key of ["round_no", "row_key", "msg_seq", "charRange", "sha256"]) {
+    assert.ok(evidence.properties[key], `evidenceRef schema 必须写出 ${key}（运行时按它校验）`);
+  }
+  assert.equal(evidence.properties.row_key.type, "string");
+  assert.ok(
+    String(evidence.properties.row_key.description).includes("撞号"),
+    "描述要说清它为什么必需（只靠 msg_seq 会撞号），不是可有可无的附注",
+  );
+});

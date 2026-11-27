@@ -39,8 +39,8 @@ function isPositiveInt(v) {
 
 /**
  * evidenceRef 形状校验（§3-C + issue #261127-15：**行主键**）：合法返回 null，否则返回报错原因（上层据此报 invalid）。
- * 只校结构（round_no/msg_seq/charRange/sha256 都在且形对），不对内容做真假判断。
- * 身份口径是**行主键**：`round_no` + `msg_seq` 合起来是本轮内**稳定**的消息地址（口径在
+ * 只校结构（round_no/row_key/msg_seq/charRange/sha256 都在且形对），不对内容做真假判断。
+ * 身份口径是**行主键**：`round_no` + `row_key` + `msg_seq` 合起来才是本轮内**唯一**的消息地址（口径在
  * `src/store/message-rows.js` 的 `messageRowPosition`：消息行取行上的 `seq`、轮载体行取该消息在
  * **该行自己的** `messages` 里的下标——两者都是行上的不可变位置，消息行被 `store.load()` 折进载体
  * 也不变，同轮再落一条消息行也不改既有消息的地址）。
@@ -221,6 +221,14 @@ export function createBuiltinRecallTools(options = {}) {
           description: "引擎落进 record.recallEvidence 的切片指纹；给了它就进 evidence 模式（优先级高于 round/pattern）。定位口径是**行主键**：round_no + msg_seq 合起来是本轮内稳定的消息地址（消息行取行上 seq、轮载体行取该行自己 messages 的下标，折进载体也不变）；两者定位必需",
           properties: {
             round_no: { type: "integer", minimum: 1, description: "定位必需的轮号（1 起）" },
+            // copilot 复审（PR #981 终验）：schema 少写 `row_key` 而运行时强制它 ⇒ 合规调用方按 schema
+            // 构造会被判 invalid。`additionalProperties: true` 允许这个字段，但**允许**不等于**告知**。
+            row_key: {
+              type: "string",
+              minLength: 1,
+              description: "行身份（`dedupKey` ?? `roundKey`）：同一轮里可以有多条带正文的行（引擎为不同 control slot 各写一条），"
+                + "只靠 msg_seq 会撞号 ⇒ 缺它一律 invalid",
+            },
             msg_seq: { type: "integer", minimum: 0, description: "本轮内的稳定消息位置：消息行是行上的 seq，轮载体行是该消息在该行 messages 里的下标" },
             charRange: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 2, maxItems: 2 },
             sha256: { type: "string", minLength: 1 },
