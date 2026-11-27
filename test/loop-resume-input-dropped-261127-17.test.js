@@ -99,3 +99,48 @@ test("#261127-17-4 续跑同时递两种输入 ⇒ 两个字段都点名", async
   assert.equal(dropped.length, 1);
   assert.deepEqual(dropped[0].fields, ["initialUserMessage", "initialMessages"]);
 });
+
+test("#261127-17-5 resume:true 但没开持久化 ⇒ 不发事件（输入照旧进请求，那是没丢）", async () => {
+  // copilot 复审抓到的误报：`restoreResume` 在 `persistence` 不是 "required" 时直接返回
+  // （`src/loop/resume-manager.js:448`），上面初始化的那份 `initialUserMessage` **照旧进请求**。
+  // 只判 `resume === true` 会把「没丢」说成「丢了」。
+  /** @type {any[]} */
+  const events = [];
+  const provider = createFakeProvider(DONE);
+  await runDirect({
+    provider,
+    initialUserMessage: "这个问题必须进请求",
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    config: { input: { wrapup: false }, run: { resume: true, runId: "no-persistence" } },
+    onEvent: (/** @type {any} */ event) => { events.push(event); },
+  });
+  assert.equal(events.filter((event) => event.type === "resume_input_dropped").length, 0,
+    "没有账本可恢复 ⇒ 输入没被丢 ⇒ 不许报「丢了」");
+  assert.equal(JSON.stringify(provider.requests.at(-1)?.messages ?? []).includes("这个问题必须进请求"), true,
+    "输入照旧进请求（这正是「没丢」的证据）");
+});
+
+test("#261127-17-6 账本存在但一条记录都没有 ⇒ 续跑直接失败（不是静默把输入顶掉）", async () => {
+  // 上一格证明「没开持久化 ⇒ 输入照旧进请求」。这一格钉住另一半：**开了持久化但账本空**时引擎
+  // 不假装能续跑，而是明确失败 —— 所以「身份没变」这个判据只需要分辨「真恢复 / 没恢复」两种，
+  // 不存在「恢复了但恢复成空」这一档。
+  const store = createMemoryTranscriptStore();
+  /** @type {any[]} */
+  const events = [];
+  await assert.rejects(
+    () => runDirect({
+      provider: createFakeProvider(DONE),
+      initialUserMessage: "这一条不该被静默顶掉",
+      executeTool: async () => "unused",
+      maxRounds: 1,
+      config: { input: { wrapup: false }, run: { resume: true, runId: "empty-ledger" } },
+      onEvent: (/** @type {any} */ event) => { events.push(event); },
+      store,
+    }),
+    /无可恢复记录/,
+    "空账本续跑必须响亮失败",
+  );
+  assert.equal(events.filter((event) => event.type === "resume_input_dropped").length, 0,
+    "run 都没起来，不该报「输入被丢」");
+});

@@ -2391,7 +2391,10 @@ export async function runToolLoop(options) {
   // 「ignored on resume」），但修前它是**一声不响**的：宿主把新问题塞进 `initialUserMessage` 再续跑，
   // 模型只会回应「【恢复运行】」告示、完全看不到那个问题（真机评测 `scripts/recall-eval.mjs` 就踩了
   // 这一格，最后靠 `appendUserTurn` 才把问题写进账本）。
-  // 这里只**记下**要丢的字段，事件在 `emitEvent` 定义之后发（那是 `const`，此处调用会撞 TDZ）。
+  // 这里只**记下**候选字段，是否真的丢了要等 `restoreResume` 跑完才知道——`resume: true` 但没开持久化
+  // （`persistence: "none"`）时 `restoreResume` 在 `src/loop/resume-manager.js:448` 直接返回，上面初始化
+  // 的那份输入**照旧进请求**（copilot 复审抓到的误报：只判 `resume === true` 会把「没丢」说成「丢了」）。
+  // 事件本身在 `emitEvent` 定义之后发（那是 `const`，此处调用会撞 TDZ）。
   const droppedResumeInput = resume === true
     ? [
       ...(typeof initialUserMessage === "string" && initialUserMessage !== "" ? ["initialUserMessage"] : []),
@@ -2408,6 +2411,11 @@ export async function runToolLoop(options) {
       throw error;
     }
   }
+  // 判「这次续跑真的从账本重建了对话」：`restoreResume` 只在真恢复时把 `ctx.messages` 换成账本那串
+  // （经 setter 写回本函数的 `messages`）⇒ **身份变了**才算重建。身份没变 = 输入照旧在上下文里，
+  // 那条 `resume_input_dropped` 就是误报。用身份而不是「有没有 store」：store 在但账本为空时
+  // 输入同样被换成空串，那一次确实丢了，该报。
+  const messagesBeforeResume = messages;
   try {
     await restoreResume({
     resume,
@@ -2739,7 +2747,7 @@ export async function runToolLoop(options) {
 
   // issue #261127-17：把「续跑丢掉了调用方这次递进来的输入」变成可观测事实（修前完全静默）。
   // 发在 `emitEvent` 之后是刻意的：它是 `const` 箭头函数，提前调用会撞 TDZ。
-  if (droppedResumeInput.length > 0) {
+  if (droppedResumeInput.length > 0 && messages !== messagesBeforeResume) {
     emitEvent({
       type: "resume_input_dropped",
       runId,
