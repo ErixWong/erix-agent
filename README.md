@@ -732,12 +732,11 @@ decide whether to consume the result.
   deprecated.
 - `context` is optional and defaults to `undefined`; when supplied, it
   accepts `strategy`, `budgetTokens`, `keepRounds`, `toolContext`, and
-  `task`. `strategy` takes either a strategy object or one of the built-in
-  name `"fold-llm"` (issue #167, narrowed by #898: the mechanical strategies are
-  internal — the budget fallback still uses one — but they are no longer
-  selectable names); an
-  unknown name or other type raises a `TypeError` at run startup, and the
-  `fold-llm` name makes the engine summarize with this run's own provider (one
+  `task`. `strategy` accepts **a strategy object only** (issue #261127-12 dropped the name form:
+  a string, including the former built-in name `"fold-llm"`, raises a `TypeError` at run startup;
+  the mechanical strategies are internal — the budget fallback still uses one — and were never
+  selectable names). **Omitting `strategy` uses the engine's built-in `fold-llm`** with a default
+  summarizer, which summarizes with this run's own provider (one
   extra tool-free completion per compaction, billed into `result.usage` and
   visible through `onUsage`). When `budgetTokens` is absent, the loop derives it from
   `contextWindowTokens` and `maxOutputTokens` found in `modelConfig`,
@@ -1075,13 +1074,19 @@ The shared CLI flags are:
   plus `effort=none→low` when the engine's one GLM translation (ADR-017) fired.
 - Context folding is done by the LLM (`fold-llm`); there is no `--compaction` flag or
   `slots.default.compaction` field any more (issue #898 removed the "explicitly pick a zero-LLM
-  strategy" escape hatch). `fold-llm` costs one extra main-model call per compaction. **One exception,
-  and it is deliberate**: when the budget still cannot be met *after* LLM folding, the engine's last
-  resort is the mechanical `slidingWindow` layer — it leaves a detectable mark in the fold record
-  rather than pretending to be a summary. A host that
-  calls the library with no strategy and no summarizer simply does not fold (the engine no longer
-  silently substitutes a mechanical summary); an over-budget run fails through the existing
-  `cannot_fit` / `budgetUnreachable` path. Since issue #673 `erix chat`
+  strategy" escape hatch), and `folding.context.strategy` now accepts **a strategy object only** — a
+  string (including the former built-in name `"fold-llm"`) throws a `TypeError` at startup (issue
+  #261127-12 dropped the name form). **Omitting the strategy uses the engine's built-in `fold-llm`**
+  (the engine injects a default summarizer), so folding does **not** switch off because no strategy was
+  written; the way to turn folding off is **not to provide a budget** (no `budgetTokens` ⇒ the engine
+  never triggers a fold; on the CLI that means giving no context window and no explicit budget).
+  `fold-llm` costs one extra main-model call per compaction. **One exception, and it is deliberate**:
+  when the budget still cannot be met *after* LLM folding, the engine's last resort is the mechanical
+  `slidingWindow` layer — it leaves a detectable mark in the fold record
+  (`degradeReason = "budget_fallback_mechanical"`) rather than pretending to be a summary (the
+  one-shot `compaction_strategy_fallback` diagnostic still fires for this budget-fallback case; only
+  the old "no strategy configured" branch was removed). An over-budget run that still cannot fit fails
+  through the existing `cannot_fit` / `budgetUnreachable` path. Since issue #673 `erix chat`
   also **shows** which layer really folded: each real fold prints one stderr line
   (`[compaction] round=… strategy=… foldedRounds=… tokensBefore=… tokensAfter=…`), the run ends
   with one machine-parsable `=== 折叠 === strategy=… folds=… foldedRounds=… tokens=…` line next

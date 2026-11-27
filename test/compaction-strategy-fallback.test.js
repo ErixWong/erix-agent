@@ -84,9 +84,27 @@ async function run(options = {}) {
 }
 
 
-test("unconfigured context.strategy + budget fallback emits exactly one diagnostic and names the fallback (issue #464 A)", async () => {
-  // issue #898-2：本格删——钉的是「未配策略⇒引擎库层用 sliding-window 兜底并发一条 context.strategy is not
-  // configured 兜底诊断」。新设计「无策略⇒不折叠」后无策略不再进折叠块（连预算兜底也不跑）⇒ 无该诊断。
+test("unconfigured context.strategy still folds via the built-in fold-llm, and the summary comes from the LLM summarizer (issue #464 A, #261127-12)", async () => {
+  // issue #261127-12 改后契约：不写策略 = 引擎内置 fold-llm（注入默认 summarizer），折叠照常发生，摘要来自
+  // LLM summarizer。旧契约里「未配策略 ⇒ 库层 sliding-window 兑底 + 一条 context.strategy is not configured
+  // 诊断」那一格已不存在（策略永不为空 ⇒ 无该诊断；预算兑底那一支是另一回事，见下方 #657 系列格）。
+  const { compactions, provider } = await runFoldLlmChain({
+    runId: "464-unconfigured-folds",
+    budgetTokens: 2500,
+    keepRounds: 0,
+    foldAtRatio: 1,
+    toolTurns: 14,
+    toolBytes: 600,
+    seedBytes: 200,
+    summaryBytes: 200,
+  });
+
+  assert.ok(compactions.length >= 1, "没配策略也必须真的折叠（引擎内置 fold-llm，不是关掉折叠）");
+  assert.ok(provider.summaryCalls() >= 1, "摘要必须来自 LLM summarizer（内置 fold-llm 的注入 summarizer 真跑过）");
+  for (const event of compactions) {
+    assert.equal(event.compaction.strategyName, "fold-llm",
+      "没配策略时这一折由引擎内置 fold-llm 完成，账上写它（名字形态删后缺省即此）");
+  }
 });
 
 test("configured strategy suppresses the diagnostic; strategyName names whoever really folded (issue #464 A, #657)", async () => {
@@ -116,10 +134,10 @@ test("configured strategy suppresses the diagnostic; strategyName names whoever 
   }
 });
 
-test("the fallback notice is run-scoped: repeated folds share one, a second run gets its own (issue #464 A)", async () => {
-  // issue #898-2：本格删——同「unconfigured ... emits exactly one diagnostic」：跨 run 去重的库层兜底诊断，
-  // 无策略不再折叠 ⇒ 该诊断不再产生，钉的是已删行为。
-});
+// issue #261127-12：原「the fallback notice is run-scoped」一格整格删除（连同标题）。它钉的是「未配策略
+// ⇒ 那条 not-configured 兑底诊断」的跨 run 去重；名字形态删后策略永不为空，那条诊断的产生点没了 ⇒ 判据
+// 不再有宿主。现存的 compaction_strategy_fallback 诊断（预算兑底那一支，src/loop/orchestrator.js:4533-4537）
+// 的每-run 至多一条由发射点守卫保证，并由下方 #657 系列格覆盖；本格的跨 run 去重断言因此一并移除。
 
 test("hosts that ignore the additive keys still see the previous compaction shape (issue #464 A)", async () => {
   const { compactions } = await run({ runId: "464-shape" });

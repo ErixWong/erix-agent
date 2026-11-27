@@ -92,8 +92,8 @@ function warnCompactionDisabledOnce() {
   compactionDisabledWarned = true;
   process.stderr.write(`${COMPACTION_DISABLED_WARNING}\n`);
 }
-// issue #261127-12：策略名字形态已删 ⇒ `DEFAULT_COMPACTION_STRATEGY` 与
-// `resolveCompactionStrategyName`（原 #167 的 CLI 名字解析）一并删除。折叠策略现在**永不为空**且
+// issue #261127-12：策略名字形态已删 ⇒ CLI 侧的「默认策略常量」与「名字解析函数」（原 #167）一并
+// 删除。折叠策略现在**永不为空**且
 // 由引擎内置：`resolveCompactionStrategy(undefined)` 直接返回带默认 summarizer 的 fold-llm，
 // `buildCompactionContext` 不再往 `config.folding.context.strategy` 写策略名，CLI 也不再传名字。
 // （#614 的语义折叠默认、#661 的 `summarizer_failed` 终局、#926 退役 `--compaction`/`config.compaction`

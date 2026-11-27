@@ -1340,7 +1340,7 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 | --- | --- | --- | --- |
 | `capabilities.ports.sleepImpl` | 函数 `(ms, signal) => Promise<void>` | `config.timing.retry.sleepImpl`（以及 issue #498 S3 之前的扁平 `retry.sleepImpl`） | 替换重试定时器：每一次退避都走它，宿主因此能不付墙钟代价记录每一个 `delay` |
 | `capabilities.ports.judgeProvider` | 可调用的 `(request) => Promise<response>` **或**带 `chat(request)` 方法的对象 | `reflection.judge.provider` / `config.run.reflection.judge.provider` | judge 的评估器。它喂三处：轮次 judge、收尾 LLM 归一化、以及上报的 `judgeModel`——与嵌套老槽位喂的是同三处。不写就用 run 的主 provider |
-| `capabilities.ports.strategy` | 压缩策略**对象**，带 `shouldCompact(messages, budgetTokens)` 与 `compact(messages, options)` | `context.strategy`（对象形态）/ `config.folding.context.strategy` | 原样透传（`resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）对对象形态原样返回），所以被调的方法就是宿主自己的。内置**名字**是数据、不是端口：`"sliding-window"` / `"fold-statistical"` / `"fold-llm"` 写 `context.strategy` / `config.folding.context.strategy`，端口位收到字符串会抛并说明这一点 |
+| `capabilities.ports.strategy` | 压缩策略**对象**，带 `shouldCompact(messages, budgetTokens)` 与 `compact(messages, options)` | `context.strategy`（对象形态）/ `config.folding.context.strategy` | 原样透传（`resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）对对象形态原样返回），所以被调的方法就是宿主自己的。名字形态已由 #261127-12 删除：`context.strategy` / `config.folding.context.strategy` 只接受**对象**，所以字符串——含曾经的 `"fold-llm"`——在 run 启动期抛 `TypeError`；不写策略即用引擎内置 `fold-llm` |
 
 三条值得知道的后果：
 
@@ -2267,29 +2267,29 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 
 ### 压缩策略选择（issue #167）
 
-`context.strategy` 既接受策略**对象**（语义逐字不变），也接受内置**名字**
-唯一的内置名字 `"fold-llm"`（#898 收口了名字集合：机械策略只剩对象形态可达，且引擎内部仍用其中
-一个作预算兜底）。名字在 **run 启动期一次性**解析成宿主自己
-也能构造出的那个实例（`src/compact/strategy-resolution.js`，接入点 `src/loop/orchestrator.js`），
-因此下游 configuredStrategy 通道零改动。未知名字、空字符串、以及既不是字符串也不是对象的值，
-都会在**首次 provider 调用前**抛 `TypeError` 并列出合法值——与上面同一种「运行前」抛错形状
-（不带 `termination`/`usage`/`rounds`/`finalText`）。名字形态的策略还会接上 context 级的
-`recoveryHint` 与 `stubFor`；对象形态依旧由宿主自己设在对象上，引擎绝不重写注入的对象——
-手工 `createFoldLlmStrategy` 但缺 `summarizer` 时，仍按它自己的构造期 `TypeError` 失败。
+`context.strategy` **只接受策略对象**（语义逐字不变）。名字形态已由 issue #261127-12 删除：曾经的
+唯一内置名字 `"fold-llm"`（#898 早已把名字集合收口到机械策略只剩对象形态可达，且引擎内部仍用其中
+一个作预算兜底）没了，所以**字符串**——含曾经的 `"fold-llm"`——会在**首次 provider 调用前**抛
+`TypeError`（与上面同一种「运行前」抛错形状：不带 `termination`/`usage`/`rounds`/`finalText`）；
+空字符串与任何非对象值同样抛错。现在只有一条路径：`resolveCompactionStrategy`
+（`src/compact/strategy-resolution.js`，接入点 `src/loop/orchestrator.js`）原样返回注入的对象，而
+**不写策略会在 run 启动期一次性解析成引擎内置的 `fold-llm`**——正是宿主自己也能构造出的那个实例，
+因此下游 configuredStrategy 通道零改动。这个内置策略也会接上 context 级的 `recoveryHint` 与
+`stubFor`；对象形态依旧由宿主自己设在对象上，引擎绝不重写注入的对象——手工
+`createFoldLlmStrategy` 但缺 `summarizer` 时，仍按它自己的构造期 `TypeError` 失败。
 
-`fold-llm` 名字形态会注入一个复用**本 run 主力 provider** 的默认 summarizer
+引擎内置的 `fold-llm` 注入一个复用**本 run 主力 provider** 的默认 summarizer
 （`src/compact/provider-summarizer.js`）：每次压缩一次无工具补全，输入是
 `SUMMARIZER_PROMPT_GUIDE` + 被折叠消息的确定性序列化 + 被折叠轮次范围。成本与记账属于契约：
 
-- **每次压缩多一次主力模型调用**，输入体量约等于被折叠的老轮次。因此 `fold-llm` 只能显式选用，
-  而「默认是什么」是**两层各自的事实**，不是一句话：
-  - **库层默认**（未配策略时）是 `sliding-window`：没有选中策略的预算溢出由 `src/compact/pipeline.js`
-    里那个兜底层接手，它的 `strategyNames` 就是这一半的唯一真值。
-  - **CLI 槽位默认**是 `fold-llm`：`slots.default.compaction` 不设时由 `bin/cli.js` 解析成它。
-    那是 **CLI 层的选择，不是库默认**——`bin/` 是校验器/调试器，不是契约面；什么都不配的宿主拿到的是
-    上面那条库层行为，不是这一条。
-  没有任何一层默认 `fold-statistical`：它是一个显式的「零 LLM」选择；自 issue #661 起 `fold-llm`
-  摘要器失败是**终局错误**，不再是降级到它（失败形状见下一条）。
+- **每次压缩多一次主力模型调用**，输入体量约等于被折叠的老轮次。自 issue #261127-12 起只有
+  一种默认、且它**不是**显式选用：不写策略即用内置 `fold-llm`（引擎注入默认 summarizer），
+  **折叠不会因不写策略而关闭**。关掉折叠的方式是**不提供预算**——没有 `budgetTokens` 引擎就不触发
+  折叠（CLI 侧即不给窗口 / 不给显式预算）。`--compaction` / `slots.default.compaction` 已由 #926
+  退役，CLI 只是省略策略，拿到的就是这个内置默认。
+- 没有任何一层默认 `fold-statistical`：它是一个显式的「零 LLM」对象选择，只能经
+  `capabilities.ports.strategy` 以对象形态可达；自 issue #661 起 `fold-llm` 摘要器失败是
+  **终局错误**，不再是降级到它（失败形状见下一条）。
 - 它的 usage 走与其他辅助调用同一的 `addUsage` 路径并入 run 总账（`persist`，`src/loop/orchestrator.js`，
   `trackLatest: false`），并通过 `onUsage` 上报，因此 `result.usage` / `error.usage` 是完整的。这次调用
   **不推 `rounds`**、不参与 stall 检测、也不更新后续压缩判断用的 `latestApiInputTokens` / `latestApiEstimatedTokens`。
@@ -2995,7 +2995,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `model` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 被评决策发生时 run **实际使用**的模型标识，从 run 选项 / provider 配置解析。探测顺序与 `modelMetadataFor()` 一致（`modelConfig` → `modelMetadata` → `model` → `provider` → `context`），键顺序 `model` → `model_name`（与 provider 构造侧同口径），首个命中且**不合并**。绝不硬编码。任一候选都探不到非空名字时该字段**缺省**：写 `"unknown"` 会让「没配模型」与「真有个叫 unknown 的模型」在账面上无法区分。 |
 | `judgeModel` | `onJudge` 记录，仅当 judge 走了与 run 不同的 evaluator 模型 | 让 per-model 校准能区分「被评的模型」与「评它的模型」。judge 与 run 同模型时缺省。 |
 | `compaction` 统计 | `onEvent`（`type: "compaction"`）与 `<runId>.state.json` 里的 `deterministic.compactionStats` 窗口 | 既有键-round-for-round 不动。**additive（issue #464 A）：** `strategyName` 只在引擎能如实说出时才出现——它写的是**真正执行了本次折叠**的那个策略（含库层兜底的 `"sliding-window"`），不是宿主配置项原文。忽略它的宿主看到的形状与从前逐字一致。**到底写哪一个名字（issue #657）：** 折叠入口有两个可能的执行者——宿主配置的那个策略，以及引擎自己的预算兜底（`sliding-window`，只折「折到够用」所需的最老几轮）。配置策略**折了 ≥1 轮** ⇒ 写**它**的名字（兜底随后又折了也一样）；配置策略**折 0 轮**、活是兜底干的 ⇒ 写**兜底实例**的名字（`"sliding-window"`）——它从不报一个一轮都没折过的策略。一次折叠窗口里谁都没折 ⇒ 整个 `strategyName` 键不出现。对引擎已知的层名，它与 `layers` 对得上：这个名字指向的 budget 相层必然 `triggered > 0`。宿主自带的策略对象没有对应层——`getCompactionLayerForStrategy` 只映射内置的策略名——所以它的折叠在 `layers` 上不留任何痕迹；这类名字的自证是同一格上的 `foldedRounds > 0` 加 `compacted === true`。 **additive（issue #469 ④）、取值域缩小（issue #661）：** `foldSummary` 记的是**真产出了摘要的那一折**的结果状态——`inputTruncated`、`droppedMessages`、`finishReason`、`inputTokens`、`outputTokens`、`priorSummaryTruncated`、`priorSummaryBytes`、`droppedRounds`、`attempts`、`reused`。其中 `attempts` / `inputTruncated` / `droppedMessages` / `droppedRounds` 由超窗重试那条路产生。`degradeKind` / `degradeReason` **名字留在形状里，但不再有降级语义**：自 #661 起摘要器失败是终局错误，能走到这条 stat 的折叠都没降级，树内也没有任何写点会产出这两个键（resume 出来的 0.30 之前的账本行仍可能带着它们）。`budgetExhausted` 本来只可能出现在失败那一支，所以它改成随异常走：`details.budgetExhausted`。与 `strategyName` 同口径：**无事实 ⇒ 无键**——这次折叠什么都没产出诊断信号时，形状逐字不变。摘要正文本身不进这里（它在 `record.foldedFacts` 上）。 **additive（issue #741）：** `foldArchive` 报的是**归档夹断**丢了什么 —— `{ droppedMessages, droppedBytes }`，信息量足够时再加 `capBytes` / `dedupedMessages`。这两个计数从 `buildFoldedRecordArchive` 第一天起就在算，但从来只到 `record.foldedPayloadMeta` 为止，于是「归档把原文丢了」在事件通道与 `<runId>.state.json` 上都是静默的。依旧是同一条纪律：什么都没丢 ⇒ 根本不带 `foldArchive` 键。 **additive（issue #930）：** `trigger` 说明**这次折叠是被什么触发的**；目前唯一写入的值是 `"context_window_exceeded"`（上游把上一个请求回成带超窗字样的 400/422，于是引擎强制折一发并重试一次）。缺席 = 普通的预算折叠。它是**审计**字段，不是可调项：静默自愈是不允许的，宿主必须能区分「这次折叠是被上游打回来才压的」与「这次是预算到了」。同一条纪律：没发生强制折叠 ⇒ 根本不带 `trigger` 键。 |
-| `compaction_strategy_fallback` 事件 | `onEvent`，一个 run 最多一条 | **additive（issue #464 A）。** `{ type: "compaction_strategy_fallback", round, detail }`，仅在 `context.strategy` **未配置**且折叠是**预算兜底触发**的那一刻发出——也就是引擎库层的 `sliding-window` 真的跑了。issue #643 起这一发**只折够用的最老轮次**（不再把所有可折轮次一路清到 `keepRounds: 0`），并把**已经算好的**机械摘要 prepend 进 head，所以模型仍然看得见折了什么（issue #464 B）。形状对齐 `model_metadata_missing`（issue #182）：`detail` 首句是宿主可直接断言的固定原文，能解析出预算时再附上 `budgetTokens` / `estimatedTokens`。 |
+| `compaction_strategy_fallback` 事件 | `onEvent`，一个 run 最多一条 | **additive（issue #464 A）。** `{ type: "compaction_strategy_fallback", round, detail }`，在**引擎自己**的 `sliding-window` 兜底真正折了这一折时发出：所选策略（自 #261127-12 起连缺省都是内置 `fold-llm`，策略永不为空）请求了折叠却没把预算收进去，于是引擎跑了自己那层机械 `sliding-window`（`degradeReason = "budget_fallback_mechanical"`）。旧的「没配策略」触发点已由 #261127-12 删除，只剩这条预算兜底一支。issue #643 起这一发**只折够用的最老轮次**（不再把所有可折轮次一路清到 `keepRounds: 0`），并把**已经算好的**机械摘要 prepend 进 head，所以模型仍然看得见折了什么（issue #464 B）。形状对齐 `model_metadata_missing`（issue #182）：`detail` 首句是宿主可直接断言的固定原文，能解析出预算时再附上 `budgetTokens` / `estimatedTokens`。 |
 | `compaction_deferred` 事件 | `onEvent`，每推迟一发压缩一条 | **additive（issue #588）。** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }`——续写（`max_tokens` continuation）循环里那一发压缩被跳过时发出，原因是请求尾部是一条 `tool_result` 还没回来的 assistant `tool_use`（`pendingTailToolUses` (`src/loop/pending-tool-result.js`)）。既不结清、也不放宽配对规则；下一轮开圈的压缩面对的就是跑完的轮。终止语义一个字没动。 |
 | `continuity_injection_skipped` 事件 | `onEvent`，续接块每有一轮没能落位发一条 | **additive（issue #568）。** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }`——这一轮的请求里没有注入续接块（例如 `reason: "pending_tool_use"`：在那个位置插入会破坏 `tool_use`/`tool_result` 配对）。跳过是上报出来的，而不是拿机械文本顶上去。 |
 | `user_turn_guard_unrecoverable` 事件 | `onEvent`，每个退到守卫最后一格的请求视图一条（也就是每次 provider attempt 一条） | **additive（issue #296）。** `{ type: "user_turn_guard_unrecoverable", runId?, parentRunId?, round, channel: "chat" \| "chatStream", reason: "empty_view" \| "no_user_turn" \| "invalid_view", detail: string }`——请求视图的 user 轮不变量退完了所有退让格：`ensureUserTurnView` (`src/loop/request-user-view.js`) 在请求视图里找不到可用的 user 轮，**并且**未折叠的源视图里也没有可回补的 user 轮，于是这个请求**原样发出**——引擎既不伪造一条 user 轮，也不抛错。要求 user query 的上游会回 `400`；本事件在**那个请求发出之前**就到，因此它是「失败」与「原因」之间的 join 键（#296 之前这一格被滤掉，对外完全无痕）。`reason` 是子原因：`empty_view`（视图空了）、`no_user_turn`（非空但没有真 user 轮——纯 `tool_result` 载体不算）、`invalid_view`（有 user 轮但 `tool_use`/`tool_result` 配对非法）。`detail` 首句是宿主可直接断言的固定原文。另外两个守卫动作（`preserved_latest_user_turn` / `abandoned_fold`）照旧落进 `compactionStats.userTurnGuard`、永不发本事件；本事件**刻意不写进** `compactionStats`——它可能在一轮**完全没有压缩**时触发，写进去会让「这一轮到底有没有折叠」不可判读。 |
@@ -5493,7 +5493,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 >
 > **钩子配在哪、三个区间键的作用域是什么、以及 `context.onFoldSummary` 为什么退役（issue #499）。** `onFoldSummary` 配在装配端口策略项（`policy.onFoldSummary`）或直接入口的顶层选项（`runToolLoop({ onFoldSummary })`）——它**不从 `context` 读**。`context.onFoldSummary` 自 issue #499 起**已退役**：这个键从 `context` 的合法键集合（`CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`））里移除，所以现在与其它宿主元数据键**逐格同形**——装配口路线通过一条 `context_unknown_option` 事件报出，直连路线静默放行，**两条路线都不抛**。选「退役」而不是「抛」是刻意的：`context` 里的键是宿主元数据的形状，不是拼错的摘要旋钮名，抛就是破坏（#493 的口径）。本文档早前的修订版把这个键写成「会被忽略」——那正是本次退役要消掉的那种静默配置：引擎从来没读过它，而白名单里那一条只买到「绿灯 + **零**事件」。同一份载荷还带折叠范围三键（issue #479）：`foldedRoundRange {from,to}` 是**本次**折叠的轮次区间，`foldedThrough` 是**本次折叠之后**的水位线，`foldedRoundCount` 是**run 作用域**的累计已折轮数——刻意不是会话/账本总账：resume 之后它只数这个 run 折过的部分，宿主若需要会话级数字，得自己把此前各 run 收到的计数相加。
 >
-> **四个上限都是 `context` 旋钮（issue #469，宿主审计 B1）：** `context.summarizerTimeoutMs`（provider 层**单发**超时，默认 `30000`）、`context.summarizerBudgetMs`（策略层**整条步骤死线**，首发与超窗自愈重试共用，默认 `30000`）、`context.maxSummarizerInputBytes`（被折窗口的字节上限，默认 `49152`）、`context.maxPriorSummaryBytes`（续写基底的字节上限，默认 `24576`）。两个超时名**刻意不合并**：单发上限与整步骤死线回答的是两个问题。省略即逐字等于今天的值；显式传入的 `summarizerTimeoutMs` 语义是**上限**（与调用方剩余预算取小），否则它会被步骤死线静默盖掉。两条入口路线现在共用同一道闸口、都在启动期校（issue #496）：非安全正整数抛 `TypeError: <key> must be a positive integer`，**未知** `context` 子键抛 `unknown assembly policy context option: "…"` 而不是被静默丢弃（`#331` 的形状）。四个键只对**内置名字形态**生效（`context.strategy: "fold-llm"`）；对象形态自带策略时上限归宿主自己。 **`context.maxSummaryTokens` 是第五个旋钮（issue #493，下游 fde-station）：** 它定摘要的输出预算（默认 `1400`），并且**同时给那一发的 `maxTokens` 封顶**——摘要调用以前原样继承 run 的 `maxTokens`（实测 32768），模型按 32k 写满、结果再被 1400 剪回，纯白烧。现在两者按 `min(run 的 maxTokens, maxSummaryTokens)` 对齐。**未知 `context` 子键按家族校验，不搞一刀切：** 拼错的摘要旋钮名（`maxPriorSummaryByte`、`summarizeBudgetMs`，判据是**与已知旋钮名的编辑距离 ≤ 2**，不是「含 `summar` 就算」，所以 `summaryStyle` / `summarizerNote` 这类业务键照旧合法）两条路线都抛，其余未知键**当宿主元数据放行**（`src/loop/budget.js` 自己就从 `context` 读 `toolContext` / `expert` / `user` / `session` / `requestId`，文档开头也让宿主把私有元数据放这里）——放行的键在**装配口路线**上通过一条 `context_unknown_option` 事件如实报出（直连路线从不发这条事件，静默放行），不阻断装配。**两条运维注记：** 复用指纹现在包含续写基底，所以**既有账本升级后首次必然 miss 一次**，那次 resume 首折叠会重算一份摘要；以及当**单独一轮就超过** 48 KB 输入上限时，没有整轮可丢（`droppedRounds` 仍为 0）——那一格由 token 守卫逐条裁消息，并在省略注里留痕。
+> **四个上限都是 `context` 旋钮（issue #469，宿主审计 B1）：** `context.summarizerTimeoutMs`（provider 层**单发**超时，默认 `30000`）、`context.summarizerBudgetMs`（策略层**整条步骤死线**，首发与超窗自愈重试共用，默认 `30000`）、`context.maxSummarizerInputBytes`（被折窗口的字节上限，默认 `49152`）、`context.maxPriorSummaryBytes`（续写基底的字节上限，默认 `24576`）。两个超时名**刻意不合并**：单发上限与整步骤死线回答的是两个问题。省略即逐字等于今天的值；显式传入的 `summarizerTimeoutMs` 语义是**上限**（与调用方剩余预算取小），否则它会被步骤死线静默盖掉。两条入口路线现在共用同一道闸口、都在启动期校（issue #496）：非安全正整数抛 `TypeError: <key> must be a positive integer`，**未知** `context` 子键抛 `unknown assembly policy context option: "…"` 而不是被静默丢弃（`#331` 的形状）。四个键只对**引擎内置 `fold-llm`** 生效（即不传对象策略时——名字形态已由 #261127-12 删除）；对象形态自带策略时上限归宿主自己。 **`context.maxSummaryTokens` 是第五个旋钮（issue #493，下游 fde-station）：** 它定摘要的输出预算（默认 `1400`），并且**同时给那一发的 `maxTokens` 封顶**——摘要调用以前原样继承 run 的 `maxTokens`（实测 32768），模型按 32k 写满、结果再被 1400 剪回，纯白烧。现在两者按 `min(run 的 maxTokens, maxSummaryTokens)` 对齐。**未知 `context` 子键按家族校验，不搞一刀切：** 拼错的摘要旋钮名（`maxPriorSummaryByte`、`summarizeBudgetMs`，判据是**与已知旋钮名的编辑距离 ≤ 2**，不是「含 `summar` 就算」，所以 `summaryStyle` / `summarizerNote` 这类业务键照旧合法）两条路线都抛，其余未知键**当宿主元数据放行**（`src/loop/budget.js` 自己就从 `context` 读 `toolContext` / `expert` / `user` / `session` / `requestId`，文档开头也让宿主把私有元数据放这里）——放行的键在**装配口路线**上通过一条 `context_unknown_option` 事件如实报出（直连路线从不发这条事件，静默放行），不阻断装配。**两条运维注记：** 复用指纹现在包含续写基底，所以**既有账本升级后首次必然 miss 一次**，那次 resume 首折叠会重算一份摘要；以及当**单独一轮就超过** 48 KB 输入上限时，没有整轮可丢（`droppedRounds` 仍为 0）——那一格由 token 守卫逐条裁消息，并在省略注里留痕。
 >
 > **续写基底按账本作用域播（issue #469，宿主裁决 A）：** resume 出来的 run 第一次折叠从**账本**播种，取源与读侧裁剪同一条规则（先 `pickCoveringFoldSummary`，再 `record.foldedFacts`；嵌套 `foldedRoundRange.{from,to}` 与平铺 `{from,to}` 两种形状都收）。优先级是契约：**显式调用参数 > 策略构造参数 > in-run 闭包 > 账本播种**——非 resume、或挑不出覆盖水位线的事实时，行为逐字退回今天。`compactionStats[].foldSummary` 增 `priorSummaryOrigin: "ledger" | "in-run"`（没有基底就不写键，与家族其余键同口径）。复用指纹**包含基底**：resume 后第一次折叠会重算一次而不是无声忽略播进来的基底（有意的取舍：宁可少命中一格，也不无声丢脉络）。
 >
