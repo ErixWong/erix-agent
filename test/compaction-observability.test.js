@@ -11,7 +11,6 @@ const layerIds = [
   "slidingWindow",
   "foldStatistical",
   "foldLlm",
-  "anchors",
   "enforceSize",
 ];
 

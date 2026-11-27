@@ -179,7 +179,7 @@ function anchorConversation() {
   ];
 }
 
-test("appends the mechanical fidelity layer after the LLM summary" + " (anchor index / verbatim user input / reverse signal)", async () => {
+test("appends the mechanical fidelity layer after the LLM summary" + " (verbatim user input / reverse signal)", async () => {
   const messages = anchorConversation();
   const paraphrased = [
     "## 阶段",
@@ -192,21 +192,20 @@ test("appends the mechanical fidelity layer after the LLM summary" + " (anchor i
   }).compact(messages, { keepRounds: 2 });
   const text = result.messages[0].content[0].text;
 
-  // LLM 复述必然丢失精确值（SHA → "某个 commit"），机械保真层把原文值兜回来。
+  // LLM 复述必然丢失精确值（SHA → "某个 commit"）；逐字引用把被折轮次的原文兜回来。
   assert.match(text, /提交了某个 commit/);
-  assert.match(text, /## 锚点索引（机械抽取，未经 LLM 改写）/);
-  assert.match(text, /^shas: 1ed3f35$/m);
-  assert.match(text, /^paths: src\/compact\/fold-llm\.js:120$/m);
-  assert.match(text, /^issues: #32$/m);
-  assert.match(text, /^urls: https:\/\/git\.erix\.vip\/eric\/erix-llm-kit\/commit\/1ed3f35$/m);
+  // 反向锁：折叠摘要不再出现机械锚点节（锚点索引已退役）。
+  assert.doesNotMatch(text, /## 锚点索引/u);
+  assert.doesNotMatch(text, /^shas: 1ed3f35$/m);
+  assert.doesNotMatch(text, /^paths: src\/compact\/fold-llm\.js:120$/m);
+  assert.doesNotMatch(text, /^urls: https:\/\/git\.erix\.vip/m);
   // 逐字引用被折轮次里最后一条真实 user 消息，并标注反向信号。
   assert.match(text, /## 用户最新未解决输入（逐字引用，未经 LLM 改写）/);
   assert.match(text, /⚠ 用户曾发出中止\/撤销信号（命中：取消）/);
   assert.match(text, /^> 取消旧方案，改做锚点索引$/m);
-  // 保真层整体追加在 LLM 摘要之后，锚点节位于最末。
+  // 保真层整体追加在 LLM 摘要之后。
   assert.ok(text.indexOf(paraphrased) < text.indexOf("## 用户最新未解决输入"));
-  assert.ok(text.lastIndexOf("## 锚点索引") > text.indexOf("## 用户最新未解决输入"));
-  assert.ok(text.trimEnd().endsWith("https://git.erix.vip/eric/erix-llm-kit/commit/1ed3f35"));
+  assert.ok(text.trimEnd().endsWith("> 取消旧方案，改做锚点索引"));
   // 引用的是"被折轮次里"最后一条真实 user 消息；仍在上下文里的最新 user 输入不重复注入。
   assert.doesNotMatch(text, /^> final request$/m);
   assert.equal(result.foldedRounds, 4);
@@ -255,132 +254,19 @@ test("adds no mechanical section when the folded payload has nothing to extract"
   assert.doesNotMatch(text, /锚点索引|用户最新未解决输入|中止\/撤销/u);
 });
 
-test("anchors:false strips the stale anchor section from a previous default fold (review fix)", async () => {
-  const summarizer = async () => "## 下一步\n已完成项禁止重做";
-  const strategy = createFoldLlmStrategy({ summarizer });
-
-  // fold1 默认（anchors 缺省开启）：产生真锚点节。
-  const fold1 = await strategy.compact(anchorConversation(), { keepRounds: 2 });
-  const fold1Text = fold1.messages[0].content[0].text;
-  assert.match(fold1Text, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-  assert.match(fold1Text, /^shas: 1ed3f35$/mu);
-  assert.match(fold1Text, /^paths: src\/compact\/fold-llm\.js:120$/mu);
-
-  // 模拟对话继续：旧摘要消息留在 head（未被折），且仍有轮次可折。
-  const continued = [
-    ...fold1.messages,
-    { role: "user", content: "second wave request" },
-    { role: "assistant", content: [{ type: "text", text: "second wave answer" }] },
-  ];
-
-  // fold2 anchors:false：旧锚点节必须从旧 content 清除。
-  const fold2 = await strategy.compact(continued, { keepRounds: 2, anchors: false });
-  const whole2 = JSON.stringify(fold2.messages);
-  // 无锚点节标题、无旧锚点值（「改做锚点索引」是用户原文逐字引用，合法保留）。
-  assert.doesNotMatch(whole2, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-  assert.doesNotMatch(whole2, /1ed3f35|src\/compact\/fold-llm\.js:120|#32|git\.erix\.vip/u);
-  // 旧摘要的非锚点内容保留（只剥锚点节，不动其余）。
-  const oldBlock = fold2.messages[0].content[1].text;
-  assert.match(oldBlock, /## 下一步\n已完成项禁止重做/u);
-  assert.doesNotMatch(oldBlock, /## 锚点索引/u);
-  // 其余保真层（逐字引用）在新摘要里照常生成，不受影响。
-  const newBlock = fold2.messages[0].content[0].text;
-  assert.match(newBlock, /## 用户最新未解决输入/u);
-  assert.match(newBlock, /^> final request$/m);
-
-  // call-level 与工厂级 anchors:false 等价。
-  const factoryDisabled = await createFoldLlmStrategy({
-    summarizer,
-    anchors: false,
-  }).compact(continued, { keepRounds: 2 });
-  assert.deepEqual(factoryDisabled.messages, fold2.messages);
-
-  // fold3 仍 anchors:false：锚点节不复活。
-  const fold3 = await strategy.compact(fold2.messages, { keepRounds: 1, anchors: false });
-  const whole3 = JSON.stringify(fold3.messages);
-  assert.doesNotMatch(whole3, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-  assert.doesNotMatch(whole3, /1ed3f35|src\/compact\/fold-llm\.js:120|#32|git\.erix\.vip/u);
-
-  // anchorsEnabled 缺省路径行为不变：旧 content 原样保留（旧锚点节仍在）。
-  const foldDefault = await strategy.compact(continued, { keepRounds: 2 });
-  const wholeDefault = JSON.stringify(foldDefault.messages);
-  assert.match(wholeDefault, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-  assert.match(wholeDefault, /1ed3f35/u);
-});
-
-test("anchors:false strips the stale anchor section from every head message when the summary lands in system", async () => {
-  const summarizer = async () => "## 下一步\n已完成项禁止重做";
-  const strategy = createFoldLlmStrategy({ summarizer, summaryRole: "system" });
-
-  // fold1 默认（anchors 缺省开启）：摘要落进 system 消息（无既有 system 则新建），带真锚点节。
-  const fold1 = await strategy.compact(anchorConversation(), { keepRounds: 2 });
-  assert.equal(fold1.messages[0].role, "system");
-  const fold1Text = fold1.messages[0].content[0].text;
-  assert.match(fold1Text, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-  assert.match(fold1Text, /^shas: 1ed3f35$/mu);
-
-  const continued = [
-    ...fold1.messages,
-    { role: "user", content: "second wave request" },
-    { role: "assistant", content: [{ type: "text", text: "second wave answer" }] },
-  ];
-
-  // fold2 anchors:false：旧 system 摘要里的锚点节必须被剥掉（全 head 剥离，不只目标消息）。
-  const fold2 = await strategy.compact(continued, { keepRounds: 2, anchors: false });
-  const whole2 = JSON.stringify(fold2.messages);
-  assert.doesNotMatch(whole2, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-  assert.doesNotMatch(whole2, /1ed3f35|src\/compact\/fold-llm\.js:120|#32|git\.erix\.vip/u);
-  // 旧摘要的非锚点内容保留，新摘要照常前置到 system 消息（其后是恢复提示与逐字引用层）。
-  const systemBlocks = fold2.messages[0].content;
-  assert.match(systemBlocks[0].text, /^## 下一步\n已完成项禁止重做/u);
-  assert.doesNotMatch(systemBlocks[0].text, /## 锚点索引/u);
-});
-
-test("anchors:false leaves no stale anchors when the summary role switches between folds", async () => {
-  const summarizer = async () => "## 下一步\n已完成项禁止重做";
-
-  // fold1 默认：摘要落在 user 消息（summaryRole 缺省 user），产生锚点节。
-  const strategy = createFoldLlmStrategy({ summarizer });
-  const fold1 = await strategy.compact(anchorConversation(), { keepRounds: 2 });
-  assert.equal(fold1.messages[0].role, "user");
-  assert.match(fold1.messages[0].content[0].text, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-
-  const continued = [
-    ...fold1.messages,
-    { role: "user", content: "second wave request" },
-    { role: "assistant", content: [{ type: "text", text: "second wave answer" }] },
-  ];
-
-  // fold2 切到 system + anchors:false：旧摘要还在 user 消息里，锚点节同样不得残留。
-  const fold2 = await createFoldLlmStrategy({
-    summarizer,
-    summaryRole: "system",
-  }).compact(continued, { keepRounds: 2, anchors: false });
-  const whole2 = JSON.stringify(fold2.messages);
-  assert.doesNotMatch(whole2, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-  assert.doesNotMatch(whole2, /1ed3f35|src\/compact\/fold-llm\.js:120|#32|git\.erix\.vip/u);
-  // 新摘要落进新建 system 消息，旧 user 摘要的非锚点内容保留。
-  assert.equal(fold2.messages[0].role, "system");
-  assert.match(fold2.messages[0].content[0].text, /已完成项禁止重做/u);
-  const userSummary = fold2.messages.find((message) => message.role === "user");
-  assert.match(userSummary.content[0].text, /## 下一步\n已完成项禁止重做/u);
-  assert.doesNotMatch(userSummary.content[0].text, /## 锚点索引/u);
-});
-
-test("prunes the anchor section into the summary budget when maxSummaryTokens is tiny (A2 / issue #873 fix ①)", async () => {
+test("prunes the fidelity layer into the summary budget when maxSummaryTokens is tiny (issue #873 fix ①)", async () => {
   const result = await createFoldLlmStrategy({
     summarizer: async () => "unsectioned summary ".repeat(200),
     maxSummaryTokens: 50,
   }).compact(anchorConversation(), { keepRounds: 2 });
   const text = result.messages[0].content[0].text;
 
-  // 旧断言（A2 时代）：摘要本体被削到 50 token 内，但锚点节完整保留（它在尺寸截断之后追加）。
-  // 新语义（#873 修复①）：锚点节也在这个预算**内**，所以 50 token 装不下时它也被夹断；
-  // 上界必须成立（选择器拿它当开销上界），且夹断必须显式留记号。
+  // 新语义（#873 修复①）：保真层（逐字引用）也在这个预算**内**，所以 50 token 装不下时它也被夹断；
+  // 上界必须成立（选择器拿它当开销上界），且夹断必须显式留记号。锚点节已退役，不得复活。
   assert.ok(estimateTokens(text) <= 50, `整份摘要必须 ≤ 声明预算（实测 ${estimateTokens(text)}）`);
   assert.match(text, /截断|修剪/);
+  assert.doesNotMatch(text, /## 锚点索引/u);
   assert.doesNotMatch(text, /^shas: 1ed3f35$/mu);
-  assert.doesNotMatch(text, /^urls: https:\/\/git\.erix\.vip/u);
 });
 
 test("constructor parameter errors stay fail-loud (summarizer must be a function)", () => {

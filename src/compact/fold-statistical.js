@@ -26,8 +26,8 @@ export const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
  * 工具调用清单的上界（issue #564 缺口 2）：**最多 8 条 × 每条 ≤80 字符**。
  *
  * 这是清单自己的形状上界，不是**新的字节预算** —— 清单落在既有 `FOLDED_FACTS_MAX_BYTES`
- * （默认 2048，`buildFoldedFacts` 做前缀夹断）之内：它排在区间行之后、锚点节之前，
- * 所以字节夹断削掉的是后面的锚点/提示，而不是清单（见 `formatFoldSummary` 的行序）。
+ * （默认 2048，`buildFoldedFacts` 做前缀夹断）之内：它排在区间行之后、恢复提示之前，
+ * 所以字节夹断削掉的是后面的提示，而不是清单（见 `formatFoldSummary` 的行序）。
  */
 export const MAX_TOOL_INVENTORY_ENTRIES = 8;
 export const MAX_TOOL_INVENTORY_CHARS = 80;
@@ -200,7 +200,7 @@ function inventoryFromToolCalls(calls) {
 }
 
 // 清单节解析（合并多份摘要时用）：标题行之后连续的 `- ` 行就是条目，遇到第一行非条目即止
-// （恢复提示 / 锚点节 / stub 行都在它后面，所以不会被误吃）。
+// （恢复提示 / stub 行都在它后面，所以不会被误吃）。
 //
 // issue #565：**导出**给 `buildFoldedFacts`（`fold-summary-journal.js`）复用 —— 结构化 `toolCalls`
 // 必须与 `text` 里的这一节逐条相等，所以只许有一个解析器；在那里另写一份正则就是两份实现各自腐烂。
@@ -416,7 +416,7 @@ function parseFoldSummaryMatch(value, match, legacy) {
  * 的取源契约依赖它已含旧摘要），而每次折叠都是「解析上一次的块 → 合并 → 重渲染」⇒
  * 新格式**必须**能被自己读回来，否则第 2 次折叠就把第 1 折的信息丢光。
  *
- * 块级信息（导航记录 / 锚点节）只有一份，挂在**最新那一折**上（并集合并不在乎它挂在哪一折）。
+ * 块级信息（导航记录）只有一份，挂在**最新那一折**上（并集合并不在乎它挂在哪一折）。
  * 远期那行只剩 title，所以那一折的 `tools`/`inventory`/`stubs` 解析回空 —— 这是**有意的信息降级**
  * （近期给全 / 远期只给 title），不是丢数据：完整的一份在账本 `foldedFacts.increment` 里（#566）。
  *
@@ -938,7 +938,7 @@ export function formatFoldSummary({
     `${FOLD_SUMMARY_MARKER}早期第 ${from}–${to} 轮（共 ${count} 轮）已折叠。`,
     `工具足迹：${footprint}。`,
   ];
-  // 行序是硬的（issue #564 判据 5）：区间行 → 工具调用清单 → 导航记录 / stub / 恢复提示 → 锚点节。
+  // 行序是硬的（issue #564 判据 5）：区间行 → 工具调用清单 → 导航记录 / stub / 恢复提示。
   // 字节夹断（`buildFoldedFacts` 的前缀夹断，默认 2048）削掉的是**尾部**，所以清单永远在前面活着。
   if (boundedInventory.length > 0) {
     lines.push(TOOL_INVENTORY_HEADING);
@@ -1104,7 +1104,7 @@ function prependSummary(
 
 /**
  * 对给定 foldedPayload 生成统计摘要文本（`fold-llm` 的机械替代物、`sliding-window` 与引擎定稿处都复用它，避免复制逻辑）。
- * 工具足迹、锚点节、恢复提示与 fold-statistical 的 compact 产物同一套规则。
+ * 工具足迹、恢复提示与 fold-statistical 的 compact 产物同一套规则。
  *
  * @param {object[]} foldedPayload Raw folded messages.
  * @param {{from?: number, to?: number, count?: number, recoveryHint?: string, noteTools?: string[],

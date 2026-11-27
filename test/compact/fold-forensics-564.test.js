@@ -2,12 +2,13 @@
 //
 // 缺口 1：TTL 句柄（`【已折叠·TTL】<工具名 + 关键入参>`，全角）进不了摘要（旧正则只认半角 `[已折叠]`）；
 // 缺口 2：摘要只有 `name → count`（`exec×12`），没有“跑了什么命令 / 读了哪个路径”；
-// 缺口 3：锚点抽取不读 `tool_use` 入参，于是 `exec git commit -m "…closes #123"` 里的 `#123` 全丢。
+// 缺口 3：`exec git commit -m "…closes #123"` 里的命令与 `#123` 要进清单（机械清单从 tool_use 入参取），
+//   不再依赖已退役的锚点节。
 //
 // 六格判据（issue 正文「判据（绿）」逐条）：
 //   1. 摘要里出现命令/路径，而不只是 `exec×12`；
 //   2. 被折内容里的 `【已折叠·TTL】exec git status` 作为 stub 进入摘要；
-//   3. `exec git commit -m "…closes #123"` 被折走后，`#123` 出现在锚点节；
+//   3. `exec git commit -m "…closes #123"` 被折走后，命令与 `#123` 进清单（锚点节已退役，不再产）；
 //   4. 清单节恒不超上界（≤8 条 / ≤80 字符/条）；
 //   5. 折叠内容 >2048 字节时，区间行与清单仍存活（防“加了东西但被夹断吃掉”）；
 //   6. 不传 `stubFor`（真机形态）也能拿到清单与 TTL 句柄。
@@ -103,11 +104,10 @@ test("#564-2 被折内容里的 TTL 句柄作为 stub 进摘要，半角 [已折
   assert.ok(withHost.includes(TTL_LINE), "TTL 句柄与宿主 stub 并存");
 });
 
-test("#564-3 exec git commit -m \"…closes #123\" 被折走后 #123 出现在锚点节", async () => {
+test("#564-3 exec git commit -m \"…closes #123\" 被折走后命令与 #123 进清单（不再进锚点节）", async () => {
   const messages = [
     { role: "user", content: "task" },
     toolUse("a", "exec", { command: 'git commit -m "feat(compact): 折叠摘要补取证力 (closes #123)"' }),
-    // 前置：正文里**没有** #123 —— 锚点只能来自 tool_use 入参。
     toolResult("a", "1 file changed, 2 insertions(+)"),
     { role: "user", content: "keep" },
   ];
@@ -115,10 +115,11 @@ test("#564-3 exec git commit -m \"…closes #123\" 被折走后 #123 出现在�
     await createFoldStatisticalStrategy().compact(messages, { keepRounds: 1 }),
   );
 
-  assert.match(summary, /## 锚点索引（机械抽取，未经 LLM 改写）/u);
-  assert.match(summary, /^issues: #123$/mu, `#123 必须从入参抽到锚点节：${summary}`);
-  // 入参里的命令也进了清单（同一份入参，两个出口）。
+  // 入参里的命令进了清单（#123 随命令原文一起留在清单行里）。
   assert.match(summary, /^- exec git commit -m "feat\(compact\)/mu);
+  // 反向锁：锚点节已退役 ⇒ 既无节标题，也无 `issues:` kind 行。
+  assert.doesNotMatch(summary, /## 锚点索引/u);
+  assert.doesNotMatch(summary, /^issues:/mu);
 });
 
 test("#564-4 清单节恒不超上界（≤8 条 × ≤80 字符），超长命令被夹断而不是撑爆", async () => {

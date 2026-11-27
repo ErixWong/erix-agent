@@ -10,7 +10,6 @@ import {
   extractLatestUserInput,
   reverseSignalWarningLine,
 } from "../../src/compact/fold-fidelity.js";
-import { ANCHOR_SECTION_HEADING } from "../../src/compact/anchors.js";
 
 function toolResult(content) {
   return { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content }] };
@@ -113,24 +112,4 @@ test("emits no empty sections when nothing was extracted", () => {
   assert.equal(buildFoldFidelitySection(undefined), undefined);
   assert.equal(buildFoldFidelitySection([toolResult("no anchors, no user text")]), undefined);
   assert.equal(buildFoldFidelitySection([{ role: "assistant", content: "纯散文，没有精确标识" }]), undefined);
-});
-
-test("appends the anchor index after the user input section", () => {
-  const payload = [
-    { role: "user", content: "看 1ed3f35 的改动" },
-    // A2 抽取范围：锚点只来自 tool_result 与真实 user 消息；assistant 散文里的标识不参与。
-    toolResult("改了 src/a/b.js:12 (#32)"),
-  ];
-  const section = buildFoldFidelitySection(payload);
-
-  assert.ok(section.startsWith(USER_INPUT_SECTION_HEADING));
-  assert.ok(section.includes(`\n\n${ANCHOR_SECTION_HEADING}`));
-  assert.ok(section.indexOf(ANCHOR_SECTION_HEADING) > section.indexOf("> 看 1ed3f35 的改动"));
-  assert.match(section, /shas: 1ed3f35/u);
-  assert.match(section, /paths: src\/a\/b\.js:12/u);
-  assert.match(section, /issues: #32/u);
-  // 有锚点但无真实 user 消息时只输出锚点节。
-  const anchorsOnly = buildFoldFidelitySection([toolResult("1ed3f35 src/a/b.js")]);
-  assert.equal(anchorsOnly.split("\n")[0], ANCHOR_SECTION_HEADING);
-  assert.doesNotMatch(anchorsOnly, new RegExp(USER_INPUT_SECTION_HEADING));
 });

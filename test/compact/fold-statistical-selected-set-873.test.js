@@ -3,7 +3,7 @@
 //
 // 旧实现：`fold-statistical` 的开销回调用 `rounds.slice(0, foldedCount)` 重建摘要，即「前 N 轮」。
 // 但选择器折的**不是连续前缀**——续接块 / 工作集地板都会让中间轮被保留
-// ⇒ 估算对象与实际被折轮次不符：夹在中间那一轮（本夹具里带 20 条锚点的大轮）被算进摘要，
+// ⇒ 估算对象与实际被折轮次不符：夹在中间那一轮（本夹具里带 10 条 TTL 句柄的大轮）被算进摘要，
 // 而真被折的后续轮被漏掉。两种方向的错都可能发生（这里表现为「按前缀」高估 ⇒ 少折一轮）。
 // 修复：`selectFoldedRounds` 把「此刻已选中的轮索引（升序）」作为回调第二参 `foldedIndexes`
 // 传出，`fold-statistical` 按这个集合重建（范围句也走同一个 `roundRangeForIndexes` 口径）。
@@ -30,7 +30,6 @@ import assert from "node:assert/strict";
 import { estimateTokens } from "../../src/tokens.js";
 import { groupIntoRounds } from "../../src/messages/rounds.js";
 import { collectTtlFoldStubs, selectFoldedRounds } from "../../src/compact/helpers.js";
-import { extractAnchors } from "../../src/compact/anchors.js";
 import {
   buildFoldNavigationRecord,
   createFoldStatisticalStrategy,
@@ -43,13 +42,13 @@ import {
 } from "../../src/loop/continuity-block.js";
 
 // 8 组「user → tool_use → tool_result」⇒ 15 轮（`groupIntoRounds` 按消息边界切轮）。
-// 第 2 组（index 1）带一份续接块（⇒ 整轮不可折），且它的 `tool_result` 带 20 条路径锚点
-//（摘要里最贵的一层）；其余各组各带一条 TTL 句柄行。于是「把被跳过那组算进摘要」与
+// 第 2 组（index 1）带一份续接块（⇒ 整轮不可折），且它的 `tool_result` 带 10 条 TTL 句柄行
+//（进摘要时最贵的一层）；其余各组各带一条 TTL 句柄行。于是「把被跳过那组算进摘要」与
 // 「把真被折的后续轮算进去」的估算差出一截，足以改变折叠轮数。
 const GROUPS = 8;
 const BLOCKED_GROUP = 1;
-// × `FOLD_TARGET_RATIO`(0.65) ⇒ 目标 2200：探针实测【按选中集合重建 = 4 轮】而
-//【按前缀重建 = 2 轮】——两支落点不同，这一格才分辨得出被修的实现（#898 换夹具后重标）。
+// × `FOLD_TARGET_RATIO`(0.65) ⇒ 目标 2200：探针实测【按选中集合重建 = 3 轮】而
+//【按前缀重建 = 2 轮】——两支落点不同，这一格才分辨得出被修的实现（锚点退役后重标，改用 TTL stub 机制）。
 const BUDGET = 3385;
 const TARGET = Math.floor(BUDGET * 0.65);
 
@@ -68,7 +67,9 @@ function fixture() {
   for (let i = 0; i < GROUPS; i += 1) {
     const blockedRound = i === BLOCKED_GROUP;
     const resultText = blockedRound
-      ? `${Array.from({ length: 20 }, (_, j) => `src/blk/f${j}.js:${100 + j}`).join(" ")} ${"p".repeat(2000)}`
+      // 被跳过那一轮是「最贵的一轮」：它带 10 条 TTL 句柄行（进摘要时按 stub 逐条保留），
+      // 于是「把它算进摘要」与「不把它算进去」的估算差出一截——这一机制不依赖已退役的锚点。
+      ? Array.from({ length: 10 }, (_, j) => `【已折叠·TTL】read path=/blk-${j}.js`).join("\n")
       : `【已折叠·TTL】read path=/p-${i}.js\nRES-${i} ${"r".repeat(400)}`;
     messages.push({
       role: "user",
@@ -103,7 +104,6 @@ function estimateOf(rounds, indexes) {
     count: indexes.length,
     stubs: [...new Set(collectTtlFoldStubs(messages))],
     navigationRecord: buildFoldNavigationRecord(messages, range),
-    anchors: extractAnchors(messages, {}),
   }));
 }
 
@@ -194,7 +194,7 @@ test("策略按实际选中的轮次重建开销估算，foldedPayload 逐条等
   );
 });
 
-test("内容级：机械摘要覆盖被选中的轮，不含被跳过那轮（带续接块那一轮）的锚点", async () => {
+test("内容级：机械摘要覆盖被选中的轮，不含被跳过那轮（带续接块那一轮）的 TTL 句柄", async () => {
   const messages = fixture();
   const view = groupIntoRounds(messages);
   const bySelected = selectedBranch(view).foldedIndexes;
@@ -205,13 +205,13 @@ test("内容级：机械摘要覆盖被选中的轮，不含被跳过那轮（�
   });
   const summary = result.foldSummary?.text ?? "";
   assert.notEqual(summary, "", "前置：这一折必须产出机械摘要");
-  // 只在「选中集合」里出现、不在同长度前缀里出现的轮：它的 TTL 句柄必须进摘要。
-  const prefixSameLength = bySelected.slice(0, bySelected.length).map((_, index) => index);
-  const extraRounds = bySelected.filter((index) => !prefixSameLength.includes(index));
-  assert.ok(extraRounds.length > 0, "前置：选中集合必须比同长度前缀多至少一轮");
-  const extraStub = collectTtlFoldStubs(extraRounds.flatMap((index) => view.rounds[index].messages))[0];
-  assert.ok(extraStub !== undefined, "前置：额外那一轮必须带 TTL 句柄行");
-  assert.ok(summary.includes(extraStub), `摘要必须覆盖只在选中集合里出现的那轮（缺：${extraStub}）`);
+  // 内容级证据：真被折的轮（选中集合）的 TTL 句柄必须进摘要（覆盖 = 选中集合）；
+  // 带续接块那一轮没被折，它的续接块内容一条都不许进摘要（下面两条）。
+  const foldedStub = collectTtlFoldStubs(
+    bySelected.flatMap((index) => view.rounds[index].messages),
+  )[0];
+  assert.ok(foldedStub !== undefined, "前置：被选中的轮必须带 TTL 句柄行");
+  assert.ok(summary.includes(foldedStub), `被选中的轮的 stub 必须进摘要（缺：${foldedStub}）`);
   // 被跳过那一轮（带续接块）的东西一条都不许进摘要——它没被折（这就是「覆盖 = 选中集合」
   // 而不是「覆盖 = 前缀」的内容级证据）。
   assert.ok(!summary.includes(CONTINUITY_BLOCK_START), "被跳过那轮的续接块不许进摘要");
@@ -219,8 +219,4 @@ test("内容级：机械摘要覆盖被选中的轮，不含被跳过那轮（�
     !summary.includes("夹具目标：中间那一轮必须被跳过"),
     "被跳过那轮的正文不许进摘要",
   );
-  // 反过来：它那一组的**下一轮**（带 20 条锚点的那轮）今天**是被折的** ⇒ 锚点必须在摘要里。
-  //（旧夹具里那两轮一起被 `protectedMessage` 保护，所以当时钉的是「锚点不许出现」；
-  // #898 之后只有带块那一轮不可折，锚点轮进了选中集合 ⇒ 同一意图的正反两面到这里。）
-  assert.ok(summary.includes("src/blk/f0.js"), "被折那轮的锚点必须进摘要（估算与生产同源）");
 });

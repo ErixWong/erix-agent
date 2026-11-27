@@ -29,7 +29,6 @@ import {
   toolCallInventory,
 } from "../../src/compact/fold-statistical.js";
 import { createSlidingWindowStrategy } from "../../src/compact/sliding-window.js";
-import { extractAnchors } from "../../src/compact/anchors.js";
 
 // 6 个「user → tool_use → tool_result」轮；总量约 2.9k，预算 4200 ⇒ 目标 ≈ 2730。
 // 该夹具下 folded 随摘要开销严格单调（0⇒1 / 500⇒3 / 900⇒5 / 1400⇒7），便于把「传了哪个
@@ -183,7 +182,6 @@ test("阻断②：fold-statistical 的摘要估算 ≥ 只有占位串时的估�
       inventory: toolCallInventory(foldedMessages),
       stubs: [...new Set(collectTtlFoldStubs(foldedMessages))],
       navigationRecord: buildFoldNavigationRecord(foldedMessages, { from: 1, to: foldedCount }),
-      anchors: extractAnchors(foldedMessages, {}),
     }));
   };
   assert.equal(result.foldedRounds, foldedWithOverhead(view, fullRecon));

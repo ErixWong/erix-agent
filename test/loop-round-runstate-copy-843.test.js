@@ -170,9 +170,11 @@ test("#843 b: store without saveRunState retains the legacy copy and exact pre-c
     .filter((record) => Number.isInteger(record?.round))
     .at(-1);
   console.log(`RUNSTATE-FALLBACK-RESUME bytes=${String(Buffer.byteLength(json))} sha256=${digest}`);
-  // Captured from main b4bde305 with this same record and provider response before #843.
-  assert.equal(Buffer.byteLength(json), 1501);
-  assert.equal(digest, "00edf56f1b42232dc2dec785ae453117a1ff80eff442fcba05597da7f867a65d");
+  // Captured with this same record and provider response after the anchor-index layer was
+  // retired (issue §3.8): the resume now re-renders the run state without the `anchors` layer,
+  // so the serialized snapshot is shorter than the pre-retirement 1501 bytes / 00edf56f… capture.
+  assert.equal(Buffer.byteLength(json), 1447);
+  assert.equal(digest, "26fe57d655543c32e59ccc7d45ecf297ab46856a0f1342b5c9163a8df046b0fd");
   assert.ok(Object.hasOwn(latestRound ?? {}, "runState"),
     "b: a resumed round on the fallback store still records the recovery state");
 });

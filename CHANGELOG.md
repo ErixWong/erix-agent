@@ -31,6 +31,24 @@
   （与 `guardExtension` 同一条纪律：成本闸，跨 resume 不许重置）。其余 400 仍保持 `invalid_request`——零压缩、零重试。
 
 ### Changed
+- **The fold summary's mechanical `## 锚点索引` section is deleted, together with the `anchors` knob
+  (issue #261127-19).** `src/compact/anchors.js` (335 lines) regex-extracted `paths` / `shas` / `issues` /
+  `urls` / `errors` out of the folded payload and appended them to the summary, capped at 20 entries and
+  1200 chars; `anchors: false | { maxPerKind, maxChars }` existed only to switch it off. The shape design
+  (`docs/design/2026-11-27-context-and-fold-shape.md` §3.8) rejected both versions of the idea: mechanical
+  extraction **enumerates an infinite set** (a CSS hex colour becomes a fake issue — `background: #0a0e18`
+  → `#0`; a template string is cut at `http://localhost:${config.port`; a YAML `# TODO` and hex inside
+  base64 hit the same regexes), and rendering the result costs ~200 tokens per fold against a 5k history
+  budget — 40% of the layer for bare strings with no context, while *not* rendering it is just a worse copy
+  of the `messages` full-text index. The failure it was meant to prevent is not silent either
+  (`git show f6a8dab` fails loudly), so exact values live in the prose and verbatim recovery of a folded
+  round belongs to `recall_read` (issue #896). Deleted: the module, its exports (`extractAnchors`,
+  `clampAnchorSection`, `splitAnchorValues`, `ANCHOR_SECTION_HEADING`, `ANCHOR_KINDS`, the caps), the
+  fidelity-layer branch that appended it, the per-fold merge/re-parse path in `fold-statistical`, the
+  `anchors` compression layer in `src/compact/pipeline.js`, and both contract sections. **BREAKING for
+  hosts that passed `anchors`**: it is now an unknown option on the same `context_unknown_option` path as
+  every other retired key (one event on the assembly-port route, silence on the fine-grained route, no
+  throw).
 - **The fold summary body is four sections instead of six (issue #261127-18).** `## 阶段` / `## 已改文件` /
   `## 已验证项` all answered "what did this fold do", so a compliant model wrote the same thing three times (and
   three *inconsistent* ways); they are now one `## 行动` section, whose body carries the verification conclusion
