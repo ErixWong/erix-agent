@@ -140,7 +140,7 @@ test("an unconfigured run folds via the built-in fold-llm with the run provider 
 
   // 2) its input carries the guide, the round range and the folded content itself
   const prompt = summaryRequest.messages[0].content;
-  assert.match(prompt, /## 主题词面包屑/u);
+  assert.match(prompt, /## 关键词/u);
   assert.match(prompt, /【被折叠的轮次】第 1 轮 - 第 1 轮/u);
   assert.match(prompt, /tool output for work-1/u);
   assert.match(prompt, /\[assistant\]/u);

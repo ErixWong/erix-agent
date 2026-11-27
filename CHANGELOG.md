@@ -31,6 +31,20 @@
   （与 `guardExtension` 同一条纪律：成本闸，跨 resume 不许重置）。其余 400 仍保持 `invalid_request`——零压缩、零重试。
 
 ### Changed
+- **The fold summary body is four sections instead of six (issue #261127-18).** `## 阶段` / `## 已改文件` /
+  `## 已验证项` all answered "what did this fold do", so a compliant model wrote the same thing three times (and
+  three *inconsistent* ways); they are now one `## 行动` section, whose body carries the verification conclusion
+  ("no separate section — a verification section is a second spelling of the action's result"). `## 下一步` is
+  now `## 遗留` and `## 主题词面包屑` is now `## 关键词`, whose body additionally demands **the literal words**
+  from the source (file names, tool names, error text, identifiers) — a breadcrumb rewritten into synonyms cannot
+  be grepped back out of the ledger, which is the only thing that section is for. The retired `## 已改文件` (file list) is not replaced by a section — `## 行动` asks for the file names
+  **in prose**, since git is the authority on what changed. `## 教训与坑` is **kept**: the
+  shape design (`docs/design/2026-11-27-context-and-fold-shape.md` §3.8) moves it to the whiteboard
+  (`runs.board`), and that does not exist yet, so deleting the section today would lose the information rather
+  than relocate it. The prompt guide went from 1602 to 1061 tokens; the pruning priority that names sections is
+  updated to match (`## 遗留` / `## 恢复提示` / `## 关键词` first, then `## 行动`). `reverseSignalWarningLine`
+  now points at 「遗留」 instead of 「下一步」 — a warning that names a section the model no longer writes is a
+  dead pointer.
 - **`docs-drift-check --self-test` is deleted, together with the overlay machinery that only it used (task 261126-59).**
   The entry had exactly one consumer — the manual `npm run docs:pass` — and took ≈8.5 minutes over 219 cases; CI never
   ran it and neither did `npm test`. By the rule this repository already settled on in #908 R2 ("a step no event triggers

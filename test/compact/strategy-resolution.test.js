@@ -57,7 +57,7 @@ test("the built-in fold-llm default consumes foldLlmOptions (engine summarizer)"
   assert.match(JSON.stringify(result.messages), /injected/u);
   assert.deepEqual(seen[0].roundRange, { from: 1, to: 1 });
   assert.ok(Array.isArray(seen[0].messages));
-  assert.match(seen[0].promptGuide, /## 主题词面包屑/u);
+  assert.match(seen[0].promptGuide, /## 关键词/u);
 });
 
 test("the built-in default forwards context-level factory options", async () => {

@@ -15,7 +15,10 @@ import { enforceSize } from "../../src/compact/enforce-size.js";
 import { DEFAULT_SUMMARY_MAX_TOKENS, createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
 import { estimateTokens } from "../../src/tokens.js";
 
-const SECTIONS = ["阶段", "已改文件", "已验证项", "下一步", "主题词面包屑"];
+// issue #261127-18（六节 → 四节）：夹具跟着提示词走。旧五节（阶段 / 已改文件 / 已验证项 / 下一步 /
+// 主题词面包屑）已退役——用旧节名做夹具会绕开 `priorityForHeading` 的新映射（copilot 复审抓到的
+// 「文档说改了、代码没改」正是这样漏掉的）。
+const SECTIONS = ["行动", "遗留", "关键词", "教训与坑（不要重犯的）"];
 
 function summaryOf(charsPerSection) {
   return SECTIONS.map((title) => `## ${title}\n${"字".repeat(charsPerSection)}`).join("\n");
@@ -65,17 +68,23 @@ test("#469-C ① 默认预算装得下 5 节 × 145 字 + 恢复提示 + 保真�
 });
 
 test("#469-C ①b 超默认预算时：机械保真层先让位（留骨架），合同节只在不够时跟着让位，整体 ≤ 预算", async () => {
-  // 150 字/节：五节本身 1,335，加上恢复提示与保真层后超出默认预算 ⇒ 预算必须真的管得住。
-  const summary = summaryOf(150);
+  // issue #261127-18：四节比五节省 ~450 token，150 字/节 现在装得下（那正是这次改动的收益），
+  // 所以这格要**真的超预算**就得把每节撑大 —— 250 字/节：四节 ≈ 1,480，超默认 1,400。
+  const summary = summaryOf(250);
   const { text, result } = await foldWith(summary);
   assert.ok(
     /^## 用户最新未解决输入[^\n]*\n\[已修剪\]$/mu.test(text),
     "保真层是第 5 档（机械可重抽），超预算时必须先它让位且留标题骨架",
   );
-  for (const title of ["已改文件", "已验证项", "下一步", "主题词面包屑"]) {
+  // 相对序：第 0 档（遗留）/ 第 1 档（关键词）必须活下来；第 2 档（行动 / 教训与坑）可以跟着让位
+  // ——预算是硬上限，「合同节只在不够时跟着让位」说的就是这一档。
+  for (const title of ["遗留", "关键词"]) {
     const at = text.indexOf(`## ${title}`);
     const body = text.slice(at + title.length + 3, text.indexOf("## ", at + 3));
     assert.ok(at >= 0 && !body.includes("[已修剪]"), `「${title}」比保真层优先级高，不该先被剪`);
+  }
+  for (const title of SECTIONS) {
+    assert.ok(text.includes(`## ${title}`), `裁剪只剪正文、不删标题：${title} 的骨架必须还在`);
   }
   assert.ok(
     estimateTokens(result.foldSummary.text) <= DEFAULT_SUMMARY_MAX_TOKENS,
@@ -87,7 +96,7 @@ test("#469-C ② 裁剪保留标题：`## 标题\\n[已修剪]`，不把整节�
   const fields = SECTIONS.map((title, index) => ({
     key: `section-${index}`,
     text: `## ${title}\n${"字".repeat(200)}`,
-    priority: title === "已改文件" ? 3 : index,
+    priority: title === "行动" ? 3 : index,
   }));
   const enforced = enforceSize(fields, 120);
   assert.deepEqual(enforced.prunedKeys.length > 0, true, "前提：这份输入必须真的触发裁剪");
@@ -97,7 +106,7 @@ test("#469-C ② 裁剪保留标题：`## 标题\\n[已修剪]`，不把整节�
   }
 });
 
-test("#469-C ③ 紧预算下先保「下一步」与「主题词」，「已改文件」先剪且留骨架", async () => {
+test("#469-C ③ 紧预算下先保「遗留」与「关键词」，「行动」先剪且留骨架", async () => {
   const summary = summaryOf(150);
   // issue #873 修复①：预算从 900 抬到 1000——保真层进了预算后，同样 900 会把「已验证项」
   // 也一并吸掉，这格要钉的是**相对优先序**，取一个让优先序完整展开的预算。
@@ -110,10 +119,10 @@ test("#469-C ③ 紧预算下先保「下一步」与「主题词」，「已改
     const next = text.indexOf("## ", at + 3);
     return text.slice(at, next < 0 ? text.length : next);
   };
-  assert.equal(body("下一步").includes("[已修剪]"), false, "「下一步」必须优先保");
-  assert.equal(body("主题词面包屑").includes("[已修剪]"), false, "「主题词面包屑」必须与「下一步」同档");
-  assert.equal(body("已改文件").includes("[已修剪]"), true, "「已改文件」应当先被剪");
-  assert.match(body("已改文件"), /^## 已改文件\n\[已修剪\]/u, "剪掉也必须留标题（骨架不消失）");
+  assert.equal(body("遗留").includes("[已修剪]"), false, "「遗留」必须优先保（第 0 档）");
+  assert.equal(body("关键词").includes("[已修剪]"), false, "「关键词」第 1 档，比「行动」先保");
+  assert.equal(body("行动").includes("[已修剪]"), true, "「行动」第 2 档，应当先被剪");
+  assert.match(body("行动"), /^## 行动\n\[已修剪\]/u, "剪掉也必须留标题（骨架不消失）");
   // 新增（#873 修复①）：机械保真层现在也在这个预算内，所以它必须让位（且同样留骨架）。
   assert.match(text, /^## 用户最新未解决输入[^\n]*\n\[已修剪\]$/mu, "保真层在预算内 ⇒ 紧预算下先让位");
 });
