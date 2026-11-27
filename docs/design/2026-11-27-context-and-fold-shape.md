@@ -279,10 +279,10 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `title_src` | text | not null | `model` / `first_line`（回退，见 §3.4 ①） |
 | `description` | text | not null | **模型写的三节**（行动 / 遗留 / 关键词），约 400 token |
 | `tokens_before` / `tokens_after` | int | not null | 折叠前后的上下文 token。**每折省了多少就挂在折上**——不需要另立一张压缩统计表 |
-| `intent` | jsonb | not null | **折叠前的白板全文**（机械抄）——渲染成 `## 意图` |
-| `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空 |
+| `intent` | jsonb | not null | **折叠前的白板全文**（机械抄）——渲染成 `## 意图`。**今天不存在**：没有白板可抄，这是新能力（`runs.board` 是它的来源） |
+| `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空。**今天不存在**：折叠时不抓 commit，这是新能力 |
 | `source` | text | not null | `llm` / `host`。**没有 `statistical`，也没有 `mechanical`**：后者今天存在，专指「LLM 摘要失败后的降级」；本形状里解析不出就是**折叠失败**（§3.7），不降级 |
-| `trigger` | text | not null | `budget` / `context_window_recovery` / `manual` |
+| `trigger` | text | not null | `budget` / `context_window_recovery` / `manual`。**今天零对应**（代码里只有 `strategy` 和 `degradeReason`）。读者是**调参的人**：「我们为什么一直在折——预算还是超窗恢复？」记的是当时的决定，不从 `tokens_before` 反推 |
 | `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行**。读者是**渲染**：被取代的折不渲染——否则恢复后重折的那一段会出现两次（旧折描述半段、新折描述整段） |
 | `created_at` | timestamptz | not null | |
 
