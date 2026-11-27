@@ -82,7 +82,6 @@
 | `store_folds_channel_absent` | boolean | not null default false | **降级事实**：store 没实现折叠通道（`appendFold` / `loadFolds`） |
 | `store_folds_channel_write_failed` | boolean | not null default false | **降级事实**：这次折叠写不成（与上一条不是同一件事：「宿主没实现」vs「写失败」） |
 | `max_rounds` | int | | 本次运行的轮数预算（输入配置） |
-| `compaction_stats` | jsonb | 可空 | **压缩事件总账**：每次压缩的 `tokensBefore` / `tokensAfter` / 各层触发。**不可重算**。不是 `folds` 的附属——`ttl` / `slidingWindow` / `anchors` / `enforceSize` 都不是折叠，`folds` 装不下它们 |
 | `verification_status` | text | 可空 | **验证结论**：`verified` / `unverified` / `skipped` / `error`。**不可派生**——guard 真的跑过才有这个值 |
 | `verification_reason` | text | 可空 | `deliverables_failed` / `machine_only` / guard 给的 reason |
 | `board` | text | | **白板：一整块现状文本**（≤1500 token），整块覆盖写。不是表——渲染时整块拼进上下文，没有按条目查询的读者（§1.7） |
@@ -279,12 +278,18 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `title` | text | not null | **模型写的短标题**，≤ 60 字符 |
 | `title_src` | text | not null | `model` / `first_line`（回退，见 §3.4 ①） |
 | `description` | text | not null | **模型写的三节**（行动 / 遗留 / 关键词），约 400 token |
+| `tokens_before` / `tokens_after` | int | not null | 折叠前后的上下文 token。**每折省了多少就挂在折上**——不需要另立一张压缩统计表 |
 | `intent` | jsonb | not null | **折叠前的白板全文**（机械抄）——渲染成 `## 意图` |
 | `commits` | jsonb | 可空 | 这一折的 commit（`[{sha, subject}]`，机械抓）——渲染成 `## 提交`；抓不到就空 |
 | `source` | text | not null | `llm` / `host`（**没有 `statistical`**） |
 | `trigger` | text | not null | `budget` / `context_window_recovery` / `manual` |
 | `superseded_by` | bigint | 可空，FK→folds(run_id, seq) | 被后来的某一折取代。**只加指针，不改行** |
 | `created_at` | timestamptz | not null | |
+
+**没有 `compaction_stats`**：今天的六层压缩里只有 `foldLlm` 是折叠——`slidingWindow` 是**整轮丢弃**
+（新形状里被梯度渲染取代，内容不丢）、`foldStatistical` 新形状里没有、`anchors` 是折叠的附属产物、
+`ttl` 与 `enforceSize` 是安全网。**新形状里唯一的压缩就是折叠**，所以省下的 token 记在折上，
+不另立事件表。
 
 **没有 `description_tokens`**：`estimateTokens(description)` 对 ≤4000 字符是微秒级，每轮最多算 10 折；
 而这一列连代码里的读点都没有。缓存列的不一致风险（换 tokenizer 就过期）是实的。
