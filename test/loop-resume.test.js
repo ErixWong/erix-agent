@@ -25,7 +25,7 @@ const textMessage = (text) => ({
  * #261127-15 同纪律：本轮内稳定位置 `round_no` + `msg_seq` 也是档案信封（`recallEvidence` 的行主键），
  * 同样不属于模型可见正文——provider 请求里根本不会出现这两个键（canonical 只读 role/content）。 */
 const withoutJournalTs = (messages) => messages
-  .map(({ ts, round_no: _roundNo, msg_seq: _msgSeq, ...message }) => message);
+  .map(({ ts, round_no: _roundNo, row_key: _rowKey, msg_seq: _msgSeq, ...message }) => message);
 
 async function addExecutedEvidence(store, runId, round, toolUseId) {
   const rows = await store.listRecoveryRows(runId);

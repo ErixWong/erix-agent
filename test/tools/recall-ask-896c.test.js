@@ -27,7 +27,7 @@ const BAIT_TEXT = "第9轮诱饵 BAIT_MARK 区间外绝不该出现在请求里"
 function makeLedger() {
   /** @type {any[]} */
   const rows = [
-    { kind: "message", round: 1, seq: 0, messages: [{ role: "user", content: R1_TEXT }] },
+    { kind: "message", round: 1, seq: 0, dedupKey: `msg-row:1:0`, messages: [{ role: "user", content: R1_TEXT }] },
     // 轮载体行**不带 seq**（照真实写侧：orchestrator 的轮 record 只有 round/roundKey/dedupKey/ts…，
     // 只有消息行带轮内 seq）。evidence 现在按**行主键** `(round_no, msg_seq)` 寻址（#261127-15）：
     // 消息行取 `row.seq`、轮载体行取 `MSG_SEQ_CARRIER_BASE + 该行 messages 的下标`（两套区间不相交）。
@@ -273,7 +273,7 @@ function makeDriftLedger() {
   /** @type {any[]} */
   const rows = [
     { kind: "round", round: 1, roundKey: "run-ask:round:1", messages: [{ role: "assistant", content: CARRIER_TEXT }] },
-    { kind: "message", round: 1, seq: 0, messages: [{ role: "user", content: R1_TEXT }] },
+    { kind: "message", round: 1, seq: 0, dedupKey: `msg-row:1:0`, messages: [{ role: "user", content: R1_TEXT }] },
   ];
   return { rows, readLedgerRows: () => rows };
 }
@@ -299,7 +299,7 @@ test("#896D-1 同轮再落一条消息行（轮内下标漂移、文本未变）
 
   // resume 往**同一轮**追加一条工具结果消息行：账本只追加、既有行的文本一字未动，
   // 但轮内位置口径下载体那条从下标 1 被顶到下标 2（copilot 指的就是这一步）。
-  rows.push({ kind: "message", round: 1, seq: 2, messages: [{ role: "user", content: TOOL_RESULT_TEXT }] });
+  rows.push({ kind: "message", round: 1, seq: 2, dedupKey: `msg-row:1:2`, messages: [{ role: "user", content: TOOL_RESULT_TEXT }] });
 
   const { executeTool: readTool } = createBuiltinRecallTools({ readLedgerRows });
   const back = JSON.parse(await readTool({ name: "recall_read", input: { evidenceRef: ref } }));
@@ -380,7 +380,7 @@ function makeWideLedger(count) {
   /** @type {any[]} */
   const rows = [];
   for (let r = 1; r <= count; r += 1) {
-    rows.push({ kind: "message", round: r, seq: 0, messages: [{ role: "user", content: `轮${r}原文 WIDE_${r}_MARK` }] });
+    rows.push({ kind: "message", round: r, seq: 0, dedupKey: `msg-row:r:0`, messages: [{ role: "user", content: `轮${r}原文 WIDE_${r}_MARK` }] });
   }
   return { rows, readLedgerRows: () => rows };
 }

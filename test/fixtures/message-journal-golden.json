@@ -67,6 +67,7 @@
                 }
               ],
               "round_no": 1,
+              "row_key": "golden-single:msg:1:0",
               "msg_seq": 0
             },
             {
@@ -92,6 +93,7 @@
                 }
               ],
               "round_no": 1,
+              "row_key": "golden-single:msg:1:1",
               "msg_seq": 1
             }
           ],
@@ -193,6 +195,7 @@
                 }
               ],
               "round_no": 2,
+              "row_key": "golden-single:msg:2:0",
               "msg_seq": 0
             }
           ],
@@ -312,6 +315,7 @@
                 }
               ],
               "round_no": 3,
+              "row_key": "golden-single:msg:3:0",
               "msg_seq": 0
             },
             {
@@ -328,6 +332,7 @@
                 }
               ],
               "round_no": 3,
+              "row_key": "golden-single:msg:3:1",
               "msg_seq": 1
             }
           ],
@@ -420,6 +425,7 @@
                 }
               ],
               "round_no": 4,
+              "row_key": "golden-single:msg:4:0",
               "msg_seq": 0
             }
           ],
@@ -534,6 +540,7 @@
                 }
               ],
               "round_no": 5,
+              "row_key": "golden-single:msg:5:0",
               "msg_seq": 0
             }
           ],
@@ -649,6 +656,7 @@
             }
           ],
           "round_no": 1,
+          "row_key": "golden-single:msg:1:0",
           "msg_seq": 0
         },
         {
@@ -674,6 +682,7 @@
             }
           ],
           "round_no": 1,
+          "row_key": "golden-single:msg:1:1",
           "msg_seq": 1
         },
         {
@@ -685,6 +694,7 @@
             }
           ],
           "round_no": 2,
+          "row_key": "golden-single:msg:2:0",
           "msg_seq": 0
         },
         {
@@ -713,6 +723,7 @@
             }
           ],
           "round_no": 3,
+          "row_key": "golden-single:msg:3:0",
           "msg_seq": 0
         },
         {
@@ -729,6 +740,7 @@
             }
           ],
           "round_no": 3,
+          "row_key": "golden-single:msg:3:1",
           "msg_seq": 1
         },
         {
@@ -740,6 +752,7 @@
             }
           ],
           "round_no": 4,
+          "row_key": "golden-single:msg:4:0",
           "msg_seq": 0
         },
         {
@@ -763,6 +776,7 @@
             }
           ],
           "round_no": 5,
+          "row_key": "golden-single:msg:5:0",
           "msg_seq": 0
         }
       ]
@@ -938,6 +952,7 @@
                 }
               ],
               "round_no": 1,
+              "row_key": "golden-resume:msg:1:0",
               "msg_seq": 0
             },
             {
@@ -954,6 +969,7 @@
                 }
               ],
               "round_no": 1,
+              "row_key": "golden-resume:msg:1:1",
               "msg_seq": 1
             }
           ],
@@ -1046,6 +1062,7 @@
                 }
               ],
               "round_no": 2,
+              "row_key": "golden-resume:msg:2:0",
               "msg_seq": 0
             }
           ],
@@ -1165,6 +1182,7 @@
                 }
               ],
               "round_no": 3,
+              "row_key": "golden-resume:msg:3:0",
               "msg_seq": 0
             },
             {
@@ -1181,6 +1199,7 @@
                 }
               ],
               "round_no": 3,
+              "row_key": "golden-resume:msg:3:1",
               "msg_seq": 1
             }
           ],
@@ -1294,6 +1313,7 @@
                 }
               ],
               "round_no": 4,
+              "row_key": "golden-resume:msg:4:0",
               "msg_seq": 0
             },
             {
@@ -1310,6 +1330,7 @@
                 }
               ],
               "round_no": 4,
+              "row_key": "golden-resume:msg:4:1",
               "msg_seq": 1
             }
           ],
@@ -1404,6 +1425,7 @@
                 }
               ],
               "round_no": 5,
+              "row_key": "golden-resume:msg:5:0",
               "msg_seq": 0
             }
           ],
@@ -1512,6 +1534,7 @@
             }
           ],
           "round_no": 1,
+          "row_key": "golden-resume:msg:1:0",
           "msg_seq": 0
         },
         {
@@ -1528,6 +1551,7 @@
             }
           ],
           "round_no": 1,
+          "row_key": "golden-resume:msg:1:1",
           "msg_seq": 1
         },
         {
@@ -1539,6 +1563,7 @@
             }
           ],
           "round_no": 2,
+          "row_key": "golden-resume:msg:2:0",
           "msg_seq": 0
         },
         {
@@ -1567,6 +1592,7 @@
             }
           ],
           "round_no": 3,
+          "row_key": "golden-resume:msg:3:0",
           "msg_seq": 0
         },
         {
@@ -1583,6 +1609,7 @@
             }
           ],
           "round_no": 3,
+          "row_key": "golden-resume:msg:3:1",
           "msg_seq": 1
         },
         {
@@ -1608,6 +1635,7 @@
             }
           ],
           "round_no": 4,
+          "row_key": "golden-resume:msg:4:0",
           "msg_seq": 0
         },
         {
@@ -1624,6 +1652,7 @@
             }
           ],
           "round_no": 4,
+          "row_key": "golden-resume:msg:4:1",
           "msg_seq": 1
         },
         {
@@ -1635,6 +1664,7 @@
             }
           ],
           "round_no": 5,
+          "row_key": "golden-resume:msg:5:0",
           "msg_seq": 0
         }
       ]

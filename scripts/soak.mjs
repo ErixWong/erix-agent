@@ -831,6 +831,7 @@ function withoutJournalEnvelope(message) {
   const copy = { ...message };
   delete copy.ts;
   delete copy.round_no;
+  delete copy.row_key;
   delete copy.msg_seq;
   return copy;
 }

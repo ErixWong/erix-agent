@@ -219,8 +219,9 @@ test("261021 fold: partOf 指认的分片按 seq 接回同一条消息（一条 
   // #261127-15：折出的每条消息还带**本轮内稳定位置** `round_no` + `msg_seq`（消息行取 `row.seq`；
   // 分片折回的聚合消息取**首片**（seq 1）的 seq——与 `ts` 同一纪律）；这是 `recallEvidence` 的行主键。
   assert.deepEqual(folded[0].messages, [
-    { ...msg("assistant", "轮二正文"), round_no: 2, msg_seq: 0 },
-    { ...aggregate, round_no: 2, msg_seq: 1 },
+    { ...msg("assistant", "轮二正文"), round_no: 2, row_key: `${RUN}:msg:2:0`, msg_seq: 0 },
+    // 分片折回的聚合消息取**首片**的行身份（seq 1）——与 `ts` 同一纪律。
+    { ...aggregate, round_no: 2, row_key: `${RUN}:msg:2:1`, msg_seq: 1 },
   ]);
 });
 

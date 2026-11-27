@@ -69,7 +69,7 @@ export function sha256Hex(slice) {
 /**
  * 组装单发回忆请求。`folds` 里每一折只贡献它的**归档正文**（截到 ≤2 KiB 的切片），拼成 user 文本；
  * 未被传进来的折（诱饵）不会出现在请求里。同时按「引擎实际读进请求的那段切片」算指纹。
- * 指纹的地址口径（issue #261127-15：**行主键**）：`round_no` + `msg_seq` ——本轮内**稳定**的消息地址
+ * 指纹的地址口径（issue #261127-15：**行主键**）：`round_no` + `row_key` + `msg_seq` ——稳定消息地址
  * （定义在 `src/store/message-rows.js` 的 `messageRowPosition`，由调用方从 `store.load()` 的消息上读出
  * 后透传）：消息行取行上的 `seq`、轮载体行取该消息在该行自己 `messages` 里的下标，两者都是行上的
  * 不可变位置 ⇒ 消息行被 `store.load()` 折进轮载体后地址仍同一个值（折行时已 stamp 上消息）。
@@ -77,10 +77,10 @@ export function sha256Hex(slice) {
  * 第几次出现）——它们存在的唯一理由是「折进载体后位置会变」，那个前提不再成立。）
  * @param {string} question
  * @param {any[]} folds
- * @returns {{ text: string, evidence: Array<{ round_no: number, msg_seq: number, charRange: [number, number], sha256: string, bytes: number }> }}
+ * @returns {{ text: string, evidence: Array<{ round_no: number, row_key: string, msg_seq: number, charRange: [number, number], sha256: string, bytes: number }> }}
  */
 export function buildRecallRequest(question, folds) {
-  /** @type {Array<{ round_no: number, msg_seq: number, charRange: [number, number], sha256: string, bytes: number }>} */
+  /** @type {Array<{ round_no: number, row_key: string, msg_seq: number, charRange: [number, number], sha256: string, bytes: number }>} */
   const evidence = [];
   const parts = [];
   for (const fold of folds ?? []) {
@@ -89,13 +89,17 @@ export function buildRecallRequest(question, folds) {
     // 行主键（issue #261127-15）：地址由调用方（有全轮消息的 recall_ask）按 `messageRowPosition`
     // 的口径算好透传；取不到稳定位置的折不会到这里（生成侧已跳过不可寻址的消息）。
     const round_no = Number.isInteger(fold?.round_no) ? fold.round_no : 0;
+    // `row_key` 是行身份（同一轮里可能有多条带正文的行 ⇒ 只靠 `msg_seq` 会撞号，见
+    // `src/store/message-rows.js` 的 `positionOfRowMessage`）。
+    const row_key = typeof fold?.row_key === "string" ? fold.row_key : "";
     const msg_seq = Number.isInteger(fold?.msg_seq) ? fold.msg_seq : -1;
-    // charRange 单位是 UTF-16 下标（`slice` 是 `body` 的前缀）；recall_read 在同一 (round_no, msg_seq)
+    // charRange 单位是 UTF-16 下标（`slice` 是 `body` 的前缀）；recall_read 在同一 (round_no, row_key, msg_seq)
     // 定位出的整段正文上按同样的下标切片，两侧口径一致才能比对 sha256。
     const charRange = /** @type {[number, number]} */ ([0, slice.length]);
     parts.push(slice);
     evidence.push({
       round_no,
+      row_key,
       msg_seq,
       charRange,
       sha256: sha256Hex(slice),

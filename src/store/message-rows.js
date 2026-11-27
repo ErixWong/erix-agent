@@ -153,23 +153,40 @@ export const MSG_SEQ_CARRIER_BASE = 2 ** 31;
  *      `row.messages` 里的下标：载体行一次写入（`appendRound` 同键异 payload 会抛）⇒ 行不可变
  *      ⇒ 下标稳定（基址只是个命名空间标签，稳定性的载体仍是那个不可变下标）。
  *
+ * **一轮里只有一套门牌号**（这条不变量是行主键能当证据地址的前提）：载体行自带正文与消息行**不会**
+ * 同时出现在同一轮——两个写者都拒绝那种形状：引擎的续跑锚点在「载体已带正文」时**不给锚点**
+ * （`docs/host-consumer-contract.md` 的 issue #729 段，`resume-manager` 同口径），宿主侧
+ * `appendUserTurn` 直接拒写（`SETTLE_REFUSED_ROUND_CARRIER_HAS_BODY`）。所以载体行的下标 0..k-1
+ * 与消息行的 `seq` 不会撞号。真要撞（宿主手写行，越界用法），两套口径会给出同一个
+ * `(round_no, msg_seq)` 指向两段不同正文——那种账本不在契约面内，且 `appendRound` 的同键异 payload
+ * 判据会先把它拦在落盘之前。
+ *
  * ⚠ 两者都**不是**「折完之后在 `messages[]` 里的下标」——那个下标会随同轮再落消息行、随消息行被
  * 折进载体而漂（#973 当初正是为躲它才改用内容寻址）；这里取的是**行上的**位置，折进载体仍是同一个值。
  *
  * 不可寻址的形状 ⇒ `null`：行没有可用轮号；消息行缺整数 `seq`（宿主手写的 `:input:` 那类行）。
  *
+ * **`row_key` 是地址的第三个分量，不是装饰**（copilot 复审判 REJECT 抓到的唯一性缺口）：
+ * `msg_seq` 只在**一行之内**唯一，跨行会撞——同一轮里引擎会为不同 control slot 各写一条带正文的行
+ * （`…:engine:round:<n>:resume` / 判官 / 方向提示），它们的 `messages[0]` 都算成
+ * `MSG_SEQ_CARRIER_BASE + 0`；`row.seq` 也没有上界（`seq = 2**31` 会撞上载体基址）。所以地址是
+ * `(round_no, row_key, msg_seq)`：`row_key` 是该行的**不可变身份**（`appendRound` 按它去重、同键异
+ * payload 会抛），`msg_seq` 只是行内位置。三者合起来才唯一。
+ *
  * @param {any} row
  * @param {number} index 该消息在 `row.messages` 里的下标（载体行按它取位置）
- * @returns {{ round_no: number, msg_seq: number } | null}
+ * @returns {{ round_no: number, row_key: string, msg_seq: number } | null}
  */
 function positionOfRowMessage(row, index) {
   const roundNo = Number.isSafeInteger(row?.round) ? row.round : undefined;
   if (roundNo === undefined) return null;
+  const key = rowKey(row);
+  if (key === "") return null;
   if (row?.kind === MESSAGE_ROW_KIND) {
-    return Number.isSafeInteger(row.seq) ? { round_no: roundNo, msg_seq: row.seq } : null;
+    return Number.isSafeInteger(row.seq) ? { round_no: roundNo, row_key: key, msg_seq: row.seq } : null;
   }
   return Number.isSafeInteger(index)
-    ? { round_no: roundNo, msg_seq: MSG_SEQ_CARRIER_BASE + index }
+    ? { round_no: roundNo, row_key: key, msg_seq: MSG_SEQ_CARRIER_BASE + index }
     : null;
 }
 
@@ -187,9 +204,12 @@ function positionOfRowMessage(row, index) {
  */
 function stampRowPosition(message, row, index) {
   if (message === null || typeof message !== "object" || Array.isArray(message)) return message;
-  if (Number.isSafeInteger(message.round_no) && Number.isSafeInteger(message.msg_seq)) return message;
+  if (Number.isSafeInteger(message.round_no) && Number.isSafeInteger(message.msg_seq)
+    && typeof message.row_key === "string" && message.row_key !== "") return message;
   const position = positionOfRowMessage(row, index);
-  return position === null ? message : { ...message, round_no: position.round_no, msg_seq: position.msg_seq };
+  return position === null
+    ? message
+    : { ...message, round_no: position.round_no, row_key: position.row_key, msg_seq: position.msg_seq };
 }
 
 /**
@@ -207,8 +227,13 @@ function stampRowPosition(message, row, index) {
  */
 export function messageRowPosition(message, row, index) {
   if (message !== null && typeof message === "object" && !Array.isArray(message)
-    && Number.isSafeInteger(message.round_no) && Number.isSafeInteger(message.msg_seq)) {
-    return { round_no: /** @type {number} */ (message.round_no), msg_seq: /** @type {number} */ (message.msg_seq) };
+    && Number.isSafeInteger(message.round_no) && Number.isSafeInteger(message.msg_seq)
+    && typeof message.row_key === "string" && message.row_key !== "") {
+    return {
+      round_no: /** @type {number} */ (message.round_no),
+      row_key: message.row_key,
+      msg_seq: /** @type {number} */ (message.msg_seq),
+    };
   }
   return positionOfRowMessage(row, index);
 }
@@ -441,11 +466,13 @@ export function foldLedgerMessages(records) {
 function withoutJournalTs(message) {
   if (message === null || typeof message !== "object" || Array.isArray(message)) return message;
   const hasEnvelope = typeof message.ts === "string"
-    || Number.isSafeInteger(message.round_no) || Number.isSafeInteger(message.msg_seq);
+    || Number.isSafeInteger(message.round_no) || Number.isSafeInteger(message.msg_seq)
+    || (typeof message.row_key === "string" && message.row_key !== "");
   if (!hasEnvelope) return message;
   const rest = { ...message };
   delete rest.ts;
   delete rest.round_no;
   delete rest.msg_seq;
+  delete rest.row_key;
   return rest;
 }

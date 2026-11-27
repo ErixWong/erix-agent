@@ -158,7 +158,7 @@ test("#896C-7 recallEvidence 形状（行主键 round_no+msg_seq）、≤2KiB、
   for (const ev of r.evidence) {
     // 行主键形状（#261127-15）：地址就两个键 `round_no` + `msg_seq`；旧的内容寻址两键已删
     //（既无 textSha256 / occurrence，也不再有 rowSeq / messageIndex）。
-    assert.deepEqual(Object.keys(ev).sort(), ["bytes", "charRange", "msg_seq", "round_no", "sha256"]);
+    assert.deepEqual(Object.keys(ev).sort(), ["bytes", "charRange", "msg_seq", "round_no", "row_key", "sha256"]);
     assert.ok(Array.isArray(ev.charRange) && ev.charRange.length === 2);
     assert.ok(ev.bytes <= RECALL_MAX_EVIDENCE_BYTES, `bytes=${ev.bytes} 必须 ≤2048`);
     assert.equal(ev.bytes, Buffer.byteLength(
@@ -209,7 +209,8 @@ const LEDGER_TEXT = "第3轮原文：MARKER_R3 逐字内容，用来验证影子
 /** 造一份 recall_read 可访问的账本：轮 3 一条轮载体行。**载体行不带 seq**（照真实写侧：轮 record 无 seq）。 */
 function makeLedger() {
   /** @type {any[]} */
-  const rows = [{ round: 3, messages: [{ role: "user", content: LEDGER_TEXT }] }];
+  // 行身份（`row_key`）是地址的第三个分量：`appendRound` 按它去重 ⇒ 不可变。夹具必须给（照真实写侧）。
+  const rows = [{ round: 3, roundKey: "ledger:round:3", messages: [{ role: "user", content: LEDGER_TEXT }] }];
   return {
     rows,
     readLedgerRows: () => rows,
@@ -221,7 +222,9 @@ function makeLedger() {
  * 下面的账本都是**轮载体行**（无 `kind:"message"`）⇒ msg_seq 走载体命名空间 `BASE + 下标`。
  */
 function refForText(text) {
-  const { evidence } = buildRecallRequest("q", [{ round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, text }]);
+  const { evidence } = buildRecallRequest("q", [{
+    round_no: 3, row_key: "ledger:round:3", msg_seq: MSG_SEQ_CARRIER_BASE, text,
+  }]);
   return evidence[0];
 }
 
@@ -346,13 +349,15 @@ test("#896C-11d 2 KiB 上限在验证侧也拦（切片字节 > 2048 ⇒ invalid
   // 造一段 >2KiB 的账本原文，手造一个把整段都盖住的 ref（生成侧会夹到 2048，验证侧必须拦超界）。
   const long = "字".repeat(1000); // 1000×3 = 3000 字节 > 2048
   /** @type {any[]} */
-  const rows = [{ round: 3, messages: [{ role: "user", content: long }] }];
+  const rows = [{ round: 3, roundKey: "ledger:round:3", messages: [{ role: "user", content: long }] }];
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
-  const fullRef = buildRecallRequest("q", [{ round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, text: long }]).evidence[0];
+  const fullRef = buildRecallRequest("q", [{
+    round_no: 3, row_key: "ledger:round:3", msg_seq: MSG_SEQ_CARRIER_BASE, text: long,
+  }]).evidence[0];
   // 用全长 charRange（未夹断）+ 与实际字节一致的 bytes（行主键地址照带）：此时字节数超 2048 ⇒ 必须 invalid。
   const out = JSON.parse(await executeTool({
     name: "recall_read",
-    input: { evidenceRef: { round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, charRange: [0, long.length], sha256: fullRef.sha256, bytes: Buffer.byteLength(long, "utf8") } },
+    input: { evidenceRef: { round_no: 3, row_key: "ledger:round:3", msg_seq: MSG_SEQ_CARRIER_BASE, charRange: [0, long.length], sha256: fullRef.sha256, bytes: Buffer.byteLength(long, "utf8") } },
   }));
   assert.equal(out.status, "invalid", "验证侧必须拦 >2KiB 的切片");
   assert.ok(/2048|字节超过|上限/.test(out.reason ?? ""));
@@ -418,9 +423,11 @@ test("#896D-5 同轮重复正文靠 msg_seq 区分（不再靠 occurrence）；�
   // msg_seq（载体行：在该行 messages 里的下标 0/1），所以能**分别**钉到那一条——下面用改第一条证明。
   const DUP = "同轮重复的正文 DUP_MARK";
   /** @type {any[]} */
-  const rows = [{ round: 3, messages: [{ role: "user", content: DUP }, { role: "user", content: DUP }] }];
+  const rows = [{ round: 3, roundKey: "ledger:round:3", messages: [{ role: "user", content: DUP }, { role: "user", content: DUP }] }];
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
-  const base = buildRecallRequest("q", [{ round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, text: DUP }]).evidence[0];
+  const base = buildRecallRequest("q", [{
+    round_no: 3, row_key: "ledger:round:3", msg_seq: MSG_SEQ_CARRIER_BASE, text: DUP,
+  }]).evidence[0];
   for (const seq of [0, 1]) {
     const out = JSON.parse(await executeTool({
       name: "recall_read",
@@ -454,9 +461,12 @@ test("#896D-5 同轮重复正文靠 msg_seq 区分（不再靠 occurrence）；�
 
 test("#896D-6 文本真的改了 ⇒ 仍 stale（仍能定位，但记录的切片 sha 对不上）", async () => {
   /** @type {any[]} */
-  const rows = [{ round: 3, messages: [{ role: "user", content: LEDGER_TEXT }] }];
+  // 行身份（`row_key`）是地址的第三个分量：`appendRound` 按它去重 ⇒ 不可变。夹具必须给（照真实写侧）。
+  const rows = [{ round: 3, roundKey: "ledger:round:3", messages: [{ role: "user", content: LEDGER_TEXT }] }];
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
-  const ref = buildRecallRequest("q", [{ round_no: 3, msg_seq: MSG_SEQ_CARRIER_BASE, text: LEDGER_TEXT }]).evidence[0];
+  const ref = buildRecallRequest("q", [{
+    round_no: 3, row_key: "ledger:round:3", msg_seq: MSG_SEQ_CARRIER_BASE, text: LEDGER_TEXT,
+  }]).evidence[0];
   // 行尾追加一条（append 本身不许改判）+ 把第一条正文改一个字。
   rows[0].messages.push({ role: "user", content: "同一行尾部追加的一条 APPEND_MARK" });
   const NEW = LEDGER_TEXT.replace("验证", "检定");

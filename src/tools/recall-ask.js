@@ -127,7 +127,12 @@ export function createRecallAskTool(options = {}) {
     // （口径在 `src/store/message-rows.js#messageRowPosition`：消息行取行上的 seq、轮载体行取该消息在
     // 该行自己 messages 里的下标）：同轮再落一条消息行、消息行被 store.load() 折进载体，地址都不变。
     // （旧的内容寻址透传已删：textSha256 / occurrence 不再带，`round` 改名为 `round_no`。）
-    const folds = slices.map((s) => ({ round_no: s.round_no, msg_seq: s.msg_seq, text: s.text }));
+    const folds = slices.map((s) => ({
+      round_no: s.round_no,
+      row_key: s.row_key,
+      msg_seq: s.msg_seq,
+      text: s.text,
+    }));
 
     // 4) 单发回忆调用：端口、用量、abort、超时全部**每次调用**经 deps 传入（缺省走安全默认）。
     /** @type {any} */

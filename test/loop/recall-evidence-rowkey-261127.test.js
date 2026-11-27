@@ -140,7 +140,9 @@ test("#261127-15-1b 真 store 账本（load 已折成载体行）取出的地址
 
   const readLedgerRows = async () => store.load(runId);
   const { executeTool } = createBuiltinRecallTools({ readLedgerRows });
-  const ref = buildRecallRequest("q", [{ round_no: target.round_no, msg_seq: target.msg_seq, text: target.text }]).evidence[0];
+  const ref = buildRecallRequest("q", [{
+    round_no: target.round_no, row_key: target.row_key, msg_seq: target.msg_seq, text: target.text,
+  }]).evidence[0];
   const before = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: ref } }));
   assert.equal(before.status, "found", `真机地址必须回账本 found（实得 ${before.status}：${before.reason ?? ""}）`);
   assert.equal(before.text, target.text, "必须逐字等于账本原文");
@@ -167,7 +169,8 @@ test("#261127-15-1b 真 store 账本（load 已折成载体行）取出的地址
   const unitsAfter = unitsOf(await store.load(runId));
   assertAddressesUnique(unitsAfter, "追加之后");
   assert.ok(unitsAfter.some((/** @type {any} */ u) => u.round_no === target.round_no
-    && u.msg_seq === target.msg_seq && u.text === target.text), "既有地址必须仍指向同一条正文");
+    && u.row_key === target.row_key && u.msg_seq === target.msg_seq && u.text === target.text),
+  "既有地址必须仍指向同一条正文");
 
   // 折叠口径自证：把 load() 再折一次（宿主/ resume 都会这么做），地址同样不改（幂等 + stamp 已随消息走）。
   const refolded = foldMessageRows(await readLedgerRows());
@@ -177,5 +180,45 @@ test("#261127-15-1b 真 store 账本（load 已折成载体行）取出的地址
   assert.equal(refoldedAfter.text, target.text, "再折一次取回的正文逐字不变");
   assertAddressesUnique(unitsOf(refolded), "再折一次");
   assert.ok(unitsOf(refolded).some((/** @type {any} */ u) => u.round_no === target.round_no
-    && u.msg_seq === target.msg_seq), "再折一次不丢稳定位置（幂等）");
+    && u.row_key === target.row_key && u.msg_seq === target.msg_seq), "再折一次不丢稳定位置（幂等）");
+});
+
+// ─── copilot 复审抓到的唯一性缺口（PR #981 阻塞项）──────────────────────────
+// 现场：同一轮里引擎会为不同 control slot 各写一条**带正文的行**（`…:engine:round:<n>:resume` /
+// 判官 / 方向提示），它们的 `messages[0]` 都算成 `MSG_SEQ_CARRIER_BASE + 0` ⇒ 只靠
+// `(round_no, msg_seq)` 会撞号，回验 `.find()` 命中第一条 ⇒ **证据指错正文**（静默错数据）。
+// 修法：地址加第三个分量 `row_key`（行身份，`appendRound` 按它去重 ⇒ 不可变）。
+test("#261127-15-7 同轮两条 control-slot 行（各带 messages[0]）⇒ 地址仍唯一", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "issue-261127-15-two-slots";
+  await store.appendRound(runId, { round: 3, roundKey: `${runId}:round:3`, messages: [] });
+  await store.appendRound(runId, {
+    round: 3,
+    dedupKey: `${runId}:engine:round:3:resume`,
+    messages: [{ role: "user", content: [{ type: "text", text: "RESUME_NOTICE_TEXT" }] }],
+  });
+  await store.appendRound(runId, {
+    round: 3,
+    dedupKey: `${runId}:judge:round:3`,
+    messages: [{ role: "user", content: [{ type: "text", text: "JUDGE_NOTE_TEXT" }] }],
+  });
+  const rows = await store.load(runId);
+  const units = collectRoundMessagesInRange(rows, 3, 3);
+  assert.equal(units.length, 2, "两条 control-slot 行各有一条正文");
+
+  const addresses = units.map((/** @type {any} */ u) => `${u.round_no}|${u.row_key}|${u.msg_seq}`);
+  assert.equal(new Set(addresses).size, 2, `地址必须互不相同（实得 ${addresses.join(" / ")}）`);
+  assert.notEqual(units[0].row_key, units[1].row_key, "行身份是区分这两条的唯一手段");
+  // 同一 `msg_seq`（都落在载体命名空间基址上）但行身份不同 ⇒ 仍能各取各的正文。
+  assert.equal(units[0].msg_seq, units[1].msg_seq, "前提：这两条的 msg_seq 本来就相同");
+
+  // 端到端：拿第一条的地址回验必须取回它自己的正文，不是另一条。
+  const { executeTool } = createBuiltinRecallTools({ readLedgerRows: () => rows });
+  const first = units[0];
+  const { evidence } = buildRecallRequest("q", [{
+    round_no: first.round_no, row_key: first.row_key, msg_seq: first.msg_seq, text: first.text,
+  }]);
+  const out = JSON.parse(await executeTool({ name: "recall_read", input: { evidenceRef: evidence[0] } }));
+  assert.equal(out.status, "found");
+  assert.equal(out.text, first.text, "必须取回它自己那一行的正文（不是同轮另一条 control slot 的）");
 });
