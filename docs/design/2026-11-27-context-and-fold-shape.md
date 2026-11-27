@@ -275,7 +275,7 @@ msg_seq=3  tool       [tool_result(tu_3)]   part_of=1
 | `cut_round` / `cut_msg_seq` | int | not null | **切点**：这一折吃掉了「≤ 此切点」的全部消息 |
 | `prior_seq` | bigint | FK→folds(run_id, seq)，可空 | 续写基底 = 上一折。**用外键，不用哈希** |
 | `title` | text | not null | **模型写的短标题**，≤ 60 字符 |
-| `title_src` | text | not null | `model` / `first_line`（回退，见 §3.4 ①） |
+| `title_fallback` | boolean | not null default false | **这个标题不是模型写的**——模型没给 title 时退回正文首行。读者是**渲染**：`true` 的折**不进「遥远的回忆」层**（那层只放 title，而正文首行不是合格索引），只进「详细日志」层（带 `description` 一起）。与代码的 `titleFallback` 同名同义 |
 | `description` | text | not null | **模型写的三节**（行动 / 遗留 / 关键词），约 400 token |
 | `tokens_before` / `tokens_after` | int | not null | 折叠前后的上下文 token。**每折省了多少就挂在折上**——不需要另立一张压缩统计表 |
 | `intent` | jsonb | not null | **折叠前的白板全文**（机械抄）——渲染成 `## 意图`。**今天不存在**：没有白板可抄，这是新能力（`runs.board` 是它的来源） |
@@ -521,7 +521,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 ### 3.4 四条硬前提（缺一条这套就塌）
 
 1. **`title` 必须是模型写的短标题。** 回退到"正文首行"的记录做不了"遥远的回忆"——它不是标题。
-   回退必须留 `title_src='first_line'`，且这种记录**不进第一层**。
+   回退必须留 `title_fallback=true`，且这种记录**不进第一层**。
 2. **`description` 必须自解释。** 每条会被单独拿出来按轮次排列，脱离上下文读。出现"上面 / 刚才 /
    该文件 / 前面提到"这类指代即不合规。
 3. **每一折必须能单独编码。** 这是形状对"跨库检索"的唯一承诺：`description` 拎出来（配 `title`
