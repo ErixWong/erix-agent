@@ -4,7 +4,7 @@
 - **定位**：本文回答「应该长什么样」，不回答「怎么落地」。实现路径、迁移步骤、端口方法、验收判据都不在这里——
   那是落地单的事。本文里的 DDL 是**形状的表达**，不是建库脚本。
 - 取代：ADR-022 第二版的表结构部分（那一版把折叠的产物当成「一份累计文档」，见 §5）。
-  第二版里做对的部分（`rounds` 的形状、`fold_round_rows`、恢复行两族语义、事实分层）原样保留。
+  第二版里做对的部分（`rounds` 的行流与冲突判据、恢复行两族语义、事实分层）原样保留。
 - 关联：ADR-018（notes）、#566（累计体 vs 增量）、#567（折叠身份）、#601（折叠记录）、
   #738（喂出去的那串字节）、#769 / #827（恢复行）、#897 / #898（折叠必须由 LLM 完成）、#971（落地单）
 
@@ -60,41 +60,71 @@
 
 `state_epoch` 这个名字是有意的：`stateVersion` 会被所有人读成"版本号"，而它数的只是注入次数。
 
-### 1.2 `rounds` —— 行流（**不存折叠事实**）
+### 1.2 `rounds` —— 一行一轮（元数据）
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` | text | **PK₁**, FK→runs | |
-| `seq` | bigint | **PK₂** | 会话内严格递增（落盘序） |
-| `round` | int | not null | 轮号 ≥ 0；`0` 是 seed 行 |
-| `kind` | text | not null | `round` / `message` / `input` / `control` / `fact` |
+| `round_no` | int | **PK₂** | ≥ 0；`0` 是 seed |
+| `status` | text | not null | `open` / `closed` / `crashed` |
+| `started_at` / `closed_at` | timestamptz | | |
+| `stop_reason` | text | | |
+| `text_preview` | text | | 本轮正文的预览 |
+| `tool_use_count` | int | not null default 0 | 本轮发起几个工具 |
+| `usage` | jsonb | | 本轮**累计**用量（截断续写时是多次之和） |
+| `response_usage` | jsonb | | **最后一发**的用量（历史形状） |
+| `summary` | text | | 本轮自身摘要 |
+| `l0facts` / `wrapup` | jsonb | | |
+
+**轮行先建后收口**：`open` → 消息落盘 → `closed`。这样消息的外键永远有主，而"崩溃在轮中"这个
+形状由 `status='open'` 表达，不再靠"行缺失"。
+
+### 1.3 `messages` —— 一行一条消息
+
+消息是**最小单位**。每条消息属于且只属于一轮。
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `run_id` | text | **PK₁** | |
+| `round_no` | int | **PK₂**, FK→rounds | 它属于哪一轮 |
+| `msg_seq` | int | **PK₃** | 轮内单调，从 0 起 |
+| `caller` | text | not null | **谁写的**：`user` / `assistant` / `tool` / `engine` |
+| `role` | text | not null | **协议要求它装成谁**：`user` / `assistant` / `system` |
+| `content` | jsonb | not null | 块数组（`text` / `tool_use` / `tool_result` / `image`），保序 |
 | `dedup_key` | text | not null | 写侧幂等身份 |
 | `payload_fingerprint` | text | not null | 规范化 JSON 的摘要，形状 `sha256:<24 hex>` |
-| `payload` | jsonb | not null | 行内容（`kind='message'` 时是一条消息，content 块留在 payload 里） |
-| `created_at` | timestamptz | not null | |
+| `ts` | timestamptz | | 信封时刻（不是顺序依据） |
 
-`payload` 不拆到块一级：原子单位是**消息**。只有需要 `tool_use ↔ tool_result ↔ 执行证据` 三向 join 时才拆。
+**`caller` 与 `role` 是两个维度，别合并**：
 
-**用户提问存在哪里**：就是一行 `rounds`，`kind='input'`，payload 里是
-`messages: [{role:'user', content:[{type:'text', text}]}]`。
-
-| 行的 kind | 里面是什么 | 进不进读侧折叠 |
+| `caller` | 是什么 | `role` |
 |---|---|---|
-| `input` | **人/宿主的提问**（`steer` 也走这里） | **不进**——它没有轮内序号，而且宿主的幂等判据要求 `load()` 能看见自己那条 `dedup_key` |
-| `message` | 引擎产出的消息（assistant 响应 / tool_result） | 进（靠 `seq` 排序，折回轮载体） |
-| `control` | 引擎在轮记录落盘**之后**注入的消息（judge nudge / finalGuard revise） | 不进（无 `seq`） |
-| `fact` | 引擎事实（`messages: []`） | 不进 |
+| `user` | 人 / 宿主提问（`steer` 也走这里） | user |
+| `assistant` | 模型返回（可同时带 text 和 tool_use） | assistant |
+| **`tool`** | **工具结果** | **user** ← 协议把它塞进 user 消息，但作者不是用户 |
+| `engine` | 引擎注入（judge nudge / guard revise） | user |
 
-⚠ **`role='user'` ≠ 提问**：`tool_result` 也住在 user 消息里。区分靠 `origin`：
-`host`（人/宿主提问） / `engine`（引擎注入） / `settle`（结清桩） / `model`（模型产出）。
+一致性约束：`caller='tool'` ⇔ 含 `tool_result` 块；`caller='assistant'` 可含 `tool_use` 块；
+`caller='user'` 只含 text（提问）；`caller='engine'` 不含 `tool_result`。
 
-**提问落在哪一轮**：第一条在 `round 0`（seed 行）；之后每一条落在**提问发生时已完成的最大轮号**。
-所以“段”（人的一次提问 → 它引发的所有轮）是一条查询：按 `kind='input'` 的行切，不需要表。
+**顺序从自然键推出来，不需要全局序号**：
 
-**幂等的三态**（唯一约束表达不了）：同 key 同指纹 ⇒ 幂等 no-op；同 key **异**指纹 ⇒ 冲突，
-既不覆盖也不静默丢；新 key ⇒ 插入。单纯 `ON CONFLICT DO NOTHING` 会把第二种吞掉。
+| 要排什么 | 用什么 |
+|---|---|
+| 轮内消息 | `msg_seq` |
+| 跨轮 | `round_no` |
+| 折叠之间 | `folds.seq`（§1.4） |
+| 恢复事件之间 | `recovery_rows.seq`（§1.9） |
 
-### 1.3 `folds` —— 一次折叠 = 一行
+全局 `seq` 是**单文件 JSONL 的产物**（一个文件里没有类型，只有行序）。拆成表之后，行序由自然键承担，
+`ts` 只作记录、不作顺序依据（墙钟会回拨，分辨率也不够）。
+
+**哪些消息进折叠**：`caller IN ('assistant','tool')`。`user` 不进——宿主的幂等判据要求
+`load()` 能看见自己那条 `dedup_key`；`engine` 不进——它在轮记录落盘之后才产生。
+
+**“段”（人的一次提问 → 它引发的所有轮）是一条查询**：按 `caller='user'` 的消息切，不建表。
+
+### 1.4 `folds` —— 一次折叠 = 一行
 
 **折叠的产物不是一份累计文档，而是一条局部日志。** 旧行一个字都不改。
 
@@ -117,32 +147,39 @@
 **折叠的身份是三元组** `(from_round, to_round, prior_seq)`：同一区间先后两次折（恢复前 `prior_seq=NULL`、
 恢复后 `prior_seq=3`）是**两次折叠**，不是一次。哈希身份是为"没有行 id 的存储"发明的，有了主键就没有理由。
 
-**没有 `stage_no`**：分组是渲染时现算的（§1.5），不在行上。
+**没有 `stage_no`**：分组是渲染时现算的（§1.6），不在行上。
 
 **没有 `text`（累计体）**：累计体每折被重写一次，同一段内容会被压缩两遍、三遍（§5 有实测）。
 
-### 1.4 `fold_round_rows` —— 这一折吃掉了哪些行
+### 1.5 `fold_exclusions` —— 区间内的例外（**不记成员**）
 
-`(run_id, round)` **不唯一**（崩溃轮有消息行 + 轮载体行；同一轮在 restore / 重折之后可能有多代行），
-所以「用轮号区间反查原文」**定位不到那一代行**。必须记成员关系：
+第二版为"这一折吃掉了哪些行"专门记了一张成员表，理由是 `(run_id, round)` 不唯一——同一轮在
+崩溃重跑 / restore / 重折之后可能有多代行。**拆成 `rounds` + `messages` 之后这个问题消失了**：
+消息的主键是 `(run_id, round_no, msg_seq)`，一条消息只有一行，不存在"第几代"。
+
+所以折叠的成员是**可推导的**：区间内的全部消息，减去例外。
 
 | 列 | 约束 |
 |---|---|
 | `fold_run_id`, `fold_seq` | FK → `folds(run_id, seq)`，**PK₁₂** |
-| `round_run_id`, `round_seq` | FK → `rounds(run_id, seq)`，**PK₃₄** |
-| `excluded` | bool not null default false + `exclude_reason`（`clamped` / `deduped` / `safety_removed`） |
+| `run_id`, `round_no`, `msg_seq` | FK → `messages`，**PK₃₄₅** |
+| `reason` | `clamped` / `safety_removed`（`deduped` 随"不存副本"一起消失） |
 
 **原文一条都不复制。** 「被折走的原文」是派生查询：
 
 ```sql
-SELECT r.* FROM fold_round_rows m JOIN rounds r ON r.run_id = m.round_run_id AND r.seq = m.round_seq
- WHERE m.fold_run_id = ? AND m.fold_seq = ? AND m.excluded = false;
+SELECT m.* FROM messages m
+ WHERE m.run_id = ?
+   AND m.round_no BETWEEN ? AND ?
+   AND NOT EXISTS (SELECT 1 FROM fold_exclusions e
+                    WHERE e.fold_seq = ? AND e.run_id = m.run_id
+                      AND e.round_no = m.round_no AND e.msg_seq = m.msg_seq);
 ```
 
 实测依据：一份真机归档里，被归档的副本 940,278 字节，而它拷贝的那些行自己合计 941,379 字节
 ——**差 0.1%，等于纯冗余**。
 
-### 1.5 两样东西是渲染时算的，**不是表**
+### 1.6 两样东西是渲染时算的，**不是表**
 
 #### ① 分组行
 
@@ -177,7 +214,7 @@ SELECT seq, title FROM folds
 即使只存“最新一份”，那也是一次**不可审计的重写**：模型每折压一遍，丢掉了什么账本上看不出来，
 而它能提供的信息量，十条 title 已经给了。
 
-### 1.6 `notes` / `note_history` / `note_ops` —— 白板是 note 的一个维度
+### 1.7 `notes` / `note_history` / `note_ops` —— 白板是 note 的一个维度
 
 | 列 | 类型 | 说明 |
 |---|---|---|
@@ -192,7 +229,7 @@ SELECT seq, title FROM folds
 **准入判据**：不记住的后果必须是一次**可观测的失败**（重复劳动 / 违反约束 / 重跑已失败的路）。
 写不出这个后果的条目，说明它只是"看起来重要"。
 
-### 1.7 `budget_verdict` —— 装不下的证据
+### 1.8 `budget_verdict` —— 装不下的证据
 
 「超预算就显式失败」只有在**说清差多少**时才成立。
 
@@ -207,25 +244,26 @@ SELECT seq, title FROM folds
 | `outcome` | text | `ok` / `degraded` / `failed` |
 | `ts` | timestamptz | |
 
-### 1.8 `recovery_rows` —— 恢复行（两族语义不同）
+### 1.9 `recovery_rows` —— 恢复行（两族语义不同）
 
 | 列 | 类型 | 说明 |
 |---|---|---|
 | `run_id` / `seq` | text / bigint | **PK** |
 | `event` | text | `tool-executed` / `tool-result-unledgered` / `partial-text` |
 | `round` | int | 槽事件按轮定界 |
-| `dedup_key` / `payload_fingerprint` / `payload` / `created_at` | | 同 §1.2 的冲突判定 |
+| `dedup_key` / `payload_fingerprint` / `payload` / `created_at` | | 同 §1.3 的冲突判定 |
 
 - `event = 'partial-text'`：**槽**——同 `(run_id, round)` 只留一条、原子替换、跨轮自剪枝；
 - 其余事件：**只追加、永不替换、一行不丢**。
 
-### 1.9 关系总图
+### 1.10 关系总图
 
 ```
-runs 1─┬─N rounds ──────────┐
-       ├─N folds ───────────┤ fold_round_rows (folds N─N rounds，精确到行)
-       ├─N recovery_rows    │
-       ├─N budget_verdict   │
+runs 1─┬─N rounds ──── N messages（消息是最小单位，每轮内按 msg_seq 排）
+       ├─N folds ───────────┐
+       │                    └─ fold_exclusions（区间内的例外，成员可推导）
+       ├─N recovery_rows
+       ├─N budget_verdict
        └─N notes 1─N note_history
                 └─N note_ops
 ```
@@ -241,7 +279,7 @@ runs 1─┬─N rounds ──────────┐
 | `folds.title` / `folds.description` / `folds.intent` | **折叠事实**（本折日志） | `folds` |
 | 实际喂给模型的那串字节 | **请求事实**。今天字段名有两个，别混：`foldedSummary.text` 是折叠后**整条消息**的投影（含原任务正文与安全层插的 `[已修剪]`）；`foldedSummary.fedSummaryText` 才是「写侧当场证得的那一块」逐字副本 | 留在**该轮的记录**上，不从 `folds` 派生 |
 | `requestStateBlock` | 会话状态块的渲染 | run-state |
-| `foldedPayload` | 被折走的原始消息 | **派生**（§1.4 的行集合查询），不落正文 |
+| `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的区间 + 例外查询），不落正文 |
 | `compactionStats[].foldSummary` | 指标 | 诊断面，只放信号 |
 
 **写点后移**：喂给模型的那串字节要在**请求组装处**（所有压缩层定稿之后）写。于是它记的就是"模型真正
@@ -307,7 +345,7 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 3. **每一折必须能单独编码。** 这是形状对"跨库检索"的唯一承诺：`description` 拎出来（配 `title`
    与 `(run_id, seq)`）就足够让任何人算出一条可用的向量，不需要同一会话的其它行、不需要原任务。
    做不到这一条，检索层就永远得把整个会话塞进去才能判断相关度。
-4. **必须有分组行。** 否则 `title` 数量线性增长（§1.5）。
+4. **必须有分组行。** 否则 `title` 数量线性增长（§1.6）。
 
 ### 3.5 渲染的边界与退化
 
@@ -405,9 +443,9 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 
 ## 4. 形状的不变量
 
-这九条是"形状对不对"的判据，不是测试用例：
+这十一条是"形状对不对"的判据，不是测试用例：
 
-1. **原文不复制**：被折走的正文只在 `rounds` 里存一份。
+1. **原文不复制**：被折走的正文只在 `messages` 里存一份。
 2. **旧日志不重写**：每次折叠只追加一行，历史行永不被改写。
 3. **渲染确定性**：同一批 `folds` + 同一预算 ⇒ 逐字节相同的输出。
 4. **降级不夹断**：任何一条要么整条进，要么降一档。
@@ -416,6 +454,8 @@ B = 窗口 × 2.5%                       ← 历史层预算（白板另算）
 7. **每一折可单独编码**：拎出 `title` + `description` + `(run_id, seq)` 就够，不依赖同一会话的其它行。
 8. **装不下要说清**：失败时 `budget_verdict` 给出 budget / measured / over_by / layers_tried。
 9. **一条信息只住一处**：现状→白板，历史→日志，细节→账本，常量→项目指令；**机械内容各自成列**，不混进 `description`。
+10. **轮行先建后收口**：`open` → 消息落盘 → `closed`。消息的外键永远有主，崩溃形状是 `status='open'`，不是行缺失。
+11. **顺序靠自然键**：轮内 `msg_seq`，跨轮 `round_no`，折叠 `folds.seq`。没有全局序号，`ts` 不作顺序依据。
 
 ---
 
@@ -448,7 +488,7 @@ description 放下**——梯度降级在这个规模上用不到，它是给 10
 - **不建 segment 表**：`rounds`（会话累计轮号）与 `runRounds`（本次拉起消耗）两个计数器确实不同，
   但没有读者需要那个边界；要归因成本就查 `llm_call` 按轮聚合，不为此多一张表。
 - **不引入 ORM / SQL 依赖**：DB 只是宿主的一种实现，`src/` 里仍只有 JSONL 与内存两种。
-- **不把 `payload` 拆到块一级**：原子单位是**消息**。
+- **不把 `content` 拆到块一级**：原子单位是**消息**。
 - **不做"无限保留历史原文"**：原文在账本里，上下文只放骨架。
 - **不给白板加时间维度**：退场靠状态（done / 被推翻 / 被证伪），不靠"多久没用到"。
 - **不在 `folds` 里存向量**：会话内它永远不会触发——200k 窗口下 10 折（约 6000 轮）全部能按完整
