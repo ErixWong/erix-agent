@@ -301,7 +301,6 @@ SELECT seq, title FROM folds
 | `title` | text | not null, ≤60 | 目录显示的那一行。写侧上限 = 显示上限，否则模型写的后半截永远看不到 |
 | `content` | text | not null, ≤4000 | 正文 |
 | `state` | text | not null | `active` / `revoked` |
-| `author` | text | not null | `agent` / `auto` / `host` |
 | `created_at` / `updated_at` | timestamptz | not null | 保留期只看 `updated_at` |
 
 **没有 `kind` / `pinned` / `board` / `tags` / `relevance`**：
@@ -312,6 +311,7 @@ SELECT seq, title FROM folds
 | `pinned` / `board` | 白板的开关，随白板一起走 |
 | `tags` | 目录不渲染它 ⇒ 在"要不要读"的决策点上不可见 ⇒ 无法可靠使用 |
 | `relevance` | 模型自评的相关度，没有客观依据 |
+| `author` / `provenance` | `auto` 在 `src/` 里只有读者、没有生产者；目录渲染的 `@agent` 恒为常量，`note_list` 的 `source` 过滤连工具面都没暴露 |
 
 **没有 `current` JSONB**：`title` 有专门读者（目录渲染）和长度约束，JSONB 里只能靠触发器；
 `content` 是正文。两者都不需要"任意扩展"。
