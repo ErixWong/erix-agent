@@ -32,7 +32,6 @@ import {
 } from "../src/loop/aggregate-budget.js";
 import { OMIT_UNRECORDED_CLAUSE } from "../src/loop/tool-result-ttl.js";
 import { WRAPUP_INSTRUCTION } from "../src/loop/reflection.js";
-import { PACK_CLAIM_MISMATCH_NOTE } from "../scripts/pack-link-check.mjs";
 
 /** 不是「一句话」而是整段提示词/长文档：它们有别的判据，钉非空没有意义。 */
 const EXEMPT = new Set([
@@ -73,7 +72,6 @@ const CLAUSE_CONSTANTS = Object.freeze({
   "src/loop/aggregate-budget.js#NO_RERUN_SIDE_EFFECT_CLAUSE": NO_RERUN_SIDE_EFFECT_CLAUSE,
   "src/loop/tool-result-ttl.js#OMIT_UNRECORDED_CLAUSE": OMIT_UNRECORDED_CLAUSE,
   "src/loop/reflection.js#WRAPUP_INSTRUCTION": WRAPUP_INSTRUCTION,
-  "scripts/pack-link-check.mjs#PACK_CLAIM_MISMATCH_NOTE": PACK_CLAIM_MISMATCH_NOTE,
 });
 
 test("261126-45 提示词常量不许被清空：空串会让 includes() 恒真，断言变假绿", () => {
@@ -112,7 +110,6 @@ test("261126-45 断言里引用的常量必须都在上表登记（漏登记 ⇒
     "../src/loop/aggregate-budget.js",
     "../src/loop/tool-result-ttl.js",
     "../src/loop/reflection.js",
-    "../scripts/pack-link-check.mjs",
   ];
   const promptExports = new Set();
   for (const specifier of promptModules) {
