@@ -189,6 +189,7 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 | `msg_seq` | int | **PK₃** | 轮内单调，从 0 起 |
 | `caller` | text | not null | **谁写的**：`user` / `assistant` / `tool` / `judge` / `engine` |
 | `content` | jsonb | not null | 块数组（`text` / `tool_use` / `tool_result` / `image`），保序 |
+| `created_at` | timestamptz | not null | **这条消息什么时候落盘**。写进去就定稿，所以创建时间就是唯一时间；**不可恢复**——事后再也拿不到 |
 
 **没有 `dedup_key` / `payload_fingerprint`**：两个都是 JSONL 的产物。
 
@@ -197,9 +198,17 @@ judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保
 | `dedup_key` | `<runId>:msg:<round>:<seq>` 这类字符串 | **就是复合主键的字符串编码**——主键已经承担幂等身份 |
 | `payload_fingerprint` | 整行 payload 的 `sha256[:24]` | 一行是不透明 blob 时才需要哈希比内容；关系模型里「同一份 payload」就是**非主键列全相等**，精确比较。存成列还会自指（行里存着这一行的摘要），任何字段变了都要重算 |
 
-**没有 `ts`（消息级）**：写入时刻落在这一轮的窗口内，`rounds.created_at` 加下一轮的 `created_at` 就是区间；
-单个工具的耗时由 `tool_result.erix.durationMs` 记。消息级时间戳今天**没有读者**——唯一的读点
-`stampRowTs` 只是把它从行拷到 message 对象上，之后再没人读。
+**`created_at` 与 `rounds.created_at` 不是重复**：
+
+| 时间戳 | 答什么 | 什么时候写 |
+|---|---|---|
+| `rounds.created_at` | 这一轮什么时候**收口** | 轮行写成时（最后一条工具结果之后） |
+| `messages.created_at` | 这条消息什么时候**落盘** | 每条消息一成型就写 |
+
+两个都不可恢复：崩溃时轮行可能写了而消息没落，那时只有 `rounds.created_at`；一轮内多条消息的时间差
+（哪个工具在 12:42:03 返回、哪个在 12:42:47）只有 `messages.created_at` 能给——宿主的时间线就用它
+（`stampRowTs`，`src/store/message-rows.js:277`）。单个工具的**耗时**仍由 `tool_result.erix.durationMs` 记，
+那是另一个事实。
 
 **没有 `role`**：它是 `caller` 的函数，而且**会跟 `caller` 打架**。
 
