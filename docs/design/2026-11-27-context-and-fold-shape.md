@@ -76,7 +76,11 @@
 | `termination_detail` | text | 可空 | 一句人可读说明。**读者是宿主 UI**（引擎内零读）——错误文本没有第二个家：返回对象宿主不落盘就没了 |
 | `termination_error_code` | text | 可空 | 仅 `reason='failed'` 时：`timeout` / `rate_limited` / `auth` / `unknown` |
 | `state_version` | int | not null | **状态块注入过几次**。计数器，不可派生 |
-| `quotas` | jsonb | | **一次性额度的领取记录**：`{lowBudgetPrompted, guardExtensionUsed, contextRecoveryUsed}`。三者是**决定**（"已经领过"），不是事实的投影；读者是同一个门 |
+| `low_budget_prompted` | boolean | not null default false | **防重复**：低预算提示已经给过 |
+| `guard_extension_used` | boolean | not null default false | **防重复**：扩轮额度已经领过 |
+| `context_recovery_used` | boolean | not null default false | **防重复**：上下文超窗恢复额度已经领过 |
+| `store_folds_channel_absent` | boolean | not null default false | **降级事实**：store 没实现折叠通道（`appendFold` / `loadFolds`） |
+| `store_folds_channel_write_failed` | boolean | not null default false | **降级事实**：这次折叠写不成（与上一条不是同一件事：「宿主没实现」vs「写失败」） |
 | `max_rounds` | int | | 本次运行的轮数预算（输入配置） |
 | `compaction_stats` | jsonb | 可空 | **压缩事件总账**：每次压缩的 `tokensBefore` / `tokensAfter` / 各层触发。**不可重算**。不是 `folds` 的附属——`ttl` / `slidingWindow` / `anchors` / `enforceSize` 都不是折叠，`folds` 装不下它们 |
 | `verification_status` | text | 可空 | **验证结论**：`verified` / `unverified` / `skipped` / `error`。**不可派生**——guard 真的跑过才有这个值 |
@@ -101,6 +105,11 @@
 一个事实只住一处——列和 jsonb 各存一份，就多了一条"必须同步"的纪律，而没有读者需要按它们查询。
 快照里的 `stateVersion` 数的是**注入次数**，不是版本号（这个名字会被所有人读错，但它住在快照 schema 里，
 名字由那边决定）。
+
+**这五个「一次性事实」是列，不是 jsonb**：它们原来住在 `state.deterministic` 里，用**键不存在**表示
+「没发生过」。换成 `default false` 的列之后：① 「缺席 vs false」的歧义消失；② 可以直接查
+（「哪些 run 用过扩轮额度」不必扫 jsonb）。给它们起一个容器名（`quotas` 之类）只是把删掉的 jsonb
+换个壳——读者看到的仍是不透明 blob。
 
 **没有 `state` 这个 jsonb**：它原来装 12 个键，实测 90 份真实快照里——
 
