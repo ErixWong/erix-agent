@@ -36,33 +36,12 @@
 | `migration_folds_complete` | bool | not null default false | §5 的**迁移完成标记**（原子判据，不是"表非空"） |
 | `created_at` / `updated_at` | timestamptz | not null | |
 
-### 1.2 `segments` —— 每次拉起（第二版缺这一层）
-
-`rounds`（会话累计轮号）与 `runRounds`（本次拉起消耗的轮数）是两个计数器，这不是冗余：
-resume 之后 `runRounds` 从 0 重算，而 `rounds` 继续递增。第二版只有 `runs` 一层，于是这层边界
-**只存在于内存里**，账本上看不见。
-
-| 列 | 类型 | 约束 |
-|---|---|---|
-| `run_id` | text | **PK₁**, FK→runs |
-| `segment_no` | int | **PK₂**，run 内从 1 递增 |
-| `reason` | text | not null，`fresh` / `resume` |
-| `started_at` / `ended_at` | timestamptz | |
-
-**它的真实读者**（否则这张表不该存在）：`rounds.segment_no` 把每一轮挂到产出它的那次拉上，
-于是「这次 resume 从第 800 轮开始、跑了 300 轮、花了多少 token、死在哪里」变成一条可查的账。
-成本归因与失败归属都需要这个边界；没有它，`runRounds` 只是一个内存变量，账本上查不到。
-
-`recovery_rows` 的「代际」与 segment **不是一回事**：代际只在 `fresh_start` 且持久化开着时换代
-（`clearRecoveryRows`），resume 不换。两者都要，别合并。
-
-### 1.3 `rounds` —— 行流（**不存折叠事实**）
+### 1.2 `rounds` —— 行流（**不存折叠事实**）
 
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` | text | **PK₁**, FK→runs | |
 | `seq` | bigint | **PK₂** | run 内严格递增（落盘序） |
-| `segment_no` | int | not null, FK→segments | 这一行是哪次拉起写的（§1.2 的读者靠它） |
 | `round` | int | not null | 轮号 ≥ 0；`0` 是 seed 行 |
 | `kind` | text | not null | `round` / `message` / `control` / `fact` |
 | `dedup_key` | text | not null | 口径**逐字照** `recordKey`：`dedupKey ?? roundKey ?? "<runId>:round:<round>"` |
@@ -81,7 +60,7 @@ resume 之后 `runRounds` 从 0 重算，而 `rounds` 继续递增。第二版�
 `payload` 不拆到块一级：原子单位是**消息**（`foldMessageRows` 的口径）。只有需要
 `tool_use ↔ tool_result ↔ 执行证据` 三向 join 时才拆出 `content_block`，本版不做（§7）。
 
-### 1.4 `folds` —— 一次折叠 = 一行（第三版重写）
+### 1.3 `folds` —— 一次折叠 = 一行（第三版重写）
 
 第三版的核心改动：**折叠的产物不是一份累计文档，而是一条局部日志**。
 
@@ -110,7 +89,7 @@ resume 之后 `runRounds` 从 0 重算，而 `rounds` 继续递增。第二版�
 **为什么没有 `text`（累计体）**：第二版的 `folds.text` 是「截至本折的累计替代物」，它每折被重写一次，
 于是同一段内容被压缩两遍、三遍（§9 第 5 条）。第三版只存**本折**的 `description`，旧行一个字不动。
 
-### 1.5 `fold_round_rows` —— 这次折叠吃掉了哪些行（沿用第二版）
+### 1.4 `fold_round_rows` —— 这次折叠吃掉了哪些行（沿用第二版）
 
 `(run_id, round)` **不唯一**（崩溃轮有消息行 + 轮载体行；同一轮在 restore / 重折之后可能有多代行），
 所以「`from_round..to_round` 反查原文」**定位不到那一代行**。必须记成员关系：
@@ -131,7 +110,7 @@ SELECT r.* FROM fold_round_rows m JOIN rounds r ON r.run_id = m.round_run_id AND
 实测依据：一份真机归档里，被归档的副本 940,278 字节，而它拷贝的那些行自己合计 941,379 字节
 ——**差 0.1%，等于纯冗余**（测量现场见 #971 评论）。
 
-### 1.6 `stages` —— 阶段线（第三版新增）
+### 1.5 `stages` —— 阶段线（第三版新增）
 
 折数一多，`title` 也是线性增长的（1000 折 × 20 token = 20k）。最老的那些按区间并成一行。
 
@@ -148,7 +127,7 @@ SELECT r.* FROM fold_round_rows m JOIN rounds r ON r.run_id = m.round_run_id AND
 （§4.10 的第 ③ 件事），拿不到就机械拼「第 a–b 折」并标 `label_src='mechanical'`。
 已并进 stage 的折**不再出现在第一、二层**——第三档独占它们（§4.2 的 ③）。
 
-### 1.7 `notes` / `note_history` / 白板（ADR-018 + 第三版）
+### 1.6 `notes` / `note_history` / 白板（ADR-018 + 第三版）
 
 `notes(run_id, key, current jsonb, state, pinned, relevance, provenance jsonb, created_at, updated_at, revoked_at)`，
 PK(run_id, key)；`note_history(run_id, key, version, payload, state, created_at)`，PK(run_id,key,version)。
@@ -165,7 +144,7 @@ PK(run_id, key)；`note_history(run_id, key, version, payload, state, created_at
 白板的**准入判据**（写不出就不许进）：不记住的后果必须是一次**可观测的失败**（重复劳动 / 违反约束 /
 重跑已失败的路）。白板 ≤ 1200 字符、条目 ≤ 12 条，满了必须删一条才能进新的。
 
-### 1.8 `budget_verdict` —— 装不下的证据（第三版新增）
+### 1.7 `budget_verdict` —— 装不下的证据（第三版新增）
 
 「超预算就显式失败」只有在**说清差多少**时才成立。
 
@@ -182,14 +161,14 @@ PK(run_id, key)；`note_history(run_id, key, version, payload, state, created_at
 
 终局 `termination_code = 'cannot_fit'` 时，宿主查这张表最后一行就知道差多少、试过什么。
 
-### 1.9 `recovery_rows` —— 恢复行（#769 / #827，两族语义不同，沿用第二版）
+### 1.8 `recovery_rows` —— 恢复行（#769 / #827，两族语义不同，沿用第二版）
 
 | 列 | 类型 | 说明 |
 |---|---|---|
 | `run_id` / `seq` | text / bigint | **PK** |
 | `event` | text | `tool-executed` / `tool-result-unledgered` / `partial-text` |
 | `round` | int | 槽事件按轮定界 |
-| `dedup_key` / `payload_fingerprint` / `payload` / `created_at` | | 同 §1.3 的冲突判定 |
+| `dedup_key` / `payload_fingerprint` / `payload` / `created_at` | | 同 §1.2 的冲突判定 |
 
 **两族语义必须在表上分开**：
 
@@ -197,11 +176,10 @@ PK(run_id, key)；`note_history(run_id, key, version, payload, state, created_at
   ⇒ `UNIQUE(run_id, round) WHERE event='partial-text'`；
 - 其余事件：**只追加、永不替换、一行不丢**。
 
-### 1.10 关系总图
+### 1.9 关系总图
 
 ```
-runs 1─┬─N segments
-       ├─N rounds ──────────┐
+runs 1─┬─N rounds ──────────┐
        ├─N folds ───────────┤ fold_round_rows (folds N─N rounds，精确到行)
        │      └─N:1 stages  │
        ├─N recovery_rows    │
@@ -228,7 +206,7 @@ runs 1─┬─N segments
 | `note_*` | `notes` / `note_history` / `note_ops` | 白板走同一个端口，多一个 `board` 参数 |
 
 **端口不该有的**：`record.foldedFacts` 作为轮记录的一部分（折叠只经 `appendFold`）；
-`foldedPayload` 作为落盘字段（它是 §1.5 的派生查询）。
+`foldedPayload` 作为落盘字段（它是 §1.4 的派生查询）。
 
 ---
 
@@ -238,10 +216,10 @@ runs 1─┬─N segments
 
 | 东西 | 真实身份 | 归属 |
 |---|---|---|
-| `folds.title` / `folds.description` | **折叠事实**（本折日志） | §1.4 的新表 |
+| `folds.title` / `folds.description` | **折叠事实**（本折日志） | §1.3 的新表 |
 | 实际喂给模型的那串字节 | **某一轮的请求事实**。今天字段名有两个，**别混**：`foldedSummary.text` 是折叠后**整条消息**的投影（含原任务正文与安全层插的 `[已修剪]`）；`foldedSummary.fedSummaryText` 才是「写侧当场证得的那一块」逐字副本，只在证得过时才落账 | 留在**该轮的记录**上，不从 `folds` 派生 |
 | `requestStateBlock` | run 状态块的渲染 | run-state |
-| `foldedPayload` | 被折走的原始消息 | **派生**（§1.5 的行集合查询），不落正文 |
+| `foldedPayload` | 被折走的原始消息 | **派生**（§1.4 的行集合查询），不落正文 |
 | `compactionStats[].foldSummary` | 指标 | 诊断面，只放信号 |
 
 准确主张：**折叠事实**有单一源（`folds`）；**请求事实**归轮记录；两者不混。
@@ -310,7 +288,7 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 2. **`description` 必须自解释。** 今天的 prompt 已要求"不出现『上面』『刚才』『该文件』"。在旧形状里
    这是好习惯；在按轮次全量排列的新形状里它是**硬前提**——每条会被单独拿出来读。判据是机械的：
    出现依赖上下文的指代词 ⇒ 该折记录不合规。
-3. **必须有阶段线。** 否则 `title` 数量线性增长（§1.6）。
+3. **必须有阶段线。** 否则 `title` 数量线性增长（§1.5）。
 
 ### 4.6 折叠前的闸门
 
@@ -332,7 +310,7 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 
 | 情况 | 行为 |
 |---|---|
-| 估算与真实 tokenizer 不一致 | 按 **0.9B** 渲染（留 10% 余量）；provider 报 `context_window_exceeded` ⇒ 按 §1.8 记一行、**降一档重试一次**，同一档不许重试两次 |
+| 估算与真实 tokenizer 不一致 | 按 **0.9B** 渲染（留 10% 余量）；provider 报 `context_window_exceeded` ⇒ 按 §1.7 记一行、**降一档重试一次**，同一档不许重试两次 |
 | 窗口极小（装不下一条 description + 一条 title） | 降级顺序：最新一条 description → 只给 title → 只给阶段线 |
 | 连一条阶段线都装不下 | **`cannot_fit` 显式失败**。不许静默只给保留区——模型会以为自己是从头开始的，然后重复劳动 |
 | 任何一档装不下整条 | **降档，不夹断**。半条 description 比没有更坏：模型会补全不存在的细节 |
@@ -371,12 +349,43 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 | 白板更新指令解析不出 | **折叠照常落账**，白板保持不变，记一条 `error_event`。**不许**写空的 `note_ops`（没发生操作就不留操作记录） |
 | 某条 `add` 超过白板上限 | 该条不进，记一条 `op='drop'` 说明是被上限挡的（不是模型没提） |
 
+### 4.11 两种文本的固定节
+
+**`description`（本折日志）—— 5 节，固定顺序，约 400 token**
+
+| 节 | 写什么 | **不**写什么 |
+|---|---|---|
+| `## 阶段` | 这一折做了什么、关键转折 | 目标（白板里有） |
+| `## 改动` | 改过 / 新增的文件路径 + 一句话 | 完整 diff |
+| `## 验证` | 跑过什么、结果如何（命令 + 结论） | 完整输出 |
+| `## 卡点` | 没解决的、试过但失败的 | 下一步计划（白板里有） |
+| `## 关键词` | 检索原文用的词（文件 / 工具 / 报错 / 未结事项） | 长句 |
+
+**为什么不要 `## 下一步`**：下一步属于"现状"，住白板。两处都写就会出现两份略有出入的版本，
+模型会按其中一份行动。同理也不写"目标""约束""教训"。
+
+**白板 —— 4 类条目 + 1 条阶段线，合计 ≤ 1200 字符**
+
+| 类（`kind`） | 渲染成 | 上限 | 退场条件 |
+|---|---|---|---|
+| `constraint` | `## 约束` | 6 条 | 用户撤销 / 任务结束 |
+| `todo` | `## 待办`（doing / waiting） | 8 条 | done（保留行但不注入） |
+| `lesson` | `## 教训` | 3 条 | 被推翻 / 不再相关 |
+| `fact` | `## 事实`（关键路径、常量、环境） | 6 条 | 被证伪 |
+| 阶段线 | `## 阶段线` 一行 | 1 行 ≤ 40 字 | 不淘汰 |
+
+白板**不是散文，是条目清单**：渲染时按上表顺序拼成 5 段，每段内按 `pinned` → `relevance` →
+`updated_at` 排。退场条件是**状态**（done / 被推翻 / 被证伪），不是"多久没用到"——按时间淘汰就是
+在做记忆模型，不是在做 agent。
+
 ---
 
 ## 5. 兼容与迁移
 
-1. **读兼容不是"表空才回退"**：两边都读、按折叠身份去重——`loadFolds` = `folds` 行 ∪ 旧轮记录里的
-   `foldedFacts`，以 `(from_round, to_round)` 为身份去重；`folds` 行优先。
+1. **读兼容不是"表空才回退"**：两边都读、**按完整折叠身份去重**——身份是
+   `(from_round, to_round, prior_seq)` 三元组，**不是** `(from_round, to_round)`。
+   同一区间先后有两个不同的折（恢复前 `prior_seq=NULL`、恢复后 `prior_seq=3`）是**两次折叠**，
+   按区间去重会让新行盖掉旧行，§4 渲染就静默少一折。`folds` 行优先。
 2. **迁移完成标记**：`runs.migration_folds_complete`。迁移在一个事务里写完再置 true；`loadFolds`
    在该标记为 true 之后才可以只读 `folds`。中途失败 ⇒ 标记为 false ⇒ 继续走合并读。
 3. **写新**：新折叠只写 `folds` + `fold_round_rows`；轮记录不再写 `foldedFacts`。
@@ -392,7 +401,7 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
    规则是「**写侧收窄，读侧宽容**」：新行不可能再出现这些值，旧行读得回来、只是不冒充日志。
 5. **旧记录没有 `title` / `description`**：迁移时从旧的 `text` 取首行当 `title`（`title_src='first_line'`），
    整段当 `description` 并标 `migrated=true`。这类记录只进第二层，不进第一层（§4.5 ①）。
-6. **`foldedPayload` 退役**：从落盘字段变成派生查询（§1.5）。宿主若在读它，升级指南要给替代查询。
+6. **`foldedPayload` 退役**：从落盘字段变成派生查询（§1.4）。宿主若在读它，升级指南要给替代查询。
 7. **版本**：`appendFold` / `loadFolds` / `appendStage` **先做成可选**（缺失 ⇒ 退回写轮记录字段 + 发一次
    `store_folds_channel_absent` 诊断），与 #769 恢复行、#157 快路径探针的既有做法一致；
    **下一主版本**才改成必需。
@@ -403,7 +412,7 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 | `record.foldedFacts.text`（累计替代物） | 最新一折的 `folds.description`；要累计语义就按 `seq` 自己拼 |
 | `record.foldedFacts.title` | `folds.title` |
 | `record.foldedFacts.toolCalls` | 由 `fold_round_rows` 现查（不落表） |
-| `record.foldedPayload` | §1.5 的派生查询 |
+| `record.foldedPayload` | §1.4 的派生查询 |
 | `record.foldedRoundRange` | `folds.from_round` / `to_round` |
 
    `migration_folds_complete` 置 true 之后，旧字段一律为空——读旧字段的宿主会**静默拿到空横幅**，
@@ -413,29 +422,37 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 
 ## 6. 判据（落地时逐条钉住）
 
-1. `rounds` 里**零** `foldedFacts`（grep + 一条"新折叠后轮记录字段为空"的断言）；
+1. `rounds` 里**零** `foldedFacts`——**仅在 `appendFold` 能力在场且 `migration_folds_complete=true` 时**成立。
+   能力缺失时的降级路径（§5.7 退回写轮记录字段 + 发诊断）是明文允许的，本判据不适用。
 2. 同 `(from_round, to_round, prior_seq)` 重投 ⇒ 不新增行、`seq` 不变；同 `dedup_key` **异 payload**
    ⇒ 抛冲突（不许 no-op）；
 3. resume 只查 `folds`（`migration_folds_complete=true` 时），**不**扫轮记录——用计数器证；
 4. 迁移中途失败 ⇒ 标记 false ⇒ `loadFolds` 仍能给出完整集合（合并读，按身份去重）；
-5. `fold_round_rows` 的精确行集合：构造"同轮多代行"用例证它不串代；
+5. `fold_round_rows` 分两层测：
+   - **store 层**（可测）：手工构造成员集合 ⇒ 精确查回，且"同轮多代行"不串代；
+   - **引擎层**（今天做不到，标 blocked）：真实折叠必须能给出"被折消息 → 账本行 key"的成员身份。
+     今天引擎只在内存 `messages` 数组上做折叠决策，唯一的行锚点是 `partOf` 首片 key（且只覆盖分片）。
+     **这条判据的前置是补锚点**，不补就不能写成"落地即可验证"。
 6. **渲染确定性**：同一批 `folds` + 同一预算 ⇒ 逐字节相同的四层输出（golden）；
 7. **梯度降级**：把预算压到只够 3 条 description，断言第 4 条起变成 title、第 N 条起并进阶段线，
    且**没有任何一条被夹断**（降级不是截断）；
 8. **`title` 硬前提**：`title_src='first_line'` 的记录不出现在第一层；模型没给 title 的折叠不许静默通过；
-9. **`description` 自解释**：机械检查"上面 / 刚才 / 该文件 / 前面提到"，命中即该折记录不合规；
+9. **`description` 自解释**（**只验词表，不冒充语义审查**）：机械检查"上面 / 刚才 / 该文件 / 前面提到"
+   四个词，命中即该折记录不合规。它**不能**验证广义的"自解释"——那一半靠 prompt 与人工评审。
 10. **白板**：CRUD 有 `note_ops` 记录；`purge` 跳过白板；`note_list` 默认不返回白板；上限 1200 字符满了
     必须淘汰（淘汰留 `op='drop'`）；
-11. **折叠前闸门**：区间内有未结清项且白板无对应条目 ⇒ 拒绝折（不许"折了再说"）；
+11. **折叠前闸门**（只取机械可判的那一半）：区间内存在**没有 `tool_result` 的 `tool_use`**
+    ⇒ 拒绝折。"白板有没有对应条目"**不做闸**（无法机械判定）——改为折叠 prompt 强制要求产出
+    "本折遗留事项"清单，并与白板的差异记进 `note_ops`，供人复核。
 12. **超预算显式失败**：`cannot_fit` 终局时 `budget_verdict` 最后一行给出 budget / measured / over_by /
-    layers_tried 四个数；
+    layers_tried 四个数。
 13. 内存 / 文件两种实现对同一操作序列产出逐字节相同的 `loadFolds()`。
 14. **渲染留余量**：按 0.9B 渲染；provider 报超窗 ⇒ 降一档重试**一次**（同一档重试两次即红）。
 15. **退化顺序**：把预算压到极小，断言顺序是「最新一条 description → 只给 title → 只给阶段线 →
     `cannot_fit`」，且**任何一步都不产出"零历史"**（判据：渲染结果里至少有一条阶段线或一折 title）。
 16. **渲染不夹断**：输出里不存在半条 `description`（整条进或降一档）。
-17. **合并调用的失败语义**：白板更新指令解析失败 ⇒ 折叠照常落账、白板不变、有一条 `error_event`，
-    且 `note_ops` **零新增**。
+17. **合并调用的失败语义**（**只在闸门通过、折叠确实发生之后适用**；闸门拒折时本条不适用）：
+    白板更新指令解析失败 ⇒ 折叠照常落账、白板不变、有一条 `error_event`，且 `note_ops` **零新增**。
 18. **作废**：`superseded_by` 指向的那一折不再出现在渲染里，但行还在、`seq` 还在（append-only 不破）。
 
 ---
@@ -474,8 +491,8 @@ B = 窗口 × 2.5%                       ← 摘要层总预算
 | 3 | `fold_id` = `foldSummaryFingerprint`，指纹兼做幂等键 | 幂等键改成 `UNIQUE(run_id, from_round, to_round, prior_seq)`；续写基底用外键 `prior_seq`。哈希是为"没有行 id 的存储"发明的，有了主键就没有理由 |
 | 4 | `foldedPayload` 的既有语义不动（咨询性、可剥、可落盘） | 有了 `fold_round_rows` 的精确行集合，副本没有存在理由 ⇒ 变派生查询（实测副本 940,278 B vs 原文 941,379 B，0.1% 冗余） |
 | 5 | 折叠的产物是「一份累计文档」（`text`），另有 `increment` 表达本折 | 只存**本折**的 `description`；累计体退役。累计体会让同一段内容被压缩两遍以上（实测 3.9k → 6.9k） |
-| 6 | 只有 `runs` 一层；`notes` "不变" | 加 `segments` 层（`rounds` / `runRounds` 双计数器就是缺这层的证据）；白板 = `notes.board` 维度 + `note_ops` |
+| 6 | 只有 `runs` 一层；`notes` "不变" | 白板 = `notes.board` 维度 + `note_ops`（**不新造实体**）。**不建 segment 表**：`rounds` / `runRounds` 两个计数器确实不同，但没有读者需要那个边界；要归因成本就查 `llm_call` 按轮聚合，不为此多一张表 |
 | 7 | 没有"上下文怎么组装"这一节 | 新增 §4：四层 + 确定性渲染算法 + 预算划分 + 三条硬前提 + 折叠前闸门；并新增 `budget_verdict` 承载"装不下"的数字 |
 
-**第二版做对、第三版原样保留的**：§1.3 的 `rounds` 形状与冲突判据、§1.5 的 `fold_round_rows`、
-§1.9 的恢复行两族语义、§3 的"折叠事实 vs 请求事实"分层、§5 的合并读 + 完成标记、§8 的九条错账。
+**第二版做对、第三版原样保留的**：§1.2 的 `rounds` 形状与冲突判据、§1.4 的 `fold_round_rows`、
+§1.8 的恢复行两族语义、§3 的"折叠事实 vs 请求事实"分层、§5 的合并读 + 完成标记、§8 的九条错账。
