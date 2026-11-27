@@ -75,13 +75,11 @@
 | `termination_reason` | text | 可空 | **怎么结束的**：`end_turn` / `judge_done` / `no_tool` / `stall` / `max_rounds_cap` / `aborted` / `failed` / `persistence_failed`。**`NULL` = 没结束**（在飞，或崩了）——收口与否由它表达，不另立 `status` |
 | `termination_detail` | text | 可空 | 一句人可读说明 |
 | `termination_error_code` | text | 可空 | 仅 `reason='failed'` 时：`timeout` / `rate_limited` / `auth` / `unknown` |
-| `state` | jsonb | | run-state 载荷（预算 / 工具统计 / 折叠计数 / 终止原因） |
-| `state_schema_version` | int | not null | 格式代次 |
-| `state_epoch` | int | not null | **「状态块注入过几次」的计数**，用来判派生缓存（`semantic` 小抄目录）是否过期。不是版本号：只在注入轮 +1，失败收尾那次会用同一个号重写 |
+| `state` | jsonb | | run-state **整份快照**：含 `schemaVersion`（格式代次）、`stateVersion`（注入次数）、预算 / 工具统计 / 折叠计数 |
 | `verification_status` | text | 可空 | **验证结论**：`verified` / `unverified` / `skipped` / `error`。**不可派生**——guard 真的跑过才有这个值 |
 | `verification_reason` | text | 可空 | `deliverables_failed` / `machine_only` / guard 给的 reason |
 | `board` | text | | **白板：一整块现状文本**（≤1500 token），整块覆盖写。不是表——渲染时整块拼进上下文，没有按条目查询的读者（§1.7） |
-| `created_at` / `updated_at` | timestamptz | not null | |
+| `created_at` / `updated_at` | timestamptz | not null | 保留期与审计的信封。**今天代码里没有 run 级时间戳**（只有轮记录的 `ts`），是形状要求 |
 
 **为什么没有 `status`**：一个 `status` 列曾把三个维度压成一个有损投影——
 
@@ -96,14 +94,17 @@
 
 `guardVerdict` / `guardMetrics` 是诊断面（宿主调试用），留在 `state`，不占列。
 
-`state_epoch` 这个名字是有意的：`stateVersion` 会被所有人读成"版本号"，而它数的只是注入次数。
+**为什么 `state_schema_version` / `state_epoch` 不是列**：它们是快照里的 `schemaVersion` / `stateVersion`。
+一个事实只住一处——列和 jsonb 各存一份，就多了一条"必须同步"的纪律，而没有读者需要按它们查询。
+快照里的 `stateVersion` 数的是**注入次数**，不是版本号（这个名字会被所有人读错，但它住在快照 schema 里，
+名字由那边决定）。
 
 **`state` 为什么不展开成列**：它的读者（恢复路径 / 渲染 / 宿主）都读**整份**，没有按字段查询的读者。
 但里面的键分三类，价值完全不同，必须标开：
 
 | 类 | 键 | 能不能重算 |
 |---|---|---|
-| **真状态**（必须存） | `guardExtension.used`、`contextWindowRecovery.used`、`lowBudgetPrompted`、`state_epoch` | **不能**——"额度已经领过"是决定，不是事实的投影 |
+| **真状态**（必须存） | `guardExtension.used`、`contextWindowRecovery.used`、`lowBudgetPrompted`、`stateVersion` | **不能**——"额度已经领过"是决定，不是事实的投影 |
 | **派生缓存**（存是为了省时间） | `tools`、`filesWritten`、`foldedRounds`、`compactionStats` | 能（从 `messages` / `folds` 算），但渲染每轮都发生，现算是 O(n) |
 | **渲染参数** | `bounds`、`maxSerializedBytes`、`truncated` | 不是数据，是"这份被压过"的自描述 |
 
@@ -121,24 +122,34 @@ CREATE INDEX ON runs ((state->'deterministic'->'guardExtension'->>'used'));
 |---|---|---|---|
 | `run_id` | text | **PK₁**, FK→runs | |
 | `round_no` | int | **PK₂** | ≥ 0；`0` 是 seed |
-| `status` | text | not null | `open` / `closed` / `crashed` |
-| `started_at` / `closed_at` | timestamptz | | |
+| `status` | text | not null | `open` / `closed` / `crashed`。**今天不存在**——轮记录是轮末一次写成的，没有「轮中」这个状态；这是形状要求（崩溃可见性，见 §4.10） |
+| `started_at` / `closed_at` | timestamptz | | 同上：今天只有 `ts`（信封）。`closed_at` 可映射 `ts`，`started_at` 没有现成来源 |
 | `stop_reason` | text | | |
-| `tool_use_count` | int | not null default 0 | 本轮发起几个工具 |
 | `usage` | jsonb | | 本轮**累计**用量（截断续写时是多次之和） |
-| `response_usage` | jsonb | | **最后一发**的用量（历史形状） |
+| `response_usage` | jsonb | | **最后一发**的用量。不是 `usage` 的特例：它带 `reasoningTokens` 这类额外字段，截断续写时两者也不相等 |
+| `engine_usage` | jsonb | 可空 | **本轮引擎自发起的调用**（round judge / 收尾归一化 / 折叠摘要）的用量。缺键 = 本轮没有这类调用。`usage` 只装主模型桶——只留 `usage` 会把引擎用量藏进主账 |
 | `wrapup` | jsonb | | 收尾那一次的结构化产物（**真状态**：模型输出的规范化结果，不可重算）。只有最后一轮有值 |
 
 **没有 `summary`（单轮自述）**：生产者协议（`<erix-summary>` 内联标记）**在任何提示词里都不存在**
-⇒ 实测 1,021 轮里 885 轮是兜底串 `"missing"`。唯一的落点是 `governorState.runningLog`，而它只被
-裁剪器读（决定丢哪条），从不渲染；judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。
-要保证质量就得每轮多一次 LLM 调用，而**当前上下文里没有它的读者**——所以先删，要的时候再加。
-按轮标签今天能现算（过滤本轮 `caller='assistant'` 的 `text` 块拼接）。
+⇒ 实测 1,021 轮里 885 轮是兜底串 `"missing"`。三个读点，一个都不受益：
+
+| 读点 | 读到什么 |
+|---|---|
+| `governorState.runningLog` | 只被裁剪器读（决定丢哪条），从不渲染 |
+| `bin/display/projection.js` | CLI 投影的 `meta.summary` 标签——`bin/` 是调试面，不是契约面 |
+| `src/compact/fold-statistical.js` | 折叠统计策略的摘要回退：`record.summary.trim()`。`"missing"` 是**非空字符串**，于是兜底串被当成摘要写进折叠段 |
+
+judge 的「时间线」来自 `buildTimeline(messages)`，与它无关。要保证质量就得每轮多一次 LLM 调用，
+而**当前上下文里没有它的读者**——所以先删，要的时候再加。按轮标签今天能现算（过滤本轮
+`caller='assistant'` 的 `text` 块拼接）。
 
 **没有 `l0facts`**：98.7% 的行存的是 `{exitOk:true}`——它认的失败口径是「工具抛异常」（`is_error`），
 而真实失败是「命令退出码非 0」，两者在 1,021 轮实测里几乎不相交（`is_error` 只在一个合成 fixture 里出现）。
 它的两个消费者（judge 的「最近错误」、resume 的 `errorRepeat` 重建）在实测里都是空转，而活着的重复错误
 守卫本来就从 `messages` 现算、不读这一列。留下的只有 `errorText` 那份 500 字原文副本，违反不变量 #1。
+
+**没有 `tool_use_count`**：能从 `messages` 数出本轮 `tool_use` 块。唯一读者是
+`bin/display/projection.js` 的投影（调试面），引擎内部零读。
 
 **没有 `text_preview`**：它是"过滤本轮 `caller='assistant'` 的 `text` 块再拼接"——一条 `GROUP BY` 就能算。
 缓存列的不一致风险是实的（消息补写了、预览不更新，两边对不上时你不知道信谁）。
