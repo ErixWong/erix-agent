@@ -178,11 +178,13 @@ export function createRecallAskTool(options = {}) {
     const uncertain = result?.uncertain === undefined ? true : result.uncertain;
     // 两句都是**事实陈述**，不是命令：引擎不校验答案内容，`uncertain` 是**模型自评**，
     // 所以这里不许写「直接用它」「这就是事实」这类替模型背书的话（copilot 复审点出来的）。
+    // 两句都只**陈述事实**，不命令、不替模型背书：引擎不校验答案内容，`uncertain` 是**模型自评**；
+    // 所以这里只报「自评值是什么」+「可核对的入口有哪些」，不写「直接用它」「应当去核」。
     const nextStep = uncertain
-      ? "模型自报 uncertain=true（引擎不校验答案内容）：可缩小 fromRound/toRound 再问一次，"
-        + "或用 recall_read({pattern}) 逐字核。"
-      : "模型自报 uncertain=false（引擎不校验答案内容）：需要逐字核对时用 "
-        + "recall_read({evidenceRef}) 或 recall_read({pattern})。";
+      ? "uncertain=true 是模型自评（引擎不校验答案内容）；可核对的入口："
+        + "recall_read({pattern}) 在账本上检索、recall_read({evidenceRef}) 逐字回账本。"
+      : "uncertain=false 是模型自评（引擎不校验答案内容）；可核对的入口："
+        + "recall_read({evidenceRef}) 逐字回账本、recall_read({pattern}) 在账本上检索。";
 
     // 键顺序就是模型读到的顺序（#261127-13）：`answer` 紧跟 `status` 第一眼看到，
     // `evidenceRefs` / `evidenceCount` 沉底——答案不被埋在一片指纹底下。
