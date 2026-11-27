@@ -50,7 +50,7 @@
 >
 > 本形状里没有通用 `events(type, payload jsonb)` 表：那是无类型、无约束的黑洞，
 > 而且会诱导"同一件事发生两次"变成合法数据。每类事件都有它自己的**事实表**
-> （`folds` / `notes.superseded` / `runs.termination_reason` / `judge.log`），列与读者各自明确。
+> （`folds` / `runs.termination_reason` / `judge.log`），列与读者各自明确。
 
 ### 1.1 `runs` —— 会话（session）
 
@@ -465,7 +465,7 @@ runs 1─┬─N rounds ──── N messages（最小单位，轮内按 msg_s
        │            切点 (cut_round, cut_msg_seq)：折走的就是「≤ 切点」那一段
        ├─N folds ───────────┘   （成员是查询出来的，不建成员表）
        ├─1 board（一列文本，不是表）
-       └─N notes（含 superseded 版本栈）
+       └─N notes
 ```
 
 **五张表**：`runs` / `rounds` / `messages` / `folds` / `notes`。
