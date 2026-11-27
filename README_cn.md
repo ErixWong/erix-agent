@@ -143,6 +143,7 @@ src/
     provider-runner.js             provider 调用、重试与快照回滚
     run-snapshot-executor.js       工具前后检查点与聚合闸门
     judge-runner.js                轮内 judge 调用单元：请求组装、超时/中止接线、用量带出（issue #177 刀4）
+    recall-runner.js               单发回忆调用单元：只装指定折、每片算 sha256 指纹、用量只进 engine 桶（issue #896 C）
     budget.js                      预算校验与状态克隆辅助函数
     aggregate-budget.js            单轮聚合输出闸门
     tool-result-ttl.js             旧工具结果的 request-view TTL 折叠

@@ -193,6 +193,7 @@ src/
     provider-runner.js             Provider call, retry, and snapshot rollback
     run-snapshot-executor.js       Pre/post tool checkpoints and aggregate gate
     judge-runner.js                Round-judge call unit: request assembly, timeout/abort wiring, usage export (issue #177 slice 4)
+    recall-runner.js               Single-shot recall call unit: designated folds only, sha256 evidence per slice, usage to the engine bucket (issue #896 C)
     budget.js                      Budget validation and state cloning helpers
     aggregate-budget.js            Per-round aggregate output gate
     tool-result-ttl.js             Request-view TTL folding for old tool results

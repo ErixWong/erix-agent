@@ -258,7 +258,7 @@ test("S2 18 个回调逐个点名：名单、别名表、schema 三者互相对�
   assert.deepEqual(
     [...CAPABILITIES_NAMESPACE_GROUPS],
     ["hooks", "checks", "ports"],
-    "三组：hooks（18 回调 + 1 形态多态旋钮，#898 退役了 `protectedMessage`）+ checks（1）+ ports（3，#498 S4c）",
+    "三组：hooks（18 回调 + 1 形态多态旋钮，#898 退役了 `protectedMessage`）+ checks（1）+ ports（4，#498 S4c + #896 §3-C）",
   );
   assert.deepEqual(Object.keys(CAPABILITIES_NAMESPACE_SCHEMA), ["hooks", "checks", "ports"]);
   assert.deepEqual([...CAPABILITY_CHECK_NAMES], ["deliverables"], "checks 组只有交付物判据");
@@ -266,11 +266,11 @@ test("S2 18 个回调逐个点名：名单、别名表、schema 三者互相对�
   // （`CAPABILITY_POLYMORPHIC_HOOK_NAMES`，它们不是回调而是「同一个旋钮的函数形态」；
   // issue #898 退役了 `protectedMessage` ⇒ 这张表从 2 降到 1，只剩 `recoveryHint`）。
   assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["recoveryHint"]);
-  assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "strategy"]);
+  assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "recallProvider", "strategy"]);
   assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 19, "hooks 接受 18 + 1 = 19 个叶子（#898 删了 `protectedMessage`）");
   assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13, "12 个扁平回调 + 1 个 checks 叶子，一条别名路径不多不少");
   assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "能力面 schema 的**扁平**叶子全集 = 13");
-  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 10, "#498 S4c：8 个嵌套槽叶子（3 ports + 5 hooks，#898 把 hooks 那一侧从 6 降到 5）+ #568 的 continuityProvider + #753 C1 的 nextUserTurn");
+  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 11, "#498 S4c：9 个嵌套槽叶子（4 ports + 5 hooks，#898 把 hooks 那一侧从 6 降到 5）+ #568 的 continuityProvider + #753 C1 的 nextUserTurn（#896 §3-C  ports 从 3 加到 4）");
   assert.equal(
     CAPABILITIES_SURFACE_OPTION_NAMES.length + CAPABILITIES_SLOT_LEAF_NAMES.length,
     CAPABILITIES_NAMESPACE_GROUPS.reduce((sum, group) => sum + CAPABILITIES_NAMESPACE_SCHEMA[group].length, 0),
@@ -651,6 +651,9 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   resume: false,
   stream: false,
   reflection: false,
+  // issue #896 §3-C：`recall` 是回忆端口的 legacy home 壳（同 `reflection`）：壳本身取纯数据
+  // 代表值走 round-trip，真正的端口值走 `capabilities.ports.recallProvider`（行为载体，不进配置面）。
+  recall: false,
   runId: "config-498-run",
   cwd: "/tmp/config-498",
   // issue #617（P0）：子 run 发起者关联——opaque 字符串标量，注册方式同构 `runId`
