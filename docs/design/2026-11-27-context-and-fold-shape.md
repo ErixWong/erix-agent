@@ -80,6 +80,23 @@
 
 `state_epoch` 这个名字是有意的：`stateVersion` 会被所有人读成"版本号"，而它数的只是注入次数。
 
+**`state` 为什么不展开成列**：它的读者（恢复路径 / 渲染 / 宿主）都读**整份**，没有按字段查询的读者。
+但里面的键分三类，价值完全不同，必须标开：
+
+| 类 | 键 | 能不能重算 |
+|---|---|---|
+| **真状态**（必须存） | `guardExtension.used`、`contextWindowRecovery.used`、`lowBudgetPrompted`、`state_epoch` | **不能**——"额度已经领过"是决定，不是事实的投影 |
+| **派生缓存**（存是为了省时间） | `tools`、`filesWritten`、`foldedRounds`、`compactionStats` | 能（从 `messages` / `folds` 算），但渲染每轮都发生，现算是 O(n) |
+| **渲染参数** | `bounds`、`maxSerializedBytes`、`truncated` | 不是数据，是"这份被压过"的自描述 |
+
+**不能拿第二类当真相去对账**——对不上时你分不清是缓存过期还是真错。
+
+要跨 run 按某个键查询（"哪些 run 用光了补跑额度"）时也**不用展开**，给 JSONB 路径建索引即可：
+
+```sql
+CREATE INDEX ON runs ((state->'deterministic'->'guardExtension'->>'used'));
+```
+
 ### 1.2 `rounds` —— 一行一轮（元数据）
 
 | 列 | 类型 | 约束 | 说明 |
