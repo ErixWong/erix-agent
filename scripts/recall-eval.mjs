@@ -102,7 +102,7 @@ function classifyRequest(request) {
   return "main";
 }
 
-function makeMeteredProvider(slot, fake) {
+function makeMeteredProvider(slot, fake, { hasRecallTools = true } = {}) {
   const log = [];
   let factForLeakCheck = null; // 每次 run 前设置；用于「请求里是否还看得到事实」
   const record = (entry) => { log.push(entry); };
@@ -128,7 +128,13 @@ function makeMeteredProvider(slot, fake) {
           scripted.n += 1;
           const hasToolResults = probe(request).includes("tool_result");
           record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? ""), factVisibleWithoutRecall: probe(withoutRecallToolResults(request)).includes(factForLeakCheck ?? "") });
-          if (scripted.n === 1 && !hasToolResults) {
+          // copilot 复审（PR #985）：A 组没有召回工具，假上游却照样发 `recall_ask` ⇒ 冒烟跑的是
+          // 一条不存在的路径。现在按 `hasRecallTools` 决定（只有 B 组为真）。
+          // 判据改成「**还没出现过 tool_result** 就发一次召回」，不再用 `scripted.n === 1`：
+          // 种了 20 轮历史 + resume 之后，主循环第一发的序号不一定是 1（实测 `--fake` 下
+          // 一次召回都没发，冒烟跑的是「不召回直接答」那条路）。
+          if (hasRecallTools && !hasToolResults && scripted.recalled !== true) {
+            scripted.recalled = true;
             return { content: [{ type: "tool_use", id: `t${scripted.n}`, name: "recall_ask", input: { question: "之前的关键事实是什么", fromRound: 1, toRound: 8 } }], stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 } };
           }
           return { content: [{ type: "text", text: `假答案 ${factForLeakCheck ?? ""}` }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
@@ -303,7 +309,11 @@ const scenarios = [
       ["前端周会加一条体积议题。", "议程已加。"],
       ["下个迭代排依赖升级。", "已排入下个迭代。"],
     ],
-    question: "第 2 轮那份模块清单里写明**禁止**在 4xx 上重试，禁令的取值与给出的理由是什么？请逐字给出那个取值。",
+    // 否定推理（copilot 复审 PR #985）：只答出取值不算对，**理由也要答出来** —— 否则这一格
+    // 与「读字段」没有区别，测不出「为什么不能这么做」。
+    mustInclude: ["no-retry-on-4xx", "客户端错"],
+    question: "第 2 轮那份模块清单里写明**禁止**在 4xx 上重试。禁令的取值是什么，"
+      + "给出的理由是什么（逐字引用理由里的关键词）？",
   },
   {
     id: 6, name: "干扰项（相似但错误）", fact: "tok-7f3a",
@@ -394,7 +404,7 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
   const recallTools = createBuiltinRecallTools({ readLedgerRows });
   const recallAsk = createRecallAskTool({ readLedgerRows });
 
-  const { log, provider, setFact } = makeMeteredProvider(slot, fake);
+  const { log, provider, setFact } = makeMeteredProvider(slot, fake, { hasRecallTools: group === "B" });
   setFact(scenario.fact);
 
   const toolCalls = [];
@@ -475,7 +485,11 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
   const mainCalls = log.filter((e) => e.kind === "main");
   const recallCalls = toolCalls.filter((c) => c.name === "recall_ask" || c.name === "recall_read").length;
   const finalText = runResult?.finalText ?? "";
-  const correct = norm(finalText).includes(norm(scenario.fact));
+  // 正确率（261128 第二版）：支持**多要素必须全中**。场景 5 是「否定推理」——只答出取值
+  // （`no-retry-on-4xx`）不算对，还要答出**理由**（copilot 复审：只查取值仍只是检索，不测否定）。
+  const required = scenario.mustInclude ?? [scenario.fact];
+  const missing = required.filter((needle) => !norm(finalText).includes(norm(needle)));
+  const correct = missing.length === 0;
 
   // 证据可验证率：把每次 recall_ask 返回的 evidenceRefs 全部拿去 recall_read({evidenceRef})。
   const refs = [];
@@ -549,6 +563,7 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
     runError,
     finalText,
     correct,
+    missingFacts: missing,
     recallToolCalls: recallCalls,
     converged: group === "B" ? (correct && recallCalls <= 4 && recallCalls >= 1) : correct,
     evidenceRefsReturned: refs.length,
