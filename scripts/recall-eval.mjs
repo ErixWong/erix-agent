@@ -11,7 +11,7 @@
 //        [--reps N] [--rounds N]
 //   `--reps N`：每个 (场景, 组) 重复 N 跑，汇总里打**逐场景可测率**（取消资格不是场景属性，
 //     是那一跑自己的事 ⇒ 单跑比的是两个不同的分母）。
-//   `--rounds N`：补到多少轮（默认 140，**最小 8**，小于 8 直接报错）。场景自带的 8 条种子轮
+//   `--rounds N`：补到多少轮（默认 20，**最小 8**，小于 8 直接报错）。场景自带的 8 条种子轮
 //     **总是**先写入、不会被截掉 ⇒ `< 8` 只会让「补例行轮」这一段落空、体量与预期不符，所以挡在入口。
 //     ⚠ 它不是「A 组不折叠的体量旋钮」——超窗后引擎自己会折
 //     （`orchestrator.js:4645-4669` 的不变量），见该参数处的注释。
@@ -650,21 +650,22 @@ const { values: cli } = parseArgs({
     // 而是「这一次摘要有没有保留那个值」——实测同一配置两跑，被取消资格的是不同的 3/6 格。
     // 单跑比较的是两个不同的分母。
     reps: { type: "string", default: "1" },
-    // 补到多少轮（**默认 140**，261128-16 改）。
+    // 补到多少轮（默认 20）。
     //
-    // **为什么默认 140 而不是 20**（实测，不是口味）：
-    //   · 20 轮 ≈ 37.6k，离 262k 窗口太远 ⇒ A 组「不折叠也能答对」是必然的，那组数字证明不了折叠层的价值；
-    //   · 更硬的一条：**可测率本身随体量变**。同一份场景，20 轮下 18 个 B 跑里 **8 个**测不到召回
-    //     （摘要仍保留了埋点值），140 轮下 6 个里只有 **1 个** —— 历史越大，摘要越装不下全部细节，
-    //     事实才真的丢。所以 20 轮既证明不了价值、也测不准召回。
-    // 代价：一轮全量（6 场景 × A/B/C）≈ 58 万 token；A/C 两条臂被上游拒绝时不产生 usage。
+    // **哪个体量回答哪个问题**（实测；默认仍是 20，与 #896 已记录的历史数字可比）：
+    //   · **20 轮（≈37.6k）**：问「窗口内不折叠行不行」——A 组必然答对，答案就是「行」。
+    //     它**回答不了**折叠层的价值（离 262k 窗口太远）。要复现 #896 里的历史数字用 `--rounds 20`。
+    //   · **140 轮（≈266k）**：问「体量真的超过窗口时谁还能答」。这一档 A 组**不再是「不折叠基线」**
+    //     （它的预算就是窗口，超了会走兜底折叠，且实测 12 跑里 10 跑直接被上游拒绝）——
+    //     要「不折」的对照看 **C 组**（预算 = 窗口 ×2）。数字不能与 20 轮那批混比。
+    // 代价：140 轮一轮全量（6 场景 × A/B/C × 2 跑）≈ ↑1.09M token、约 13 分钟；C 组被拒时不产生 usage。
     //
     // ⚠ **这个参数不是「A 组不折叠的体量旋钮」**（261128 更正，copilot 复审 #992）：引擎有一条
     // 不变量——策略折完仍超预算，就一定会再跑 `sliding-window` 兜底（`orchestrator.js:4645-4669`），
     // 而 A 组的预算就是模型窗口 ⇒ **一旦历史超窗，A 组自己就折了**，不再是「不折叠基线」。
     // 真要「不折叠」的基线得另做 A'：预算设到窗口之上 + 一个 no-op 策略对象，让请求**真的超窗**
     // 去撞上游 400（#930 的 relay 会回 `context_length_exceeded`）。那是一个独立的实验，不在本参数里。
-    rounds: { type: "string", default: "140" },
+    rounds: { type: "string", default: "20" },
   },
 });
 
@@ -685,7 +686,8 @@ const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase())
 
 const slotInfo = readSlot(cli.slot);
 console.log(`#896 §5 recall-eval · slot=${cli.slot} model=${slotInfo.slot.model} endpoint=${slotInfo.slot.endpoint} config=${slotInfo.configPath}`);
-console.log(`scenarios=[${wantScenarios}] groups=[${wantGroups}] maxRounds=${maxRounds}`);
+console.log(`scenarios=[${wantScenarios}] groups=[${wantGroups}] maxRounds=${maxRounds} `
+  + `rounds=${targetRounds} reps=${reps}`);
 
 const results = [];
 for (const s of wantScenarios) {
@@ -796,7 +798,8 @@ if (cRows.length > 0) {
     + `｜折叠 ${cRows.filter((r) => r.folded).length} 次`);
 }
 console.log(`\n汇总：`
-  + `A 基线 ${summary.baseline.correct}/${summary.baseline.runs}`
+  + `A（预算=窗口；高体量下会自己折或被上游拒，不是「不折叠基线」）`
+  + ` ${summary.baseline.correct}/${summary.baseline.runs}`
   + `｜B 可测 ${summary.foldAndRecall.measured}/${summary.foldAndRecall.runs}`
   + `，可测内答对 ${summary.foldAndRecall.correct}/${summary.foldAndRecall.measured}`
   + `｜B 未测到 ${summary.notMeasured} 跑`
