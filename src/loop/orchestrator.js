@@ -6611,42 +6611,54 @@ export async function runToolLoop(options) {
             // 切片 2：持久化形状换成九列，边界仍给旧形状（由九列导出）。
             // cutRound = foldedRoundRange.to；cutMsgSeq 从 messageSeqByRound 取（拿不到就不传）
             const foldStat = compactionStats.slice(compactionStatsStart).at(-1);
-            const nineCol = toFoldRecord(compaction.foldedFacts, {
-              ...(compaction.foldedRoundRange?.to !== undefined
-                ? { cutRound: compaction.foldedRoundRange.to } : {}),
-              ...(compaction.foldedRoundRange?.to !== undefined
-                && runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) !== undefined
-                ? { cutMsgSeq: runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) } : {}),
-              ...(foldStat?.tokensBefore !== undefined ? { tokensBefore: foldStat.tokensBefore } : {}),
-              ...(foldStat?.tokensAfter !== undefined ? { tokensAfter: foldStat.tokensAfter } : {}),
-              // `created_at` 是形状稿 §1.4 的 not null 列（copilot 复审 #993 ③）。信封时刻由**调用方**
-              // 给（纯函数不读时钟）。
-              createdAt: new Date().toISOString(),
-              runId,
-            });
-            const persistedNineCol = await store.appendFold(runId, nineCol);
-            // 账本仍给旧形状（引擎边界 = 旧形状，持久化 = 九列）。
-            // seq 从通道返回的九列行取回（这是 appendFold 分配的那个）。
-            const ledgerEntry = /** @type {Record<string, any>} */ (cloneState(compaction.foldedFacts));
-            if (persistedNineCol?.seq !== undefined) ledgerEntry.seq = persistedNineCol.seq;
-            // copilot 复审 #993 ②：**通道是 `seq` 的权威**（它按 `foldId` 分配），但轮记录与
-            // `onFoldSummary` 的载荷在 `appendFold` **之前**就已经发出去了，拿到的是引擎分配器那个号。
-            // 两个分配器播种口径相同（都从「通道 ∪ 轮记录」合并集播），所以正常路径恒相等；
-            // 一旦不等，**不许静默**——把分歧报出来，让宿主/日志看得见。
-            if (persistedNineCol?.seq !== undefined
-              && compaction.foldedFacts?.seq !== undefined
-              && persistedNineCol.seq !== compaction.foldedFacts.seq) {
-              await reportHostPersistenceFailure({
-                port: "notes",
-                operation: "appendFold",
-                phase: "folds_seq_divergence",
-                error: new Error(
-                  `folds.seq 分歧：通道分配 ${persistedNineCol.seq}，轮记录/载荷是 ${compaction.foldedFacts.seq}`
-                    + `（foldId=${String(compaction.foldedFacts.foldId ?? "-")}）——两个分配器的播种口径不一致`,
-                ),
+            // copilot 复审 #993：**缺 `cut_round` 就不许写成九列行**。切点是局部日志的必需列，
+            // 而 `foldRecordsToFacts` 拿不到 `to` 时，`foldRecordSegments` 会**整份账本放弃** ⇒
+            // 一条缺切点的行会把整个折叠账本读废。这种情况下退回「只写轮记录」并留痕，不写坏行。
+            if (!Number.isSafeInteger(compaction.foldedRoundRange?.to)) {
+              // 不写坏行、也不中断本轮：事实仍进账本与轮记录，只是这次不走通道。
+              foldRecordLedger.push(cloneState(compaction.foldedFacts));
+              notifyFoldsChannelWriteFailed(new Error(
+                "appendFold skipped: this fold has no cut_round (foldedRoundRange.to 缺席) —— "
+                  + "九列行必须有切点，否则 foldRecordSegments 会整份放弃",
+              ));
+            } else {
+              const nineCol = toFoldRecord(compaction.foldedFacts, {
+                ...(compaction.foldedRoundRange?.to !== undefined
+                  ? { cutRound: compaction.foldedRoundRange.to } : {}),
+                ...(compaction.foldedRoundRange?.to !== undefined
+                  && runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) !== undefined
+                  ? { cutMsgSeq: runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) } : {}),
+                ...(foldStat?.tokensBefore !== undefined ? { tokensBefore: foldStat.tokensBefore } : {}),
+                ...(foldStat?.tokensAfter !== undefined ? { tokensAfter: foldStat.tokensAfter } : {}),
+                // `created_at` 是形状稿 §1.4 的 not null 列（copilot 复审 #993 ③）。信封时刻由**调用方**
+                // 给（纯函数不读时钟）。
+                createdAt: new Date().toISOString(),
+                runId,
               });
+              const persistedNineCol = await store.appendFold(runId, nineCol);
+              // 账本仍给旧形状（引擎边界 = 旧形状，持久化 = 九列）。
+              // seq 从通道返回的九列行取回（这是 appendFold 分配的那个）。
+              const ledgerEntry = /** @type {Record<string, any>} */ (cloneState(compaction.foldedFacts));
+              if (persistedNineCol?.seq !== undefined) ledgerEntry.seq = persistedNineCol.seq;
+              // copilot 复审 #993 ②：**通道是 `seq` 的权威**（它按 `foldId` 分配），但轮记录与
+              // `onFoldSummary` 的载荷在 `appendFold` **之前**就已经发出去了，拿到的是引擎分配器那个号。
+              // 两个分配器播种口径相同（都从「通道 ∪ 轮记录」合并集播），所以正常路径恒相等；
+              // 一旦不等，**不许静默**——把分歧报出来，让宿主/日志看得见。
+              if (persistedNineCol?.seq !== undefined
+                && compaction.foldedFacts?.seq !== undefined
+                && persistedNineCol.seq !== compaction.foldedFacts.seq) {
+                await reportHostPersistenceFailure({
+                  port: "notes",
+                  operation: "appendFold",
+                  phase: "folds_seq_divergence",
+                  error: new Error(
+                    `folds.seq 分歧：通道分配 ${persistedNineCol.seq}，轮记录/载荷是 ${compaction.foldedFacts.seq}`
+                      + `（foldId=${String(compaction.foldedFacts.foldId ?? "-")}）——两个分配器的播种口径不一致`,
+                  ),
+                });
+              }
+              foldRecordLedger.push(ledgerEntry);
             }
-            foldRecordLedger.push(ledgerEntry);
           } catch (foldChannelError) {
             // PR #971 终验：`appendFold` 的 fail-closed（播种读不动轮记录 ⇒ 拒绝发出可能被占用的 seq）
             // 落到这里。**折叠本身不失败**——事实仍写轮记录，账本仍推进；只是这次不落通道，并留痕。
