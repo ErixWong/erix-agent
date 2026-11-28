@@ -9,12 +9,7 @@ import assert from "node:assert/strict";
 
 import { buildFoldedFacts } from "../../src/compact/fold-summary-journal.js";
 import { FOLD_RECORD_COLUMNS } from "../../src/store/folds.js";
-import {
-  DERIVED_FOLD_FACTS_SOURCE,
-  DERIVED_FOLD_FACTS_STRATEGY,
-  fromFoldRecord,
-  toFoldRecord,
-} from "../../src/store/fold-record.js";
+import { fromFoldRecords, toFoldRecord } from "../../src/store/fold-record.js";
 
 /** `fold-statistical.js` 的清单节标题（`toolCalls` 的唯一触发条件：正文里有这一节 + `- ` 条目行）。 */
 const INVENTORY_HEADING = "工具调用清单（机械摘要，不代表执行成功）：";
@@ -140,35 +135,65 @@ test("261128-09 判据4: 既无 foldId 又无 fingerprint ⇒ TypeError（幂等
 test("261128-09 判据5: 既无 summary 又无 text ⇒ TypeError（description 是 not null 列）", () => {
   assert.throws(() => toFoldRecord({ foldId: "fold-1", source: "llm" }), TypeError);
   assert.throws(() => toFoldRecord({ foldId: "fold-1", summary: "", text: "   " }), TypeError);
-  // 真实对象路径：只有 text（没有 summary）时 description 就是 text 本身。
-  const onlyText = /** @type {Record<string, unknown>} */ (realFacts({ summary: undefined }));
+  // copilot 复审 #991 ①：**累计 text 不许当 description**——那会把整份累计正文按折存 N 份。
+  // 构造一份「只有累计 text、没有任何本折正文」的对象（`increment` 也不给，否则它才是合法来源）。
+  const onlyText = /** @type {Record<string, unknown>} */ ({
+    .../** @type {Record<string, unknown>} */ (buildFoldedFacts({ text: "累计正文", origin: "semantic" })),
+    // 补一个幂等键：本判据要钉的是 description，不是 fold_id（后者是判据 4 的事）。
+    foldId: "fold-only-text",
+  });
   assert.equal("summary" in onlyText, false);
-  assert.equal(toFoldRecord(onlyText).description, onlyText.text);
+  assert.equal("increment" in onlyText, false, "前提：这份对象确实没有本折正文");
+  assert.equal(typeof onlyText.text, "string", "前提：它确实带累计 text");
+  assert.throws(() => toFoldRecord(onlyText), TypeError,
+    "只有累计 text、没有本折正文 ⇒ 必须抛，不许把累计正文当本折日志");
+  // 本折正文的第二条合法来源是 `increment.text`（机械折的增量），不是累计 text。
+  const withIncrement = /** @type {Record<string, unknown>} */ ({ ...onlyText, increment: { text: "本折增量正文" } });
+  assert.equal(toFoldRecord(withIncrement).description, "本折增量正文");
 });
 
-test("261128-09 判据6: 往返 —— fromFoldRecord(toFoldRecord(f, {cutRound:5,cutMsgSeq:9}), {previousCutRound:2}) 得 from: 2, to: 5", () => {
+test("261128-09 判据6: 往返 —— fromFoldRecords([toFoldRecord(f, …)], {previousCutRound:2}) 得 from: 2, to: 5", () => {
   const facts = /** @type {Record<string, unknown>} */ (realFacts());
-  const back = fromFoldRecord(toFoldRecord(facts, { cutRound: 5, cutMsgSeq: 9 }), { previousCutRound: 2 });
+  const back = fromFoldRecords(
+    [toFoldRecord(facts, { cutRound: 5, cutMsgSeq: 9 })],
+    { previousCutRound: 2, source: "llm", strategy: "fold-llm" },
+  );
   assert.equal(back.from, 2);
   assert.equal(back.to, 5);
   assert.equal(back.rounds, 3);
   assert.equal(back.foldId, "fold-261128");
   assert.equal(back.seq, 3);
-  assert.equal(back.source, DERIVED_FOLD_FACTS_SOURCE);
-  assert.equal(back.strategy, DERIVED_FOLD_FACTS_STRATEGY);
+  // copilot 复审 #991 ③：来源/策略**由调用方给**，不许写死（显式 `fold-statistical` 也走这条路）。
+  assert.equal(back.source, "llm");
+  assert.equal(back.strategy, "fold-llm");
   assert.equal(back.text, "## 行动\n改了 fold-record.js\n## 遗留\n接线\n## 关键词\n九列");
 });
 
-test("261128-09 判据6b: fromFoldRecord 的键集合恰好 = 契约面里能从九列导出的那些（truncated / degradeReason 缺席）", () => {
+test("261128-09 判据6b: fromFoldRecords 的键集合恰好 = 契约面里能从九列导出的那些（truncated / degradeReason 缺席）", () => {
   const facts = /** @type {Record<string, unknown>} */ (realFacts());
-  const back = fromFoldRecord(toFoldRecord(facts, { cutRound: 5, cutMsgSeq: 9 }), { previousCutRound: 2 });
+  const back = fromFoldRecords(
+    [toFoldRecord(facts, { cutRound: 5, cutMsgSeq: 9 })],
+    { previousCutRound: 2, source: "llm", strategy: "fold-llm" },
+  );
   assert.deepEqual(
     Object.keys(back).sort(),
     ["bytes", "foldId", "from", "rounds", "seq", "source", "strategy", "text", "to"],
   );
   assert.equal(back.bytes, Buffer.byteLength(/** @type {string} */ (back.text), "utf8"));
+  // ① 来源/策略不给 ⇒ 缺席，不猜（写死就是给统计折贴 LLM 标签）。
+  const noSource = fromFoldRecords([toFoldRecord(facts)], {});
+  assert.equal("source" in noSource, false);
+  assert.equal("strategy" in noSource, false);
+  // ② 累计正文是**拼接**，不是取最后一折：两折 ⇒ 两段按序连起来。
+  const two = fromFoldRecords([
+    toFoldRecord(facts, { cutRound: 3 }),
+    toFoldRecord(/** @type {Record<string, unknown>} */ (realFacts({ summary: "第二折正文" })), { cutRound: 5 }),
+  ], { previousCutRound: 2 });
+  assert.equal(two.text, `${facts.summary}\n\n第二折正文`, "累计 text 必须按 seq 拼接各折 description");
+  assert.equal(two.to, 5);
+  assert.equal(two.from, 2);
   // 上一折切点拿不到 ⇒ from / rounds 缺席，不猜 0。
-  const noPrev = fromFoldRecord(toFoldRecord(facts), {});
+  const noPrev = fromFoldRecords([toFoldRecord(facts)], {});
   assert.equal("from" in noPrev, false);
   assert.equal("rounds" in noPrev, false);
   assert.equal("to" in noPrev, false, "本折切点也只能由调用方给");
@@ -210,7 +235,7 @@ test("261128-09 判据7: 15 个退役键一个都不在 toFoldRecord 的结果�
 
 test("261128-09 判据8: 拿不到的列一律缺席 —— 不用 0 / -1 / \"\" 顶替，也不拿 bytes 冒充 token", () => {
   const minimal = /** @type {Record<string, unknown>} */ (
-    buildFoldedFacts({ text: "只有一行正文", origin: "semantic" })
+    buildFoldedFacts({ text: "只有一行正文", summary: "本折正文", origin: "semantic" })
   );
   assert.ok(minimal);
   assert.equal(minimal.titleFallback, true);

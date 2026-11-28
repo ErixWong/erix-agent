@@ -13,7 +13,7 @@
 //   ③ **退役 ≠ 消失**：`bytes` / `truncated` / `from` / `to` / … 不再是**列**，但它们仍是**契约键**
 //      （`docs/host-consumer-contract.md:6962` 逐字列出 `{ text, source, strategy, from, to, rounds,
 //      bytes, truncated?, degradeReason?, foldId, seq }`，`onFoldSummary` 整份递给宿主）⇒
-//      `fromFoldRecord` 从九列把**能导出的那几格**原样导出，导不出的（`truncated` / `degradeReason`）
+//      `fromFoldRecords` 从九列把**能导出的那几格**原样导出，导不出的（`truncated` / `degradeReason`）
 //      仍然缺席，不写 `false` / `null` 占位。
 //
 // 纯函数纪律：不读时钟、不碰 IO、不调模型；只 import `node:` 内置与相对路径（当前一条都不需要）。
@@ -48,27 +48,16 @@
  */
 
 /**
- * `fromFoldRecord` 的调用方补充：**上一折的切点**——它是「本折覆盖区间」的左端，
+ * `fromFoldRecords` 的调用方补充：**上一折的切点** + 来源/策略（九列里没有）。它是「本折覆盖区间」的左端，
  * 存在**上一行**里而不是本行（ADR：形状稿「覆盖区间是 `(上一折的切点, 本折的切点]`，由 `seq` 顺序推」，
  * `seq` 连续 ⇒ 上一折恒为 `seq - 1`，但**取哪一行的切点**是调用方（store/读侧）的事）。
  *
  * @typedef {object} FoldFactsExtras
  * @property {number} [previousCutRound]
+ * @property {string} [source] 契约键 `source`：**必须由调用方给**（九列里没有来源）。今天引擎里
+ *   真值只有 `"llm"`（摘要器，`src/compact/fold-llm.js:459`）与 `"statistical"`（显式统计折）
+ * @property {string} [strategy] 契约键 `strategy`：同上，由调用方给
  */
-
-/**
- * 契约键 `source` 的导出值。折叠文本的作者在新形状里**只有一种**（引擎摘要器），
- * ADR-022 第二刀的退役表明确 `source` / `strategy` 是「契约键，**导出值**」——所以这里给的是
- * 今天**摘要器那条路径**的真实字面值（`src/compact/fold-llm.js:459` 的 `source: "llm"`），
- * 不是新发明的值。列里没有它 ⇒ 由本模块导出，宿主侧契约面不动。
- */
-export const DERIVED_FOLD_FACTS_SOURCE = "llm";
-
-/**
- * 契约键 `strategy` 的导出值：引擎摘要器那一折的名字（`src/loop/orchestrator.js:1950` 记着它是
- * 唯一剩下的折叠名字）。同 `DERIVED_FOLD_FACTS_SOURCE`：列里没有，按契约导出。
- */
-export const DERIVED_FOLD_FACTS_STRATEGY = "fold-llm";
 
 /** 与 `fold-summary-journal.js#foldedFactsEncoder` 同一把尺子（`TextEncoder`，UTF-8 字节数）。 */
 const factsEncoder = new TextEncoder();
@@ -116,10 +105,16 @@ export function toFoldRecord(foldedFacts, extras = {}) {
     );
   }
 
-  const description = textColumn(facts.summary) ?? textColumn(facts.text);
+  // **只认本折的正文**：`summary`（模型写的三节）或 `increment.text`（本折增量）。
+  // 绝不拿 `facts.text` 顶替——那是**累计**正文，用它当 `description` 就等于「每折把整份累计文本
+  // 存一遍」，正是形状稿否掉的那个形状（实测 3.9k → 5.9k → 6.9k token，涨的全是重复）。
+  // copilot 复审 #991 抓到的第一处。
+  const increment = /** @type {{ text?: unknown }} */ (facts.increment ?? {});
+  const description = textColumn(facts.summary) ?? textColumn(increment.text);
   if (description === undefined) {
     throw new TypeError(
-      "toFoldRecord: 缺 description（foldedFacts.summary / text 都没有）——该列 not null，不许写空串顶替",
+      "toFoldRecord: 缺 description（本折既没有 summary 也没有 increment.text）——该列 not null；"
+        + "累计 text 不许顶替（那会把整份累计正文按折存 N 份）",
     );
   }
 
@@ -168,25 +163,40 @@ export function toFoldRecord(foldedFacts, extras = {}) {
  * @param {FoldFactsExtras} [extras]
  * @returns {Record<string, unknown>}
  */
-export function fromFoldRecord(record, extras = {}) {
-  if (record === null || typeof record !== "object") {
-    throw new TypeError("fromFoldRecord: record 必须是九列记录对象");
+export function fromFoldRecords(records, extras = {}) {
+  if (!Array.isArray(records) || records.length === 0) {
+    throw new TypeError("fromFoldRecords: records 必须是非空数组（一次折叠的集合，按 seq 升序）");
   }
-  const text = textColumn(record.description);
-  if (text === undefined) {
-    throw new TypeError("fromFoldRecord: record.description 缺失——契约键 text 由它导出，没有就没有");
-  }
-
-  const to = intColumn(record.cutRound);
+  const rows = records.map((record) => {
+    if (record === null || typeof record !== "object") {
+      throw new TypeError("fromFoldRecords: 每条记录必须是九列记录对象");
+    }
+    const text = textColumn(record.description);
+    if (text === undefined) {
+      throw new TypeError("fromFoldRecords: record.description 缺失——契约键 text 由它导出，没有就没有");
+    }
+    return { record, text };
+  });
+  // 累计正文**是函数**：`seq ≤ n` 的 `description` 按序拼接（ADR 第二刀）。单条记录反解成一份
+  // 「累计 text」是错的——那是把局部当日志用（copilot 复审 #991 抓到的第二处）。
+  const text = rows.map((row) => row.text).join("\n\n");
+  const last = rows[rows.length - 1];
+  const to = intColumn(last.record.cutRound);
   const from = intColumn(extras.previousCutRound);
   const rounds = to !== undefined && from !== undefined && to > from ? to - from : undefined;
-  const foldId = textColumn(record.foldId);
-  const seq = intColumn(record.seq, 1);
+  const foldId = textColumn(last.record.foldId);
+  const seq = intColumn(last.record.seq, 1);
+
+  // `source` / `strategy` **必须由调用方给**：九列里没有来源，而引擎今天仍支持显式
+  // `fold-statistical`（`src/compact/fold-statistical.js`），写死 `"llm"` / `"fold-llm"` 会把统计折
+  // 静默标成 LLM 折（copilot 复审 #991 抓到的第三处）。拿不到 ⇒ 缺席，不猜。
+  const source = textColumn(extras.source);
+  const strategy = textColumn(extras.strategy);
 
   return {
     text,
-    source: DERIVED_FOLD_FACTS_SOURCE,
-    strategy: DERIVED_FOLD_FACTS_STRATEGY,
+    ...(source === undefined ? {} : { source }),
+    ...(strategy === undefined ? {} : { strategy }),
     ...(from === undefined ? {} : { from }),
     ...(to === undefined ? {} : { to }),
     ...(rounds === undefined ? {} : { rounds }),
