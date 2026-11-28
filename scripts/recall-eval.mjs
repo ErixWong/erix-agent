@@ -675,6 +675,23 @@ const summary = {
     }];
   })),
 };
+/**
+ * 「这一跑真的测到了召回」的**完整判据**（copilot 复审 #990 的阻塞点）。
+ *
+ * 不能只看 `disqualified === null`：那个字段只在**观测到**「折叠后仍看得见事实」时才被置值。
+ * A 组根本不折叠 ⇒ 恒为 null；B 组若这一跑没折叠、折叠后没有主请求、或跑出错误，也都是 null。
+ * 把它们算进「可测」，分母就掺进了「没测」的跑。
+ *
+ * 所以三条同时成立才算可测：**B 组** ∧ **真的折叠了**（`folded === true`）∧
+ * **折叠后事实确实不在上下文里**（`factStillInContextAfterFold === false`，不是 null）。
+ *
+ * @param {any} r
+ * @returns {boolean}
+ */
+function isMeasurable(r) {
+  return r.group === "B" && r.folded === true && r.factStillInContextAfterFold === false;
+}
+
 // 逐场景：**可测率**才是这一格的性质（不是单跑那一次的资格）。reps>1 时才打。
 if (reps > 1) {
   console.log("\n逐场景（可测 = 折叠后事实确实不在上下文里；正确率只在可测那几跑里算）：");
@@ -685,20 +702,33 @@ if (reps > 1) {
     byScenario.get(key).push(r);
   }
   for (const [key, rows] of byScenario) {
-    const measurable = rows.filter((r) => r.disqualified === null);
-    const correct = measurable.filter((r) => r.correct).length;
-    const recalls = rows.reduce((sum, r) => sum + r.recallToolCalls, 0);
     const [sid, g] = key.split("|");
-    console.log(`  场景 ${sid} 组 ${g}：可测 ${measurable.length}/${rows.length}`
-      + `｜可测里答对 ${correct}/${measurable.length}｜召回 ${recalls} 次`
-      + `｜↑${rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0)}`);
+    const recalls = rows.reduce((sum, r) => sum + r.recallToolCalls, 0);
+    const tokens = rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0);
+    if (g === "A") {
+      // A 组不折叠 ⇒ 没有「可测」这回事，只报**基线**：不折叠时答得对不对。
+      console.log(`  场景 ${sid} 组 A：基线答对 ${rows.filter((r) => r.correct).length}/${rows.length}`
+        + `｜召回 ${recalls} 次｜↑${tokens}`);
+      continue;
+    }
+    const measurable = rows.filter(isMeasurable);
+    const correct = measurable.filter((r) => r.correct).length;
+    const notMeasured = rows.filter((r) => !isMeasurable(r));
+    console.log(`  场景 ${sid} 组 B：可测 ${measurable.length}/${rows.length}`
+      + `｜可测里答对 ${correct}/${measurable.length}`
+      + `｜未测到 ${notMeasured.length} 跑（没折叠 / 折叠后事实仍可见 / 跑错）`
+      + `｜召回 ${recalls} 次｜↑${tokens}`);
   }
 }
 
-console.log(`\n汇总（已排除 ${summary.disqualified} 个取消资格的场景）：`
-  + Object.entries(summary.byGroup)
-    .map(([g, v]) => `${g} ${v.correct}/${v.scenarios} 召回 ${v.recallCalls} 次 ↑${v.inputTokens}`)
-    .join("｜"));
+// 汇总分两条口径，**不合并**：A 是基线（不折叠时答得对不对），B 只有「可测」的跑才算进正确率
+// （copilot 复审 #990：`disqualified === null` 不等于可测，A 组恒为 null）。
+const bRows = results.filter((r) => r.group === "B");
+const bMeasurable = bRows.filter(isMeasurable);
+console.log(`\n汇总：`
+  + `A 基线 ${results.filter((r) => r.group === "A" && r.correct).length}/${results.filter((r) => r.group === "A").length}`
+  + `｜B 可测 ${bMeasurable.length}/${bRows.length}，可测内答对 ${bMeasurable.filter((r) => r.correct).length}/${bMeasurable.length}`
+  + `｜B 召回 ${bRows.reduce((sum, r) => sum + r.recallToolCalls, 0)} 次（含未测到的跑）`);
 console.log(`总量：model=${totals.model} ↑${totals.input} ↓${totals.output} 墙钟=${totals.wallMs}ms`);
 writeFileSync(cli.out, JSON.stringify({ slot: slotInfo.slot.model, totals, summary, results }, null, 2));
 console.log(`结果 JSON：${cli.out}`);
