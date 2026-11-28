@@ -654,27 +654,6 @@ for (const s of wantScenarios) {
   }
 }
 
-const totals = { model: slotInfo.slot.model, input: 0, output: 0, wallMs: 0 };
-for (const r of results) {
-  for (const k of Object.values(r.usageByKind)) { totals.input += k.input; totals.output += k.output; }
-  totals.wallMs += r.wallMs;
-}
-// 汇总：**排除被取消资格的场景**（它们测不出召回，算进去会让 B 组虚高）。
-const counted = results.filter((r) => r.disqualified === null);
-const summary = {
-  counted: counted.length,
-  disqualified: results.length - counted.length,
-  correct: counted.filter((r) => r.correct).length,
-  byGroup: Object.fromEntries([...new Set(results.map((r) => r.group))].map((g) => {
-    const rows = counted.filter((r) => r.group === g);
-    return [g, {
-      scenarios: rows.length,
-      correct: rows.filter((r) => r.correct).length,
-      recallCalls: rows.reduce((sum, r) => sum + r.recallToolCalls, 0),
-      inputTokens: rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0),
-    }];
-  })),
-};
 /**
  * 「这一跑真的测到了召回」的**完整判据**（copilot 复审 #990 的阻塞点）。
  *
@@ -691,6 +670,34 @@ const summary = {
 function isMeasurable(r) {
   return r.group === "B" && r.folded === true && r.factStillInContextAfterFold === false;
 }
+
+const totals = { model: slotInfo.slot.model, input: 0, output: 0, wallMs: 0 };
+for (const r of results) {
+  for (const k of Object.values(r.usageByKind)) { totals.input += k.input; totals.output += k.output; }
+  totals.wallMs += r.wallMs;
+}
+// 落盘的汇总**必须与终端同一口径**（copilot 复审 #990 第二次：终端改了、JSON 没改，等于
+// 存了一份掺了「没测」的分母）。A 与 B 分开，不合并成一个 correct/total。
+const byGroupRows = (g) => results.filter((r) => r.group === g);
+const aRows = byGroupRows("A");
+const bRowsAll = byGroupRows("B");
+const bMeasured = bRowsAll.filter(isMeasurable);
+const groupStats = (rows, measured) => ({
+  runs: rows.length,
+  // A 组没有「可测」这回事：不折叠，`factStillInContextAfterFold` 恒为 null。
+  measured: measured === undefined ? null : measured.length,
+  correct: (measured ?? rows).filter((r) => r.correct).length,
+  recallCalls: rows.reduce((sum, r) => sum + r.recallToolCalls, 0),
+  inputTokens: rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0),
+});
+const summary = {
+  // 两种口径都写进文件，谁读都不用自己再推一遍。
+  baseline: groupStats(aRows),
+  foldAndRecall: groupStats(bRowsAll, bMeasured),
+  // 未测到的跑单独计数（没折叠 / 折叠后事实仍可见 / 跑错）。
+  notMeasured: bRowsAll.length - bMeasured.length,
+  byGroup: { A: groupStats(aRows), B: groupStats(bRowsAll, bMeasured) },
+};
 
 // 逐场景：**可测率**才是这一格的性质（不是单跑那一次的资格）。reps>1 时才打。
 if (reps > 1) {
@@ -721,14 +728,14 @@ if (reps > 1) {
   }
 }
 
-// 汇总分两条口径，**不合并**：A 是基线（不折叠时答得对不对），B 只有「可测」的跑才算进正确率
-// （copilot 复审 #990：`disqualified === null` 不等于可测，A 组恒为 null）。
-const bRows = results.filter((r) => r.group === "B");
-const bMeasurable = bRows.filter(isMeasurable);
+// 终端汇总直接读落盘的同一份 `summary`（**不许各算一套** —— copilot 复审 #990 第二次就是
+// 「终端改了、JSON 没改」，等于存了一份掺了「没测」的分母）。
 console.log(`\n汇总：`
-  + `A 基线 ${results.filter((r) => r.group === "A" && r.correct).length}/${results.filter((r) => r.group === "A").length}`
-  + `｜B 可测 ${bMeasurable.length}/${bRows.length}，可测内答对 ${bMeasurable.filter((r) => r.correct).length}/${bMeasurable.length}`
-  + `｜B 召回 ${bRows.reduce((sum, r) => sum + r.recallToolCalls, 0)} 次（含未测到的跑）`);
+  + `A 基线 ${summary.baseline.correct}/${summary.baseline.runs}`
+  + `｜B 可测 ${summary.foldAndRecall.measured}/${summary.foldAndRecall.runs}`
+  + `，可测内答对 ${summary.foldAndRecall.correct}/${summary.foldAndRecall.measured}`
+  + `｜B 未测到 ${summary.notMeasured} 跑`
+  + `｜B 召回 ${summary.foldAndRecall.recallCalls} 次（含未测到的跑）`);
 console.log(`总量：model=${totals.model} ↑${totals.input} ↓${totals.output} 墙钟=${totals.wallMs}ms`);
 writeFileSync(cli.out, JSON.stringify({ slot: slotInfo.slot.model, totals, summary, results }, null, 2));
 console.log(`结果 JSON：${cli.out}`);
