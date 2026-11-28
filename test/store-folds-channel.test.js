@@ -139,10 +139,34 @@ test("判据4b：列集合恰好是九列+幂等键；旧形状由 mergeFoldReco
   assert.equal(merged.foldId, facts.foldId);
   assert.equal(merged.seq, 1);
   // 导不出来的仍然缺席——不写 false / null 占位。
-  for (const key of ["truncated", "degradeReason", "source", "strategy", "increment", "toolCalls"]) {
+  for (const key of ["truncated", "degradeReason", "source", "strategy", "toolCalls"]) {
     assert.equal(Object.prototype.hasOwnProperty.call(merged, key), false,
       `"${key}" 导不出来就不许出现（不写占位值）`);
   }
+  // **第一折的 `from` 是 0**（水位起点，是定义不是猜）：缺了它 `foldRecordSegments` 会整份账本
+  // 放弃、退回解析块 ⇒ resume 之后统计折读法静默退化（copilot 复审 #993 ①）。
+  assert.equal(merged.from, 0);
+  assert.equal(merged.to, 7);
+  assert.equal(merged.rounds, 7);
+  // **`increment.text` 是单折正文**（`foldRecordSegments` 把它当 detailText 用）；父键 `text` 是
+  // 累计正文。两者在单折时相等，多折时必须不同——见下一条用例。
+  assert.equal(merged.increment?.text, facts.summary, "increment.text 必须是这一折自己的正文");
+  assert.equal(merged.summary, facts.summary, "summary 由 description 导出（ledgerSummary 读它）");
+  // 多折：父键 `text` 是累计拼接，`increment.text` 必须还是**那一折自己**的正文。
+  const store2 = createMemoryTranscriptStore();
+  const f1 = /** @type {Record<string, unknown>} */ (richFacts());
+  // 第二折必须换 foldId：合并读按 foldId 去重，同 id 会被当成重投（那正是幂等要的）。
+  const f2 = /** @type {Record<string, unknown>} */ (richFacts({ summary: "第二折正文", foldId: "fold-261128-b" }));
+  await store2.appendFold("run-4c", toFoldRecord(f1, { cutRound: 3 }));
+  await store2.appendFold("run-4c", toFoldRecord(f2, { cutRound: 9 }));
+  const twoRows = await store2.loadFolds("run-4c");
+  const two = mergeFoldRecords({ channelRows: twoRows, roundFacts: [] });
+  assert.equal(two.length, 2);
+  assert.equal(two[1].text, `${f1.summary}\n\n第二折正文`, "父键 text 是累计拼接");
+  assert.equal(two[1].increment.text, "第二折正文", "increment.text 是单折正文，不是累计");
+  assert.equal(two[1].from, 3);
+  assert.equal(two[1].to, 9);
+  assert.equal(two[0].from, 0, "第一折的 from 是水位起点 0");
   // 旧 transcript（通道里是旧形状行）仍要能合并——迁移期两种行并存是常态。
   const legacy = richFacts();
   assert.ok(legacy !== undefined);

@@ -199,3 +199,33 @@ test("isFoldRecord 判定逻辑", () => {
   assert.ok(!isFoldRecord(null));
   assert.ok(!isFoldRecord("string"));
 });
+
+// ── copilot 复审 #993 ①：resume 之后统计折的读法不许退化 ────────────────────────────
+// `foldRecordSegments`（`src/compact/fold-statistical.js:520`）遇到任一条缺 `from`/`to` 就**整份
+// 账本放弃**、退回解析块；而它把 `record.text` 当**单折**正文用（父键 text 是累计正文）。
+// 所以重建出的旧形状必须：① 第一折的 `from` = 0（水位起点）；② 每折带自己的 `increment.text`。
+test("261128-11 判据9: 重建的旧形状能被 foldRecordSegments 读（from/to 齐、increment 是单折）", async () => {
+  const store = createMemoryTranscriptStore();
+  // 形状照 `buildFoldedFacts` 的真实产出（幂等键 + 本折正文 + 语义来源）。
+  const f1 = /** @type {Record<string, unknown>} */ ({
+    foldId: "fold-1", summary: "第一折正文", origin: "semantic", title: "T1",
+  });
+  const f2 = /** @type {Record<string, unknown>} */ ({
+    foldId: "fold-2", summary: "第二折正文", origin: "semantic", title: "T2",
+  });
+  await store.appendFold("run-9", toFoldRecord(f1, { cutRound: 3 }));
+  await store.appendFold("run-9", toFoldRecord(f2, { cutRound: 9 }));
+  const rows = await store.loadFolds("run-9");
+  const facts = mergeFoldRecords({ channelRows: rows, roundFacts: [] });
+  // ① 每一折都有整数 from/to —— 否则读侧整份放弃。
+  for (const [i, fact] of facts.entries()) {
+    assert.equal(Number.isSafeInteger(fact.from), true, `第 ${i + 1} 折缺 from ⇒ 读侧会整份放弃`);
+    assert.equal(Number.isSafeInteger(fact.to), true, `第 ${i + 1} 折缺 to ⇒ 读侧会整份放弃`);
+  }
+  assert.equal(facts[0].from, 0, "第一折的 from 是水位起点 0（定义，不是猜）");
+  // ② `increment.text` 是**这一折自己**的正文；父键 `text` 是累计。
+  assert.equal(facts[1].increment.text, "第二折正文");
+  assert.notEqual(facts[1].text, facts[1].increment.text, "多折时累计正文与单折正文必须不同");
+  // ③ `summary` 也在（`ledgerSummary` 读它）。
+  assert.equal(facts[1].summary, "第二折正文");
+});

@@ -6619,6 +6619,9 @@ export async function runToolLoop(options) {
                 ? { cutMsgSeq: runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) } : {}),
               ...(foldStat?.tokensBefore !== undefined ? { tokensBefore: foldStat.tokensBefore } : {}),
               ...(foldStat?.tokensAfter !== undefined ? { tokensAfter: foldStat.tokensAfter } : {}),
+              // `created_at` 是形状稿 §1.4 的 not null 列（copilot 复审 #993 ③）。信封时刻由**调用方**
+              // 给（纯函数不读时钟）。
+              createdAt: new Date().toISOString(),
               runId,
             });
             const persistedNineCol = await store.appendFold(runId, nineCol);
@@ -6626,6 +6629,23 @@ export async function runToolLoop(options) {
             // seq 从通道返回的九列行取回（这是 appendFold 分配的那个）。
             const ledgerEntry = /** @type {Record<string, any>} */ (cloneState(compaction.foldedFacts));
             if (persistedNineCol?.seq !== undefined) ledgerEntry.seq = persistedNineCol.seq;
+            // copilot 复审 #993 ②：**通道是 `seq` 的权威**（它按 `foldId` 分配），但轮记录与
+            // `onFoldSummary` 的载荷在 `appendFold` **之前**就已经发出去了，拿到的是引擎分配器那个号。
+            // 两个分配器播种口径相同（都从「通道 ∪ 轮记录」合并集播），所以正常路径恒相等；
+            // 一旦不等，**不许静默**——把分歧报出来，让宿主/日志看得见。
+            if (persistedNineCol?.seq !== undefined
+              && compaction.foldedFacts?.seq !== undefined
+              && persistedNineCol.seq !== compaction.foldedFacts.seq) {
+              await reportHostPersistenceFailure({
+                port: "notes",
+                operation: "appendFold",
+                phase: "folds_seq_divergence",
+                error: new Error(
+                  `folds.seq 分歧：通道分配 ${persistedNineCol.seq}，轮记录/载荷是 ${compaction.foldedFacts.seq}`
+                    + `（foldId=${String(compaction.foldedFacts.foldId ?? "-")}）——两个分配器的播种口径不一致`,
+                ),
+              });
+            }
             foldRecordLedger.push(ledgerEntry);
           } catch (foldChannelError) {
             // PR #971 终验：`appendFold` 的 fail-closed（播种读不动轮记录 ⇒ 拒绝发出可能被占用的 seq）
