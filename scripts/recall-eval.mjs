@@ -165,6 +165,44 @@ function makeMeteredProvider(slot) {
  *
  * 内容确定性生成（无随机），保证 A/B 两组拿到逐字相同的账本。
  */
+/**
+ * 填充值：与埋点值**同形**（同长度量级、同字符集），只是数值不同。
+ *
+ * 为什么必须同形（261128 第三版）：上一版填充值是 `ok` / `off` / `4` / `true` 这类短词，而埋点是
+ * `412ms` / `src/db/schema/orders.sql` / `tok-7f3a` —— 摘要器只要"挑一条最特别的写进摘要"就能带上
+ * 埋点，于是那几格**测不到召回**（实测 2/6 场景因此被取消资格）。同形之后 40 条候选没有哪条更
+ * 值得抄，摘要只能写"读了 40 行清单"。
+ *
+ * @param {{ marker?: string } | undefined} burial
+ * @param {number} index
+ * @returns {string}
+ */
+function fillerValue(burial, index) {
+  const marker = typeof burial?.marker === "string" ? burial.marker : "";
+  const value = marker.slice(marker.indexOf("=") + 1);
+  // 数字（含单位）：`412ms` ⇒ 同量级、同单位的其它数。
+  const numeric = /^(\d+(?:\.\d+)?)([a-z%]*)$/u.exec(value);
+  if (numeric !== null) {
+    const base = Number(numeric[1]);
+    const scaled = Math.max(1, Math.round(base * (0.55 + ((index * 37) % 90) / 100)));
+    return `${scaled}${numeric[2]}`;
+  }
+  // 路径：同目录、同后缀。
+  if (value.includes("/")) {
+    const dir = value.slice(0, value.lastIndexOf("/"));
+    const ext = value.slice(value.lastIndexOf("."));
+    return `${dir}/alt${String(index).padStart(2, "0")}${ext}`;
+  }
+  // 令牌：同前缀、同长度、同字符集。
+  if (/^[a-z]+-[0-9a-f]{4}$/u.test(value)) {
+    const prefix = value.slice(0, value.indexOf("-"));
+    const tail = (0x7f3a + index * 0x0113).toString(16).padStart(4, "0").slice(-4);
+    return `${prefix}-${tail}`;
+  }
+  // 其余：短词轮换（保持原有行为）。
+  return ["ok", "off", "4", "1.5", "auto", "true", "3"][index % 7];
+}
+
 function codeList(n, topic, burial) {
   const modules = [
     "gateway/router.ts", "gateway/auth.ts", "gateway/ratelimit.ts", "gateway/cors.ts",
@@ -192,7 +230,7 @@ function codeList(n, topic, burial) {
       ? burial.marker
       : (burial !== undefined && burial.round === n && burial.secondIndex === index
         ? burial.secondMarker
-        : `kv[${200 + index}]=${["ok", "off", "4", "1.5", "auto", "true", "3"][index % 7]}`);
+        : `kv[${200 + index}]=${fillerValue(burial, index)}`);
     return `${module}:${seq}  // ${topic}·第${n}轮快照 ${planted} export ${module.split("/").pop().replace(".ts", "")}Handler`
       + `(input: { id: string; retries: number }) → { ok: boolean; seq: ${seq} }`;
   });
@@ -563,11 +601,17 @@ const { values: cli } = parseArgs({
     slot: { type: "string", default: "default" },
     out: { type: "string", default: "/tmp/recall-eval-results.json" },
     "max-rounds": { type: "string", default: "12" },
+    // 每个 (场景, 组) 重复几轮。**必须 >1 才能得出可比的结论**：取消资格不是场景的属性，
+    // 而是「这一次摘要有没有保留那个值」——实测同一配置两跑，被取消资格的是不同的 3/6 格。
+    // 单跑比较的是两个不同的分母。
+    reps: { type: "string", default: "1" },
   },
 });
 
 const maxRounds = Number(cli["max-rounds"]);
 if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) throw new Error("--max-rounds 必须是正整数");
+const reps = Number(cli.reps);
+if (!Number.isSafeInteger(reps) || reps <= 0) throw new Error("--reps 必须是正整数");
 const wantScenarios = cli.scenarios.split(",").map((s) => Number(s.trim())).filter(Number.isSafeInteger);
 const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase()).filter((g) => g === "A" || g === "B");
 
@@ -580,9 +624,10 @@ for (const s of wantScenarios) {
   const scenario = scenarios.find((x) => x.id === s);
   if (scenario === undefined) { console.error(`未知场景 ${s}`); continue; }
   for (const g of wantGroups) {
-    process.stdout.write(`▶ 场景 ${s}（${scenario.name}）组 ${g} … `);
+   for (let rep = 1; rep <= reps; rep += 1) {
+    process.stdout.write(`▶ 场景 ${s}（${scenario.name}）组 ${g}${reps > 1 ? ` #${rep}` : ""} … `);
     const r = await runOne({ scenario, group: g, slot: slotInfo.slot, maxRounds });
-    results.push(r);
+    results.push({ ...r, rep });
     if (r.disqualified !== null) {
       console.log(`   ⚠ 取消资格（${r.disqualified}）：这一格测不出召回，不计入汇总`);
     }
@@ -594,6 +639,7 @@ for (const s of wantScenarios) {
     );
     if (r.runError) console.log(`   ⚠ runError: ${JSON.stringify(r.runError)}`);
     console.log(`   finalText: ${String(r.finalText).slice(0, 300)}`);
+   }
   }
 }
 
@@ -618,6 +664,26 @@ const summary = {
     }];
   })),
 };
+// 逐场景：**可测率**才是这一格的性质（不是单跑那一次的资格）。reps>1 时才打。
+if (reps > 1) {
+  console.log("\n逐场景（可测 = 折叠后事实确实不在上下文里；正确率只在可测那几跑里算）：");
+  const byScenario = new Map();
+  for (const r of results) {
+    const key = `${r.scenario}|${r.group}`;
+    if (!byScenario.has(key)) byScenario.set(key, []);
+    byScenario.get(key).push(r);
+  }
+  for (const [key, rows] of byScenario) {
+    const measurable = rows.filter((r) => r.disqualified === null);
+    const correct = measurable.filter((r) => r.correct).length;
+    const recalls = rows.reduce((sum, r) => sum + r.recallToolCalls, 0);
+    const [sid, g] = key.split("|");
+    console.log(`  场景 ${sid} 组 ${g}：可测 ${measurable.length}/${rows.length}`
+      + `｜可测里答对 ${correct}/${measurable.length}｜召回 ${recalls} 次`
+      + `｜↑${rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0)}`);
+  }
+}
+
 console.log(`\n汇总（已排除 ${summary.disqualified} 个取消资格的场景）：`
   + Object.entries(summary.byGroup)
     .map(([g, v]) => `${g} ${v.correct}/${v.scenarios} 召回 ${v.recallCalls} 次 ↑${v.inputTokens}`)
