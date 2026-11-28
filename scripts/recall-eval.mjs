@@ -197,7 +197,7 @@ function codeList(n, topic, burial) {
 const scenarios = [
   {
     id: 1, name: "单点字符串（令牌）", fact: "tok-7f3a",
-    burial: { round: 2, index: 7, marker: "deploy-token=tok-7f3a" },
+    burial: { round: 2, index: 7, marker: "kv[17]=tok-7f3a" },
     rounds: [
       ["启动清单核对：服务名、端口、日志采集，都过了。", "收到，登记进启动清单。"],
       ["部署令牌定下来了，写在第 2 轮那份模块清单的某一条注释里。后面部署要用的就是它，别记混。", "好，令牌已随清单登记，后续以这条为准。"],
@@ -208,11 +208,11 @@ const scenarios = [
       ["文档站今晚发布，别动 main。", "收到，main 挂起合并。"],
       ["本周例会顺延到周五下午。", "已改到周五下午。"],
     ],
-    question: "第 2 轮那份模块清单里登记的部署令牌是什么？请逐字给出令牌本身。",
+    question: "第 2 轮那份模块清单里 `kv[17]` 的值是什么？请逐字给出。",
   },
   {
     id: 2, name: "数字（p95）", fact: "412ms",
-    burial: { round: 2, index: 11, marker: "p95-budget-ms=412ms" },
+    burial: { round: 2, index: 11, marker: "kv[23]=412ms" },
     rounds: [
       ["压测环境先对齐：三台 4C8G，数据量 1200 万行。", "环境参数已登记。"],
       ["第 1 次实验跑完，p95 是 318ms，作为基准。", "第 1 次基准 p95=318ms 已记录。"],
@@ -225,11 +225,11 @@ const scenarios = [
       ["值班表下周轮换。", "值班表已更新。"],
       ["季度总结模板发群里了。", "模板收到。"],
     ],
-    question: "第 2 轮那份模块清单里登记的 p95 预算值是多少？请逐字给出那个数值（含单位）。",
+    question: "第 2 轮那份模块清单里 `kv[23]` 的值是多少？请逐字给出那个数值（含单位）。",
   },
   {
     id: 3, name: "文件路径", fact: "src/db/schema/orders.sql",
-    burial: { round: 2, index: 19, marker: "schema-path=src/db/schema/orders.sql" },
+    burial: { round: 2, index: 19, marker: "kv[31]=src/db/schema/orders.sql" },
     rounds: [
       ["预算这块的口径要先定：按请求视图估算，不按账本。", "口径记下：以请求视图为准。"],
       ["定位了，要改的文件是 src/loop/budget.js，别的都先不动。", "明确了：只改 src/loop/budget.js。"],
@@ -240,7 +240,7 @@ const scenarios = [
       ["合完打 tag 通知下游。", "打 tag 通知下游。"],
       ["这周冻结发布窗口。", "冻结窗口已知悉。"],
     ],
-    question: "第 2 轮那份模块清单里标出的 schema 文件路径是什么？请逐字给出路径。",
+    question: "第 2 轮那份模块清单里 `kv[31]` 的值是什么？请逐字给出路径。",
   },
   {
     // copilot 复审（PR #985）：上一版直接把答案写成 `handoff-owner=obs-trace`，那就不是两跳了。
@@ -248,8 +248,8 @@ const scenarios = [
     // （`OWNER-7 → 张启明`），模型要先把两条对上才答得出。
     id: 4, name: "两跳（A 指向 B）", fact: "张启明",
     burial: {
-      round: 2, index: 23, marker: "handoff-owner-ref=OWNER-7",
-      secondIndex: 27, secondMarker: "OWNER-7 → 张启明（交接责任人）",
+      round: 2, index: 23, marker: "kv[9]=OWNER-7",
+      secondIndex: 27, secondMarker: "kv[37]=张启明",
     },
     rounds: [
       ["密钥策略定了：不进代码库，放在一个 YAML 文件里。具体路径我登记在后面某轮，这里先不写。", "好，密钥走 YAML 文件，路径以登记那条为准。"],
@@ -261,13 +261,13 @@ const scenarios = [
       ["监控探针加一条文件存在性检查。", "探针规则已加。"],
       ["这季度合规扫描下月初开始。", "扫描时间已同步。"],
     ],
-    question: "第 2 轮那份模块清单里标出的交接责任人（handoff-owner）是谁？请逐字给出。",
+    question: "第 2 轮那份模块清单里 `kv[9]` 指向哪个键，那个键的值是谁？请逐字给出人名。",
   },
   {
     // copilot 复审（PR #985）：上一版直接问 `retry-forbidden` 的字段值，那不是「否定推理」，
     // 只是读字段。恢复否定语义：清单里写着**禁止**用某方案及理由，题目问「为什么不用」。
     id: 5, name: "否定事实", fact: "no-retry-on-4xx",
-    burial: { round: 2, index: 29, marker: "retry-forbidden=no-retry-on-4xx（4xx 是客户端错，重试只会放大故障）" },
+    burial: { round: 2, index: 29, marker: "kv[11]=no-retry-on-4xx（4xx 是客户端错，重试只会放大故障）" },
     rounds: [
       ["依赖治理开始：先列候选库清单。", "清单已建。"],
       ["决定：不要用 lodash，原因是它整包进 bundle，造成重复打包、体积膨胀。替代用原生方法。", "记住了：禁用 lodash，原因是重复打包导致体积膨胀。"],
@@ -281,12 +281,11 @@ const scenarios = [
     // 否定推理（copilot 复审 PR #985）：只答出取值不算对，**理由也要答出来** —— 否则这一格
     // 与「读字段」没有区别，测不出「为什么不能这么做」。
     mustInclude: ["no-retry-on-4xx", "客户端错"],
-    question: "第 2 轮那份模块清单里写明**禁止**在 4xx 上重试。禁令的取值是什么，"
-      + "给出的理由是什么（逐字引用理由里的关键词）？",
+    question: "第 2 轮那份模块清单里 `kv[11]` 的值是什么，括号里给的理由是什么（逐字引用理由关键词）？",
   },
   {
     id: 6, name: "干扰项（相似但错误）", fact: "tok-7f3a",
-    burial: { round: 2, index: 31, marker: "deploy-token=tok-7f3a" },
+    burial: { round: 2, index: 31, marker: "kv[41]=tok-7f3a" },
     rounds: [
       ["令牌体系先梳理：部署令牌与用户令牌分开管理。", "两套令牌分开管，收到。"],
       ["初版草案里部署令牌写的是 tok-9x9x，注意那只是草案。", "草案值 tok-9x9x 已标注为草案。"],
@@ -297,7 +296,7 @@ const scenarios = [
       ["轮换窗口月底评估。", "月底评估轮换。"],
       ["安全审计下季度做。", "审计排期收到。"],
     ],
-    question: "第 2 轮那份模块清单里登记的部署令牌是什么（不是草案里的那个）？请逐字给出令牌本身。",
+    question: "第 2 轮那份模块清单里 `kv[41]` 的值是什么（不是草案里的那个）？请逐字给出。",
   },
 ];
 
