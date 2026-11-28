@@ -452,7 +452,23 @@ async function runOne({ scenario, group, slot, maxRounds, targetRounds = 20 }) {
     return JSON.stringify({ status: "no_such_tool" });
   };
 
-  const folding = group === "A"
+  const folding = group === "C"
+    ? {
+      // **C 组 = A'（261128 新增）**：唯一能证明「折叠层必需」的对照。
+      //
+      // A 组（预算 = 模型窗口）在体量超窗时**自己会折**（引擎不变量：策略折完仍超预算 ⇒ 必跑
+      // `sliding-window` 兜底，`orchestrator.js:4645-4669`），所以它证明不了「不折叠会怎样」。
+      // C 组把预算抬到窗口的 **2 倍** ⇒ 引擎认为装得下、不折、不兜底 ⇒ 请求带着完整历史发出去，
+      // 由**上游**按窗口拒绝（#930 记着 relay 会回 400 `context_length_exceeded`）。
+      // 这一组该**失败**；它失败才说明折叠层不是可选项。
+      context: {
+        budgetTokens: (slot.contextWindowTokens ?? 128_000) * 2,
+        keepRounds: 999,
+        task: `recall-eval C${scenario.id}`,
+      },
+      toolResultTtl: 8,
+    }
+    : group === "A"
     ? {
       // A 组 = **真实窗口内不折叠**（261128 修）：旧版写 8_000_000 —— 没有任何模型能吃 8M 上下文，
       // 那是个不存在的基线。现在取模型自己的窗口（`contextWindowTokens`，本机 262144），保留轮拉满。
@@ -590,6 +606,15 @@ async function runOne({ scenario, group, slot, maxRounds, targetRounds = 20 }) {
     rounds: runResult?.rounds ?? null,
     termination: runResult?.termination?.reason ?? (runError ? `error:${runError.code ?? "unknown"}` : null),
     runError,
+    // C 组（A'）的**预期失败形态**：上游按窗口拒绝（#930 的 relay 回 400 `context_length_exceeded`）。
+    // 判据按**文本**取（引擎的 `classifyHttpError` 把这一类归成 `context_window_exceeded`，
+    // 但它在 error 里未必以结构化字段暴露到这一层）⇒ 三个词全都要，避免把普通 400 记成超窗。
+    contextWindowRejected: (() => {
+      const hay = `${runResult?.termination?.reason ?? ""} ${runResult?.termination?.detail ?? ""} `
+        + `${runError?.message ?? ""} ${runError?.code ?? ""} ${String(finalText ?? "")}`.toLowerCase();
+      const hit = /context/.test(hay) && /(length|window|token)/.test(hay) && /(exceed|too long|too large|max)/.test(hay);
+      return hit;
+    })(),
     finalText,
     correct,
     missingFacts: missing,
@@ -616,6 +641,8 @@ const { values: cli } = parseArgs({
   options: {
     scenarios: { type: "string", default: "1" },
     groups: { type: "string", default: "A,B" },
+    // A = 预算取模型窗口（体量超窗时**引擎自己会折**，见下面的注释）；
+    // B = 折叠 + 召回工具；C = A'（预算 = 窗口 ×2 ⇒ 不折、不兜底，让请求真的超窗撞上游 400）。
     slot: { type: "string", default: "default" },
     out: { type: "string", default: "/tmp/recall-eval-results.json" },
     "max-rounds": { type: "string", default: "12" },
@@ -646,7 +673,8 @@ if (!Number.isSafeInteger(targetRounds) || targetRounds < 8) {
   );
 }
 const wantScenarios = cli.scenarios.split(",").map((s) => Number(s.trim())).filter(Number.isSafeInteger);
-const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase()).filter((g) => g === "A" || g === "B");
+const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase())
+  .filter((g) => g === "A" || g === "B" || g === "C");
 
 const slotInfo = readSlot(cli.slot);
 console.log(`#896 §5 recall-eval · slot=${cli.slot} model=${slotInfo.slot.model} endpoint=${slotInfo.slot.endpoint} config=${slotInfo.configPath}`);
@@ -752,6 +780,14 @@ if (reps > 1) {
 
 // 终端汇总直接读落盘的同一份 `summary`（**不许各算一套** —— copilot 复审 #990 第二次就是
 // 「终端改了、JSON 没改」，等于存了一份掺了「没测」的分母）。
+const cRows = results.filter((r) => r.group === "C");
+if (cRows.length > 0) {
+  const rejected = cRows.filter((r) => r.contextWindowRejected).length;
+  const answered = cRows.filter((r) => r.correct).length;
+  console.log(`\nC 组（A'：预算 = 窗口×2 ⇒ 不折、不兜底）：`
+    + `因超窗被上游拒绝 ${rejected}/${cRows.length}｜仍然答对 ${answered}/${cRows.length}`
+    + `｜折叠 ${cRows.filter((r) => r.folded).length} 次`);
+}
 console.log(`\n汇总：`
   + `A 基线 ${summary.baseline.correct}/${summary.baseline.runs}`
   + `｜B 可测 ${summary.foldAndRecall.measured}/${summary.foldAndRecall.runs}`
