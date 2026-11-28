@@ -25,14 +25,18 @@ import {
 
 export function createSummarizerPromptGuide(recoveryHint) {
   const hint = resolveRecoveryHint(recoveryHint);
-  return `请把被折叠轮次整理成可继续工作的日志。在第一个 \`##\` 小节**之前**，先单独输出两行元信息，
+  return `请把被折叠轮次整理成可继续工作的日志。在第一个 \`##\` 小节**之前**，先单独输出三行元信息，
 每行以固定前缀开头、各占一行、冒号后紧跟内容（不要加空格之外的额外符号、不要写成标题或列表）：
 标题：<一句话标题，不超过 60 个字符>
 描述：<自解释段落，不超过 500 token（本引擎按 estimateTokens 口径计）。要求：
   • 必须自解释：不出现「上面」「刚才」「该文件」「前面提到的」这类依赖上下文的指代；写清项目名 / 文件路径 / 判据 / 具体动作。
   • 不要用 Markdown 表格语法（| 浪费字符且渲染归宿主）。
   • 只列真实存在的动作，不许推测、不许补充原文没有的东西。>
-这两行必须写实际内容，不要写「无」或其它占位符；确实无法概括时宁可留空（只写前缀）也不要填「无」。
+白板：<本 run 现状的一整块文本，≤1500 token（本引擎按 estimateTokens 口径计）。规则：
+  • 整块替换：这一行交回的是下一版白板的**整块全文**（不是增量指令）——把要保留的旧条目连同新条目重写成完整一块；引擎只校验长度然后整块覆盖，没有「某条被上限挡掉」这回事，装不下是你要取舍的活。
+  • 推荐结构（约定，不是 schema，引擎不解析条目）：## 约束 / ## 待办 / ## 教训 / ## 事实 / ## 当前阶段。
+  • 没东西可写就留空：整行只写「白板：」前缀、后面什么都不写（不要写「无」）；要显式清空整块白板，则整块只写一行「（空）」。
+标题与描述这两行必须写实际内容，不要写「无」或其它占位符；确实无法概括时宁可留空（只写前缀）也不要填「无」。
 之后严格使用以下分节：
 ## 行动
 实际做了什么、结果如何。**验证结论写在这里**（跑了什么测试 / 检查、结论是什么），不另开一节。
@@ -415,6 +419,14 @@ export function createFoldLlmStrategy({
         // 下面的 withRecoveryHint / enforceSummarySize / appendFoldFidelity 吃的是**剥掉那两行后**的正文。
         const summarizerMeta = parseSummarizerMeta(summarizerOutcome.summary);
         const summary = summarizerMeta.body;
+        // 白板：上一版现状由引擎从 run state 递下来（`callOptions.board`）；decideBoard 照
+        // title/description 同一口径定出本折要交回的 board / boardMissing / boardRejected。
+        const boardOption = optionValue(callOptions, options, "board", "");
+        const boardDecision = decideBoard({
+          board: summarizerMeta.board,
+          boardMissing: summarizerMeta.boardMissing,
+          previousBoard: typeof boardOption === "string" ? boardOption : "",
+        });
         const droppedInputMessages = summarizerOutcome.droppedMessages;
         // issue #566：本折的机械替代物总是算（零 LLM）。
         // `compactedSummary` 是续写累计体（prior 会被续写进输出），
@@ -464,6 +476,16 @@ export function createFoldLlmStrategy({
             ? { description: summarizerMeta.description }
             : { descriptionMissing: summarizerMeta.descriptionMissing }),
           ...(summarizerMeta.descriptionTruncated ? { descriptionTruncated: true } : {}),
+          // 白板（第一刀）：照 title/description 的**加法**口径。`board` 在场 = 本折要整块覆盖的
+          // 新板（含显式清空的空串）；`boardRejected` = 拒收原因（旧板由上层保持）；`boardMissing`
+          // = 没提（与「有病」区分）。三者互斥，最多出现一个。
+          ...(boardDecision.board !== undefined ? { board: boardDecision.board } : {}),
+          ...(boardDecision.boardMissing !== undefined
+            ? { boardMissing: boardDecision.boardMissing }
+            : {}),
+          ...(boardDecision.boardRejected !== undefined
+            ? { boardRejected: boardDecision.boardRejected }
+            : {}),
           ...(prior.truncated ? { priorSummaryTruncated: true, priorSummaryBytes: prior.bytes } : {}),
           ...(prior.bytes > 0 && !prior.truncated ? { priorSummaryBytes: prior.bytes } : {}),
           // issue #469（裁决 A）：基底从哪来——`"ledger"` = resume 后从账本播的，
@@ -789,6 +811,12 @@ const SUMMARIZER_TITLE_MAX_CHARS = 60;
 export const SUMMARIZER_DESCRIPTION_MAX_TOKENS = 500;
 const SUMMARIZER_TITLE_LINE = /^标题：(.*)$/m;
 const SUMMARIZER_DESC_LINE = /^描述：(.*)$/m;
+/** 白板是一整块文本（`runs.board`），上限与摘要预算同一把尺子（`estimateTokens`）；超了拒收（§3.7）。 */
+export const SUMMARIZER_BOARD_MAX_TOKENS = 1500;
+const SUMMARIZER_BOARD_LINE = /^白板：(.*)$/m;
+// 正文起点必须锚定**日志正文**的固定节（行动/遗留/关键词/教训与坑），不能用任意 `##`：
+// 白板内部允许 `## 约束` 这类小节标题，用泛 `##` 会把 preamble 切到白板中间。
+const SUMMARIZER_BODY_HEADING = /^## (?:行动|遗留|关键词|教训与坑)(?:\r?\n|$)/m;
 
 /** @param {string} value @param {number} maxChars @returns {string} */
 function clampMetaChars(value, maxChars) {
@@ -829,6 +857,29 @@ function normalizeMetaValue(raw) {
 }
 
 /**
+ * 判定白板本折的落地值（§3.7 失败语义，写死不静默）：
+ *   · 给了且超 1500 token ⇒ 拒收（`over-limit`），不交回新板（白板由上层保持旧值）。
+ *   · 给了（含显式清空的空串）且未超限 ⇒ 交回 `board`（整块覆盖）。
+ *   · 没给但旧板非空⇒ 拒收（`empty-over-nonempty`）：一次解析失误不能抹掉全部现状。
+ *   · 没给且旧板空 ⇒ 不变（`boardMissing` 原样带上，与「有病」区分）。
+ *
+ * @param {{ board?: string, boardMissing?: string, previousBoard: string }} input
+ * @returns {{ board?: string, boardMissing?: string, boardRejected?: "over-limit" | "empty-over-nonempty" }}
+ */
+function decideBoard({ board, boardMissing, previousBoard }) {
+  if (board !== undefined) {
+    if (board !== "" && estimateTokens(board) > SUMMARIZER_BOARD_MAX_TOKENS) {
+      return { boardRejected: "over-limit" };
+    }
+    return { board };
+  }
+  if (boardMissing === "empty-or-placeholder" && previousBoard !== "") {
+    return { boardRejected: "empty-over-nonempty" };
+  }
+  return boardMissing !== undefined ? { boardMissing } : {};
+}
+
+/**
  * 解析摘要正文里模型给的两行元信息。
  * @param {string} summary 摘要器返回的原文
  * @returns {{ body: string,
@@ -837,20 +888,46 @@ function normalizeMetaValue(raw) {
  *   descriptionTruncated?: true }}
  */
 export function parseSummarizerMeta(summary) {
-  const headingMatch = /^## .*(?:\r?\n|$)/m.exec(summary);
-  const headEnd = headingMatch ? headingMatch.index : summary.length;
-  let preamble = summary.slice(0, headEnd);
-  const sections = summary.slice(headEnd);
+  // 白板是一整块文本，内部允许 `## 约束` 这类小节标题；所以正文起点必须锚定**日志正文**的
+  // 固定节。没给白板时退回旧行为（第一个任意 `##` 即正文起点），旧摘要形状逐字不变。
+  const boardStart = SUMMARIZER_BOARD_LINE.exec(summary);
+  const headingMatch = boardStart
+    ? SUMMARIZER_BODY_HEADING.exec(summary)
+    : /^## .*(?:\r?\n|$)/m.exec(summary);
+  const bodyStart = headingMatch ? headingMatch.index : summary.length;
+  const metaRegion = summary.slice(0, bodyStart);
 
-  const titleMatch = SUMMARIZER_TITLE_LINE.exec(preamble);
-  const descMatch = SUMMARIZER_DESC_LINE.exec(preamble);
+  const titleMatch = SUMMARIZER_TITLE_LINE.exec(metaRegion);
+  const descMatch = SUMMARIZER_DESC_LINE.exec(metaRegion);
 
   const rawTitle = titleMatch ? normalizeMetaValue(titleMatch[1]) : undefined;
   const rawDesc = descMatch ? normalizeMetaValue(descMatch[1]) : undefined;
 
-  // 从 preamble 剥掉这两行（连同尾随换行），body = 剩余 preamble + 各小节。
-  preamble = preamble.replace(/^标题：.*\r?\n?/m, "").replace(/^描述：.*\r?\n?/m, "");
-  const body = `${preamble}${sections}`;
+  // 白板：从 `白板：` 前缀之后一直取到正文起点，逐字保留（只裁两端空白）。
+  // 显式清空标记「（空）」⇒ value:""（允许覆盖非空旧板）；空/占位「无」⇒ 没拿到。
+  /** @type {{ value: string } | { missing: "no-line" | "empty-or-placeholder" }} */
+  let boardResult;
+  if (!boardStart) {
+    boardResult = { missing: "no-line" };
+  } else {
+    const afterPrefix = summary.slice(boardStart.index + "白板：".length, bodyStart).trim();
+    if (afterPrefix === "" || afterPrefix === "无") {
+      boardResult = { missing: "empty-or-placeholder" };
+    } else if (afterPrefix === "（空）") {
+      boardResult = { value: "" };
+    } else {
+      boardResult = { value: afterPrefix };
+    }
+  }
+
+  // body：白板**之前**那段元信息（剥掉三行前缀，通常为空）+ 各正文小节。白板自身的行落在
+  // [boardStart, bodyStart) 区间内，被下面的切片自然排除 ⇒ 白板不会漏进正文（判据 7）。
+  const preBoard = boardStart ? metaRegion.slice(0, boardStart.index) : metaRegion;
+  const preamble = preBoard
+    .replace(/^标题：.*\r?\n?/m, "")
+    .replace(/^描述：.*\r?\n?/m, "")
+    .replace(/^白板：.*\r?\n?/m, "");
+  const body = `${preamble}${summary.slice(bodyStart)}`;
 
   // description 按 token 夹断（issue #897：向量化单元），超了写 descriptionTruncated 标记。
   let descResult;
@@ -869,6 +946,9 @@ export function parseSummarizerMeta(summary) {
       ? { description: descResult.text }
       : { descriptionMissing: descMatch ? "empty-or-placeholder" : "no-line" }),
     ...(descTruncated ? { descriptionTruncated: true } : {}),
+    ...("value" in boardResult
+      ? { board: boardResult.value }
+      : { boardMissing: boardResult.missing }),
   };
 }
 

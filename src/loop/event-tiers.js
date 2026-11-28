@@ -110,6 +110,9 @@ export const EVENT_TIERS = Object.freeze({
   // 仍在分级表里（契约文档中英两份仍列它）；引擎现在只在「自己退回机械 `sliding-window`
   // 兑底」那一支真发它（见 orchestrator 折叠入口）——契约不变、发射点收窄。
   compaction_strategy_fallback: EVENT_TIER_FACT,
+  // 白板第一刀（§3.7）：新白板被拒收（超 1500 token / 空板覆盖非空板）⇒ 一条可检测的降级事实，
+  // 不静默（白板保持旧值），`detail` 写拒收原因。与 `compaction_strategy_fallback` 同属折叠族。
+  board_rejected: EVENT_TIER_FACT,
   continuity_injection_skipped: EVENT_TIER_FACT,
   continuity_written: EVENT_TIER_FACT,
   continuity_write_failed: EVENT_TIER_FACT,

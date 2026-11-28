@@ -6662,6 +6662,7 @@ at the emission site, and two of them were wrong in the first draft of this sect
 | `compaction` | `fact` | no | That a compaction happened at this round is the fact. |
 | `compaction_deferred` | `fact` | no | A compaction was deferred — nothing durable records the deferral. |
 | `compaction_strategy_fallback` | `fact` | no | Which strategy the compaction fell back to — same: only copy. |
+| `board_rejected` | `fact` | no | The new whiteboard was rejected (over 1500 tokens / empty over non-empty) and the board kept its previous value — the only record that a fold's board was dropped, not silently truncated. |
 | `final_guard` | `fact` | no | The verification verdict for this run (see the verification section; `guard_error` / `unverified_error` runs are exactly the ones a host re-audits). |
 | `final_guard_extend` | `fact` | no | The extension request and its outcome. |
 | `forced_final` | `fact` | no | The wrap-up forced a final answer; it is part of the termination story. |
