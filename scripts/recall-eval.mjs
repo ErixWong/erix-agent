@@ -180,26 +180,37 @@ function makeMeteredProvider(slot) {
 function fillerValue(burial, index) {
   const marker = typeof burial?.marker === "string" ? burial.marker : "";
   const value = marker.slice(marker.indexOf("=") + 1);
-  // 数字（含单位）：`412ms` ⇒ 同量级、同单位的其它数。
+  // ① 纯数字（可带单位）：同量级、同单位的其它数。
   const numeric = /^(\d+(?:\.\d+)?)([a-z%]*)$/u.exec(value);
   if (numeric !== null) {
     const base = Number(numeric[1]);
     const scaled = Math.max(1, Math.round(base * (0.55 + ((index * 37) % 90) / 100)));
-    return `${scaled}${numeric[2]}`;
+    return `${scaled === base ? scaled + 7 : scaled}${numeric[2]}`;
   }
-  // 路径：同目录、同后缀。
+  // ② 路径：同目录、同后缀。
   if (value.includes("/")) {
     const dir = value.slice(0, value.lastIndexOf("/"));
     const ext = value.slice(value.lastIndexOf("."));
     return `${dir}/alt${String(index).padStart(2, "0")}${ext}`;
   }
-  // 令牌：同前缀、同长度、同字符集。
+  // ③ 令牌 `tok-7f3a`：同前缀、同长度、同字符集。
   if (/^[a-z]+-[0-9a-f]{4}$/u.test(value)) {
     const prefix = value.slice(0, value.indexOf("-"));
-    const tail = (0x7f3a + index * 0x0113).toString(16).padStart(4, "0").slice(-4);
-    return `${prefix}-${tail}`;
+    const tail = (0x7f3a + (index + 1) * 0x0113).toString(16).padStart(4, "0").slice(-4);
+    const candidate = `${prefix}-${tail}`;
+    return candidate === value ? `${prefix}-dead` : candidate;
   }
-  // 其余：短词轮换（保持原有行为）。
+  // ④ **任何含数字的值**（`OWNER-7`、`no-retry-on-4xx（4xx 是客户端错…）`）：把所有数字段换成
+  //    另一个数，前缀/后缀/括注**逐字保留**。没有这一支，这两种值会掉进 ⑤ 的短词池，40 条候选
+  //    只剩 7 个不同值 ⇒ 埋点又变成「最特别的那条」（copilot 复审 #990 抓到的缺口）。
+  const digits = /\d+/u.exec(value);
+  if (digits !== null) {
+    const original = digits[0];
+    let next = String(index + 1);
+    if (next === original) next = String(index + 1 + 40);
+    return value.split(original).join(next);
+  }
+  // ⑤ 其余（不含数字的短词）：轮换。保持原有行为。
   return ["ok", "off", "4", "1.5", "auto", "true", "3"][index % 7];
 }
 
