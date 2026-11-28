@@ -370,7 +370,7 @@ function systemPrompt(group) {
   return base + "直接依据你看到的对话记录回答。";
 }
 
-async function runOne({ scenario, group, slot, maxRounds }) {
+async function runOne({ scenario, group, slot, maxRounds, targetRounds = 20 }) {
   const store = createMemoryTranscriptStore();
   const runId = `recall-eval-s${scenario.id}-${group}-${Date.now().toString(36)}`;
   // 种子轮：每轮一条 {round, dedupKey:"<runId>:round:<n>"} 轮记录（appendUserTurn 同款载体形状）。
@@ -391,7 +391,7 @@ async function runOne({ scenario, group, slot, maxRounds }) {
   }
   // 261128：场景自带的 rounds 只有 8 条（事实埋在其中），补到 20 条「例行轮」把历史体量撑过
   // B 组 16k 预算 —— 补的内容确定性生成（同 A/B 两组逐字相同），不掺任何新事实。
-  const targetRounds = 20;
+  // 由 `--rounds` 给（默认 20 与历史一致）。
   while (round < targetRounds) {
     round += 1;
     const key = `${runId}:round:${round}`;
@@ -616,6 +616,10 @@ const { values: cli } = parseArgs({
     // 而是「这一次摘要有没有保留那个值」——实测同一配置两跑，被取消资格的是不同的 3/6 格。
     // 单跑比较的是两个不同的分母。
     reps: { type: "string", default: "1" },
+    // 补到多少轮。**A 组什么时候真的会爆，取决于这个数**：20 轮 × ~1.8k ≈ 37.6k，离 262k 窗口还很远，
+    // 所以「不折叠也能答对」在 37.6k 上是必然的。要看折叠层的价值，得把体量推到窗口真的不够的地方
+    // （≈150 轮 ≈ 280k）。
+    rounds: { type: "string", default: "20" },
   },
 });
 
@@ -623,6 +627,10 @@ const maxRounds = Number(cli["max-rounds"]);
 if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) throw new Error("--max-rounds 必须是正整数");
 const reps = Number(cli.reps);
 if (!Number.isSafeInteger(reps) || reps <= 0) throw new Error("--reps 必须是正整数");
+const targetRounds = Number(cli.rounds);
+if (!Number.isSafeInteger(targetRounds) || targetRounds < 8) {
+  throw new Error("--rounds 必须是 >=8 的整数（场景自带的 8 条轮记录不能被截掉）");
+}
 const wantScenarios = cli.scenarios.split(",").map((s) => Number(s.trim())).filter(Number.isSafeInteger);
 const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase()).filter((g) => g === "A" || g === "B");
 
@@ -637,7 +645,7 @@ for (const s of wantScenarios) {
   for (const g of wantGroups) {
    for (let rep = 1; rep <= reps; rep += 1) {
     process.stdout.write(`▶ 场景 ${s}（${scenario.name}）组 ${g}${reps > 1 ? ` #${rep}` : ""} … `);
-    const r = await runOne({ scenario, group: g, slot: slotInfo.slot, maxRounds });
+    const r = await runOne({ scenario, group: g, slot: slotInfo.slot, maxRounds, targetRounds });
     results.push({ ...r, rep });
     if (r.disqualified !== null) {
       console.log(`   ⚠ 取消资格（${r.disqualified}）：这一格测不出召回，不计入汇总`);
