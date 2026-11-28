@@ -32,10 +32,6 @@ export function createSummarizerPromptGuide(recoveryHint) {
   • 必须自解释：不出现「上面」「刚才」「该文件」「前面提到的」这类依赖上下文的指代；写清项目名 / 文件路径 / 判据 / 具体动作。
   • 不要用 Markdown 表格语法（| 浪费字符且渲染归宿主）。
   • 只列真实存在的动作，不许推测、不许补充原文没有的东西。>
-白板：<本 run 现状的一整块文本，≤1500 token（本引擎按 estimateTokens 口径计）。规则：
-  • 整块替换：这一行交回的是下一版白板的**整块全文**（不是增量指令）——把要保留的旧条目连同新条目重写成完整一块；引擎只校验长度然后整块覆盖，没有「某条被上限挡掉」这回事，装不下是你要取舍的活。
-  • 推荐结构（约定，不是 schema，引擎不解析条目）：## 约束 / ## 待办 / ## 教训 / ## 事实 / ## 当前阶段。
-  • 没东西可写就留空：整行只写「白板：」前缀、后面什么都不写（不要写「无」）；要显式清空整块白板，则整块只写一行「（空）」。
 标题与描述这两行必须写实际内容，不要写「无」或其它占位符；确实无法概括时宁可留空（只写前缀）也不要填「无」。
 之后严格使用以下分节：
 ## 行动
@@ -48,6 +44,12 @@ export function createSummarizerPromptGuide(recoveryHint) {
 ## 教训与坑（不要重犯的）
 记录被折轮次里出现过的：①试过但失败或代价高的做法（含为什么失败）；②不可违反的约束；③已确认的坑。
 只写原文里确实出现过的，不要推测、不要补充；没有就写「无」。
+
+最后一段是白板（**必须是整份输出的最后一段**，引擎按它把正文与白板切开）：
+白板：<本 run 现状的一整块文本，≤1500 token（本引擎按 estimateTokens 口径计）。规则：
+  • 整块替换：这一行交回的是下一版白板的**整块全文**（不是增量指令）——把要保留的旧条目连同新条目重写成完整一块；引擎只校验长度然后整块覆盖，没有「某条被上限挡掉」这回事，装不下是你要取舍的活。
+  • 推荐结构（约定，不是 schema，引擎不解析条目）：## 约束 / ## 待办 / ## 教训 / ## 事实 / ## 当前阶段。
+  • 没东西可写就留空：整行只写「白板：」前缀、后面什么都不写（不要写「无」）；要显式清空整块白板，则整块只写一行「（空）」。
 
 恢复提示：${hint}
 
@@ -888,13 +890,14 @@ function decideBoard({ board, boardMissing, previousBoard }) {
  *   descriptionTruncated?: true }}
  */
 export function parseSummarizerMeta(summary) {
-  // 白板是一整块文本，内部允许 `## 约束` 这类小节标题；所以正文起点必须锚定**日志正文**的
-  // 固定节。没给白板时退回旧行为（第一个任意 `##` 即正文起点），旧摘要形状逐字不变。
+  // 白板是**整份输出的最后一段**（261128 第二版，copilot 复审 P2）：旧版把白板夹在 `描述：`
+  // 与正文之间，而正文起点是「第一个 `## 行动`/`## 遗留`/…」——白板内部若出现这些标题（模型
+  // 完全可能这么写），白板会被从中间切断，剩下的半块还会漏进摘要正文。移到末尾之后，正文与
+  // 白板的分界就是**白板行本身**：白板 = 从 `白板：` 到结尾，正文 = 从第一个 `##` 到白板行之前。
   const boardStart = SUMMARIZER_BOARD_LINE.exec(summary);
-  const headingMatch = boardStart
-    ? SUMMARIZER_BODY_HEADING.exec(summary)
-    : /^## .*(?:\r?\n|$)/m.exec(summary);
-  const bodyStart = headingMatch ? headingMatch.index : summary.length;
+  const bodyRegionEnd = boardStart ? boardStart.index : summary.length;
+  const headingMatch = /^## .*(?:\r?\n|$)/m.exec(summary.slice(0, bodyRegionEnd));
+  const bodyStart = headingMatch ? headingMatch.index : bodyRegionEnd;
   const metaRegion = summary.slice(0, bodyStart);
 
   const titleMatch = SUMMARIZER_TITLE_LINE.exec(metaRegion);
@@ -903,14 +906,14 @@ export function parseSummarizerMeta(summary) {
   const rawTitle = titleMatch ? normalizeMetaValue(titleMatch[1]) : undefined;
   const rawDesc = descMatch ? normalizeMetaValue(descMatch[1]) : undefined;
 
-  // 白板：从 `白板：` 前缀之后一直取到正文起点，逐字保留（只裁两端空白）。
+  // 白板：从 `白板：` 前缀之后一直取到**结尾**（它是最后一段），逐字保留（只裁两端空白）。
   // 显式清空标记「（空）」⇒ value:""（允许覆盖非空旧板）；空/占位「无」⇒ 没拿到。
   /** @type {{ value: string } | { missing: "no-line" | "empty-or-placeholder" }} */
   let boardResult;
   if (!boardStart) {
     boardResult = { missing: "no-line" };
   } else {
-    const afterPrefix = summary.slice(boardStart.index + "白板：".length, bodyStart).trim();
+    const afterPrefix = summary.slice(boardStart.index + "白板：".length).trim();
     if (afterPrefix === "" || afterPrefix === "无") {
       boardResult = { missing: "empty-or-placeholder" };
     } else if (afterPrefix === "（空）") {
@@ -920,14 +923,12 @@ export function parseSummarizerMeta(summary) {
     }
   }
 
-  // body：白板**之前**那段元信息（剥掉三行前缀，通常为空）+ 各正文小节。白板自身的行落在
-  // [boardStart, bodyStart) 区间内，被下面的切片自然排除 ⇒ 白板不会漏进正文（判据 7）。
-  const preBoard = boardStart ? metaRegion.slice(0, boardStart.index) : metaRegion;
-  const preamble = preBoard
+  // body：元信息区（剥掉两行前缀，通常为空）+ 正文小节，**止于白板行之前**。
+  // 白板在末尾 ⇒ 它不会被拼进正文（判据 7），白板内部写什么都切不到正文。
+  const preamble = metaRegion
     .replace(/^标题：.*\r?\n?/m, "")
-    .replace(/^描述：.*\r?\n?/m, "")
-    .replace(/^白板：.*\r?\n?/m, "");
-  const body = `${preamble}${summary.slice(bodyStart)}`;
+    .replace(/^描述：.*\r?\n?/m, "");
+  const body = `${preamble}${summary.slice(bodyStart, bodyRegionEnd)}`;
 
   // description 按 token 夹断（issue #897：向量化单元），超了写 descriptionTruncated 标记。
   let descResult;

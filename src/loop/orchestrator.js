@@ -2610,6 +2610,21 @@ export async function runToolLoop(options) {
     set todoState(value) {
       runLoopState.todoState = value;
     },
+    // 白板（issue 261128-03）：`restoreResume` 经这对访问器把存档里的板灌回来。
+    // 没有它，`runLoopState.board` 恒为初值 `""`，随后 `refreshRunState()` 会用空板重建并保存
+    // 状态 ⇒ **续跑把白板清空**（copilot 复审判 P1 的现场）。
+    get board() {
+      return runLoopState.board;
+    },
+    set board(value) {
+      runLoopState.board = typeof value === "string" ? value : "";
+    },
+    get boardEvents() {
+      return runLoopState.boardEvents;
+    },
+    set boardEvents(value) {
+      runLoopState.boardEvents = Array.isArray(value) ? value : [];
+    },
     get judgeInterceptCount() {
       return runLoopState.judgeInterceptCount;
     },

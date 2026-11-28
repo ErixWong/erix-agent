@@ -117,9 +117,16 @@ test("#611 判据 1：新节在场、三条要求在场，且位置在「主题�
     SUMMARIZER_PROMPT_GUIDE.includes(`${CRUMBS_TITLE}\n${CRUMBS_BODY}\n${LESSONS_BLOCK}`),
     "新节必须紧跟在「主题词面包屑」正文之后（五节之后立刻是新节）",
   );
+  // 261128（白板第一刀）：`教训与坑` 之后现在还有**白板块**（整份输出的最后一段），
+  // 所以「紧接恢复提示」这条改成「后面确实跟一个空行」——空行纪律不变，中间多不多一段白板由
+  // `test/compact/fold-board-261128.test.js` 管。
   assert.ok(
-    SUMMARIZER_PROMPT_GUIDE.includes(`${LESSONS_BODY.at(-1)}\n\n${RECOVERY_LABEL}`),
-    "新节与「恢复提示：」之间必须保留空行",
+    SUMMARIZER_PROMPT_GUIDE.includes(`${LESSONS_BODY.at(-1)}\n\n`),
+    "新节之后必须保留空行",
+  );
+  assert.ok(
+    SUMMARIZER_PROMPT_GUIDE.indexOf(RECOVERY_LABEL) > SUMMARIZER_PROMPT_GUIDE.indexOf(LESSONS_BODY.at(-1)),
+    "「恢复提示：」必须在「教训与坑」之后",
   );
 });
 

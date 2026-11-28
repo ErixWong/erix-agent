@@ -14,6 +14,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
+import { createFakeProvider } from "../helpers/fake-provider.js";
+import { runDirect } from "../helpers/run-direct.js";
 import {
   RUN_STATE_BOARD_MAX_TOKENS,
   applyBoardUpdate,
@@ -23,7 +25,6 @@ import {
 } from "../../src/run-state.js";
 import { estimateTokens } from "../../src/tokens.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
-import { runDirect } from "../helpers/run-direct.js";
 
 // —— 策略级零件 ——————————————————————————————————————————————
 const BOARD_MARK = "白板唯一标记ZQ7";
@@ -42,10 +43,15 @@ function conversation() {
   ];
 }
 
-/** 造一份带新提示词四节的摘要；boardLine = `白板：` 前缀后的整块文本（null ⇒ 不给这行）。 */
+/**
+ * 造一份带新提示词四节的摘要；boardLine = `白板：` 前缀后的整块文本（null ⇒ 不给这行）。
+ *
+ * 261128 第二版：白板是**整份输出的最后一段**（copilot 复审 P2 —— 夹在正文前时，白板内部若出现
+ * `## 行动` 这类标题会被正文起点切断）。夹具因此把白板放在末尾。
+ */
 function summaryWithBoard(boardLine, { mark = BOARD_MARK } = {}) {
-  const meta = `标题：一个短标题\n描述：一句自解释描述\n${boardLine === null ? "" : `白板：${boardLine}\n`}`;
-  return `${meta}## 行动
+  const meta = `标题：一个短标题\n描述：一句自解释描述\n`;
+  const body = `## 行动
 做了 ${mark} 相关的事。
 ## 遗留
 无
@@ -53,6 +59,7 @@ function summaryWithBoard(boardLine, { mark = BOARD_MARK } = {}) {
 ${mark}
 ## 教训与坑
 无`;
+  return boardLine === null ? `${meta}${body}` : `${meta}${body}\n\n白板：${boardLine}`;
 }
 
 /** 跑一折（fold-llm），返回 foldSummary。prevBoard 走 callOptions.board（引擎的接线口径）。 */
@@ -204,4 +211,57 @@ test("判据6 跑一轮：折叠后 provider 收到的请求里含白板全文",
   assert.ok(seen.length > 1, "前置：必须跑了多轮（否则无从判断折叠后是否注入）");
   assert.ok(injected.some((h) => h.includes(E2E_BOARD)),
     "折叠后某条 provider 请求必须含白板全文");
+});
+
+// ─── copilot 复审 P2：白板内部写 `## 行动` 这类标题也不许被切断 ───────────────────
+// 旧版把白板夹在 `描述：` 与正文之间、正文起点是「第一个 `## 行动`/`## 遗留`/…」——白板内部出现
+// 这些标题时，白板被从中间切开、剩下半块漏进摘要。白板移到末尾后，分界就是白板行本身。
+test("判据9 白板内部含 `## 行动` / `## 遗留` 也不被切断（白板是最后一段）", async () => {
+  const board = [
+    "## 约束", "不要动 main。",
+    "## 行动", "这一行是**白板内部**的标题，不是摘要正文。",
+    "## 遗留", "同上。",
+    "## 当前阶段", "收尾。",
+  ].join("\n");
+  const strategy = createFoldLlmStrategy({ summarizer: async () => summaryWithBoard(board) });
+  const result = await strategy.compact(conversation(), { keepRounds: 1 });
+  assert.equal(result.foldSummary.board, board, "白板必须逐字完整（含内部的 `##` 标题）");
+  assert.equal(result.foldSummary.text.includes("这一行是**白板内部**的标题"), false,
+    "白板内容不许漏进摘要正文");
+});
+
+// ─── copilot 复审 P1：续跑**真的**把白板读回来（不是只做 JSON 往返）───────────────
+// 旧判据 8 只验 `deterministic.board` 的序列化/校验，没跑续跑。现场：`restoreResume` 恢复了
+// `currentRunState` 却没有恢复 `runLoopState.board`，orchestrator 侧仍是初值 `""`，随后的
+// `refreshRunState()` 用空板重建并保存状态 ⇒ **存档里的白板被清空**。
+test("判据10 续跑：上一跑落的白板在续跑后仍在（不是只做 JSON 往返）", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "board-resume-261128";
+  // 第一跑：正常跑一轮，把板写进 run state。
+  await runDirect({
+    provider: createFakeProvider([{ content: [{ type: "text", text: "第一跑" }], stopReason: "end_turn" }]),
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    config: { input: { wrapup: false } },
+    store,
+    runId,
+  });
+  // 手工把板写进 run state（模拟「折叠落了板」），再续跑读回。
+  const saved = await store.loadRunState(runId);
+  const state = { ...saved, deterministic: { ...saved.deterministic, board: "## 约束\n不要动 main。" } };
+  await store.saveRunState(runId, state);
+
+  const seen = [];
+  await runDirect({
+    provider: createFakeProvider([{ content: [{ type: "text", text: "续跑" }], stopReason: "end_turn" }]),
+    executeTool: async () => "unused",
+    maxRounds: 1,
+    config: { input: { wrapup: false }, run: { resume: true, runId } },
+    store,
+    onEvent: (event) => { if (event.type === "round_start") seen.push(event); },
+  });
+
+  const after = await store.loadRunState(runId);
+  assert.equal(after.deterministic.board, "## 约束\n不要动 main。",
+    "续跑不许把存档里的白板覆盖成空（copilot 复审 P1）");
 });
