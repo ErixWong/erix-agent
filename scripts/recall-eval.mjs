@@ -66,9 +66,12 @@ function readSlot(slotName) {
  * 的返回值里就带着那段原文——召回成功反而被判成「泄漏」。剔掉它们，「事实是否还需要召回才能看见」
  * 才是可测的。
  *
- * 识别方式：`recall_read` / `recall_ask` 的返回值是 JSON 字符串，带 `status` 与（前者的）`text` /
- * （后者的）`answer`；这里按 `tool_result` 块的内容形态判，不按 tool_use 名字（请求视图里 tool_result
- * 不一定带名字）。
+ * 识别方式（261128 第二版）：按 `tool_use` 的 **id → 工具名** 认。第一版按结果正文的形态猜
+ * （找 `"status"` / `"answer"` / `"text"`），而 `recall_read` 的 pattern 模式返回
+ * `{status, pattern, matches[]}`、round 模式返回 `{status, text}` —— 形状各异，按正文猜必漏判
+ * （实测两条召回结果只剔掉一条，事实仍可见 ⇒ 这一格假红）。
+ * 为什么按 id 可靠：请求视图校验要求每个 `tool_result` 与相邻的 `tool_use` 配对，TTL 折叠保留配对
+ * ⇒「结果还在、调用块已被折掉」不可达（copilot 复审确认）。
  */
 function withoutRecallToolResults(request) {
   const messages = request?.messages;
@@ -207,7 +210,9 @@ function codeList(n, topic, burial) {
     // 要答对就必须回账本捞 —— 这才是「判读过大文件之后要回忆」的真实场景。
     const planted = burial !== undefined && burial.round === n && burial.index === index
       ? ` // ${burial.marker}`
-      : "";
+      : (burial !== undefined && burial.round === n && burial.secondIndex === index
+        ? ` // ${burial.secondMarker}`
+        : "");
     return `${module}:${seq}  // ${topic}·第${n}轮快照 export ${module.split("/").pop().replace(".ts", "")}Handler`
       + `(input: { id: string; retries: number }) → { ok: boolean; seq: ${seq} }${planted}`;
   });
@@ -236,7 +241,9 @@ const scenarios = [
     rounds: [
       ["压测环境先对齐：三台 4C8G，数据量 1200 万行。", "环境参数已登记。"],
       ["第 1 次实验跑完，p95 是 318ms，作为基准。", "第 1 次基准 p95=318ms 已记录。"],
-      ["第 3 次实验结果出来了：p95 是 412ms，比基准差，先别改代码，查索引。", "第 3 次实验 p95=412ms 已记录，先查索引再动代码。"],
+      // copilot 复审（PR #985）：这一句原来写着 412ms —— 与埋点重复，于是 B 组即使第 2 轮被折掉，
+      // 也能从第 3 轮读到答案，对照就塌了。事实必须**唯一来源**。
+      ["第 3 次实验结果比基准差，先别改代码，查索引。", "第 3 次实验结论已记录，先查索引再动代码。"],
       ["索引确实缺了，加复合索引的 PR 我开好了。", "去看 PR，今天合。"],
       ["加完索引复测排到明天上午。", "复测排明天上午。"],
       ["看板加了 p95 分位数面板。", "面板已上线。"],
@@ -261,8 +268,14 @@ const scenarios = [
     question: "第 2 轮那份模块清单里标出的 schema 文件路径是什么？请逐字给出路径。",
   },
   {
-    id: 4, name: "两跳（A 指向 B）", fact: "obs-trace",
-    burial: { round: 2, index: 23, marker: "handoff-owner=obs-trace" },
+    // copilot 复审（PR #985）：上一版直接把答案写成 `handoff-owner=obs-trace`，那就不是两跳了。
+    // 恢复真两跳：埋点只给**指针**（`handoff-owner-ref=OWNER-7`），值在**另一条**里
+    // （`OWNER-7 → 张启明`），模型要先把两条对上才答得出。
+    id: 4, name: "两跳（A 指向 B）", fact: "张启明",
+    burial: {
+      round: 2, index: 23, marker: "handoff-owner-ref=OWNER-7",
+      secondIndex: 27, secondMarker: "OWNER-7 → 张启明（交接责任人）",
+    },
     rounds: [
       ["密钥策略定了：不进代码库，放在一个 YAML 文件里。具体路径我登记在后面某轮，这里先不写。", "好，密钥走 YAML 文件，路径以登记那条为准。"],
       ["部署脚本改从环境变量注入路径。", "脚本已改环境变量注入。"],
@@ -276,8 +289,10 @@ const scenarios = [
     question: "第 2 轮那份模块清单里标出的交接责任人（handoff-owner）是谁？请逐字给出。",
   },
   {
+    // copilot 复审（PR #985）：上一版直接问 `retry-forbidden` 的字段值，那不是「否定推理」，
+    // 只是读字段。恢复否定语义：清单里写着**禁止**用某方案及理由，题目问「为什么不用」。
     id: 5, name: "否定事实", fact: "no-retry-on-4xx",
-    burial: { round: 2, index: 29, marker: "retry-forbidden=no-retry-on-4xx" },
+    burial: { round: 2, index: 29, marker: "retry-forbidden=no-retry-on-4xx（4xx 是客户端错，重试只会放大故障）" },
     rounds: [
       ["依赖治理开始：先列候选库清单。", "清单已建。"],
       ["决定：不要用 lodash，原因是它整包进 bundle，造成重复打包、体积膨胀。替代用原生方法。", "记住了：禁用 lodash，原因是重复打包导致体积膨胀。"],
@@ -288,7 +303,7 @@ const scenarios = [
       ["前端周会加一条体积议题。", "议程已加。"],
       ["下个迭代排依赖升级。", "已排入下个迭代。"],
     ],
-    question: "第 2 轮那份模块清单里标出的重试禁令（retry-forbidden）取值是什么？请逐字给出。",
+    question: "第 2 轮那份模块清单里写明**禁止**在 4xx 上重试，禁令的取值与给出的理由是什么？请逐字给出那个取值。",
   },
   {
     id: 6, name: "干扰项（相似但错误）", fact: "tok-7f3a",
@@ -515,10 +530,18 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
     console.log(`   [debug] 事实仍可见，上下文：…${probe.slice(Math.max(0, at - 120), at + 80)}…`);
   }
 
+  // 取消资格（copilot 复审 PR #985）：B 组若「折叠后不召回仍看得见事实」，这一格**测不出召回**
+  // （模型可能从摘要/别处直接读到），不能算进对照。旧版只把它当一条观测打印，于是泄漏场景照样参与
+  // 正确率比较 —— 那会让 B 组看起来比实际好。
+  const disqualified = group === "B" && foldIdx !== -1 && factAfterFold === false
+    ? "fact_visible_after_fold_without_recall"
+    : null;
+
   return {
     scenario: scenario.id,
     name: scenario.name,
     group,
+    disqualified,
     runId,
     seedRounds,
     rounds: runResult?.rounds ?? null,
@@ -573,6 +596,9 @@ for (const s of wantScenarios) {
     process.stdout.write(`▶ 场景 ${s}（${scenario.name}）组 ${g} … `);
     const r = await runOne({ scenario, group: g, slot: slotInfo.slot, fake: cli.fake, maxRounds });
     results.push(r);
+    if (r.disqualified !== null) {
+      console.log(`   ⚠ 取消资格（${r.disqualified}）：这一格测不出召回，不计入汇总`);
+    }
     console.log(
       `rounds=${r.rounds} termination=${r.termination} correct=${r.correct} recallCalls=${r.recallToolCalls} `
       + `refs=${r.evidenceRefFound}/${r.evidenceRefsReturned} shadow=${r.shadowAsFact} folded=${r.folded} `
@@ -589,6 +615,26 @@ for (const r of results) {
   for (const k of Object.values(r.usageByKind)) { totals.input += k.input; totals.output += k.output; }
   totals.wallMs += r.wallMs;
 }
-console.log(`\n总量：model=${totals.model} ↑${totals.input} ↓${totals.output} 墙钟=${totals.wallMs}ms fake=${cli.fake}`);
-writeFileSync(cli.out, JSON.stringify({ slot: slotInfo.slot.model, fake: cli.fake, totals, results }, null, 2));
+// 汇总：**排除被取消资格的场景**（它们测不出召回，算进去会让 B 组虚高）。
+const counted = results.filter((r) => r.disqualified === null);
+const summary = {
+  counted: counted.length,
+  disqualified: results.length - counted.length,
+  correct: counted.filter((r) => r.correct).length,
+  byGroup: Object.fromEntries([...new Set(results.map((r) => r.group))].map((g) => {
+    const rows = counted.filter((r) => r.group === g);
+    return [g, {
+      scenarios: rows.length,
+      correct: rows.filter((r) => r.correct).length,
+      recallCalls: rows.reduce((sum, r) => sum + r.recallToolCalls, 0),
+      inputTokens: rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0),
+    }];
+  })),
+};
+console.log(`\n汇总（已排除 ${summary.disqualified} 个取消资格的场景）：`
+  + Object.entries(summary.byGroup)
+    .map(([g, v]) => `${g} ${v.correct}/${v.scenarios} 召回 ${v.recallCalls} 次 ↑${v.inputTokens}`)
+    .join("｜"));
+console.log(`总量：model=${totals.model} ↑${totals.input} ↓${totals.output} 墙钟=${totals.wallMs}ms fake=${cli.fake}`);
+writeFileSync(cli.out, JSON.stringify({ slot: slotInfo.slot.model, fake: cli.fake, totals, summary, results }, null, 2));
 console.log(`结果 JSON：${cli.out}`);
