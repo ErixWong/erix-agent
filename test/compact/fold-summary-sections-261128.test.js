@@ -107,4 +107,14 @@ test("#261128-05-5 位置纪律：三节之后是白板段，恢复提示在最�
   }
   const recoveryAt = guide.indexOf("恢复提示：");
   assert.equal(guide[recoveryAt - 2], "\n", "「恢复提示：」之前必须有一个空行");
+  // 而且它必须是**最后一段折叠内容**：后面紧跟占位符与空行，再往后只剩机械保真层的留痕规则
+  // （那一层由引擎追加，不是模型写的正文）。若有人在它之后又插一节，模型会把新节写进提示行后面，
+  // `withRecoveryHint` 的 `includes` 幂等检查就再也不是「整段已经带过」了。
+  // `SUMMARIZER_PROMPT_GUIDE` 是**渲染过**的（`${hint}` 已替换），所以判据按结构写：
+  // 恢复提示之后再没有任何 `##` 标题，且后面只剩机械保真层那段留痕规则。
+  const after = guide.slice(recoveryAt);
+  assert.equal(after.includes("## "), false,
+    `「恢复提示：」之后不许再有节标题，实测 ${JSON.stringify(after.slice(0, 80))}`);
+  assert.ok(after.includes("历史工具结果留痕规则："),
+    "「恢复提示：」之后应当只剩机械保真层的留痕规则");
 });

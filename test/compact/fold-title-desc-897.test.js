@@ -52,7 +52,11 @@ function summaryWithoutMeta() {
 ## 遗留
 已完成项禁止重做。
 ## 关键词
-897 title fallback`;
+897 title fallback
+
+白板：
+## 约束
+无`;
 }
 
 /** fake provider：主循环用工具轮撑上下文；识别摘要请求（含 promptGuide 首句）返回指定正文。 */
