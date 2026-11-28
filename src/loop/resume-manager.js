@@ -498,6 +498,13 @@ export async function restoreResume(ctx) {
       ? deterministic.filesWritten.map((path) => ({ path }))
       : [];
     ctx.todoState = deterministic.todo;
+    // 白板（`runs.board`，issue 261128-03）：**必须跨 resume 恢复**。它是「本 run 现状」的整块
+    // 文本，不是本次预算类状态 —— 与 `guardExtension` / `contextWindowRecovery` 同一条纪律
+    // （跟这个 run 走完）。不恢复的话 orchestrator 侧仍初始化为 `""`，随后的
+    // `refreshRunState()` 会拿这个空值重建并保存状态 ⇒ **把存档里的白板覆盖成空**（copilot 复审
+    // 判 P1 的现场）。旧档没有这一格（增量字段）⇒ 读成空串，与今天的 run 等价。
+    ctx.board = typeof deterministic.board === "string" ? deterministic.board : "";
+    ctx.boardEvents = Array.isArray(deterministic.boardEvents) ? deterministic.boardEvents : [];
     ctx.semanticState = restored.semantic;
   };
 

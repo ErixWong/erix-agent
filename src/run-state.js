@@ -6,6 +6,8 @@ import {
 // issue #548: the pairing predicate has exactly one home (`src/loop/pending-tool-result.js`,
 // `#394`); this file only reads it through the shared read-side entry.
 import { pendingTailToolUses } from "./loop/pending-tool-result.js";
+// 白板长度上限用与摘要预算同一把尺子（issue：不许自己写字符数换算）。
+import { estimateTokens } from "./tokens.js";
 
 const MAX_RENDERED_CHARS = 1600;
 // 序列化超限时的第二道压缩把 compactionStats 再切成最后 8 条（体积约束），窗口账要跟着改口。
@@ -18,6 +20,14 @@ export const RUN_STATE_MAX_TODO_ENTRIES = 64;
 export const RUN_STATE_MAX_FIELD_CHARS = 120;
 /** `last=` 一格的字符上界（issue #608）：与 `tools=` 一格同量级，~10 token 的成本承诺。 */
 export const RUN_STATE_MAX_LAST_TOOL_CHARS = 60;
+/**
+ * 白板（`runs.board`）的 token 上限：与折叠摘要预算同一把尺子（`estimateTokens`）。
+ * 超了 ⇒ 拒收新板（不静默截断）；旧板非空时的空板覆盖同样拒收（§3.7）。
+ */
+export const RUN_STATE_BOARD_MAX_TOKENS = 1500;
+/** 白板注入进上下文的**独立**预算上限（与会话状态块的 `MAX_RENDERED_CHARS` 分开算）。 */
+export const RUN_STATE_BOARD_MAX_RENDER_CHARS = 6000;
+const BOARD_MARKER = "[白板 runs.board｜本 run 现状・整块]";
 const DETERMINISTIC_MARKER = "[run state deterministic v1]";
 const SEMANTIC_MARKER = "[run state semantic derived]";
 const END_MARKER = "[/run state]";
@@ -355,6 +365,13 @@ export function boundRunState(state) {
         ? {}
         : { lastToolCall: deterministic.lastToolCall }),
       fold: deterministic.fold ?? {},
+      // 白板与 `guardExtension` 同一条纪律：最后一级体积兜底也不许丢（丢了 = 现状静默消失）。
+      ...(typeof deterministic.board === "string" && deterministic.board !== ""
+        ? { board: deterministic.board }
+        : {}),
+      ...(Array.isArray(deterministic.boardEvents) && deterministic.boardEvents.length > 0
+        ? { boardEvents: deterministic.boardEvents.slice(-8) }
+        : {}),
       compactionStats: deterministic.compactionStats ?? [],
       ...(deterministic.compactionStatsWindow === undefined
         ? {}
@@ -551,6 +568,10 @@ export function createDeterministicRunState({
   // 唯一落盘面。
   storeFoldsChannelAbsent = false,
   storeFoldsChannelWriteFailed = false,
+  // 白板（第一刀）：`board` = 本 run 现状整块（已经过 `applyBoardUpdate` 定值，未再变）；
+  // `boardEvents` = 拒收审计（`board_rejected` 事件列表）。两者缺席 ⇒ 不写键（旧 run 逐字不变）。
+  board,
+  boardEvents,
 } = {}) {
   const safeRounds = safeInteger(rounds);
   // 双计数器（issue #32 #8）：rounds = 会话累计身份轮号（跨 resume 单调递增）；
@@ -589,6 +610,16 @@ export function createDeterministicRunState({
         foldedRounds: safeInteger(foldedRounds),
         navigationRecords: safeInteger(navigationRecords),
       },
+      // 白板（第一刀）：只在真非空且在限内时写（「无事实不写键」：显式清空 / 从未有板
+      // ⇒ 键缺席 = 无板）。防御性再过一次上限：>1500 token 的板不写（宁可当没板，
+      // 也不静默塑进上下文）。
+      ...(typeof board === "string" && board !== ""
+        && estimateTokens(board) <= RUN_STATE_BOARD_MAX_TOKENS
+        ? { board }
+        : {}),
+      ...(Array.isArray(boardEvents) && boardEvents.length > 0
+        ? { boardEvents: boardEvents.slice(-8) }
+        : {}),
       compactionStats: persistedCompactionStats,
       // 只在本次 run 真的产出过统计时出现：0 条没有可截断的东西，缺席不是歧义
       // （旧版本落的 state 也没这个字段，读侧必须放过）。
@@ -635,6 +666,45 @@ export function createDeterministicRunState({
 export function withSemanticRunState(state, semantic) {
   const normalized = normalizeSemantic(semantic, state?.stateVersion ?? 0);
   return boundRunState({ ...state, semantic: normalized });
+}
+
+/**
+ * 白板落地的**权威闸**（§3.7）：与上层 `fold-llm#decideBoard` 同一口径，但这一层是持久化前的
+ * 最后一道，任何调用方都绕不过。返回 `{ board, rejected, event }`：
+ *   · `board` = 要写进 `deterministic.board` 的最终值（拒收时为旧值）；
+ *   · `rejected` / `event` = 仅在真拒收时在场（`board_rejected` 事件，理由进 `detail`）。
+ * 没给（`board === undefined`）⇒ 保持旧值、不记事件（一个没提，一个有病）。
+ *
+ * @param {any} state 当前 run state（读 `deterministic.board` 作旧值）
+ * @param {{ board?: string, boardMissing?: string, boardRejected?: string }} [patch]
+ * @returns {{ board: string, rejected?: "over-limit" | "empty-over-nonempty", event?: { type: string, detail: string } }}
+ */
+export function applyBoardUpdate(state, { board, boardRejected } = {}) {
+  const prev = typeof state?.deterministic?.board === "string" ? state.deterministic.board : "";
+  if (boardRejected === "over-limit" || boardRejected === "empty-over-nonempty") {
+    return { board: prev, rejected: boardRejected, event: { type: "board_rejected", detail: boardRejected } };
+  }
+  if (board === undefined) return { board: prev };
+  // 显式清空（`（空）` 标记解析成空串）⇒ 允许清空，哪怕旧板非空。
+  if (board === "") return { board: "" };
+  if (estimateTokens(board) > RUN_STATE_BOARD_MAX_TOKENS) {
+    return { board: prev, rejected: "over-limit", event: { type: "board_rejected", detail: "over-limit" } };
+  }
+  return { board };
+}
+
+/**
+ * 把白板渲染成**独立一段**（每轮整块注入进上下文）。与会话状态块分开算预算；
+ * 无板（空 / 从未有）⇒ 空串（不注空段）。长度用 `estimateTokens` 同一把尺子卡的，
+ * 渲染时再按字符上限兼一下（双保险，实际白板本应 ≤ {@link RUN_STATE_BOARD_MAX_TOKENS}）。
+ *
+ * @param {any} state
+ * @returns {string}
+ */
+export function renderRunStateBoard(state) {
+  const board = state?.deterministic?.board;
+  if (typeof board !== "string" || board === "") return "";
+  return `${BOARD_MARKER}\n${boundedMultilineText(board, RUN_STATE_BOARD_MAX_RENDER_CHARS)}`;
 }
 
 export function renderRunState(state) {
@@ -705,7 +775,13 @@ export function renderRunState(state) {
   // 闭合标记必须存活：若把它当作 lines 的最后一行，超预算时会被截掉，
   // upsertRunStateInMessages 的替换正则（要求 END_MARKER 收尾）就匹配不到旧块。
   // 为它预留空间、渲染后永远追加。
-  return `${renderLines(lines, MAX_RENDERED_CHARS - END_MARKER.length - 1)}\n${END_MARKER}`;
+  // 白板整块注入：走**独立**预算（不挤占确定性块的 1600 字符），且刻意留在
+  // DETERMINISTIC_MARKER..END_MARKER 这一段之内 ⇒ `upsertRunStateInMessages` 每轮整块替换它，
+  // 不会在持久消息里堆叠出多份白板。
+  const boardBlock = renderRunStateBoard(state);
+  const core = renderLines(lines, MAX_RENDERED_CHARS - END_MARKER.length - 1);
+  const withBoard = boardBlock === "" ? core : `${core}\n${boardBlock}`;
+  return `${withBoard}\n${END_MARKER}`;
 }
 
 function runStateBlockPattern() {

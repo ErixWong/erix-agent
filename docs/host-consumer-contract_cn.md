@@ -5219,6 +5219,7 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 | `compaction` | `fact` | 不可删 | 「这一轮真的压了一下」就是那个事实。 |
 | `compaction_deferred` | `fact` | 不可删 | 压缩被拖延了 —— 没有任何 durable 处记下这次拖延。 |
 | `compaction_strategy_fallback` | `fact` | 不可删 | 压缩降级到了哪个策略 —— 同上：唯一副本。 |
+| `board_rejected` | `fact` | 不可删 | 新白板被拒收（超 1500 token / 空板覆盖非空板）、白板保持旧值 —— 「这一折的白板被丢了、不是静默截断」的唯一记录。 |
 | `final_guard` | `fact` | 不可删 | 本 run 的核验结论（见核验那节；`guard_error` / `unverified_error` 的 run 恰恰是宿主会重审的那批）。 |
 | `final_guard_extend` | `fact` | 不可删 | 扩轮请求与它的结果。 |
 | `forced_final` | `fact` | 不可删 | 收尾阶段强迫交卷，它是终止故事的一部分。 |

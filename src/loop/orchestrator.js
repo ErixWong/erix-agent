@@ -92,6 +92,7 @@ import {
   advanceLastToolCall,
   resetLastToolCallStreak,
   createDeterministicRunState,
+  applyBoardUpdate,
   measureRunStateMeta,
   renderRunState,
   upsertRunStateInMessages,
@@ -494,7 +495,7 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"compaction_strategy_fallback"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"resume_input_dropped"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"compaction_strategy_fallback"|"board_rejected"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"store_folds_channel_absent"|"resume_journal_skipped"|"resume_input_dropped"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"final_text_textualized_tool_call"|"deliverable_blind"|"run_outcome"} type
  * @property {number} [round]
  * @property {string[]} [fields] issue #261127-17（additive）：`resume_input_dropped` 专用——这次续跑
  *   被丢掉的调用方输入字段名（`initialUserMessage` / `initialMessages`）。续跑只认账本，这些字段本来
@@ -1135,7 +1136,7 @@ export async function runToolLoop(options) {
   // 已初始化不改变可观察行为；其余声明（含 `emitEvent` 在 `notifyModelMetadataMissing` 下方
   // 这个次序）一行没动。
   // 【C resume 尾队列】`resumePendingTools` / `resumeTailMessages` 与 `resumeTranscriptStart`。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeUnledgeredToolResults: any[], resumeTailMessages: any[], resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, roundRunStateInject: { lowBudget: boolean, request: boolean, persist: boolean, remainingRounds: number, injections: number }|undefined, deliverableBlindEmitted: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeUnledgeredToolResults: any[], resumeTailMessages: any[], resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, roundRunStateInject: { lowBudget: boolean, request: boolean, persist: boolean, remainingRounds: number, injections: number }|undefined, deliverableBlindEmitted: boolean, foldedRoundCount: number, navigationRecordCount: number, board: string, boardEvents: { type: string, detail: string, round: number }[], lowBudgetPrompted: boolean, toolErrorCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -1221,6 +1222,9 @@ export async function runToolLoop(options) {
     //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：7 / 7 行，全部在声明之后），提先初始化不可观察。
     foldedRoundCount: 0,
     navigationRecordCount: 0,
+    // 白板（第一刀）：本 run 现状整块 + 拒收审计。初值 = 无板（空串）/ 无事件（不注入、不落盘）。
+    board: "",
+    boardEvents: /** @type {{ type: string, detail: string, round: number }[]} */ ([]),
     lowBudgetPrompted: false,
     toolErrorCount: 0,
     // issue #386 切片 3：**单轮聚合输出预算**是否已经撞过线（本 run 内一旦为真就不再复位）。
@@ -2606,6 +2610,21 @@ export async function runToolLoop(options) {
     set todoState(value) {
       runLoopState.todoState = value;
     },
+    // 白板（issue 261128-03）：`restoreResume` 经这对访问器把存档里的板灌回来。
+    // 没有它，`runLoopState.board` 恒为初值 `""`，随后 `refreshRunState()` 会用空板重建并保存
+    // 状态 ⇒ **续跑把白板清空**（copilot 复审判 P1 的现场）。
+    get board() {
+      return runLoopState.board;
+    },
+    set board(value) {
+      runLoopState.board = typeof value === "string" ? value : "";
+    },
+    get boardEvents() {
+      return runLoopState.boardEvents;
+    },
+    set boardEvents(value) {
+      runLoopState.boardEvents = Array.isArray(value) ? value : [];
+    },
     get judgeInterceptCount() {
       return runLoopState.judgeInterceptCount;
     },
@@ -3634,6 +3653,9 @@ export async function runToolLoop(options) {
       // issue #971 ④：折叠通道缺失的降级事实随 run-state 落盘（无 listener 时仍可事后查，不静默）。
       storeFoldsChannelAbsent: governorState.storeFoldsChannelAbsent,
       storeFoldsChannelWriteFailed: governorState.storeFoldsChannelWriteFailed,
+      // 白板（第一刀）：本 run 现状整块 + 拒收审计随 run-state 落盘（每轮整块注入、resume 可读回）。
+      board: runLoopState.board,
+      boardEvents: runLoopState.boardEvents,
     });
     if (semantic && typeof semanticStateProvider === "function") {
       try {
@@ -4466,6 +4488,12 @@ export async function runToolLoop(options) {
         value: noteToolSurface,
       });
       if (runLoopState.foldedThrough > 0) compactOptions.roundOffset = runLoopState.foldedThrough;
+      // 白板：把当前现状整块递下去（`fold-llm#decideBoard` 用它判「空板覆盖非空板」）。非枚举：
+      // 宿主策略看到的选项键面逐字不变（与 `roundNumbers` / `foldRecords` 同口径）。
+      Object.defineProperty(compactOptions, "board", {
+        enumerable: false,
+        value: runLoopState.board,
+      });
       Object.defineProperty(compactOptions, "onLayer", {
         enumerable: false,
         value: ({
@@ -4553,6 +4581,25 @@ export async function runToolLoop(options) {
           source: "strategy",
           strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
         };
+      }
+      // 白板（第一刀）：把本折的 board 决策落进 run 状态。`boardRejected` ⇒ 保留旧板 +
+      // 记一条 `board_rejected` 事件；`board`（含显式清空的空串）⇒ 整块覆盖；`boardMissing`
+      //（没提）⇒ 不动不记。决策与持久化层的 `applyBoardUpdate` 同一口径（双保险）。
+      if (strategyFoldSummary?.board !== undefined
+        || strategyFoldSummary?.boardRejected !== undefined) {
+        const boardUpdate = applyBoardUpdate(
+          { deterministic: { board: runLoopState.board } },
+          {
+            board: strategyFoldSummary.board,
+            boardRejected: strategyFoldSummary.boardRejected,
+          },
+        );
+        runLoopState.board = boardUpdate.board;
+        if (boardUpdate.event !== undefined) {
+          runLoopState.boardEvents.push({ ...boardUpdate.event, round });
+          // `type` 写成字面量（事件扫描器要求发射点有顶层 `type: "…"` 字面量），`detail` 取判定结果。
+          emitEvent({ type: "board_rejected", detail: boardUpdate.event.detail, round });
+        }
       }
       // issue #657：**策略这一折折了几轮**（入口选中的那个策略实例自己报的，兜底那一发之前）。
       // 单独留一份是因为 `foldedRounds` 随后会被兜底加上去——而「谁真干了活」要分两层看。
