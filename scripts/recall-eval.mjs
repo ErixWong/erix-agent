@@ -183,13 +183,18 @@ function codeList(n, topic, burial) {
     // 事实**埋进清单的某一条**（261128）：埋在一句显眼的话里，摘要会照抄 ⇒ 折叠后模型不靠 recall
     // 也能答，测不出 recall 的价值。埋进 40 条机器清单的中间，摘要（≤200 token）抄不下来，
     // 要答对就必须回账本捞 —— 这才是「判读过大文件之后要回忆」的真实场景。
+    // 261128 第二版（copilot 复审）：第一版只把埋点改成 `kv[N]=值`，可**其余 39 行没有 kv 段**
+    // ⇒ 它仍是清单里唯一一条 `kv[…]`，照样扎眼（「与另外 39 条一样无聊」当时是假话）。现在每一行
+    // 都在同一个位置带一段 `kv[<200+i>]=<值>`，埋点那条（`kv[9]` … `kv[41]`）在形状、位置、长度上
+    // 与它们同级；唯一的区别是**值**，而那正是要考的东西。填充段编号取 200 以上，与埋点号段
+    // （9–41）不相交 ⇒ 不会出现两条同名 `kv[N]`。
     const planted = burial !== undefined && burial.round === n && burial.index === index
-      ? ` // ${burial.marker}`
+      ? burial.marker
       : (burial !== undefined && burial.round === n && burial.secondIndex === index
-        ? ` // ${burial.secondMarker}`
-        : "");
-    return `${module}:${seq}  // ${topic}·第${n}轮快照 export ${module.split("/").pop().replace(".ts", "")}Handler`
-      + `(input: { id: string; retries: number }) → { ok: boolean; seq: ${seq} }${planted}`;
+        ? burial.secondMarker
+        : `kv[${200 + index}]=${["ok", "off", "4", "1.5", "auto", "true", "3"][index % 7]}`);
+    return `${module}:${seq}  // ${topic}·第${n}轮快照 ${planted} export ${module.split("/").pop().replace(".ts", "")}Handler`
+      + `(input: { id: string; retries: number }) → { ok: boolean; seq: ${seq} }`;
   });
   return `[第${n}轮·${topic}] 读了一遍模块清单（${String(modules.length)} 个文件）：\n${lines.join("\n")}`;
 }
@@ -249,7 +254,7 @@ const scenarios = [
     id: 4, name: "两跳（A 指向 B）", fact: "张启明",
     burial: {
       round: 2, index: 23, marker: "kv[9]=OWNER-7",
-      secondIndex: 27, secondMarker: "kv[37]=张启明",
+      secondIndex: 27, secondMarker: "kv[37]=OWNER-7 → 张启明",
     },
     rounds: [
       ["密钥策略定了：不进代码库，放在一个 YAML 文件里。具体路径我登记在后面某轮，这里先不写。", "好，密钥走 YAML 文件，路径以登记那条为准。"],
