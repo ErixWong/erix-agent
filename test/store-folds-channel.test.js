@@ -126,7 +126,7 @@ test("判据4a：落盘的是九列 —— buildFoldedFacts 的退役键一个�
 test("判据4b：列集合恰好是九列+幂等键；旧形状由 mergeFoldRecords 在边界上重建", async () => {
   assert.deepEqual(
     [...FOLD_RECORD_COLUMNS].sort(),
-    ["createdAt", "cutMsgSeq", "cutRound", "description", "foldId", "runId", "seq", "title", "tokensAfter", "tokensBefore"],
+    ["createdAt", "cutMsgSeq", "cutRound", "description", "foldId", "fromRound", "rounds", "runId", "seq", "title", "tokensAfter", "tokensBefore"],
   );
   const store = createMemoryTranscriptStore();
   const facts = richFacts();
@@ -145,7 +145,8 @@ test("判据4b：列集合恰好是九列+幂等键；旧形状由 mergeFoldReco
   }
   // **第一折的 `from` 是 0**（水位起点，是定义不是猜）：缺了它 `foldRecordSegments` 会整份账本
   // 放弃、退回解析块 ⇒ resume 之后统计折读法静默退化（copilot 复审 #993 ①）。
-  assert.equal(merged.from, 0);
+  // 第一折覆盖第 1..7 轮（`from` 是闭区间左端，不是水位）⇒ from=1、rounds=7
+  assert.equal(merged.from, 1);
   assert.equal(merged.to, 7);
   assert.equal(merged.rounds, 7);
   // **`increment.text` 是单折正文**（`foldRecordSegments` 把它当 detailText 用）；父键 `text` 是
@@ -164,9 +165,9 @@ test("判据4b：列集合恰好是九列+幂等键；旧形状由 mergeFoldReco
   assert.equal(two.length, 2);
   assert.equal(two[1].text, `${f1.summary}\n\n第二折正文`, "父键 text 是累计拼接");
   assert.equal(two[1].increment.text, "第二折正文", "increment.text 是单折正文，不是累计");
-  assert.equal(two[1].from, 3);
+  assert.equal(two[1].from, 4, "第二折覆盖第 4..9 轮（上一折切点 3 + 1）");
   assert.equal(two[1].to, 9);
-  assert.equal(two[0].from, 0, "第一折的 from 是水位起点 0");
+  assert.equal(two[0].from, 1, "第一折覆盖第 1..3 轮");
   // 旧 transcript（通道里是旧形状行）仍要能合并——迁移期两种行并存是常态。
   const legacy = richFacts();
   assert.ok(legacy !== undefined);

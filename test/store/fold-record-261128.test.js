@@ -38,7 +38,8 @@ function realFacts(override = {}) {
     origin: "semantic",
     summary: "## 行动\n改了 fold-record.js\n## 遗留\n接线\n## 关键词\n九列",
     incrementText: "本折自己那一份增量正文",
-    roundRange: { from: 2, to: 5 },
+    // 与判据 6 的  自洽：上一折折到第 2 轮 ⇒ 本折从第 3 轮起。
+    roundRange: { from: 3, to: 5 },
     rounds: 4,
     fingerprint: "fp-261128",
     foldId: "fold-261128",
@@ -70,7 +71,7 @@ test("261128-09 判据1: 输入是 buildFoldedFacts 真跑出的对象（单次 
   const union = new Set([...Object.keys(semantic), ...Object.keys(dropped), ...Object.keys(fallback)]);
   // FOLD_RECORD_COLUMNS 现在是九列持久化形状（10 项），不再是 buildFoldedFacts 的键并集（21 项）。
   // buildFoldedFacts 是引擎边界的旧形状；新列集合是存储形状。
-  assert.equal(FOLD_RECORD_COLUMNS.size, 10, "九列 + 幂等键 = 10 项");
+  assert.equal(FOLD_RECORD_COLUMNS.size, 12, "九列 + 幂等键 + 区间两列（fromRound/rounds）= 12 项");
   // buildFoldedFacts 产出的键并集（旧形状）应多于新列集合
   assert.ok(union.size > FOLD_RECORD_COLUMNS.size, "旧形状键并集应多于九列存储形状");
   // 验证 toFoldRecord 产出是 FOLD_RECORD_COLUMNS 的子集
@@ -156,13 +157,15 @@ test("261128-09 判据5: 既无 summary 又无 text ⇒ TypeError（description 
   assert.equal(toFoldRecord(withIncrement).description, "本折增量正文");
 });
 
-test("261128-09 判据6: 往返 —— fromFoldRecords([toFoldRecord(f, …)], {previousCutRound:2}) 得 from: 2, to: 5", () => {
+test("261128-09 判据6: 往返 —— fromFoldRecords([toFoldRecord(f, …)], {previousCutRound:2}) 得 from: 3, to: 5", () => {
   const facts = /** @type {Record<string, unknown>} */ (realFacts());
+  // 夹具自洽：源事实的 `roundRange` 是 {from:3,to:5}（`previousCutRound:2` ⇒ 本折从第 3 轮起）。
+  // 261128-13：`from` 优先取列值 `fromRound`；列缺席才退回「上一折切点 + 1」。
   const back = fromFoldRecords(
-    [toFoldRecord(facts, { cutRound: 5, cutMsgSeq: 9 })],
+    [toFoldRecord(facts, { cutRound: 5, cutMsgSeq: 9, fromRound: 3, rounds: 3 })],
     { previousCutRound: 2, source: "llm", strategy: "fold-llm" },
   );
-  assert.equal(back.from, 2);
+  assert.equal(back.from, 3);
   assert.equal(back.to, 5);
   assert.equal(back.rounds, 3);
   assert.equal(back.foldId, "fold-261128");
@@ -181,7 +184,7 @@ test("261128-09 判据6b: fromFoldRecords 的键集合恰好 = 契约面里能�
   );
   assert.deepEqual(
     Object.keys(back).sort(),
-    ["bytes", "foldId", "from", "rounds", "seq", "source", "strategy", "text", "to"],
+    ["bytes", "foldId", "from", "rounds", "seq", "source", "strategy", "text", "title", "to"],
   );
   assert.equal(back.bytes, Buffer.byteLength(/** @type {string} */ (back.text), "utf8"));
   // ① 来源/策略不给 ⇒ 缺席，不猜（写死就是给统计折贴 LLM 标签）。
@@ -195,7 +198,7 @@ test("261128-09 判据6b: fromFoldRecords 的键集合恰好 = 契约面里能�
   ], { previousCutRound: 2 });
   assert.equal(two.text, `${facts.summary}\n\n第二折正文`, "累计 text 必须按 seq 拼接各折 description");
   assert.equal(two.to, 5);
-  assert.equal(two.from, 2);
+  assert.equal(two.from, 3, "from = 上一折切点 + 1");
   // 上一折切点拿不到 ⇒ from / rounds 缺席，不猜 0。
   const noPrev = fromFoldRecords([toFoldRecord(facts)], {});
   assert.equal("from" in noPrev, false);

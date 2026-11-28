@@ -17,12 +17,12 @@ import { tmpdir } from "node:os";
 
 // ========== 判据 1：FOLD_RECORD_COLUMNS 恰好十项 ==========
 
-test("判据1: FOLD_RECORD_COLUMNS 恰好是九列+幂等键的十项", () => {
+test("判据1: FOLD_RECORD_COLUMNS 恰好是九列+幂等键+区间两列的十二项", () => {
   const expected = [
-    "runId", "seq", "foldId", "cutRound", "cutMsgSeq",
+    "runId", "seq", "foldId", "cutRound", "cutMsgSeq", "fromRound", "rounds",
     "title", "description", "tokensBefore", "tokensAfter", "createdAt",
   ];
-  assert.equal(FOLD_RECORD_COLUMNS.size, 10);
+  assert.equal(FOLD_RECORD_COLUMNS.size, 12);
   for (const col of expected) {
     assert.ok(FOLD_RECORD_COLUMNS.has(col), `缺少列: ${col}`);
   }
@@ -222,7 +222,7 @@ test("261128-11 判据9: 重建的旧形状能被 foldRecordSegments 读（from/
     assert.equal(Number.isSafeInteger(fact.from), true, `第 ${i + 1} 折缺 from ⇒ 读侧会整份放弃`);
     assert.equal(Number.isSafeInteger(fact.to), true, `第 ${i + 1} 折缺 to ⇒ 读侧会整份放弃`);
   }
-  assert.equal(facts[0].from, 0, "第一折的 from 是水位起点 0（定义，不是猜）");
+  assert.equal(facts[0].from, 1, "第一折覆盖第 1..3 轮（from 是闭区间左端，不是水位）");
   // ② `increment.text` 是**这一折自己**的正文；父键 `text` 是累计。
   assert.equal(facts[1].increment.text, "第二折正文");
   assert.notEqual(facts[1].text, facts[1].increment.text, "多折时累计正文与单折正文必须不同");

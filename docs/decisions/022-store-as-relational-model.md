@@ -18,6 +18,8 @@
 > | `run_id` / `seq` | text / bigint | **PK(run_id, seq)**；`seq` 由写入方分配（§1.3 末段那条分配器逻辑不变） |
 > | `fold_id` | text | **UNIQUE(run_id, fold_id)** —— **幂等键**，见下 |
 > | `cut_round` / `cut_msg_seq` | int | 切点：这一折吃掉「≤ 此切点」的全部消息 |
+> | `from_round` | int | **本折覆盖的第一轮**（261128-13 补）。切点单独表达不了「吃了哪些轮」：真机现场 `1–5, 6–6, 8–8` 有口子（第 7 轮一轮未折，`src/compact/fold-statistical.js:834` 引的原始数据），只按「上一折切点 + 1」推会把它误报成已折 |
+> | `rounds` | int | **本折轮数**（同上）。它不总等于区间长度——`buildFoldedFacts` 单独收 `input.rounds`，统计折的真实计数可能不同 ⇒ 单独存，不靠算术推 |
 > | `title` | text | 模型写的短标题，可空；模型没给就是 `NULL`（**新写入必须绕过 `buildFoldedFacts` 的首行回退**，否则回退出来的标题会被当成模型标题存下） |
 > | `description` | text | 模型写的三节（行动 / 遗留 / 关键词），约 400 token |
 > | `tokens_before` / `tokens_after` | int | 折叠前后上下文 token（省了多少挂在折上） |
