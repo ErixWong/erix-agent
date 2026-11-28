@@ -4753,9 +4753,11 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 `# TODO` 与 base64 里的十六进制撞同一批正则）；而渲染它一折约 200 token，历史层预算只有 5k——**40%
 换一堆没有上下文的裸字符串**，不渲染则只是 `messages` 全文索引的一份更差的副本。它想防的「写错 sha
 是静默损坏」也不成立：`git show f6a8dab` 会**响亮地报错**。所以精确值就写在散文里（"commit f6a8da8"），
-被折轮次的逐字取回是 `recall_read` 的活（issue #896）。在 `context`/策略选项里写 `anchors` 现在按
-未知选项处理——走与其它退役键同一条 `context_unknown_option` 通道（装配口那一路报一条事件、细粒度
-那一路静默、不抛错）。
+被折轮次的逐字取回是 `recall_read` 的活（issue #896）。退役的 `anchors` 键在每个入口都没了，而三个入口行为不同（实测，issue #261127-19）：
+`context.anchors` 在装配口报一条 `context_unknown_option`、在细粒度那一路静默容忍；策略级
+`anchors`（`createFoldStatisticalStrategy({ anchors })` 或 `compact(…, { anchors })`）**静默忽略**——
+不报事件也不抛错；而顶层 `runToolLoop({ anchors })` 与其它未知顶层选项一样，由
+`assertRunToolLoopOptionNames` 抛 **TypeError**。
 
 ## 折叠触发比例与会话续接块（issue #569 / issue #568）
 

@@ -6064,9 +6064,12 @@ rendering it costs ~200 tokens per fold out of a 5k history budget — 40% of th
 with no context, while *not* rendering it would just be a worse copy of the `messages` full-text index.
 The corruption it was meant to prevent is not silent either: `git show f6a8dab` fails loudly. Exact
 values therefore live **in the prose** ("commit f6a8da8"), and verbatim recovery of a folded round is
-`recall_read`'s job (issue #896). Writing `anchors` in a `context`/strategy option is now an unknown
-option — it follows the same `context_unknown_option` path as every other retired key (one event on the
-assembly-port route, silence on the fine-grained route, no throw).
+`recall_read`'s job (issue #896). The retired `anchors` key is gone from every entry point, and the three
+of them behave differently (measured, issue #261127-19): `context.anchors` reports one
+`context_unknown_option` on the assembly-port route and is silently tolerated on the fine-grained route;
+a strategy-level `anchors` (`createFoldStatisticalStrategy({ anchors })` or `compact(…, { anchors })`) is
+**silently ignored** — no event, no throw; and `runToolLoop({ anchors })` at the top level is a **hard
+TypeError** from `assertRunToolLoopOptionNames` like any other unknown top-level option.
 
 ## Fold trigger ratio and the session continuity block (issue #569 / issue #568)
 
