@@ -49,6 +49,22 @@
   hosts that passed `anchors`**: it is now an unknown option on the same `context_unknown_option` path as
   every other retired key (one event on the assembly-port route, silence on the fine-grained route, no
   throw).
+- **`## 教训与坑` is deleted from the fold summary; "pitfalls already hit" now lives on the whiteboard
+  (issue #261128-05).** #261127-18 kept the section only because `runs.board` did not exist yet — deleting it
+  then would have lost the information instead of relocating it. The board landed in the previous commit, so
+  the section goes. The reason is not tokens: "what pitfalls have we hit" answers *what is true now*, and the
+  board is present tense while the fold summary is past tense. Writing both makes the model maintain two
+  inconsistent descriptions of one thing (the shape design's §0 skeleton,
+  `docs/design/2026-11-27-context-and-fold-shape.md` §3.8). Deleted: the section block in the prompt guide,
+  its `priorityForHeading` entry, and the now-dead `SUMMARIZER_BODY_HEADING` regex (the parser splits body
+  from board on the board line, which is the last block, so it no longer needs a heading allowlist).
+  `test/compact/fold-summary-lessons-611.test.js` is replaced by
+  `test/compact/fold-summary-sections-261128.test.js`, which pins **both directions** — every retired section
+  name is gone (six of them now) and the three current ones appear once each, in order. Fixtures that
+  simulated model output (`fixtures/upstream.mjs`, `fold-title-desc-897`, `fold-llm-summary-budget-469`,
+  `cli-compaction-default-614`, `examples/fold-default-real-e2e.mjs`) were moved to the current section names:
+  a fixture written against retired names lets "the prompt changed, the fixture did not" pass silently, which
+  is exactly how #980's `priorityForHeading` bug slipped through.
 - **The fold summary body is four sections instead of six (issue #261127-18).** `## 阶段` / `## 已改文件` /
   `## 已验证项` all answered "what did this fold do", so a compliant model wrote the same thing three times (and
   three *inconsistent* ways); they are now one `## 行动` section, whose body carries the verification conclusion
@@ -56,10 +72,7 @@
   now `## 遗留` and `## 主题词面包屑` is now `## 关键词`, whose body additionally demands **the literal words**
   from the source (file names, tool names, error text, identifiers) — a breadcrumb rewritten into synonyms cannot
   be grepped back out of the ledger, which is the only thing that section is for. The retired `## 已改文件` (file list) is not replaced by a section — `## 行动` asks for the file names
-  **in prose**, since git is the authority on what changed. `## 教训与坑` is **kept**: the
-  shape design (`docs/design/2026-11-27-context-and-fold-shape.md` §3.8) moves it to the whiteboard
-  (`runs.board`), and that does not exist yet, so deleting the section today would lose the information rather
-  than relocate it. The prompt guide went from 1602 to 1061 tokens; the pruning priority that names sections is
+  **in prose**, since git is the authority on what changed. The prompt guide went from 1602 to 1061 tokens; the pruning priority that names sections is
   updated to match (`## 遗留` / `## 恢复提示` / `## 关键词` first, then `## 行动`). `reverseSignalWarningLine`
   now points at 「遗留」 instead of 「下一步」 — a warning that names a section the model no longer writes is a
   dead pointer.

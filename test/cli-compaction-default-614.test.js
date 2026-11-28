@@ -3,7 +3,7 @@
 // 为什么需要这一层（进程级 + 真 socket 假上游）：`DEFAULT_COMPACTION_STRATEGY` 是 CLI 的**选择**
 // （引擎层 `resolveCompactionStrategy(undefined) → undefined`，即「不折」——库的边界不动）。
 // 所以「默认到底走哪条策略」只有在「真子进程 + 真端点 + 真折叠」这条链上才看得见：
-//   判据 1  不传 `--compaction` ⇒ 策略 `fold-llm`；折叠块里出现**语义分节**（`## 阶段` / `## 教训与坑`）；
+//   判据 1  不传 `--compaction` ⇒ 策略 `fold-llm`；折叠块里出现**语义分节**（`## 行动` / `## 关键词`）；
 //   判据 2  显式选择仍生效：`--compaction fold-statistical` ⇒ 走统计（零摘要器请求）、
 //           `--compaction sliding-window` ⇒ 走滑动窗口；非法值仍在 load 期报错并列合法值；
 //   判据 3  摘要器抛错/失败 ⇒ 折叠块里出现**既有降级标记**，且 run **不失败**（termination 正常）；
@@ -258,7 +258,7 @@ function excerpt(body, needle, radius = 260) {
 // 判据 1 + 4a：默认走 fold-llm，摘要器给合法分节 ⇒ 折叠块含语义分节
 // ---------------------------------------------------------------------------
 
-test("#614 判据1/4a：不传 --compaction ⇒ 摘要器那一发真的发了，且折叠块含 ## 阶段 / ## 教训与坑", async (t) => {
+test("#614 判据1/4a：不传 --compaction ⇒ 摘要器那一发真的发了，且折叠块含 ## 行动 / ## 关键词", async (t) => {
   const run = await runFoldScenario(t);
 
   assert.equal(run.code, EXIT_NOT_VERIFIED, `chat 退出码应为 ${EXIT_NOT_VERIFIED}（skipped 不是失败）`
@@ -279,8 +279,10 @@ test("#614 判据1/4a：不传 --compaction ⇒ 摘要器那一发真的发了�
     + `或者摘要没进主循环上下文；分类结果：${run.requests.map(({ kind }) => kind).join(",")}`,
   );
   const block = withSemantic.body;
-  assert.match(block, /## 阶段/u, "折叠块里没有 `## 阶段`（语义分节之一）");
-  assert.match(block, /## 教训与坑/u, "折叠块里没有 `## 教训与坑`（语义分节之二）");
+  // issue #261127-18 / #261128-05：节名是 `## 行动` / `## 遗留` / `## 关键词`（`## 阶段` 与
+  // `## 教训与坑` 都已退役 —— 前者并进 `## 行动`，后者住白板）。这里钉的是**语义分节在场**。
+  assert.match(block, /## 行动/u, "折叠块里没有 `## 行动`（语义分节之一）");
+  assert.match(block, /## 关键词/u, "折叠块里没有 `## 关键词`（语义分节之二）");
   // 反向：走 fold-llm 就不该出现统计摘要的头部标记。
   assert.ok(
     !block.includes(FOLD_SUMMARY_MARKER),

@@ -18,7 +18,8 @@ import { estimateTokens } from "../../src/tokens.js";
 // issue #261127-18（六节 → 四节）：夹具跟着提示词走。旧五节（阶段 / 已改文件 / 已验证项 / 下一步 /
 // 主题词面包屑）已退役——用旧节名做夹具会绕开 `priorityForHeading` 的新映射（copilot 复审抓到的
 // 「文档说改了、代码没改」正是这样漏掉的）。
-const SECTIONS = ["行动", "遗留", "关键词", "教训与坑（不要重犯的）"];
+// issue #261128-05：`## 教训与坑` 已删除（「踩过的坑」住白板 `runs.board`），剩三节。
+const SECTIONS = ["行动", "遗留", "关键词"];
 
 function summaryOf(charsPerSection) {
   return SECTIONS.map((title) => `## ${title}\n${"字".repeat(charsPerSection)}`).join("\n");
@@ -47,11 +48,13 @@ async function foldWith(summaryText, options = {}) {
   return { result, text };
 }
 
-test("#469-C ① 默认预算装得下 5 节 × 145 字 + 恢复提示 + 保真层：全在，一个 [已修剪] 都没有", async () => {
+test("#469-C ① 默认预算装得下 3 节 × 200 字 + 恢复提示 + 保真层：全在，一个 [已修剪] 都没有", async () => {
   // issue #873 修复①口径：机械保真层现在**在** `maxSummaryTokens` 之内，所以「默认预算装得下」
   // 这句话的范围从「五节」变成了「五节 + 恢复提示 + 保真层」——本夹具总量 1,386 ≤ 1,400，
   // 三层同时装得下（旧夹具的 150 字/节在旧口径下是 1,335 + 躲在预算外的保真层，不是一回事）。
-  const summary = summaryOf(145);
+  // issue #261128-05：只剩三节后 145 字/节 已装不进「旧默认 800 会被剪」这条前提（768 token），
+  // 每节加长到 200 字（1,052 ≤ 1,400），前提与结论同时成立。
+  const summary = summaryOf(200);
   assert.ok(estimateTokens(summary) > 800, "前提：这一份在旧默认 800 下必须会被剪");
   const { text, result } = await foldWith(summary);
   for (const title of SECTIONS) {
@@ -76,7 +79,7 @@ test("#469-C ①b 超默认预算时：机械保真层先让位（留骨架）�
     /^## 用户最新未解决输入[^\n]*\n\[已修剪\]$/mu.test(text),
     "保真层是第 5 档（机械可重抽），超预算时必须先它让位且留标题骨架",
   );
-  // 相对序：第 0 档（遗留）/ 第 1 档（关键词）必须活下来；第 2 档（行动 / 教训与坑）可以跟着让位
+  // 相对序：第 0 档（遗留）/ 第 1 档（关键词）必须活下来；第 2 档（行动）可以跟着让位
   // ——预算是硬上限，「合同节只在不够时跟着让位」说的就是这一档。
   for (const title of ["遗留", "关键词"]) {
     const at = text.indexOf(`## ${title}`);
@@ -108,9 +111,11 @@ test("#469-C ② 裁剪保留标题：`## 标题\\n[已修剪]`，不把整节�
 
 test("#469-C ③ 紧预算下先保「遗留」与「关键词」，「行动」先剪且留骨架", async () => {
   const summary = summaryOf(150);
-  // issue #873 修复①：预算从 900 抬到 1000——保真层进了预算后，同样 900 会把「已验证项」
-  // 也一并吸掉，这格要钉的是**相对优先序**，取一个让优先序完整展开的预算。
-  const { text } = await foldWith(summary, { maxSummaryTokens: 1000 });
+  // issue #873 修复①：保真层进了预算 ⇒ 预算必须选到「让相对优先序完整展开」的那一档。
+  // issue #261128-05：只剩三节（150 字/节 合计 768），原 1000 预算已装得下全部三节
+  // （没有任何一节被剪 ⇒ 这格测不到优先序）。实测定档 650：遗留/关键词活、行动被剪、保真层让位；
+  // 900 起就一个都不剪了。
+  const { text } = await foldWith(summary, { maxSummaryTokens: 650 });
   // 正文窗口只取到下一节标题为止（旧实现定长 400 字窗口会邻接读到邻节的 `[已修剪]`，
   // 保真层进了摘要之后那个窗口会误报）。
   const body = (title) => {
