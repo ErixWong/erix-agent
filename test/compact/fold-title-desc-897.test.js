@@ -1,18 +1,18 @@
 // @ts-check
 // issue #897 第一刀：折叠摘要器产出的 title / description 必须可解析并落进 `foldedFacts`。
 //
-// 病根（工单正文）：产品默认 `fold-llm` 下，出厂提示词规定第一行是 `## 阶段` 小节标题，
+// 病根（工单正文）：产品默认 `fold-llm` 下，出厂提示词规定第一行是 `## 行动` 小节标题（当时叫 `## 阶段`），
 // 而 `buildFoldedFacts` 的 title 派生是「取正文首行」⇒ 落账的 `foldedFacts.title` 逐字等于
-// `## 阶段`（一个壳）；`foldedFacts.summary`（description）在产品路径上恒缺席（orchestrator
+// 该标题（一个壳）；`foldedFacts.summary`（description）在产品路径上恒缺席（orchestrator
 // 从不传 `input.summary`）。本单让摘要器在第一个 `##` 之前额外吐两行带固定前缀的元信息
 //（`标题：` / `描述：`），引擎解析、剥离、优先落账，且「挤掉」可检测。
 //
 // 判据（四格，全部内存 store + fake provider，零真实 LLM）：
-//   1. 语义折的 title 不再是小节标题：`foldedFacts.title` 等于 fake 给的纯 title（不是 "## 阶段"）；
+//   1. 语义折的 title 不再是小节标题：`foldedFacts.title` 等于 fake 给的纯 title（不是 "## 行动"）；
 //   2. description 落账：`foldedFacts.summary` 等于 fake 给的 description；
 //   3. 装不下时可检测：description 大到 2048（此处收小到 maxFoldedFactsBytes）装不下
 //      ⇒ `summary` 键缺席**且** `summaryDropped` 在场，并与「模型没给 description」的落账形状可区分；
-//   4. 解析失败不冒充：fake 返回没有那两行的六节摘要 ⇒ title 退回正文首行（今天的 `## 阶段`），
+//   4. 解析失败不冒充：fake 返回没有那两行的摘要 ⇒ title 退回正文首行（今天的 `## 行动`），
 //      且 `titleFallback` 在场（能看出这一折没拿到模型 title）。
 //
 // ⚠ 每格都先在未改树上红（见终稿）；每格至少一条断言钉住「退回旧派生 / 旧落账」会翻红。
@@ -30,37 +30,29 @@ const DESC = "让摘要器产出标题与描述，解析后优先落进账本";
 // 200 字符上限内取满中文（每字符 3 字节 ≈ 600 字节），配合收小的 maxFoldedFactsBytes 触发挤掉。
 const LONG_DESC = "长".repeat(200);
 
-/** 六节摘要，带两行元信息前缀（模拟新提示词下模型的行为）。desc=null ⇒ 只给 title 不给 description。 */
+/** 当前三节摘要（+ 末尾白板块），带两行元信息前缀（模拟当前提示词下模型的行为）。desc=null ⇒ 只给 title，不给 description。 */
 function summaryWithMeta(title, desc) {
   const meta = `标题：${title}\n${desc === null ? "" : `描述：${desc}\n`}`;
-  return `${meta}## 阶段
-阶段：先解析再落账。
-## 已改文件
-src/compact/fold-llm.js
-## 已验证项
-node --check 通过
-## 下一步（含"已完成项禁止重做"）
-已完成项禁止重做
-## 主题词面包屑
+  return `${meta}## 行动
+先解析再落账；改的是 src/compact/fold-llm.js，node --check 通过。
+## 遗留
+已完成项禁止重做。
+## 关键词
 897 fold title desc
-## 教训与坑（不要重犯的）
+
+白板：
+## 约束
 无`;
 }
 
-/** 六节摘要但**没有**那两行元信息前缀（模拟模型不配合 / 旧提示词）。 */
+/** 同样三节但**没有**那两行元信息前缀（模拟模型不配合 / 旧提示词）。 */
 function summaryWithoutMeta() {
-  return `## 阶段
-阶段：旧派生。
-## 已改文件
-src/compact/fold-llm.js
-## 已验证项
-node --check 通过
-## 下一步（含"已完成项禁止重做"）
-已完成项禁止重做
-## 主题词面包屑
-897 title fallback
-## 教训与坑（不要重犯的）
-无`;
+  return `## 行动
+旧派生：改的是 src/compact/fold-llm.js，node --check 通过。
+## 遗留
+已完成项禁止重做。
+## 关键词
+897 title fallback`;
 }
 
 /** fake provider：主循环用工具轮撑上下文；识别摘要请求（含 promptGuide 首句）返回指定正文。 */
@@ -123,7 +115,7 @@ async function foldOnce({ runId, summarizeReply, maxBytes }) {
   return factsOf(store, runId);
 }
 
-test("#897-1 语义折的 title 是模型给的纯 title，不再是小节标题 ## 阶段", async () => {
+test("#897-1 语义折的 title 是模型给的纯 title，不再是小节标题 ## 行动", async () => {
   const rows = await foldOnce({ runId: "897-1", summarizeReply: summaryWithMeta(TITLE, DESC) });
   const semantic = rows.filter((facts) => facts.origin === "semantic");
   assert.ok(semantic.length >= 1, "前置：必须有语义折（origin===semantic）");
@@ -132,7 +124,7 @@ test("#897-1 语义折的 title 是模型给的纯 title，不再是小节标题
     // 这条会因「退回旧的首行派生」而红。
     assert.equal(facts.title, TITLE,
       `title 必须等于模型给的纯 title，实测 ${JSON.stringify(facts.title)}`);
-    assert.notEqual(facts.title, "## 阶段",
+    assert.notEqual(facts.title, "## 行动",
       "title 不得是小节标题壳（这正是本单要消灭的病根）");
     assert.equal(Object.hasOwn(facts, "titleFallback"), false,
       "拿到了模型 title ⇒ 不应出现 titleFallback 标记");
@@ -185,14 +177,15 @@ test("#897-3 description 装得下 vs 被挤掉：落账形状可区分（summar
     "「被挤掉」与「模型没写」必须在落账形状上可区分（deepStrictEqual 不等）");
 });
 
-test("#897-4 解析失败（没有那两行）不冒充：title 退回正文首行(## 阶段) 且能看出没拿到模型 title", async () => {
+test("#897-4 解析失败（没有那两行）不冒充：title 退回正文首行(## 行动) 且能看出没拿到模型 title", async () => {
   const rows = await foldOnce({ runId: "897-4", summarizeReply: summaryWithoutMeta() });
   const semantic = rows.filter((facts) => facts.origin === "semantic");
   assert.ok(semantic.length >= 1, "前置：必须有语义折");
   for (const facts of semantic) {
-    // 退回今天的行为：title = 正文首行（模型正文首行是 `## 阶段`）。
-    assert.equal(facts.title, "## 阶段",
-      `没拿到模型 title 时 title 退回正文首行（今天的 ## 阶段），实测 ${JSON.stringify(facts.title)}`);
+    // 退回今天的行为：title = 正文首行（模型正文首行是 `## 行动`）。
+    // 261128-05：节名从 `## 阶段` 换成 `## 行动`，这条判据钉的是「退回**正文首行**」这件事本身。
+    assert.equal(facts.title, "## 行动",
+      `没拿到模型 title 时 title 退回正文首行（今天的 ## 行动），实测 ${JSON.stringify(facts.title)}`);
     // 且能看出这一折没拿到模型 title —— 未改树上无 titleFallback 键 ⇒ 此断言红。
     assert.equal(facts.titleFallback, true,
       "退回首行必须可检测：titleFallback 在场（不许静默冒充模型 title）");

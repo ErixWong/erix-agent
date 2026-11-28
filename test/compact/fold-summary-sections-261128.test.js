@@ -84,3 +84,27 @@ test("#261128-05-4 节表措辞只在 `src/compact/fold-llm.js` 定义（别处�
     "节标题只许在 fold-llm.js 的引导语里定义（别处出现就是又抄了一份节表）",
   );
 });
+
+// copilot 复审（#988）：旧文件里「新节与下一段之间保留空行」「恢复提示在最后」这两条位置判据
+// 没有跟着搬过来。位置不是装饰：解析器按**第一个 `##`** 切正文、按**白板行**切白板，
+// 少一个空行不会坏，但「恢复提示」跑到正文中间会让 `withRecoveryHint` 的幂等检查失效
+// （它靠 `summary.includes(recoveryHint)` 判「已经带过」）。
+test("#261128-05-5 位置纪律：三节之后是白板段，恢复提示在最后且与前一行为空行", () => {
+  const guide = SUMMARIZER_PROMPT_GUIDE;
+  const lastSection = guide.indexOf("## 关键词");
+  const boardLine = guide.indexOf("白板：");
+  const recovery = guide.indexOf("恢复提示：");
+  assert.ok(lastSection > 0 && boardLine > lastSection,
+    "白板段必须在三节之后（它是整份输出的最后一段）");
+  assert.ok(recovery > boardLine, "「恢复提示：」必须排在白板段之后");
+  // 换行纪律：每个节标题与白板行都必须**另起一行**（节标题紧跟上文是提示词既有风格，不要求空行）；
+  // 「恢复提示：」是例外 —— 它前面必须是空行，否则 `withRecoveryHint` 拼出来的那一句会粘在
+  // 白板块的最后一行上，宿主侧按行读提示就分不出来了。
+  for (const anchor of ["## 行动", "## 遗留", "## 关键词", "白板：", "恢复提示："]) {
+    const at = guide.indexOf(anchor);
+    assert.ok(at > 0, `缺「${anchor}」`);
+    assert.equal(guide[at - 1], "\n", `「${anchor}」必须另起一行`);
+  }
+  const recoveryAt = guide.indexOf("恢复提示：");
+  assert.equal(guide[recoveryAt - 2], "\n", "「恢复提示：」之前必须有一个空行");
+});
