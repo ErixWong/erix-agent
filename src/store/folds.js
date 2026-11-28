@@ -161,6 +161,8 @@ export function foldRecordsToFacts(rows) {
     // 「已折到的水位」，水位起点就是 0。这里写 0 是**定义**，不是猜。不写的话
     // `foldRecordSegments`（`fold-statistical.js:520`）会因为缺 `from`/`to` **整份账本放弃**、
     // 退回解析块 ⇒ resume 之后统计折的读法静默退化。
+    // 上一折的切点（第一折 = 0，即「还没有折过任何轮」）；`fromFoldRecords` 会把它 +1 变成
+    // 本折覆盖的第一轮（261128-12 实测：`from` 是闭区间左端，不是水位）。
     const previousCutRound = i > 0
       ? Number.isSafeInteger(sorted[i - 1]?.cutRound) ? sorted[i - 1].cutRound : undefined
       : 0;

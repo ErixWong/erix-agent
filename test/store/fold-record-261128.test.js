@@ -156,13 +156,14 @@ test("261128-09 判据5: 既无 summary 又无 text ⇒ TypeError（description 
   assert.equal(toFoldRecord(withIncrement).description, "本折增量正文");
 });
 
-test("261128-09 判据6: 往返 —— fromFoldRecords([toFoldRecord(f, …)], {previousCutRound:2}) 得 from: 2, to: 5", () => {
+test("261128-09 判据6: 往返 —— fromFoldRecords([toFoldRecord(f, …)], {previousCutRound:2}) 得 from: 3, to: 5", () => {
   const facts = /** @type {Record<string, unknown>} */ (realFacts());
   const back = fromFoldRecords(
     [toFoldRecord(facts, { cutRound: 5, cutMsgSeq: 9 })],
     { previousCutRound: 2, source: "llm", strategy: "fold-llm" },
   );
-  assert.equal(back.from, 2);
+  // `from` 是本折覆盖的**第一轮**（闭区间左端）= 上一折切点 + 1（261128-12 实测更正）
+  assert.equal(back.from, 3);
   assert.equal(back.to, 5);
   assert.equal(back.rounds, 3);
   assert.equal(back.foldId, "fold-261128");
@@ -181,7 +182,7 @@ test("261128-09 判据6b: fromFoldRecords 的键集合恰好 = 契约面里能�
   );
   assert.deepEqual(
     Object.keys(back).sort(),
-    ["bytes", "foldId", "from", "rounds", "seq", "source", "strategy", "text", "to"],
+    ["bytes", "foldId", "from", "rounds", "seq", "source", "strategy", "text", "title", "to"],
   );
   assert.equal(back.bytes, Buffer.byteLength(/** @type {string} */ (back.text), "utf8"));
   // ① 来源/策略不给 ⇒ 缺席，不猜（写死就是给统计折贴 LLM 标签）。
@@ -195,7 +196,7 @@ test("261128-09 判据6b: fromFoldRecords 的键集合恰好 = 契约面里能�
   ], { previousCutRound: 2 });
   assert.equal(two.text, `${facts.summary}\n\n第二折正文`, "累计 text 必须按 seq 拼接各折 description");
   assert.equal(two.to, 5);
-  assert.equal(two.from, 2);
+  assert.equal(two.from, 3, "from = 上一折切点 + 1");
   // 上一折切点拿不到 ⇒ from / rounds 缺席，不猜 0。
   const noPrev = fromFoldRecords([toFoldRecord(facts)], {});
   assert.equal("from" in noPrev, false);

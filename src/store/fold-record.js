@@ -182,8 +182,15 @@ export function fromFoldRecords(records, extras = {}) {
   const text = rows.map((row) => row.text).join("\n\n");
   const last = rows[rows.length - 1];
   const to = intColumn(last.record.cutRound);
-  const from = intColumn(extras.previousCutRound);
-  const rounds = to !== undefined && from !== undefined && to > from ? to - from : undefined;
+  // **`from` 是本折覆盖的**第一轮**（闭区间左端），不是上一折的切点**（261128-12 实测更正）：
+  // `buildFoldedFacts({ roundRange: { from: 1, to: 5 } })` 里 `from` = 1，而第一折之前什么都没有。
+  // 上一折切点是 `previousCutRound`，所以 `from = previousCutRound + 1`；`rounds = to - from + 1`。
+  // 按「from = 上一折切点」算会整体错一位（实测：`覆盖第 0–34 轮` vs 真值 `第 1–34`）。
+  const previousCut = intColumn(extras.previousCutRound);
+  const from = to !== undefined && previousCut !== undefined && previousCut >= 0
+    ? previousCut + 1
+    : undefined;
+  const rounds = to !== undefined && from !== undefined && to >= from ? to - from + 1 : undefined;
   const foldId = textColumn(last.record.foldId);
   const seq = intColumn(last.record.seq, 1);
 
@@ -195,6 +202,10 @@ export function fromFoldRecords(records, extras = {}) {
 
   return {
     text,
+    // `title` 是九列的列之一，而旧形状的读侧（`foldSegmentTitle`）就吃 `record.title` ⇒ 必须导出。
+    // 它不在宿主契约那个对象里（`:6962` 列的是 `{ text, source, strategy, from, to, rounds, bytes,
+    // truncated?, degradeReason?, foldId, seq }`），所以不影响宿主面。
+    ...(textColumn(last.record.title) === undefined ? {} : { title: textColumn(last.record.title) }),
     ...(source === undefined ? {} : { source }),
     ...(strategy === undefined ? {} : { strategy }),
     ...(from === undefined ? {} : { from }),
