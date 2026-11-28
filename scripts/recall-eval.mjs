@@ -650,7 +650,15 @@ const { values: cli } = parseArgs({
     // 而是「这一次摘要有没有保留那个值」——实测同一配置两跑，被取消资格的是不同的 3/6 格。
     // 单跑比较的是两个不同的分母。
     reps: { type: "string", default: "1" },
-    // 补到多少轮（默认 20，与历史数字可比）。
+    // 补到多少轮（默认 20）。
+    //
+    // **哪个体量回答哪个问题**（实测；默认仍是 20，与 #896 已记录的历史数字可比）：
+    //   · **20 轮（≈37.6k）**：问「窗口内不折叠行不行」——A 组必然答对，答案就是「行」。
+    //     它**回答不了**折叠层的价值（离 262k 窗口太远）。要复现 #896 里的历史数字用 `--rounds 20`。
+    //   · **140 轮（≈266k）**：问「体量真的超过窗口时谁还能答」。这一档 A 组**不再是「不折叠基线」**
+    //     （它的预算就是窗口，超了会走兜底折叠，且实测 12 跑里 10 跑直接被上游拒绝）——
+    //     要「不折」的对照看 **C 组**（预算 = 窗口 ×2）。数字不能与 20 轮那批混比。
+    // 代价：140 轮一轮全量（6 场景 × A/B/C × 2 跑）≈ ↑1.09M token、约 13 分钟；C 组被拒时不产生 usage。
     //
     // ⚠ **这个参数不是「A 组不折叠的体量旋钮」**（261128 更正，copilot 复审 #992）：引擎有一条
     // 不变量——策略折完仍超预算，就一定会再跑 `sliding-window` 兜底（`orchestrator.js:4645-4669`），
@@ -678,7 +686,8 @@ const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase())
 
 const slotInfo = readSlot(cli.slot);
 console.log(`#896 §5 recall-eval · slot=${cli.slot} model=${slotInfo.slot.model} endpoint=${slotInfo.slot.endpoint} config=${slotInfo.configPath}`);
-console.log(`scenarios=[${wantScenarios}] groups=[${wantGroups}] maxRounds=${maxRounds}`);
+console.log(`scenarios=[${wantScenarios}] groups=[${wantGroups}] maxRounds=${maxRounds} `
+  + `rounds=${targetRounds} reps=${reps}`);
 
 const results = [];
 for (const s of wantScenarios) {
@@ -789,7 +798,8 @@ if (cRows.length > 0) {
     + `｜折叠 ${cRows.filter((r) => r.folded).length} 次`);
 }
 console.log(`\n汇总：`
-  + `A 基线 ${summary.baseline.correct}/${summary.baseline.runs}`
+  + `A（预算=窗口；高体量下会自己折或被上游拒，不是「不折叠基线」）`
+  + ` ${summary.baseline.correct}/${summary.baseline.runs}`
   + `｜B 可测 ${summary.foldAndRecall.measured}/${summary.foldAndRecall.runs}`
   + `，可测内答对 ${summary.foldAndRecall.correct}/${summary.foldAndRecall.measured}`
   + `｜B 未测到 ${summary.notMeasured} 跑`
