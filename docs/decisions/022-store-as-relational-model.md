@@ -6,6 +6,50 @@
 > ——折叠改为**每次一条局部日志**，原文不复制，上下文按预算梯度渲染。本文正文**一字未改**（决策记录不
 > 事后重写），做对的部分（`rounds` 形状、`fold_round_rows`、恢复行两族语义、事实分层）被设计稿原样沿用。
 
+> **第二刀（2026-11-28）——`folds` 的列集合落到形状稿的九列。** 本文 §1.3 要求「与
+> `buildFoldedFacts` 的返回键逐键对齐，一个都不许丢」；那条规则把**实现细节当成了契约**：
+> `buildFoldedFacts` 是「一份累计替代物」那个形状的产物。第二刀按形状稿
+> （[`docs/design/2026-11-27-context-and-fold-shape.md`](../design/2026-11-27-context-and-fold-shape.md)
+> §1.4）定为九列，正文**不改**（同一纪律：决策文不事后重写），差异与理由记在这里。
+>
+> | 列 | 类型 | 说明 |
+> |---|---|---|
+> | `run_id` / `seq` | text / bigint | **PK(run_id, seq)**；`seq` 由写入方分配（§1.3 末段那条逻辑不变） |
+> | `cut_round` / `cut_msg_seq` | int | 切点：这一折吃掉「≤ 此切点」的全部消息 |
+> | `title` | text | 模型写的短标题，可空；模型没给就是 `NULL`，不许用正文首行顶替 |
+> | `description` | text | 模型写的三节（行动 / 遗留 / 关键词），约 400 token |
+> | `tokens_before` / `tokens_after` | int | 折叠前后上下文 token（省了多少挂在折上） |
+> | `created_at` | timestamptz | 信封时刻 |
+>
+> **累计正文 `text` 不是列**：它是「`seq ≤ n` 的 `description` 按序拼接」这个函数。存它就是同一件事
+> 存 N 份、每份越来越长（实测摘要 3.9k → 5.9k → 6.9k token，涨的全是重复），而且每次重写不可审计
+> （这一折丢了什么，账本上看不出来）。要上下文就现拼；要「这段会话干了什么」就
+> `SELECT seq, title FROM folds ORDER BY seq`。
+>
+> **退役键与替代**（不写清楚就会被当成遗漏，下次有人补回来）：
+>
+> | 代码里的键 | 被什么取代 |
+> |---|---|
+> | `text` | 由 `description` 按 `seq` 拼接渲染（函数，不落列） |
+> | `summary` / `summaryDropped` | 并进 `description`；「被挤掉」不再是一个状态——解析不出就是折叠失败 |
+> | `origin` / `source` / `strategy` | 折叠文本的作者只有一种（引擎的摘要器）；统计策略与降级已删 |
+> | `toolCalls` | `description` 的 `## 行动` |
+> | `bytes` / `bytesBefore` / `truncated` | `tokens_before` / `tokens_after`（只留预算尺子） |
+> | `degradeReason` | 不降级：解析不出就是折叠失败 |
+> | `fingerprint` / `foldId` | 折叠身份 = 主键 `(run_id, seq)`，不需要哈希 |
+> | `titleFallback` | `title IS NULL` 就是「模型没给」 |
+> | `descriptionTruncated` | 今天零读者零契约（`src/` 里只有转发链，`host-consumer-contract` 零提及） |
+> | `from` / `to` / `rounds` | `cut_round` + 上一折切点（`seq-1`）推出区间 |
+> | `increment` | 就是这一行本身（一折一行，没有"增量"这回事） |
+> | `trigger` | 可派生：`context_recovery_used` 由 false 变 true ⇒ 超窗恢复；`tokens_before` 超预算 ⇒ 预算触发；都不成立 ⇒ 手动 |
+>
+> **§2 端口与 §5 判据 8 跟着变**：`appendFold(runId, fold)` 的入参是上表九列（**不含累计 `text`**）；
+> `loadFolds(runId)` 返回**局部日志序列**，不是一份累计正文；判据 8 从「与 `buildFoldedFacts` 逐键对齐」
+> 改成「与形状稿九列逐列对齐，且每个没有列的键都在上表里有一行」。
+>
+> **还没动的**：`recall_ask` 的证据面读的是 `folds.text`（`src/loop/recall-runner.js:27`）。九列落地时
+> 它要改成「按 `cut_round` 去 `rounds` 取原文」，否则召回的证据会跟着 `text` 一起消失。
+
 - 状态：Proposed（2026-11-27，第二版）
 - 关联：#896（召回层）、#601（折叠记录账本）、#567（foldId/seq）、#769（恢复行独立通道）、#827（partial 槽）、
   ADR-018（notes）、ADR-020（transcript 单一来源）
