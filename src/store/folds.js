@@ -13,20 +13,17 @@ import { createHash } from "node:crypto";
 import {
   createFoldIdentityAllocator, FOLDED_FACTS_RECORD_FIELD,
 } from "../compact/fold-summary-journal.js";
+import { fromFoldRecords } from "./fold-record.js";
 
 /**
- * ADR-022 §1.3 folds 记录的列集合（`buildFoldedFacts` 返回**逐键对齐**，再加通道自分配的 `seq`）。
- * 这张表是**表驱动断言**的判据（测试判据 4：`buildFoldedFacts(...)` 返回键集合 ⊆ 本列集合）。
- * 少一格就红。
+ * ADR-022 §1.3 folds 记录的列集合（九列 + 幂等键，共十项）。
+ * 这张表是**表驱动断言**的判据（测试判据 1：恰好是这十项，多一个少一个都红）。
  *
  * @type {ReadonlySet<string>}
  */
 export const FOLD_RECORD_COLUMNS = new Set([
-  "text", "title", "titleFallback", "origin", "source", "strategy",
-  "summary", "summaryDropped", "descriptionTruncated", "toolCalls",
-  "increment", "from", "to", "rounds", "bytes",
-  "truncated", "bytesBefore", "degradeReason", "fingerprint",
-  "foldId", "seq",
+  "runId", "seq", "foldId", "cutRound", "cutMsgSeq",
+  "title", "description", "tokensBefore", "tokensAfter", "createdAt",
 ]);
 
 /**
@@ -132,19 +129,65 @@ export function foldRecordsFromRoundRecords(roundRecords) {
 }
 
 /**
+ * 判定一条通道行是否是**九列**形状。九列特征：有 `description` 或 `cutRound`，
+ * 且没有 `text` 与 `increment`（旧 21 键形状有 `text`，有的还有 `increment`）。
+ *
+ * @param {any} row
+ * @returns {boolean}
+ */
+export function isFoldRecord(row) {
+  if (row === null || typeof row !== "object") return false;
+  const hasNine = row.description !== undefined || row.cutRound !== undefined;
+  const hasOld = row.text !== undefined || row.increment !== undefined;
+  return hasNine && !hasOld;
+}
+
+/**
+ * 把九列行按 `seq` 升序折成旧形状 `foldedFacts` 数组。
+ * 逐行：传前缀 `sorted[0..i]`，`previousCutRound` 取 `sorted[i-1]?.cutRound`。
+ * `source`/`strategy` 不传（九列里没有来源）。
+ *
+ * @param {object[]} rows 九列行（不必已排序，内部会排）
+ * @returns {object[]} 与入参同序的旧形状数组（按 seq 升序）
+ */
+export function foldRecordsToFacts(rows) {
+  const sorted = sortFoldsBySeq(rows);
+  /** @type {object[]} */
+  const results = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const prefix = sorted.slice(0, i + 1);
+    const previousCutRound = i > 0 ? sorted[i - 1]?.cutRound : undefined;
+    const facts = fromFoldRecords(prefix, {
+      ...(previousCutRound !== undefined ? { previousCutRound } : {}),
+    });
+    results.push(facts);
+  }
+  return results;
+}
+
+/**
  * 合并读（ADR §4）的**唯一口径**（issue #971 ②）：`folds` 通道 ∪ 轮记录 `foldedFacts`，按
  * `foldIdentityKey` 去重、**通道行优先**（轮记录先占位、通道行后入覆盖），再按 `seq` 升序。
  * 纯函数、不 clone（调用方自己决定要不要副本）。orchestrator 的 resume 合并读与两侧 store 的
  * `appendFold` 播种都走它 ⇒ 「口径只许有一处」。
  *
+ * 九列通道行在合并前先经 `foldRecordsToFacts` 转成旧形状；旧形状原样。混装可处理。
+ *
  * @param {{ channelRows?: object[], roundFacts?: object[] }} input
  * @returns {object[]}
  */
 export function mergeFoldRecords({ channelRows = [], roundFacts = [] }) {
+  // 分离九列行与旧形状行
+  const nineCol = channelRows.filter(isFoldRecord);
+  const legacy = channelRows.filter((row) => !isFoldRecord(row));
+  // 九列 → 旧形状
+  const converted = nineCol.length > 0 ? foldRecordsToFacts(nineCol) : [];
+  const allChannel = [...legacy, ...converted];
+
   /** @type {Map<string, object>} */
   const byIdentity = new Map();
   for (const facts of roundFacts) byIdentity.set(foldIdentityKey(facts), facts);
-  for (const row of channelRows) byIdentity.set(foldIdentityKey(row), row);
+  for (const row of allChannel) byIdentity.set(foldIdentityKey(row), row);
   return sortFoldsBySeq([...byIdentity.values()]);
 }
 
@@ -180,6 +223,8 @@ export function foldIdentityKey(fold) {
   if (typeof fold?.fingerprint === "string" && fold.fingerprint !== "") {
     return `fp:${fold.fingerprint}`;
   }
+  // 九列行没有 from/to/text 也没有 fingerprint（只有 foldId，上面已命中）；
+  // 走到这里的一定是旧形状（至少有 text）。
   const digest = createHash("sha256")
     .update(JSON.stringify([fold?.from ?? null, fold?.to ?? null, fold?.text ?? ""]))
     .digest("hex");
