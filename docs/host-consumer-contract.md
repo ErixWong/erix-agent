@@ -6053,44 +6053,23 @@ with `summaryRole: "system"`). Its fixed sections, in order:
    carry archive artifacts).
 3. Optional `[已折叠] …` stubs (at most 10).
 4. The recovery hint line.
-5. Optional **anchor index** section (mechanical extraction, no LLM rewrite):
-
-   ```
-   ## 锚点索引（机械抽取，未经 LLM 改写）
-   paths: src/a/b.js:12, …
-   shas: 1ed3f35, …
-   issues: #32, …
-   urls: https://…
-   errors: TypeError: …, …
-   ```
-
-   Anchors are regex-extracted from the folded payload — only from
-   `tool_result` content and real user messages, never from assistant prose.
-   Kinds render in the fixed order `paths, shas, issues, urls, errors`;
-   `errors` lines contain `Error`/`Exception`/`Traceback`/`fatal:` and are
-   kept verbatim up to 120 chars, at most 5. Within a line, multiple values
-   are joined with `, `; a literal `,` or `\` inside a value is escaped as
-   `\,` / `\\` at render time and unescaped when the section is re-parsed,
-   so every kind round-trips losslessly across repeated folds (e.g. an error
-   line `Error: failed, retry later` or a URL query `?a=1,2` stays a single
-   value). Note the `paths` regex charset excludes `,`, so paths containing
-   commas are not extracted — an accepted false-negative tradeoff.
-   Caps: 20 anchors total,
-   1200 chars for the whole section (ranked by frequency, then first
-   appearance). Across consecutive folds the section is re-parsed and merged
-   as a per-kind union (existing entries first, new entries appended,
-   deduplicated) and re-clamped, so anchors survive repeated folding without
-   loss, duplication, or overflow.
-
-   The anchor section is on by default. Pass `anchors: false` (strategy
-   factory or per-`compact` options) to restore the exact 0.7.0 behavior —
-   no anchor section, and anchor sections from previously folded summaries
-   are dropped on merge (a later `anchors: false` fold fully removes an
-   anchor section created by an earlier default fold); the rest of the
-   summary is unchanged. An object form
-   `anchors: { maxPerKind, maxChars }` clamps per-kind counts and section
-   characters. In `fold-llm` the section is appended after the LLM summary
-   (and after size enforcement), so `maxSummaryTokens` cannot truncate it.
+**No anchor index any more (issue #261127-19).** The mechanical `## 锚点索引` section — regex-extracted
+`paths` / `shas` / `issues` / `urls` / `errors` lines, capped at 20 entries and 1200 chars — is gone,
+and so is the `anchors: false` / `anchors: { maxPerKind, maxChars }` knob that existed only to switch it
+off. Two independent reasons, both recorded in
+`docs/design/2026-11-27-context-and-fold-shape.md` §3.8: extraction **enumerates an infinite set** (a CSS
+hex colour becomes a fake issue — `background: #0a0e18` → `#0`; a template string is cut at
+`http://localhost:${config.port`; a YAML `# TODO` and hex inside base64 hit the same regexes), and
+rendering it costs ~200 tokens per fold out of a 5k history budget — 40% of the layer for bare strings
+with no context, while *not* rendering it would just be a worse copy of the `messages` full-text index.
+The corruption it was meant to prevent is not silent either: `git show f6a8dab` fails loudly. Exact
+values therefore live **in the prose** ("commit f6a8da8"), and verbatim recovery of a folded round is
+`recall_read`'s job (issue #896). The retired `anchors` key is gone from every entry point, and the three
+of them behave differently (measured, issue #261127-19): `context.anchors` reports one
+`context_unknown_option` on the assembly-port route and is silently tolerated on the fine-grained route;
+a strategy-level `anchors` (`createFoldStatisticalStrategy({ anchors })` or `compact(…, { anchors })`) is
+**silently ignored** — no event, no throw; and `runToolLoop({ anchors })` at the top level is a **hard
+TypeError** from `assertRunToolLoopOptionNames` like any other unknown top-level option.
 
 ## Fold trigger ratio and the session continuity block (issue #569 / issue #568)
 

@@ -295,7 +295,7 @@ export const MIN_KEEP_ROUNDS = 5;
  *      当成「前 N 轮」重建摘要 ⇒ 估算对象与实际被折轮次不符（issue #873，PR #893 copilot ②）。
  *      为何改接口而不是在本函数里猜（issue #873
  *      验收阻断②）：三策略摘要来源各不相同（`fold-llm` 是模型写的、生成前拿不到长度；
- *      `fold-statistical` 是机械摘要但还拼 stubs / navigation / recovery hint / anchors；
+ *      `fold-statistical` 是机械摘要但还拼 stubs / navigation / recovery hint；
  *      `sliding-window` 不往输入里 prepend 摘要），用「机械摘要」估 `fold-llm` 会**低估**（模型
  *      摘要可能长得多 ⇒ 估算说 ≤ 65%、实际超），故本函数不再自己猜，开销由调用方声明。
  *
@@ -624,9 +624,6 @@ export function foldOptions(factoryOptions, callOptions = {}) {
       "workingSetRecentRounds",
       0,
     ),
-    // 锚点索引（A2）：默认启用；false 完全关闭（行为与 0.7.0 一致），
-    // 对象形式可夹取 { maxPerKind, maxChars }。
-    anchors: optionValue(callOptions, factoryOptions, "anchors"),
     roundOffset: Number.isFinite(callOptions.roundOffset)
       ? Math.max(0, Math.floor(callOptions.roundOffset))
       : Number.isFinite(factoryOptions?.roundOffset)

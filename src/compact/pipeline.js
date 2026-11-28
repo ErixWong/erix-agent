@@ -55,17 +55,8 @@ export const COMPACTION_PIPELINE = Object.freeze([
     strategyNames: ["fold-llm"],
   }),
   layer({
-    id: "anchors",
-    order: 5,
-    phase: "fidelity",
-    granularity: "folded-source-fragments",
-    trigger: "a fold emits an anchors or fold-fidelity section",
-    output: "bounded mechanical anchor index and optional verbatim user-input fidelity block",
-    strategyNames: ["fold-statistical", "fold-llm"],
-  }),
-  layer({
     id: "enforceSize",
-    order: 6,
+    order: 5,
     phase: "safety",
     granularity: "fields-and-messages",
     trigger: "fold-llm summary sizing or final context still exceeds the budget",

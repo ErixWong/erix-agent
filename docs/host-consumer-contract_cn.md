@@ -4745,34 +4745,19 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 2. 可选的 `导航记录：{…}` 行（有界 JSON，仅当被折叠的工具结果携带归档产物时出现）。
 3. 可选的 `[已折叠] …` 存根（最多 10 条）。
 4. 恢复提示行。
-5. 可选的**锚点索引**分节（机械抽取，不经 LLM 改写）：
-
-   ```
-   ## 锚点索引（机械抽取，未经 LLM 改写）
-   paths: src/a/b.js:12, …
-   shas: 1ed3f35, …
-   issues: #32, …
-   urls: https://…
-   errors: TypeError: …, …
-   ```
-
-   锚点用正则从被折叠的负载中抽取——只取自 `tool_result` 内容与真实用户消息，绝不取自
-   assistant 散文。各类按固定顺序 `paths, shas, issues, urls, errors` 渲染；
-   `errors` 行含 `Error`/`Exception`/`Traceback`/`fatal:`，逐字保留至多 120 字符、
-   最多 5 条。同一行内多个值以 `, ` 连接；值内的字面 `,` 或 `\` 在渲染时转义为
-   `\,` / `\\`，在该分节被重新解析时反转义，因此每一类都能在反复折叠之间无损往返
-   （例如错误行 `Error: failed, retry later` 或 URL 查询串 `?a=1,2` 仍是单个值）。
-   注意 `paths` 的正则字符集排除了 `,`，含逗号的 paths 不会被抽取——这是接受的漏报代价。
-   上限：锚点总计 20 个，整个分节 1200 字符（按频次排序，其次按首次出现）。连续折叠之间
-   该分节会被重新解析并按类做并集合并（既有条目在前、新条目追加、去重）后重新钳制，
-   因此锚点在反复折叠中不丢失、不重复、不溢出。
-
-   锚点分节默认开启。传 `anchors: false`（策略工厂或每次 `compact` 的选项）可恢复
-   0.7.0 的确切行为——没有锚点分节，且此前折叠摘要中带有的锚点分节会在合并时被丢弃
-   （一次 `anchors: false` 折叠会彻底移除早先默认折叠创建的锚点分节）；摘要其余部分
-   不变。对象形态 `anchors: { maxPerKind, maxChars }` 可钳制每类条数与分节字符数。
-   在 `fold-llm` 中，该分节在 LLM 摘要之后（且在尺寸钳制之后）追加，因此
-   `maxSummaryTokens` 截不到它。
+**锚点索引已删（issue #261127-19）。** 机械抽取的 `## 锚点索引` 分节（`paths` / `shas` / `issues` /
+`urls` / `errors`，上限 20 条 / 1200 字符）没了，只为关掉它而存在的 `anchors: false` /
+`anchors: { maxPerKind, maxChars }` 开关也一起没了。两条独立理由，都记在
+`docs/design/2026-11-27-context-and-fold-shape.md` §3.8：抽取在**枚举无穷**（CSS 十六进制颜色被抽成
+假 issue——`background: #0a0e18` → `#0`；模板字符串被截成 `http://localhost:${config.port`；YAML 的
+`# TODO` 与 base64 里的十六进制撞同一批正则）；而渲染它一折约 200 token，历史层预算只有 5k——**40%
+换一堆没有上下文的裸字符串**，不渲染则只是 `messages` 全文索引的一份更差的副本。它想防的「写错 sha
+是静默损坏」也不成立：`git show f6a8dab` 会**响亮地报错**。所以精确值就写在散文里（"commit f6a8da8"），
+被折轮次的逐字取回是 `recall_read` 的活（issue #896）。退役的 `anchors` 键在每个入口都没了，而三个入口行为不同（实测，issue #261127-19）：
+`context.anchors` 在装配口报一条 `context_unknown_option`、在细粒度那一路静默容忍；策略级
+`anchors`（`createFoldStatisticalStrategy({ anchors })` 或 `compact(…, { anchors })`）**静默忽略**——
+不报事件也不抛错；而顶层 `runToolLoop({ anchors })` 与其它未知顶层选项一样，由
+`assertRunToolLoopOptionNames` 抛 **TypeError**。
 
 ## 折叠触发比例与会话续接块（issue #569 / issue #568）
 

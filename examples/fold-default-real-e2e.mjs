@@ -73,7 +73,7 @@
 // token 不在抽取面内**。所以「TOK 标记逐字保留」若指望模型复述，就变成赌模型自由（真机 e2e 赌
 // 这个 = 随机假红）；把它放进路径形态，测的才是**产品真有的那一层**：语义摘要之后，机械锚点节
 // 是否还在（`appendFoldFidelity` 在 `enforceSummarySize` **之后**追加，预算削不掉它）。
-// 离线自检那一条把这个机制钉住（`extractAnchors` 对同一份夹具必须吐出逐字标记）。
+// ⚠ 这一段是历史：锚点索引已随 issue #261127-19 整块删除，判据 ③ 因此退役（见该处注释）。
 //
 // 隔离：不给 store（`runToolLoop` 不落盘），只读 `~/.erix` 的配置；唯一的输出是 stdout 上的诊断行与块原文。
 
@@ -85,7 +85,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { createOpenAIProvider, runToolLoop } from "../src/index.js";
-import { ANCHOR_SECTION_HEADING, extractAnchors } from "../src/compact/anchors.js";
 import { SUMMARIZER_PROMPT_GUIDE } from "../src/compact/fold-llm.js";
 import { FOLD_SUMMARY_MARKER, createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { estimateMessageTokens } from "../src/tokens.js";
@@ -440,14 +439,10 @@ test("断言集自身的不变量：摘要器分类 / 折叠块定位 / 机械�
   assert.equal(foldBlockOf([{ role: "user", content: [{ type: "text", text: original }] }], original), undefined,
     "content[0] 还是原始提示词时不许当成折叠块");
 
-  // ③ 机械保真层真的会保标记：同一份夹具（标记长在路径里）⇒ 锚点节逐字含它。
-  //    这条钉的是判据 ③ 的机制本身——锚点抽取面一旦收缩，真机那条会变成赌模型复述。
-  const anchors = extractAnchors([
-    { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: paragraphOf(3, marker) }] },
-  ]);
-  assert.equal(anchors.text.includes(ANCHOR_SECTION_HEADING), true, "锚点节标题必须在场");
-  assert.equal(anchors.text.includes(marker), true,
-    `锚点节没逐字保住 TOK 标记（判据 ③ 的机制塌了）：${anchors.text}`);
+  // ③ **已退役（issue #261127-19）**：这一条原来钉的是「机械锚点节逐字保住被折轮次的 TOK 标记」。
+  //    锚点索引整套删掉之后，那个机制不存在了 —— 被折轮次的逐字取回改由 `recall_read` 负责
+  //    （issue #896，覆盖在 `test/tools/recall-*.test.js`）。这里**不**改成「赌模型复述标记」：
+  //    那正是这条判据当初要躲的随机假红。
 
   // ④ 预置历史真的够大：轮数 > keepRounds 默认 6，且估算 token > 预算（判据「折叠必然发生」的前提）。
   const markers = new Map(Array.from({ length: SEGMENTS }, (_, position) => [position + 1, `TOK-${position + 1}-cafebabe`]));
@@ -492,25 +487,17 @@ test("真模型端点 e2e（默认策略臂）：默认 fold-llm ⇒ 块在 + �
     `摘要器一次都没被调用（默认策略跑成了统计摘要？）：counts=${JSON.stringify(arm.counts)}`
     + ` compactionStats=${JSON.stringify(arm.stats)}`);
 
-  // 判据 ③ 机械保真层没被语义层挤掉：块里（锚点节）逐字保留**被折轮次**的 TOK 标记，且**没有编造**标记。
-  assert.equal(arm.block.includes(ANCHOR_SECTION_HEADING), true,
-    `折叠块里没有锚点节（机械保真层被语义层挤掉了）：${arm.block.slice(-400)}`);
-  const issued = [...arm.markers.values()];
-  const inBlock = issued.filter((marker) => arm.block.includes(marker));
-  assert.ok(inBlock.length >= 1,
-    `折叠块里一个 TOK 标记都没保住（机械保真层失效）：被折区间=${JSON.stringify(arm.foldedRoundRange)}`
-    + `｜块尾=${JSON.stringify(arm.block.slice(-400))}`);
-  const fabricated = [...arm.block.matchAll(/TOK-\d+-[0-9a-f]+/gu)]
-    .map((matched) => matched[0])
-    .filter((marker) => !issued.includes(marker));
-  assert.deepEqual(fabricated, [], `折叠块里出现了没发过的 TOK 标记（编造）：${fabricated.join(",")}`);
+  // 判据 ③ **已退役（issue #261127-19）**：原来钉「块里的锚点节逐字保住被折轮次的 TOK 标记，且没有编造」。
+  // 锚点索引删掉后这个机制不存在了；被折轮次的逐字取回是 `recall_read` 的活（issue #896，离线全覆盖）。
+  // 反过来这里也**不**去断言「块里没有 TOK 标记」：模型完全可以自己提到某个路径，那是它的自由，
+  // 钉住会把一次合规输出判成红。
 
   // 隔离：不给 store ⇒ 真实 `~/.erix/transcripts` 下不许出现本次 runId 的产物。
   const realTranscript = join(process.env.HOME ?? homedir(), ".erix", "transcripts", "fold-default-real-619.jsonl");
   assert.equal(existsSync(realTranscript), false, `真实 ~/.erix/transcripts 下出现了本次 run 的账本：${realTranscript}`);
 
   console.log(`[619] PASS ① 语义分节在场 ② 摘要器请求=${arm.counts.summarizer}`
-    + ` ③ 块里保住被折轮次的标记 ${inBlock.length} 个（${inBlock.join(",")}）`
+    + ` ③ 已退役（锚点索引随 #261127-19 删除）`
     + `｜被折区间=${JSON.stringify(arm.foldedRoundRange)}`);
 });
 

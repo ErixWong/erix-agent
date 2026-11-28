@@ -1912,10 +1912,11 @@ export function buildErrorPayload(error, input) {
  *
  * 层 id **一律取引擎声明里的真实 id**：`COMPACTION_LAYER_IDS`（`src/compact/pipeline.js`）由
  * `COMPACTION_PIPELINE`（`src/compact/pipeline.js`）的 id 派生，当前是
- * ttl / slidingWindow / foldStatistical / foldLlm / anchors / enforceSize；下面四个展示归组
+ * ttl / slidingWindow / foldStatistical / foldLlm / enforceSize；下面三个展示归组
  * 的依据就是那份声明里的 `granularity` / `phase` 字段（whole-round → 整轮折叠，
- * single-result → 逐条 TTL 削减，safety 阶段的 fields-and-messages → 输出钳制，
- * fidelity → 折叠锚点/保真）。本表只做**展示归组**：不新增层、不重命名层、不参与判定。
+ * single-result → 逐条 TTL 削减，safety 阶段的 fields-and-messages → 输出钳制）。本表只做
+ * **展示归组**：不新增层、不重命名层、不参与判定。
+ * （`anchors` 层随 issue #261127-19 删除，`foldFidelity` 这一组因此不再有成员。）
  * 数据里出现的**未知层 id** 一律进 `unattributed` 并单独渲染，绝不静默丢弃——引擎加层时
  * 这里最坏是「归组名字还没起」，不会重演「数字被 compacted=false 盖掉」那次事故。
  */
@@ -1927,7 +1928,6 @@ export const COMPACTION_LAYER_ROLES = Object.freeze([
   }),
   Object.freeze({ key: "ttlResultFold", label: "逐条TTL削减", layerIds: Object.freeze(["ttl"]) }),
   Object.freeze({ key: "outputClamp", label: "输出钳制", layerIds: Object.freeze(["enforceSize"]) }),
-  Object.freeze({ key: "foldFidelity", label: "折叠锚点", layerIds: Object.freeze(["anchors"]) }),
 ]);
 
 /**

@@ -5,11 +5,9 @@ import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import { terminationErrorCodeForError } from "../loop/termination.js";
 import { KitError } from "../providers/errors.js";
 import { enforceSize } from "./enforce-size.js";
-import { extractAnchors } from "./anchors.js";
 import { buildFoldFidelitySection } from "./fold-fidelity.js";
 import {
   buildFoldNavigationRecord,
-  stripAnchorSection,
   summarizeFoldedPayload,
 } from "./fold-statistical.js";
 import {
@@ -59,16 +57,14 @@ function withRecoveryHint(summary, recoveryHint) {
   return `${summary}\n## 恢复提示\n${recoveryHint}`;
 }
 
-// 机械保真层（锚点索引 / 逐字引用 / 反向信号）在尺寸截断**之前**追加（issue #873 修复①）：
+// 机械保真层（逐字引用 / 反向信号）在尺寸截断**之前**追加（issue #873 修复①）：
 // 整份摘要（模型正文 + 恢复提示 + 这一层）随后一起过 `enforceSummarySize(summaryBudget)`，
 // 所以声明给选择器的 `summaryOverheadTokens: summaryBudget` 是**真上界**——旧顺序在夹断之后
 // 追加，保真层削不掉且让最终摘要**大于**声明值，选择器会过早停折、落点高于 0.65×预算。
 // 没有抽到任何内容时不输出空小节。
-// anchors:false 时跳过锚点节（其余保真层不变，向后兼容 0.7.0 关闭形态）。
-function appendFoldFidelity(summary, foldedPayload, anchorSettings, onLayer) {
-  const fidelity = buildFoldFidelitySection(foldedPayload, { anchors: anchorSettings });
+function appendFoldFidelity(summary, foldedPayload) {
+  const fidelity = buildFoldFidelitySection(foldedPayload);
   if (fidelity === undefined) return summary;
-  onLayer?.({ layerId: "anchors" });
   return summary.trim() === "" ? fidelity : `${summary}\n\n${fidelity}`;
 }
 
@@ -97,29 +93,8 @@ function isRealUser(message) {
     || blocks.some((block) => block?.type !== "tool_result");
 }
 
-// anchors:false（评审终审修复）：对 head 全部消息的所有 text 块统一剥离锚点节——
-// 定点清理只覆盖目标消息，summaryRole:"system" 或 role 切换时旧摘要落在另一 role 的
-// 消息里会残留锚点节。复用 fold-statistical 的 stripAnchorSection，不复制实现；
-// anchorsEnabled 缺省为 true 时 head 原样不动，行为与之前字节级一致（向后兼容）。
-function stripAnchorsFromHead(head, anchorsEnabled) {
-  if (anchorsEnabled) return head;
-  return head.map((message) => {
-    const content = typeof message?.content === "string"
-      ? [{ type: "text", text: message.content }]
-      : Array.isArray(message?.content)
-        ? message.content
-        : [];
-    const stripped = content.flatMap((block) => {
-      if (block?.type !== "text" || typeof block.text !== "string") return [block];
-      const text = stripAnchorSection(block.text);
-      return text.trim() === "" ? [] : [{ ...block, text }];
-    });
-    return { ...message, content: stripped };
-  });
-}
-
-function prependSummary(head, summary, summaryRole = "user", anchorsEnabled = true) {
-  const strippedHead = stripAnchorsFromHead(head, anchorsEnabled);
+function prependSummary(head, summary, summaryRole = "user") {
+  const strippedHead = head;
   if (summaryRole === "system") {
     const systemIndex = strippedHead.findLastIndex((message) => message?.role === "system");
     if (systemIndex < 0) {
@@ -172,8 +147,9 @@ function priorityForHeading(heading) {
   // `## 行动`。
   if (heading.includes("行动")) return 2;
   if (heading.includes("教训与坑")) return 2;
-  // issue #873 修复① 的配套：机械保真层节（用户逐字引用 / 反向信号）现在**在**摘要预算内，
+  // issue #873 修复① 的配套：机械保真层节（用户逐字引用）现在**在**摘要预算内，
   // 它必须排在合同节**之后**被剪，否则 #469-C ①「默认预算装得下全部合同节」会破防。
+  // （锚点索引那一档随 issue #261127-19 删除。）
   if (heading.includes("用户最新未解决输入")) return 5;
   return 4;
 }
@@ -443,12 +419,6 @@ export function createFoldLlmStrategy({
         // issue #566：本折的机械替代物总是算（零 LLM）。
         // `compactedSummary` 是续写累计体（prior 会被续写进输出），
         // 不是本折增量。
-        const fallbackAnchors = settings.anchors === false
-          ? undefined
-          : extractAnchors(
-            foldedPayload,
-            settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {},
-          );
         const mechanicalSummaryText = summarizeFoldedPayload(foldedPayload, {
           from: range.from,
           to: range.to,
@@ -456,7 +426,6 @@ export function createFoldLlmStrategy({
           recoveryHint,
           stubs: foldedStubs,
           ...(navigationRecord === undefined ? {} : { navigationRecord }),
-          ...(fallbackAnchors === undefined ? {} : { anchors: fallbackAnchors }),
         });
         // issue #873（copilot 拦下的第 ① 条）：**保真层先拼、尺寸后管**。最终进消息的摘要
         //（模型正文 + 恢复提示 + 机械保真层）整体受同一个 `summaryBudget` 约束 ⇒ 本函数上面
@@ -467,8 +436,6 @@ export function createFoldLlmStrategy({
           appendFoldFidelity(
             withRecoveryHint(summary, recoveryHint),
             foldedPayload,
-            settings.anchors,
-            settings.onLayer,
           ),
           summaryBudget,
           settings.onLayer,
@@ -516,7 +483,6 @@ export function createFoldLlmStrategy({
           head,
           compactedSummary,
           settings.summaryRole,
-          settings.anchors !== false,
         );
       }
 

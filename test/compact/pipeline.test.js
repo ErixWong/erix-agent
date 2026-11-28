@@ -10,13 +10,12 @@ import {
   getCompactionLayerForStrategy,
 } from "../../src/compact/pipeline.js";
 
-test("compaction registry declares the six layers in stable order", () => {
+test("compaction registry declares the five layers in stable order", () => {
   assert.deepEqual(COMPACTION_LAYER_IDS, [
     "ttl",
     "slidingWindow",
     "foldStatistical",
     "foldLlm",
-    "anchors",
     "enforceSize",
   ]);
   assert.deepEqual(

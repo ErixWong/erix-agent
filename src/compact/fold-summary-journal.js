@@ -200,7 +200,7 @@ export const FOLDED_FACTS_INCREMENT_KEY = "increment";
 
 /**
  * 替代物投影的字节上界（issue #470-B，#897 放宽）。
- * 机械文本本身有界（锚点索引带 `maxPerKind`/`maxChars`），这里再夹一刀，
+ * 机械文本本身有界（逐字引用与反向信号两层各自带字数上界），这里再夹一刀，
  * 防 #460 那条 O(n) 在摘要面复发（与 #335 重复存储同族）。
  *
  * issue #897 放宽理由：description 是 500 token 的段落（中文 ≈1,000 字节、英文 ≈1,500 字节），
