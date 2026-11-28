@@ -156,10 +156,32 @@ export function foldRecordsToFacts(rows) {
   const results = [];
   for (let i = 0; i < sorted.length; i++) {
     const prefix = sorted.slice(0, i + 1);
-    const previousCutRound = i > 0 ? sorted[i - 1]?.cutRound : undefined;
-    const facts = fromFoldRecords(prefix, {
-      ...(previousCutRound !== undefined ? { previousCutRound } : {}),
-    });
+    const row = sorted[i] ?? {};
+    // **第一折的 `from` 是 0，不是「拿不到」**（copilot 复审 #993 ①）：`from` 的语义是
+    // 「已折到的水位」，水位起点就是 0。这里写 0 是**定义**，不是猜。不写的话
+    // `foldRecordSegments`（`fold-statistical.js:520`）会因为缺 `from`/`to` **整份账本放弃**、
+    // 退回解析块 ⇒ resume 之后统计折的读法静默退化。
+    const previousCutRound = i > 0
+      ? Number.isSafeInteger(sorted[i - 1]?.cutRound) ? sorted[i - 1].cutRound : undefined
+      : 0;
+    const facts = fromFoldRecords(prefix, { previousCutRound });
+    // **本折自己的那份**（copilot 复审 #993 ①）：`fromFoldRecords` 的 `text` 是**累计**正文
+    // （契约语义），而 `foldRecordSegments` 把 `record.text` 当**单折**正文用。所以补三个派生键，
+    // 让读侧拿到的每一折都带着「这一折是什么」：
+    //   · `summary` = 这一行的 `description`（语义折的模型正文，`ledgerSummary` 读它）；
+    //   · `increment.text` = 同一个 `description`（`detailText` 读它，单折文本）；
+    //   · `increment.{from,to,rounds}` = 与父键同值（`foldRecordSegments` 也从 increment 兜底取）。
+    // 这三个键**不是列**，是从列导出的；写进派生对象是因为旧形状的读侧就是按旧形状写的。
+    const description = typeof row.description === "string" ? row.description : undefined;
+    if (description !== undefined) {
+      facts.summary = description;
+      facts.increment = {
+        text: description,
+        ...(Number.isSafeInteger(facts.from) ? { from: facts.from } : {}),
+        ...(Number.isSafeInteger(facts.to) ? { to: facts.to } : {}),
+        ...(Number.isSafeInteger(facts.rounds) ? { rounds: facts.rounds } : {}),
+      };
+    }
     results.push(facts);
   }
   return results;
