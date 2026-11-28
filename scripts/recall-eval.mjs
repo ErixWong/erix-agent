@@ -165,6 +165,55 @@ function makeMeteredProvider(slot) {
  *
  * 内容确定性生成（无随机），保证 A/B 两组拿到逐字相同的账本。
  */
+/**
+ * 填充值：与埋点值**同形**（同长度量级、同字符集），只是数值不同。
+ *
+ * 为什么必须同形（261128 第三版）：上一版填充值是 `ok` / `off` / `4` / `true` 这类短词，而埋点是
+ * `412ms` / `src/db/schema/orders.sql` / `tok-7f3a` —— 摘要器只要"挑一条最特别的写进摘要"就能带上
+ * 埋点，于是那几格**测不到召回**（实测 2/6 场景因此被取消资格）。同形之后 40 条候选没有哪条更
+ * 值得抄，摘要只能写"读了 40 行清单"。
+ *
+ * @param {{ marker?: string } | undefined} burial
+ * @param {number} index
+ * @returns {string}
+ */
+function fillerValue(burial, index) {
+  const marker = typeof burial?.marker === "string" ? burial.marker : "";
+  const value = marker.slice(marker.indexOf("=") + 1);
+  // ① 纯数字（可带单位）：同量级、同单位的其它数。
+  const numeric = /^(\d+(?:\.\d+)?)([a-z%]*)$/u.exec(value);
+  if (numeric !== null) {
+    const base = Number(numeric[1]);
+    const scaled = Math.max(1, Math.round(base * (0.55 + ((index * 37) % 90) / 100)));
+    return `${scaled === base ? scaled + 7 : scaled}${numeric[2]}`;
+  }
+  // ② 路径：同目录、同后缀。
+  if (value.includes("/")) {
+    const dir = value.slice(0, value.lastIndexOf("/"));
+    const ext = value.slice(value.lastIndexOf("."));
+    return `${dir}/alt${String(index).padStart(2, "0")}${ext}`;
+  }
+  // ③ 令牌 `tok-7f3a`：同前缀、同长度、同字符集。
+  if (/^[a-z]+-[0-9a-f]{4}$/u.test(value)) {
+    const prefix = value.slice(0, value.indexOf("-"));
+    const tail = (0x7f3a + (index + 1) * 0x0113).toString(16).padStart(4, "0").slice(-4);
+    const candidate = `${prefix}-${tail}`;
+    return candidate === value ? `${prefix}-dead` : candidate;
+  }
+  // ④ **任何含数字的值**（`OWNER-7`、`no-retry-on-4xx（4xx 是客户端错…）`）：把所有数字段换成
+  //    另一个数，前缀/后缀/括注**逐字保留**。没有这一支，这两种值会掉进 ⑤ 的短词池，40 条候选
+  //    只剩 7 个不同值 ⇒ 埋点又变成「最特别的那条」（copilot 复审 #990 抓到的缺口）。
+  const digits = /\d+/u.exec(value);
+  if (digits !== null) {
+    const original = digits[0];
+    let next = String(index + 1);
+    if (next === original) next = String(index + 1 + 40);
+    return value.split(original).join(next);
+  }
+  // ⑤ 其余（不含数字的短词）：轮换。保持原有行为。
+  return ["ok", "off", "4", "1.5", "auto", "true", "3"][index % 7];
+}
+
 function codeList(n, topic, burial) {
   const modules = [
     "gateway/router.ts", "gateway/auth.ts", "gateway/ratelimit.ts", "gateway/cors.ts",
@@ -192,7 +241,7 @@ function codeList(n, topic, burial) {
       ? burial.marker
       : (burial !== undefined && burial.round === n && burial.secondIndex === index
         ? burial.secondMarker
-        : `kv[${200 + index}]=${["ok", "off", "4", "1.5", "auto", "true", "3"][index % 7]}`);
+        : `kv[${200 + index}]=${fillerValue(burial, index)}`);
     return `${module}:${seq}  // ${topic}·第${n}轮快照 ${planted} export ${module.split("/").pop().replace(".ts", "")}Handler`
       + `(input: { id: string; retries: number }) → { ok: boolean; seq: ${seq} }`;
   });
@@ -563,11 +612,17 @@ const { values: cli } = parseArgs({
     slot: { type: "string", default: "default" },
     out: { type: "string", default: "/tmp/recall-eval-results.json" },
     "max-rounds": { type: "string", default: "12" },
+    // 每个 (场景, 组) 重复几轮。**必须 >1 才能得出可比的结论**：取消资格不是场景的属性，
+    // 而是「这一次摘要有没有保留那个值」——实测同一配置两跑，被取消资格的是不同的 3/6 格。
+    // 单跑比较的是两个不同的分母。
+    reps: { type: "string", default: "1" },
   },
 });
 
 const maxRounds = Number(cli["max-rounds"]);
 if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) throw new Error("--max-rounds 必须是正整数");
+const reps = Number(cli.reps);
+if (!Number.isSafeInteger(reps) || reps <= 0) throw new Error("--reps 必须是正整数");
 const wantScenarios = cli.scenarios.split(",").map((s) => Number(s.trim())).filter(Number.isSafeInteger);
 const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase()).filter((g) => g === "A" || g === "B");
 
@@ -580,9 +635,10 @@ for (const s of wantScenarios) {
   const scenario = scenarios.find((x) => x.id === s);
   if (scenario === undefined) { console.error(`未知场景 ${s}`); continue; }
   for (const g of wantGroups) {
-    process.stdout.write(`▶ 场景 ${s}（${scenario.name}）组 ${g} … `);
+   for (let rep = 1; rep <= reps; rep += 1) {
+    process.stdout.write(`▶ 场景 ${s}（${scenario.name}）组 ${g}${reps > 1 ? ` #${rep}` : ""} … `);
     const r = await runOne({ scenario, group: g, slot: slotInfo.slot, maxRounds });
-    results.push(r);
+    results.push({ ...r, rep });
     if (r.disqualified !== null) {
       console.log(`   ⚠ 取消资格（${r.disqualified}）：这一格测不出召回，不计入汇总`);
     }
@@ -594,7 +650,25 @@ for (const s of wantScenarios) {
     );
     if (r.runError) console.log(`   ⚠ runError: ${JSON.stringify(r.runError)}`);
     console.log(`   finalText: ${String(r.finalText).slice(0, 300)}`);
+   }
   }
+}
+
+/**
+ * 「这一跑真的测到了召回」的**完整判据**（copilot 复审 #990 的阻塞点）。
+ *
+ * 不能只看 `disqualified === null`：那个字段只在**观测到**「折叠后仍看得见事实」时才被置值。
+ * A 组根本不折叠 ⇒ 恒为 null；B 组若这一跑没折叠、折叠后没有主请求、或跑出错误，也都是 null。
+ * 把它们算进「可测」，分母就掺进了「没测」的跑。
+ *
+ * 所以三条同时成立才算可测：**B 组** ∧ **真的折叠了**（`folded === true`）∧
+ * **折叠后事实确实不在上下文里**（`factStillInContextAfterFold === false`，不是 null）。
+ *
+ * @param {any} r
+ * @returns {boolean}
+ */
+function isMeasurable(r) {
+  return r.group === "B" && r.folded === true && r.factStillInContextAfterFold === false;
 }
 
 const totals = { model: slotInfo.slot.model, input: 0, output: 0, wallMs: 0 };
@@ -602,26 +676,66 @@ for (const r of results) {
   for (const k of Object.values(r.usageByKind)) { totals.input += k.input; totals.output += k.output; }
   totals.wallMs += r.wallMs;
 }
-// 汇总：**排除被取消资格的场景**（它们测不出召回，算进去会让 B 组虚高）。
-const counted = results.filter((r) => r.disqualified === null);
+// 落盘的汇总**必须与终端同一口径**（copilot 复审 #990 第二次：终端改了、JSON 没改，等于
+// 存了一份掺了「没测」的分母）。A 与 B 分开，不合并成一个 correct/total。
+const byGroupRows = (g) => results.filter((r) => r.group === g);
+const aRows = byGroupRows("A");
+const bRowsAll = byGroupRows("B");
+const bMeasured = bRowsAll.filter(isMeasurable);
+const groupStats = (rows, measured) => ({
+  runs: rows.length,
+  // A 组没有「可测」这回事：不折叠，`factStillInContextAfterFold` 恒为 null。
+  measured: measured === undefined ? null : measured.length,
+  correct: (measured ?? rows).filter((r) => r.correct).length,
+  recallCalls: rows.reduce((sum, r) => sum + r.recallToolCalls, 0),
+  inputTokens: rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0),
+});
 const summary = {
-  counted: counted.length,
-  disqualified: results.length - counted.length,
-  correct: counted.filter((r) => r.correct).length,
-  byGroup: Object.fromEntries([...new Set(results.map((r) => r.group))].map((g) => {
-    const rows = counted.filter((r) => r.group === g);
-    return [g, {
-      scenarios: rows.length,
-      correct: rows.filter((r) => r.correct).length,
-      recallCalls: rows.reduce((sum, r) => sum + r.recallToolCalls, 0),
-      inputTokens: rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0),
-    }];
-  })),
+  // 两种口径都写进文件，谁读都不用自己再推一遍。
+  baseline: groupStats(aRows),
+  foldAndRecall: groupStats(bRowsAll, bMeasured),
+  // 未测到的跑单独计数（没折叠 / 折叠后事实仍可见 / 跑错）。
+  notMeasured: bRowsAll.length - bMeasured.length,
+  byGroup: { A: groupStats(aRows), B: groupStats(bRowsAll, bMeasured) },
 };
-console.log(`\n汇总（已排除 ${summary.disqualified} 个取消资格的场景）：`
-  + Object.entries(summary.byGroup)
-    .map(([g, v]) => `${g} ${v.correct}/${v.scenarios} 召回 ${v.recallCalls} 次 ↑${v.inputTokens}`)
-    .join("｜"));
+
+// 逐场景：**可测率**才是这一格的性质（不是单跑那一次的资格）。reps>1 时才打。
+if (reps > 1) {
+  console.log("\n逐场景（可测 = 折叠后事实确实不在上下文里；正确率只在可测那几跑里算）：");
+  const byScenario = new Map();
+  for (const r of results) {
+    const key = `${r.scenario}|${r.group}`;
+    if (!byScenario.has(key)) byScenario.set(key, []);
+    byScenario.get(key).push(r);
+  }
+  for (const [key, rows] of byScenario) {
+    const [sid, g] = key.split("|");
+    const recalls = rows.reduce((sum, r) => sum + r.recallToolCalls, 0);
+    const tokens = rows.reduce((sum, r) => sum + (r.usageByKind.main?.input ?? 0), 0);
+    if (g === "A") {
+      // A 组不折叠 ⇒ 没有「可测」这回事，只报**基线**：不折叠时答得对不对。
+      console.log(`  场景 ${sid} 组 A：基线答对 ${rows.filter((r) => r.correct).length}/${rows.length}`
+        + `｜召回 ${recalls} 次｜↑${tokens}`);
+      continue;
+    }
+    const measurable = rows.filter(isMeasurable);
+    const correct = measurable.filter((r) => r.correct).length;
+    const notMeasured = rows.filter((r) => !isMeasurable(r));
+    console.log(`  场景 ${sid} 组 B：可测 ${measurable.length}/${rows.length}`
+      + `｜可测里答对 ${correct}/${measurable.length}`
+      + `｜未测到 ${notMeasured.length} 跑（没折叠 / 折叠后事实仍可见 / 跑错）`
+      + `｜召回 ${recalls} 次｜↑${tokens}`);
+  }
+}
+
+// 终端汇总直接读落盘的同一份 `summary`（**不许各算一套** —— copilot 复审 #990 第二次就是
+// 「终端改了、JSON 没改」，等于存了一份掺了「没测」的分母）。
+console.log(`\n汇总：`
+  + `A 基线 ${summary.baseline.correct}/${summary.baseline.runs}`
+  + `｜B 可测 ${summary.foldAndRecall.measured}/${summary.foldAndRecall.runs}`
+  + `，可测内答对 ${summary.foldAndRecall.correct}/${summary.foldAndRecall.measured}`
+  + `｜B 未测到 ${summary.notMeasured} 跑`
+  + `｜B 召回 ${summary.foldAndRecall.recallCalls} 次（含未测到的跑）`);
 console.log(`总量：model=${totals.model} ↑${totals.input} ↓${totals.output} 墙钟=${totals.wallMs}ms`);
 writeFileSync(cli.out, JSON.stringify({ slot: slotInfo.slot.model, totals, summary, results }, null, 2));
 console.log(`结果 JSON：${cli.out}`);
