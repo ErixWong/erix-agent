@@ -6,6 +6,66 @@
 > ——折叠改为**每次一条局部日志**，原文不复制，上下文按预算梯度渲染。本文正文**一字未改**（决策记录不
 > 事后重写），做对的部分（`rounds` 形状、`fold_round_rows`、恢复行两族语义、事实分层）被设计稿原样沿用。
 
+> **第二刀（2026-11-28）——`folds` 的列集合落到形状稿的九列，外加一个幂等键。** 本文 §1.3 要求
+> 「与 `buildFoldedFacts` 的返回键逐键对齐，一个都不许丢」；那条规则把**实现细节当成了契约**：
+> `buildFoldedFacts` 是「一份累计替代物」那个形状的产物。第二刀按形状稿
+> （[`docs/design/2026-11-27-context-and-fold-shape.md`](../design/2026-11-27-context-and-fold-shape.md)
+> §1.4）定为九列，**外加 `fold_id`**（理由见下）。正文**不改**（同一纪律：决策文不事后重写），
+> §1.3 与 §5 判据 8 里的旧列集合**已被本节取代**。
+>
+> | 列 | 类型 | 说明 |
+> |---|---|---|
+> | `run_id` / `seq` | text / bigint | **PK(run_id, seq)**；`seq` 由写入方分配（§1.3 末段那条分配器逻辑不变） |
+> | `fold_id` | text | **UNIQUE(run_id, fold_id)** —— **幂等键**，见下 |
+> | `cut_round` / `cut_msg_seq` | int | 切点：这一折吃掉「≤ 此切点」的全部消息 |
+> | `title` | text | 模型写的短标题，可空；模型没给就是 `NULL`（**新写入必须绕过 `buildFoldedFacts` 的首行回退**，否则回退出来的标题会被当成模型标题存下） |
+> | `description` | text | 模型写的三节（行动 / 遗留 / 关键词），约 400 token |
+> | `tokens_before` / `tokens_after` | int | 折叠前后上下文 token（省了多少挂在折上） |
+> | `created_at` | timestamptz | 信封时刻 |
+>
+> **为什么形状稿的九列不够：幂等键不是行身份。** 形状稿 §1.4 写「折叠身份就是主键 `(run_id, seq)`，
+> 不需要哈希」——那对**读**成立，对**写**不成立：`seq` 是写入时分配的，重投同一份折叠会拿到**新号**，
+> 于是「同一次折叠重放」变成两行。现有两个实现都靠 `foldId` 去重：`src/store/folds.js:8-9`
+> （「命中已投的 `foldId` 拿回首次那个号」）、`src/store/memory.js:261-264` 与 `src/store/file.js:817-820`
+> （按 `foldId` 找已有行）。所以 `fold_id` 是**必需列**，形状稿这一句要按此更正。
+>
+> **累计正文 `text` 不是列**：它是「`seq ≤ n` 的 `description` 按序拼接」这个函数。存它就是同一件事
+> 存 N 份、每份越来越长（实测摘要 3.9k → 5.9k → 6.9k token，涨的全是重复），而且每次重写不可审计。
+>
+> **「退役」= 不再是列，不等于不再是宿主可见的键。** `foldedFacts` 是**契约面**
+> （`docs/host-consumer-contract.md:6962` 逐字列出 `{ text, source, strategy, from, to, rounds, bytes,
+> truncated?, degradeReason?, foldId, seq }`，`onFoldSummary` 还把它整份递给宿主）。所以下面这张表说的是
+> **表里不再存**，宿主侧那些键要么由九列**导出**，要么按废弃流程单独走——不能因为「没人读」就当它不存在。
+>
+> | 代码里的键 | 表里被什么取代 | 宿主可见性 |
+> |---|---|---|
+> | `text` | `description` 按 `seq` 拼接渲染（函数） | 契约键，**仍递**（导出值）；`recall_ask` 的证据面要改成按 `cut_round` 取原文 |
+> | `summary` / `summaryDropped` | 并进 `description`；「被挤掉」不再是状态——解析不出就是折叠失败 | 契约未单独列 `summaryDropped` |
+> | `origin` / `source` / `strategy` | 折叠文本的作者只有一种（引擎摘要器） | `source` / `strategy` 是**契约键**，导出值；`origin` 零读者零契约 |
+> | `toolCalls` | `description` 的 `## 行动` | 契约未单列 |
+> | `bytes` / `bytesBefore` / `truncated` | `tokens_before` / `tokens_after`（只留预算尺子） | `bytes` / `truncated` 是**契约键**（`:6962` 逐字列出），导出值；`bytesBefore` 零读者零契约 |
+> | `degradeReason` | 不降级：解析不出就是折叠失败 | **契约键**（可选），导出值 |
+> | `fingerprint` | 并入 `fold_id`（同一身份） | 契约里由 `foldId` 承担 |
+> | `titleFallback` | `title IS NULL` 就是「模型没给」 | 零读者零契约 |
+> | `descriptionTruncated` | 今天零读者零契约（`src/` 只有转发链，契约零提及） | 零读者零契约 |
+> | `from` / `to` / `rounds` | `cut_round` + 上一折切点（`seq-1`）推出区间 | **契约键**（`:6962` 列出 `from`/`to`/`rounds`），导出值 |
+> | `increment` | 就是这一行本身（一折一行，没有"增量"这回事） | 契约未单列 |
+> | `trigger` | **不是 `buildFoldedFacts` 的键**，也**不是** `folds` 的列 | 它是一等可选字段挂在 `compactionStats` 上（`orchestrator.js:275`、`:2780`），契约有审计语义 ⇒ **继续留在 `compactionStats`**，不进 `folds` |
+>
+> **落地时要跟着改的读点**（只列 `recall_ask` 是不完整的）：
+>
+> | 读点 | 现在读什么 | 九列之后 |
+> |---|---|---|
+> | `src/loop/recall-runner.js:27` | 折叠事实的 `text` | 按 `cut_round` 去 `rounds` 取原文 |
+> | `src/compact/resume-fold-trim.js:105` | `fact.text` + `foldedRoundRange.to` | 按 `seq` 取 `description` 拼接 |
+> | `src/compact/fold-statistical.js:790` / `:544` | `summary` / `toolCalls` | 这两个键不再由折叠产生 |
+> | `onFoldSummary` 的 payload | `{ ...foldedFacts, round }` 整份 | 由九列导出同样的键（契约面不动） |
+>
+> **§2 端口与 §5 判据 8 跟着变**：`appendFold(runId, fold)` 的入参是上表九列 + `fold_id`（**不含累计
+> `text`**），且必须保持「同 `fold_id` 重投 ⇒ 返回首次那个 `seq`」；`loadFolds(runId)` 返回**局部日志
+> 序列**，不是一份累计正文；判据 8 从「与 `buildFoldedFacts` 逐键对齐」改成「与本节列集合逐列对齐，
+> 且每个没有列的键都在退役表里有一行并注明宿主可见性」。
+
 - 状态：Proposed（2026-11-27，第二版）
 - 关联：#896（召回层）、#601（折叠记录账本）、#567（foldId/seq）、#769（恢复行独立通道）、#827（partial 槽）、
   ADR-018（notes）、ADR-020（transcript 单一来源）

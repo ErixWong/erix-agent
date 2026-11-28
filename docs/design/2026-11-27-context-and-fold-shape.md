@@ -288,6 +288,7 @@ msg_seq=3  tool       [tool_result(tu_3)]
 | 列 | 类型 | 约束 | 说明 |
 |---|---|---|---|
 | `run_id` / `seq` | text / bigint | **PK(run_id, seq)**, CHECK `seq >= 1` | 会话内严格递增折叠序 |
+| `fold_id` | text | **UNIQUE(run_id, fold_id)** | **幂等键**（261128 补）：`seq` 是写入时分配的，重投同一份折叠会拿新号 ⇒ 必须有稳定的输入身份才能「重投拿回原行」 |
 | `cut_round` / `cut_msg_seq` | int | not null | **切点**：这一折吃掉了「≤ 此切点」的全部消息 |
 | `title` | text | 可空，≤ 60 | **模型写的短标题**。模型没给就是 `NULL`——**不许用正文首行顶替**（见 §3.4 ①）。`NULL` 本身就是标记：渲染时这种折不进「遥远的回忆」层 |
 | `description` | text | not null | **模型写的三节**（行动 / 遗留 / 关键词），约 400 token |
@@ -335,7 +336,11 @@ msg_seq=3  tool       [tool_result(tu_3)]
 **没有 `description_tokens`**：`estimateTokens(description)` 对 ≤4000 字符是微秒级，每轮最多算 10 折；
 而这一列连代码里的读点都没有。缓存列的不一致风险（换 tokenizer 就过期）是实的。
 
-**折叠的身份就是主键 `(run_id, seq)`**。不需要哈希（那是给"没有行 id 的存储"发明的），也不需要
+**折叠的身份就是主键 `(run_id, seq)`——对「读」成立，对「写」不成立。** 261128 更正：`seq` 是写入时
+分配的，重投同一份折叠会拿到**新号** ⇒ 同一次折叠变两行。现有两个实现都靠 `foldId` 去重
+（`src/store/folds.js:8-9`「命中已投的 `foldId` 拿回首次那个号」、`src/store/memory.js:261-264`、
+`src/store/file.js:817-820`），所以 `folds` 还需要一列 `fold_id` + `UNIQUE(run_id, fold_id)`
+作为**幂等键**（ADR-022 顶部「第二刀」节）。仍然不需要
 `prior_seq`——切点严格连续 ⇒ "上一折"恒等于 `seq - 1`；水位线单调 ⇒ "同一切点两次折"这个场景不存在
 （代码里 `prior` / `previousFold` 零命中）。覆盖区间是 `(上一折的切点, 本折的切点]`，由 `seq` 顺序推。
 
