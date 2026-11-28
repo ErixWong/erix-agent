@@ -8,6 +8,13 @@
 // 用法：
 //   node scripts/recall-eval.mjs [--scenarios 1,2,...] [--groups A,B] [--slot default]
 //        [--out /tmp/recall-eval-results.json] [--max-rounds 12]
+//        [--reps N] [--rounds N]
+//   `--reps N`：每个 (场景, 组) 重复 N 跑，汇总里打**逐场景可测率**（取消资格不是场景属性，
+//     是那一跑自己的事 ⇒ 单跑比的是两个不同的分母）。
+//   `--rounds N`：补到多少轮（默认 20，**最小 8**，小于 8 直接报错）。场景自带的 8 条种子轮
+//     **总是**先写入、不会被截掉 ⇒ `< 8` 只会让「补例行轮」这一段落空、体量与预期不符，所以挡在入口。
+//     ⚠ 它不是「A 组不折叠的体量旋钮」——超窗后引擎自己会折
+//     （`orchestrator.js:4645-4669` 的不变量），见该参数处的注释。
 // 场景 = 预写 20 轮账本（事实**埋在第 2 轮那份模块清单的某一条注释里**）→ 最终轮问一个只有该事实能答
 // 的问题。体量（261128 修）：每轮 ~1.9k token 的可判读清单，20 轮 ≈ 38k —— 超过 B 组 16k 预算，
 // 折叠由**内容量**自然触发，不再靠把预算压到 2.5k（2.5k 放不下任何真实工作）。
@@ -370,7 +377,7 @@ function systemPrompt(group) {
   return base + "直接依据你看到的对话记录回答。";
 }
 
-async function runOne({ scenario, group, slot, maxRounds }) {
+async function runOne({ scenario, group, slot, maxRounds, targetRounds = 20 }) {
   const store = createMemoryTranscriptStore();
   const runId = `recall-eval-s${scenario.id}-${group}-${Date.now().toString(36)}`;
   // 种子轮：每轮一条 {round, dedupKey:"<runId>:round:<n>"} 轮记录（appendUserTurn 同款载体形状）。
@@ -391,7 +398,7 @@ async function runOne({ scenario, group, slot, maxRounds }) {
   }
   // 261128：场景自带的 rounds 只有 8 条（事实埋在其中），补到 20 条「例行轮」把历史体量撑过
   // B 组 16k 预算 —— 补的内容确定性生成（同 A/B 两组逐字相同），不掺任何新事实。
-  const targetRounds = 20;
+  // 由 `--rounds` 给（默认 20 与历史一致）。
   while (round < targetRounds) {
     round += 1;
     const key = `${runId}:round:${round}`;
@@ -616,6 +623,14 @@ const { values: cli } = parseArgs({
     // 而是「这一次摘要有没有保留那个值」——实测同一配置两跑，被取消资格的是不同的 3/6 格。
     // 单跑比较的是两个不同的分母。
     reps: { type: "string", default: "1" },
+    // 补到多少轮（默认 20，与历史数字可比）。
+    //
+    // ⚠ **这个参数不是「A 组不折叠的体量旋钮」**（261128 更正，copilot 复审 #992）：引擎有一条
+    // 不变量——策略折完仍超预算，就一定会再跑 `sliding-window` 兜底（`orchestrator.js:4645-4669`），
+    // 而 A 组的预算就是模型窗口 ⇒ **一旦历史超窗，A 组自己就折了**，不再是「不折叠基线」。
+    // 真要「不折叠」的基线得另做 A'：预算设到窗口之上 + 一个 no-op 策略对象，让请求**真的超窗**
+    // 去撞上游 400（#930 的 relay 会回 `context_length_exceeded`）。那是一个独立的实验，不在本参数里。
+    rounds: { type: "string", default: "20" },
   },
 });
 
@@ -623,6 +638,13 @@ const maxRounds = Number(cli["max-rounds"]);
 if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) throw new Error("--max-rounds 必须是正整数");
 const reps = Number(cli.reps);
 if (!Number.isSafeInteger(reps) || reps <= 0) throw new Error("--reps 必须是正整数");
+const targetRounds = Number(cli.rounds);
+if (!Number.isSafeInteger(targetRounds) || targetRounds < 8) {
+  throw new Error(
+    "--rounds 必须是 >=8 的整数：场景自带的 8 条种子轮**总是**先写入（不会被截掉），"
+    + "所以 <8 只会让「补例行轮」这一段落空，与预期体量不符",
+  );
+}
 const wantScenarios = cli.scenarios.split(",").map((s) => Number(s.trim())).filter(Number.isSafeInteger);
 const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase()).filter((g) => g === "A" || g === "B");
 
@@ -637,7 +659,7 @@ for (const s of wantScenarios) {
   for (const g of wantGroups) {
    for (let rep = 1; rep <= reps; rep += 1) {
     process.stdout.write(`▶ 场景 ${s}（${scenario.name}）组 ${g}${reps > 1 ? ` #${rep}` : ""} … `);
-    const r = await runOne({ scenario, group: g, slot: slotInfo.slot, maxRounds });
+    const r = await runOne({ scenario, group: g, slot: slotInfo.slot, maxRounds, targetRounds });
     results.push({ ...r, rep });
     if (r.disqualified !== null) {
       console.log(`   ⚠ 取消资格（${r.disqualified}）：这一格测不出召回，不计入汇总`);
