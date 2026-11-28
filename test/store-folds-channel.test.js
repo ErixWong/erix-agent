@@ -13,7 +13,8 @@ import { makeTmp } from "./helpers/tmp.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore, foldsPath, transcriptPath } from "../src/store/file.js";
 import { buildFoldedFacts } from "../src/compact/fold-summary-journal.js";
-import { FOLD_RECORD_COLUMNS } from "../src/store/folds.js";
+import { FOLD_RECORD_COLUMNS, mergeFoldRecords } from "../src/store/folds.js";
+import { toFoldRecord } from "../src/store/fold-record.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 
 // 一段含**工具清单节**的正文：buildFoldedFacts 会把它投影成结构化 `toolCalls`。
@@ -90,57 +91,66 @@ test("判据3 memory：新折叠 seq 严格递增、接在最大值之后、不�
   assert.deepEqual(loaded.map((row) => row.seq), [1, 2, 3, 4, 5]);
 });
 
-// ── 判据 4：键集合对齐（表驱动）：buildFoldedFacts 每个键都能在 folds 记录里找到 ──────────────
-test("判据4a：buildFoldedFacts 返回键集合 ⊆ folds 记录键集合（appendFold 后逐键可见）", async () => {
+// ── 判据 4：**持久化形状是九列，旧形状在边界上重建**（261128 第二刀，ADR-022 顶部）─────────
+//
+// 旧口径是「`buildFoldedFacts` 的键 ⊆ 列集合」——那是「一份累计替代物」那个形状的规则。九列之后
+// 它**正好相反**：累计正文、`increment`、`toolCalls`、`bytes` 都不是列。
+//
+// 形状归一的位置在**引擎的写点**（`orchestrator.js` 的 `toFoldRecord(...)` → `appendFold`），
+// 通道本身是哑存储（它拿不到 `cutRound` / `tokensBefore`，只有调用方知道）。所以这一格照写点的
+// 真实顺序来：先 `toFoldRecord` 再 `appendFold`，然后双向钉住——**落盘的没有旧键** +
+// **合并读把它们重建回来**；另加一格钉「旧 transcript 里的旧形状行仍能合并」。
+test("判据4a：落盘的是九列 —— buildFoldedFacts 的退役键一个都不在通道行里", async () => {
   const store = createMemoryTranscriptStore();
   const facts = richFacts();
   assert.ok(facts !== undefined);
-  await store.appendFold("run-4", facts);
+  // 与引擎写点同序（`orchestrator.js` 的 `toFoldRecord(...)` 那一处）。
+  const nineCol = toFoldRecord(facts, { cutRound: 7, cutMsgSeq: 3, tokensBefore: 900, tokensAfter: 400 });
+  await store.appendFold("run-4", nineCol);
   const [record] = await store.loadFolds("run-4");
-  for (const key of Object.keys(facts)) {
-    assert.ok(Object.prototype.hasOwnProperty.call(record, key),
-      `buildFoldedFacts 的键 "${key}" 必须在 folds 记录里可见`);
-    assert.ok(FOLD_RECORD_COLUMNS.has(key),
-      `buildFoldedFacts 的键 "${key}" 必须在 FOLD_RECORD_COLUMNS 列集合里`);
-    assert.deepEqual(record[key], facts[key], `键 "${key}" 的值必须逐字一致`);
+  assert.equal(record.foldId, facts.foldId);
+  assert.equal(record.description, facts.summary, "description 必须来自本折正文（summary），不是累计 text");
+  assert.equal(record.cutRound, 7);
+  assert.equal(record.seq, 1);
+  const retired = [
+    "text", "increment", "toolCalls", "bytes", "bytesBefore", "truncated",
+    "origin", "source", "strategy", "from", "to", "rounds",
+    "titleFallback", "summaryDropped", "descriptionTruncated", "degradeReason", "fingerprint",
+  ];
+  for (const key of retired) {
+    assert.equal(Object.prototype.hasOwnProperty.call(record, key), false,
+      `退役键 "${key}" 不许出现在通道行里（它已不是列）`);
   }
 });
 
-test("判据4b：FOLD_RECORD_COLUMNS 覆盖 buildFoldedFacts 的全部可能键（除通道自分配的 seq）", async () => {
-  // 三种折叠输入，合计触发 buildFoldedFacts 所有条件性键。
-  const a = richFacts(); // summary / descriptionTruncated / increment / toolCalls / from / to / rounds / degradeReason / fingerprint / foldId / title
-  const b = richFacts({
-    title: undefined, // semantic + 无 model title ⇒ titleFallback
-    summary: undefined,
-    descriptionTruncated: false,
-    maxBytes: 40, // 正文超预算 ⇒ truncated + bytesBefore
-  });
-  const c = richFacts({
-    title: undefined, // 触发 titleFallback
-    summary: "一段会被挤掉的 description", // 小预算 ⇒ summaryDropped
-    maxBytes: 40,
-  });
-  /** @type {Set<string>} */
-  const observed = new Set();
-  for (const facts of [a, b, c]) {
-    assert.ok(facts !== undefined);
-    for (const key of Object.keys(facts)) observed.add(key);
-    assert.ok(FOLD_RECORD_COLUMNS.has("seq"));
+test("判据4b：列集合恰好是九列+幂等键；旧形状由 mergeFoldRecords 在边界上重建", async () => {
+  assert.deepEqual(
+    [...FOLD_RECORD_COLUMNS].sort(),
+    ["createdAt", "cutMsgSeq", "cutRound", "description", "foldId", "runId", "seq", "title", "tokensAfter", "tokensBefore"],
+  );
+  const store = createMemoryTranscriptStore();
+  const facts = richFacts();
+  assert.ok(facts !== undefined);
+  await store.appendFold("run-4", toFoldRecord(facts, { cutRound: 7, tokensBefore: 900, tokensAfter: 400 }));
+  const channelRows = await store.loadFolds("run-4");
+  // 边界：合并读把九列行还原成旧形状（下游四个读点因此一行都不用改）。
+  const [merged] = mergeFoldRecords({ channelRows, roundFacts: [] });
+  assert.equal(merged.text, facts.summary, "text 由 description 导出");
+  assert.equal(merged.foldId, facts.foldId);
+  assert.equal(merged.seq, 1);
+  // 导不出来的仍然缺席——不写 false / null 占位。
+  for (const key of ["truncated", "degradeReason", "source", "strategy", "increment", "toolCalls"]) {
+    assert.equal(Object.prototype.hasOwnProperty.call(merged, key), false,
+      `"${key}" 导不出来就不许出现（不写占位值）`);
   }
-  // seq 由通道分配、buildFoldedFacts 自己不写 ⇒ 单独放行。
-  const columnsCovered = new Set([...FOLD_RECORD_COLUMNS, "seq"]);
-  for (const key of columnsCovered) {
-    assert.ok(key === "seq" || observed.has(key),
-      `列 "${key}" 没有被任何 buildFoldedFacts 输出触发 ⇒ 列集合可能有凭空多出的键`);
-  }
-  // 反向：buildFoldedFacts 的每个键都在列集合里（判据 4a 已覆盖 a；这里覆盖 b/c 独有的键）。
-  for (const key of observed) {
-    assert.ok(FOLD_RECORD_COLUMNS.has(key), `观测到的键 "${key}" 不在列集合里`);
-  }
-  // 点名几个易漏的条件性键（ADR §7 错账 #2 的历史教训）。
-  for (const key of ["titleFallback", "summaryDropped", "truncated", "bytesBefore", "toolCalls", "increment"]) {
-    assert.ok(observed.has(key), `条件性键 "${key}" 至少应被某次 buildFoldedFacts 触发到`);
-  }
+  // 旧 transcript（通道里是旧形状行）仍要能合并——迁移期两种行并存是常态。
+  const legacy = richFacts();
+  assert.ok(legacy !== undefined);
+  await store.appendFold("run-4b", { ...legacy, seq: 1 });
+  const legacyRows = await store.loadFolds("run-4b");
+  const mergedLegacy = mergeFoldRecords({ channelRows: legacyRows, roundFacts: [] });
+  assert.equal(mergedLegacy.length, 1);
+  assert.equal(mergedLegacy[0].text, legacy.text, "旧形状行原样可读（不因九列而丢历史）");
 });
 
 // ── 判据 5：store 没有 appendFold ⇒ 退化写轮记录 + 恰好一次 store_folds_channel_absent ──────────
