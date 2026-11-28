@@ -4,7 +4,16 @@
 // 用法：
 //   node scripts/recall-eval.mjs [--scenarios 1,2,...] [--groups A,B] [--slot default]
 //        [--out /tmp/recall-eval-results.json] [--fake] [--max-rounds 12]
-// 场景 = 预写 8 轮账本（前几轮埋一个具体事实）→ 最终轮问一个只有该事实能答的问题。
+// 场景 = 预写 20 轮账本（事实**埋在第 2 轮那份模块清单的某一条注释里**）→ 最终轮问一个只有该事实能答
+// 的问题。体量（261128 修）：每轮 ~1.9k token 的可判读清单，20 轮 ≈ 38k —— 超过 B 组 16k 预算，
+// 折叠由**内容量**自然触发，不再靠把预算压到 2.5k（2.5k 放不下任何真实工作）。
+//
+// 题目必须**点名第 2 轮**（261128 修）：不点名时 A 组要在 20 轮 × 40 行 ≈ 800 行里找一根针，
+// 它答错是「找不到」而不是「记不住」，于是 B 组答错时无法归因。点名之后 A 只要看第 2 轮
+// （必答对），B 的第 2 轮被折掉了（必须回账本捞）—— 变量被隔离出来。
+//
+// 两组基线（261128 修）：A = **模型自己的窗口**（`contextWindowTokens`，本机 262144），不再写
+// 8_000_000（没有任何模型能吃 8M，那是不存在的基线）；B = 16k（窗口的 1/16）+ keepRounds 6（引擎默认）。
 //   A 组：不折叠（预算巨大），无 recall 工具 ⇒ 基线。
 //   B 组：折叠（小预算 + fold-llm）+ recall_read/recall_ask + capabilities.ports.recallProvider。
 // 模型/端点/密钥一律读 config 槽位（源码零模型名）；读不到就失败。
@@ -50,6 +59,39 @@ function readSlot(slotName) {
 //   recall ⇒ recall-runner 的 system（"你是回忆检索器…"）
 //   fold   ⇒ provider-summarizer 的 DEFAULT_SUMMARY_SYSTEM（"你是对话历史压缩器…"）
 //   main   ⇒ 其余（主循环轮）
+/**
+ * 把**召回工具**的结果正文从请求里剔掉（其余原样保留）。
+ *
+ * 为什么需要它（261128）：「折叠后事实还在吗」这一格旧口径看整份请求，而 `recall_read` / `recall_ask`
+ * 的返回值里就带着那段原文——召回成功反而被判成「泄漏」。剔掉它们，「事实是否还需要召回才能看见」
+ * 才是可测的。
+ *
+ * 识别方式：`recall_read` / `recall_ask` 的返回值是 JSON 字符串，带 `status` 与（前者的）`text` /
+ * （后者的）`answer`；这里按 `tool_result` 块的内容形态判，不按 tool_use 名字（请求视图里 tool_result
+ * 不一定带名字）。
+ */
+function withoutRecallToolResults(request) {
+  const messages = request?.messages;
+  if (!Array.isArray(messages)) return request;
+  // 按 **tool_use 的 id → 工具名** 认，不按结果正文的形态认。
+  // 上一版按正文找 `"status"`/`"answer"`/`"text"`：`recall_read` 的 pattern 模式返回
+  // `{status, pattern, matches:[{round,text}]}`、`round` 模式返回 `{status, text}`——形态各异，
+  // 按正文猜必然漏判（实测两条召回结果只剔掉一条，事实仍可见 ⇒ 这一格假红）。
+  const recallIds = new Set();
+  for (const message of messages) {
+    if (!Array.isArray(message?.content)) continue;
+    for (const block of message.content) {
+      if (block?.type !== "tool_use") continue;
+      if (block.name === "recall_read" || block.name === "recall_ask") recallIds.add(block.id);
+    }
+  }
+  if (recallIds.size === 0) return request;
+  const strip = (content) => (Array.isArray(content)
+    ? content.filter((b) => !(b?.type === "tool_result" && recallIds.has(b.tool_use_id)))
+    : content);
+  return { ...request, messages: messages.map((m) => ({ ...m, content: strip(m.content) })) };
+}
+
 function classifyRequest(request) {
   const sys = typeof request?.system === "string" ? request.system : "";
   if (sys.includes("回忆检索器")) return "recall";
@@ -73,16 +115,16 @@ function makeMeteredProvider(slot, fake) {
           const kind = classifyRequest(request);
           const t0 = Date.now();
           if (kind === "recall") {
-            record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? "") });
+            record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? ""), factVisibleWithoutRecall: probe(withoutRecallToolResults(request)).includes(factForLeakCheck ?? "") });
             return { content: [{ type: "text", text: JSON.stringify({ answer: "FAKE", pointers: [], uncertain: false }) }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
           }
           if (kind === "fold") {
-            record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? "") });
+            record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? ""), factVisibleWithoutRecall: probe(withoutRecallToolResults(request)).includes(factForLeakCheck ?? "") });
             return { content: [{ type: "text", text: "（假摘要）" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
           }
           scripted.n += 1;
           const hasToolResults = probe(request).includes("tool_result");
-          record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? "") });
+          record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? ""), factVisibleWithoutRecall: probe(withoutRecallToolResults(request)).includes(factForLeakCheck ?? "") });
           if (scripted.n === 1 && !hasToolResults) {
             return { content: [{ type: "tool_use", id: `t${scripted.n}`, name: "recall_ask", input: { question: "之前的关键事实是什么", fromRound: 1, toRound: 8 } }], stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 } };
           }
@@ -109,6 +151,11 @@ function makeMeteredProvider(slot, fake) {
         const kind = classifyRequest(request);
         const t0 = Date.now();
         const factInRequest = factForLeakCheck === null ? null : probe(request).includes(factForLeakCheck);
+        // 「不需要召回就看得见」：把 recall 工具结果的正文剔掉再找（recall 把事实捞回来是它该做的事，
+        // 记成泄漏会让 B 组这一格永远红）。只剔 `tool_result` 块里属于 recall 工具的那部分。
+        const factVisibleWithoutRecall = factForLeakCheck === null
+          ? null
+          : probe(withoutRecallToolResults(request)).includes(factForLeakCheck);
         const response = await base.chat(request);
         record({
           kind,
@@ -116,6 +163,9 @@ function makeMeteredProvider(slot, fake) {
           input: response?.usage?.input_tokens ?? null,
           output: response?.usage?.output_tokens ?? null,
           factInRequest,
+          factVisibleWithoutRecall,
+          // 只在排障时留请求体（默认不留：一轮 37k token 的请求留在内存里没必要）
+          ...(process.env.ERIX_EVAL_DEBUG_LEAK === "1" ? { request } : {}),
           stop: response?.stop_reason ?? null,
         });
         return response;
@@ -126,20 +176,51 @@ function makeMeteredProvider(slot, fake) {
 
 // ───────────────────────────────────────────────────────────────── 场景
 
-function pad(n, topic) {
-  // 每轮约 100–150 token 的填充，保证 8 轮总量足以越过 B 组折叠预算。
-  return `[第${n}轮·${topic}] 我们在梳理迁移背景。先盘依赖面：网关层、存储层、调度层三条线各自有负责人，`
-    + `接口冻结在下周一，冻结前的变更要走评审；预算方面本季度还剩两次外部扩容，超了要写复盘。`
-    + `监控上 p50 与 p95 分开看，告警阈值按环境分别配；文档要求跟代码同 PR 提交，缺文档的合并会被打回。`
-    + `这一轮先对齐这些背景，具体数字后面按轮登记，别凭记忆答。`;
+/**
+ * 一轮的**真实体量**填充：一份可判读的源码清单（不是无意义重复）。
+ *
+ * 为什么改（261128）：旧版每轮 ~130 token 的散文填充，8 轮合计才 1.5k —— 而模型窗口 262k、
+ * B 组折叠预算被压到 2.5k 才勉强触发折叠。那是**为了触发而扭曲场景**：2.5k 上下文放不下任何
+ * 真实工作，测出来的只是「小历史上折叠是纯亏」。现在按真实体量造：每轮一份模块清单（~900 token），
+ * 20 轮 ≈ 18k，折叠预算取 16k（模型的 1/16，远小于 262k 窗口）⇒ 折叠由**内容量**自然触发，
+ * 不靠压小预算。
+ *
+ * 内容确定性生成（无随机），保证 A/B 两组拿到逐字相同的账本。
+ */
+function codeList(n, topic, burial) {
+  const modules = [
+    "gateway/router.ts", "gateway/auth.ts", "gateway/ratelimit.ts", "gateway/cors.ts",
+    "store/pg/pool.ts", "store/pg/migrate.ts", "store/pg/tx.ts", "store/pg/replica.ts",
+    "store/redis/cache.ts", "store/redis/lock.ts", "store/redis/pubsub.ts", "store/s3/put.ts",
+    "sched/queue.ts", "sched/worker.ts", "sched/retry.ts", "sched/lease.ts",
+    "sched/cron.ts", "sched/backfill.ts", "sched/dag.ts", "sched/deadletter.ts",
+    "obs/metrics.ts", "obs/trace.ts", "obs/log.ts", "obs/alert.ts",
+    "obs/audit.ts", "obs/slo.ts", "obs/profiler.ts", "obs/dashboard.ts",
+    "auth/session.ts", "auth/token.ts", "auth/scope.ts", "auth/mfa.ts",
+    "billing/meter.ts", "billing/quota.ts", "billing/invoice.ts", "billing/plan.ts",
+    "search/index.ts", "search/query.ts", "search/rank.ts", "search/suggest.ts",
+  ];
+  const lines = modules.map((module, index) => {
+    const seq = (n * 31 + index * 7) % 900 + 100;
+    // 事实**埋进清单的某一条**（261128）：埋在一句显眼的话里，摘要会照抄 ⇒ 折叠后模型不靠 recall
+    // 也能答，测不出 recall 的价值。埋进 40 条机器清单的中间，摘要（≤200 token）抄不下来，
+    // 要答对就必须回账本捞 —— 这才是「判读过大文件之后要回忆」的真实场景。
+    const planted = burial !== undefined && burial.round === n && burial.index === index
+      ? ` // ${burial.marker}`
+      : "";
+    return `${module}:${seq}  // ${topic}·第${n}轮快照 export ${module.split("/").pop().replace(".ts", "")}Handler`
+      + `(input: { id: string; retries: number }) → { ok: boolean; seq: ${seq} }${planted}`;
+  });
+  return `[第${n}轮·${topic}] 读了一遍模块清单（${String(modules.length)} 个文件）：\n${lines.join("\n")}`;
 }
 
 const scenarios = [
   {
     id: 1, name: "单点字符串（令牌）", fact: "tok-7f3a",
+    burial: { round: 2, index: 7, marker: "deploy-token=tok-7f3a" },
     rounds: [
       ["启动清单核对：服务名、端口、日志采集，都过了。", "收到，登记进启动清单。"],
-      ["部署令牌定下来了：tok-7f3a。后面部署要用的就是这个，别记混。", "好，部署令牌 tok-7f3a 已登记，后续以这条为准。"],
+      ["部署令牌定下来了，写在第 2 轮那份模块清单的某一条注释里。后面部署要用的就是它，别记混。", "好，令牌已随清单登记，后续以这条为准。"],
       ["灰度比例第一轮 5%，观察两小时无异常再放。", "明白，5% 起步，两小时后看指标。"],
       ["回滚预案：保留上一版镜像 72 小时。", "已写入回滚预案。"],
       ["日志采样率先调到 20% 控制成本。", "采样率 20% 已配置。"],
@@ -147,10 +228,11 @@ const scenarios = [
       ["文档站今晚发布，别动 main。", "收到，main 挂起合并。"],
       ["本周例会顺延到周五下午。", "已改到周五下午。"],
     ],
-    question: "当时定下的部署令牌是什么？请逐字给出令牌本身。",
+    question: "第 2 轮那份模块清单里登记的部署令牌是什么？请逐字给出令牌本身。",
   },
   {
     id: 2, name: "数字（p95）", fact: "412ms",
+    burial: { round: 2, index: 11, marker: "p95-budget-ms=412ms" },
     rounds: [
       ["压测环境先对齐：三台 4C8G，数据量 1200 万行。", "环境参数已登记。"],
       ["第 1 次实验跑完，p95 是 318ms，作为基准。", "第 1 次基准 p95=318ms 已记录。"],
@@ -161,10 +243,11 @@ const scenarios = [
       ["值班表下周轮换。", "值班表已更新。"],
       ["季度总结模板发群里了。", "模板收到。"],
     ],
-    question: "第 3 次实验的 p95 是多少？请逐字给出那个数值（含单位）。",
+    question: "第 2 轮那份模块清单里登记的 p95 预算值是多少？请逐字给出那个数值（含单位）。",
   },
   {
-    id: 3, name: "文件路径", fact: "src/loop/budget.js",
+    id: 3, name: "文件路径", fact: "src/db/schema/orders.sql",
+    burial: { round: 2, index: 19, marker: "schema-path=src/db/schema/orders.sql" },
     rounds: [
       ["预算这块的口径要先定：按请求视图估算，不按账本。", "口径记下：以请求视图为准。"],
       ["定位了，要改的文件是 src/loop/budget.js，别的都先不动。", "明确了：只改 src/loop/budget.js。"],
@@ -175,10 +258,11 @@ const scenarios = [
       ["合完打 tag 通知下游。", "打 tag 通知下游。"],
       ["这周冻结发布窗口。", "冻结窗口已知悉。"],
     ],
-    question: "当时定位下来要改的是哪个文件？请逐字给出路径。",
+    question: "第 2 轮那份模块清单里标出的 schema 文件路径是什么？请逐字给出路径。",
   },
   {
-    id: 4, name: "两跳（A 指向 B）", fact: "/etc/erix/keys.yaml",
+    id: 4, name: "两跳（A 指向 B）", fact: "obs-trace",
+    burial: { round: 2, index: 23, marker: "handoff-owner=obs-trace" },
     rounds: [
       ["密钥策略定了：不进代码库，放在一个 YAML 文件里。具体路径我登记在后面某轮，这里先不写。", "好，密钥走 YAML 文件，路径以登记那条为准。"],
       ["部署脚本改从环境变量注入路径。", "脚本已改环境变量注入。"],
@@ -189,10 +273,11 @@ const scenarios = [
       ["监控探针加一条文件存在性检查。", "探针规则已加。"],
       ["这季度合规扫描下月初开始。", "扫描时间已同步。"],
     ],
-    question: "密钥所在的 YAML 文件的完整路径是什么？请逐字给出路径。",
+    question: "第 2 轮那份模块清单里标出的交接责任人（handoff-owner）是谁？请逐字给出。",
   },
   {
-    id: 5, name: "否定事实", fact: "重复打包",
+    id: 5, name: "否定事实", fact: "no-retry-on-4xx",
+    burial: { round: 2, index: 29, marker: "retry-forbidden=no-retry-on-4xx" },
     rounds: [
       ["依赖治理开始：先列候选库清单。", "清单已建。"],
       ["决定：不要用 lodash，原因是它整包进 bundle，造成重复打包、体积膨胀。替代用原生方法。", "记住了：禁用 lodash，原因是重复打包导致体积膨胀。"],
@@ -203,21 +288,22 @@ const scenarios = [
       ["前端周会加一条体积议题。", "议程已加。"],
       ["下个迭代排依赖升级。", "已排入下个迭代。"],
     ],
-    question: "之前为什么决定不要用 lodash？请逐字给出那个原因关键词。",
+    question: "第 2 轮那份模块清单里标出的重试禁令（retry-forbidden）取值是什么？请逐字给出。",
   },
   {
     id: 6, name: "干扰项（相似但错误）", fact: "tok-7f3a",
+    burial: { round: 2, index: 31, marker: "deploy-token=tok-7f3a" },
     rounds: [
       ["令牌体系先梳理：部署令牌与用户令牌分开管理。", "两套令牌分开管，收到。"],
       ["初版草案里部署令牌写的是 tok-9x9x，注意那只是草案。", "草案值 tok-9x9x 已标注为草案。"],
       ["草案评审：格式要带前缀，长度不超 16。", "格式要求已记。"],
-      ["部署令牌最终确认为 tok-7f3a，草案作废，一切以这条为准。", "终版令牌 tok-7f3a 登记，草案作废。"],
+      ["部署令牌最终确认（以第 2 轮模块清单里那条注释为准），草案作废。", "终版令牌已按清单那条登记，草案作废。"],
       ["CI 里注入令牌的 secret 已配置。", "CI secret 配好。"],
       ["预发环境用同一枚，不再发新的。", "预发沿用同令牌。"],
       ["轮换窗口月底评估。", "月底评估轮换。"],
       ["安全审计下季度做。", "审计排期收到。"],
     ],
-    question: "最终确认的部署令牌是什么（不是草案）？请逐字给出令牌本身。",
+    question: "第 2 轮那份模块清单里登记的部署令牌是什么（不是草案里的那个）？请逐字给出令牌本身。",
   },
 ];
 
@@ -251,8 +337,26 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
       roundKey: key,
       ts: new Date(1700000000000 + round * 1000).toISOString(),
       messages: [
-        { role: "user", content: [{ type: "text", text: `${pad(round, group)} ${userText}` }] },
+        { role: "user", content: [{ type: "text", text: `${codeList(round, group, scenario.burial)}\n${userText}` }] },
         { role: "assistant", content: [{ type: "text", text: assistantText }] },
+      ],
+    });
+  }
+  // 261128：场景自带的 rounds 只有 8 条（事实埋在其中），补到 20 条「例行轮」把历史体量撑过
+  // B 组 16k 预算 —— 补的内容确定性生成（同 A/B 两组逐字相同），不掺任何新事实。
+  const targetRounds = 20;
+  while (round < targetRounds) {
+    round += 1;
+    const key = `${runId}:round:${round}`;
+    const routine = `例行巡检第 ${String(round)} 轮：` + `网关/存储/调度三条线指标正常，无告警。`;
+    await store.appendRound(runId, {
+      round,
+      dedupKey: key,
+      roundKey: key,
+      ts: new Date(1700000000000 + round * 1000).toISOString(),
+      messages: [
+        { role: "user", content: [{ type: "text", text: `${codeList(round, group, scenario.burial)}\n${routine}` }] },
+        { role: "assistant", content: [{ type: "text", text: `第 ${String(round)} 轮巡检完成，登记在案。` }] },
       ],
     });
   }
@@ -296,15 +400,22 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
 
   const folding = group === "A"
     ? {
-      context: { budgetTokens: 8_000_000, keepRounds: 64, task: `recall-eval A${scenario.id}` },
+      // A 组 = **真实窗口内不折叠**（261128 修）：旧版写 8_000_000 —— 没有任何模型能吃 8M 上下文，
+      // 那是个不存在的基线。现在取模型自己的窗口（`contextWindowTokens`，本机 262144），保留轮拉满。
+      context: {
+        budgetTokens: slot.contextWindowTokens ?? 128_000,
+        keepRounds: 999,
+        task: `recall-eval A${scenario.id}`,
+      },
       toolResultTtl: 8,
     }
     : {
       context: {
-        // 预算/保留轮取宽：1200/1 会让 recall 结果一进来就二次折叠，把**问题轮**也折掉
-        // （实测模型反复说「问题不可见」直到撞 max_rounds）；keepRounds=2 保住问题轮与最近一轮。
-        budgetTokens: 2500,
-        keepRounds: 2,
+        // 261128：预算从 2500 抬到 16000 —— 2500 放不下任何真实工作（2.5k 上下文能放啥），
+        // 那是「为了触发折叠而压小预算」。16k = 模型窗口的 1/16，折叠由**内容量**自然触发。
+        // keepRounds=6 是引擎默认值（保住最近 6 轮 + 问题轮），不再靠 2 硬撑。
+        budgetTokens: 16_000,
+        keepRounds: 6,
         task: `recall-eval B${scenario.id}`,
         // issue #261127-12 起策略名字形态已删：不写策略 = 引擎内置 fold-llm（同一行为）。
         maxSummaryTokens: 200,
@@ -367,13 +478,42 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
   }
   const refFound = refChecks.filter((s) => s === "found").length;
 
-  // 影子当事实：终稿逐字含正确事实，但本 run 没有任何 found 证据支撑（A 组无证据通道，单独标注）。
-  const shadowAsFact = correct && refFound === 0;
+  // ── 「影子当事实」拆成两格（261128 修）────────────────────────────────────────
+  // 旧口径 `correct && refFound === 0` 把两件不同的事记成同一个名字：
+  //   ① **召回成功但没引用**：模型调了 recall_ask，工具把答案直接给它了，它没再用 recall_read 核；
+  //   ② **凭印象答**：一次 recall 都没调，答案却对。
+  // ① 是「引擎已把 answerUnbacked=true 告诉它、它没去核」，② 才是真·影子。两者对产品的含义不同，
+  // 混在一格会让「recall 起作用」看起来像「模型在编」。
+  const recallAnswersUnbacked = toolCalls
+    .filter((c) => c.name === "recall_ask")
+    .map((c) => {
+      try {
+        return JSON.parse(String(c.result));
+      } catch {
+        return null;
+      }
+    })
+    .filter((parsed) => parsed !== null)
+    .filter((parsed) => parsed.answerUnbacked === true).length;
+  const answeredWithoutAnyRecall = correct && recallCalls === 0 && refFound === 0;
+  // 兼容旧字段名：`shadowAsFact` 只保留「② 凭印象答」这一种（A 组没有召回通道，恒 false）。
+  const shadowAsFact = group === "B" ? answeredWithoutAnyRecall : false;
 
-  // 折叠是否真的把事实折掉了：看折叠后（fold 调用之后）主循环请求里事实还在不在。
+  // ── 「折叠后事实还在吗」修口径（261128）──────────────────────────────────────
+  // 旧口径直接看整份请求里有没有那个字符串——而 `recall_read` / `recall_ask` 把事实捞回来放进请求
+  // **正是它该做的事**，于是「召回成功」被记成「泄漏」，B 组这一格永远红。
+  // 新口径：只看**不需要召回就看得见**的那部分——请求里把 recall 工具结果的正文剔掉再找。
   const foldIdx = log.findIndex((e) => e.kind === "fold");
   const mainAfterFold = foldIdx === -1 ? [] : mainCalls.filter((e) => log.indexOf(e) > foldIdx);
-  const factAfterFold = mainAfterFold.length === 0 ? null : mainAfterFold.every((e) => e.factInRequest === false);
+  const factAfterFold = mainAfterFold.length === 0
+    ? null
+    : mainAfterFold.every((e) => e.factVisibleWithoutRecall === false);
+  if (process.env.ERIX_EVAL_DEBUG_LEAK === "1" && factAfterFold === false && mainAfterFold.length > 0) {
+    const first = mainAfterFold[0];
+    const probe = JSON.stringify(withoutRecallToolResults(first.request ?? {}));
+    const at = probe.indexOf(scenario.fact);
+    console.log(`   [debug] 事实仍可见，上下文：…${probe.slice(Math.max(0, at - 120), at + 80)}…`);
+  }
 
   return {
     scenario: scenario.id,
@@ -391,6 +531,8 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
     evidenceRefsReturned: refs.length,
     evidenceRefFound: refFound,
     shadowAsFact,
+    // ① 召回给了答案但没回账本核（引擎的 `answerUnbacked: true` 出现过几次）
+    recallAnswersUnbacked,
     folded: foldIdx !== -1,
     factStillInContextAfterFold: factAfterFold === null ? null : !factAfterFold,
     toolCalls: toolCalls.map((c) => ({ name: c.name, input: c.input, result: String(c.result).slice(0, 800) })),
