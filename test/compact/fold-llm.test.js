@@ -116,9 +116,10 @@ test("publishes note-first recovery guidance requirements", () => {
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 遗留/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /已完成项禁止重做/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 关键词/);
-  // issue #611：三节之后、「恢复提示」之前多一节「教训与坑」（位置判据见
-  // test/compact/fold-summary-lessons-611.test.js，这里只把钉子补齐）。
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 教训与坑（不要重犯的）/);
+  // issue #261128-05：`## 教训与坑` 已删除 —— 「踩过的坑」住白板（`runs.board` 的 `## 教训`），
+  // 白板是现在时、摘要日志是过去时，两边都写就是同一件事说两遍（docs/design/2026-11-27-context-and-fold-shape.md §3.8）。
+  // 逐节判据见 test/compact/fold-summary-sections-261128.test.js。
+  assert.doesNotMatch(SUMMARIZER_PROMPT_GUIDE, /教训与坑/);
   // issue #741：提示分两种口径 —— 无证据时（默认那份）不得宣称「查看持久笔记」，
   // 有证据时（宿主/引擎给出证据后解析出的那一句）才给 note_* 这条路。
   assert.match(SUMMARIZER_PROMPT_GUIDE, /需要原文请重读文件；无可复原的决策记录（原因：无笔记证据）/);
@@ -453,12 +454,12 @@ test("a long failure reason is truncated inside the summarizer_failed message", 
 // 判据取「同尺寸四节 + 只装得下两节的预算」：谁活下来就是谁排在前档。
 // 契约写的是 `## 遗留`（0）/ `## 恢复提示`（0）/ `## 关键词`（1）先保，`## 行动`（2）随后 ⇒ 活下来的
 // 必须是**遗留 + 关键词**。任何一节掉进兜底档 4 都会把它挤进被剪的那一半，于是这条必红。
-test("#261127-18-3 裁剪优先级表覆盖新四节：紧预算下活下来的是「遗留」+「关键词」", async () => {
-  const titles = ["行动", "遗留", "关键词", "教训与坑（不要重犯的）"];
+test("#261127-18-3 裁剪优先级表覆盖当前三节：紧预算下活下来的是「遗留」+「关键词」", async () => {
+  const titles = ["行动", "遗留", "关键词"];
   const summary = titles.map((title) => `## ${title}\n${"字".repeat(200)}`).join("\n");
   const strategy = createFoldLlmStrategy({
     summarizer: async () => summary,
-    // 四节 ≈ 1,392 token，单节 ≈ 348，预算 900 ⇒ 装得下两节、装不下三节（保真层先让位，再按档位从高到低剪）。
+    // 三节 ≈ 1,044 token，单节 ≈ 348，预算 900 ⇒ 装得下两节、装不下三节（保真层先让位，再按档位从高到低剪）。
     maxSummaryTokens: 900,
   });
   const result = await strategy.compact([
@@ -479,7 +480,7 @@ test("#261127-18-3 裁剪优先级表覆盖新四节：紧预算下活下来的�
     return text.slice(at, next < 0 ? text.length : next).includes("[已修剪]");
   });
   assert.deepEqual(
-    trimmed, ["行动", "教训与坑（不要重犯的）"],
+    trimmed, ["行动"],
     `被剪的必须是第 2 档的那两节（实得 ${trimmed.join("、")}）——`
     + "掉进兜底档 4 的节会挤到这里来（priorityForHeading 没跟上节名改名）",
   );

@@ -41,9 +41,6 @@ export function createSummarizerPromptGuide(recoveryHint) {
 只列出尚未完成的动作，并明确写出"已完成项禁止重做"。若这一折只是讨论/设想/没有可执行事务，写「本折无具体事务」，不要编造待办。
 ## 关键词
 列出后续检索原文所需的项目、文件、工具、错误和未结事项关键词。**用原文里的字面词**（文件名、工具名、报错原文、标识符），不要改写成同义词。
-## 教训与坑（不要重犯的）
-记录被折轮次里出现过的：①试过但失败或代价高的做法（含为什么失败）；②不可违反的约束；③已确认的坑。
-只写原文里确实出现过的，不要推测、不要补充；没有就写「无」。
 
 最后一段是白板（**必须是整份输出的最后一段**，引擎按它把正文与白板切开）：
 白板：<本 run 现状的一整块文本，≤1500 token（本引擎按 estimateTokens 口径计）。规则：
@@ -152,7 +149,6 @@ function priorityForHeading(heading) {
   // 行动排在保真层**之前**被保。两档之间不再有「已验证项 / 已改文件」这两个更低的档：它们已并入
   // `## 行动`。
   if (heading.includes("行动")) return 2;
-  if (heading.includes("教训与坑")) return 2;
   // issue #873 修复① 的配套：机械保真层节（用户逐字引用）现在**在**摘要预算内，
   // 它必须排在合同节**之后**被剪，否则 #469-C ①「默认预算装得下全部合同节」会破防。
   // （锚点索引那一档随 issue #261127-19 删除。）
@@ -816,9 +812,6 @@ const SUMMARIZER_DESC_LINE = /^描述：(.*)$/m;
 /** 白板是一整块文本（`runs.board`），上限与摘要预算同一把尺子（`estimateTokens`）；超了拒收（§3.7）。 */
 export const SUMMARIZER_BOARD_MAX_TOKENS = 1500;
 const SUMMARIZER_BOARD_LINE = /^白板：(.*)$/m;
-// 正文起点必须锚定**日志正文**的固定节（行动/遗留/关键词/教训与坑），不能用任意 `##`：
-// 白板内部允许 `## 约束` 这类小节标题，用泛 `##` 会把 preamble 切到白板中间。
-const SUMMARIZER_BODY_HEADING = /^## (?:行动|遗留|关键词|教训与坑)(?:\r?\n|$)/m;
 
 /** @param {string} value @param {number} maxChars @returns {string} */
 function clampMetaChars(value, maxChars) {
