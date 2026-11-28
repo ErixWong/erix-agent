@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 // scripts/recall-eval.mjs — issue #896 §5：recall 真机评测（折叠后模型靠 recall_ask/recall_read 找事实）。
 // 定位：**测量脚本**（不入 test/，要联网）。除本文件外不改 src/。
+//
+// ⚠ 没有 `--fake` 模式（261128 删）：它自称「管线冒烟」，实测却**跳过要冒烟的那条路**——假上游
+// 发出 `recall_ask` 的 tool_use，引擎却没调 `executeTool`（`toolCalls` 恒空、召回 0 次），
+// 而它的产出本来就不算数据（报告里标 fake）。一条会静默跳过被测路径的冒烟，比没有更糟。
 // 用法：
 //   node scripts/recall-eval.mjs [--scenarios 1,2,...] [--groups A,B] [--slot default]
-//        [--out /tmp/recall-eval-results.json] [--fake] [--max-rounds 12]
+//        [--out /tmp/recall-eval-results.json] [--max-rounds 12]
 // 场景 = 预写 20 轮账本（事实**埋在第 2 轮那份模块清单的某一条注释里**）→ 最终轮问一个只有该事实能答
 // 的问题。体量（261128 修）：每轮 ~1.9k token 的可判读清单，20 轮 ≈ 38k —— 超过 B 组 16k 预算，
 // 折叠由**内容量**自然触发，不再靠把预算压到 2.5k（2.5k 放不下任何真实工作）。
@@ -102,46 +106,11 @@ function classifyRequest(request) {
   return "main";
 }
 
-function makeMeteredProvider(slot, fake, { hasRecallTools = true } = {}) {
+function makeMeteredProvider(slot) {
   const log = [];
   let factForLeakCheck = null; // 每次 run 前设置；用于「请求里是否还看得到事实」
   const record = (entry) => { log.push(entry); };
   const probe = (request) => JSON.stringify(request ?? null);
-  if (fake) {
-    // 假上游：只验证脚本管线（不算真机数据，报告里必须标注 --fake）。
-    const scripted = { n: 0 };
-    return {
-      log,
-      setFact: (f) => { factForLeakCheck = f; },
-      provider: {
-        async chat(request) {
-          const kind = classifyRequest(request);
-          const t0 = Date.now();
-          if (kind === "recall") {
-            record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? ""), factVisibleWithoutRecall: probe(withoutRecallToolResults(request)).includes(factForLeakCheck ?? "") });
-            return { content: [{ type: "text", text: JSON.stringify({ answer: "FAKE", pointers: [], uncertain: false }) }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
-          }
-          if (kind === "fold") {
-            record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? ""), factVisibleWithoutRecall: probe(withoutRecallToolResults(request)).includes(factForLeakCheck ?? "") });
-            return { content: [{ type: "text", text: "（假摘要）" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
-          }
-          scripted.n += 1;
-          const hasToolResults = probe(request).includes("tool_result");
-          record({ kind, ms: 0, input: 1, output: 1, factInRequest: probe(request).includes(factForLeakCheck ?? ""), factVisibleWithoutRecall: probe(withoutRecallToolResults(request)).includes(factForLeakCheck ?? "") });
-          // copilot 复审（PR #985）：A 组没有召回工具，假上游却照样发 `recall_ask` ⇒ 冒烟跑的是
-          // 一条不存在的路径。现在按 `hasRecallTools` 决定（只有 B 组为真）。
-          // 判据改成「**还没出现过 tool_result** 就发一次召回」，不再用 `scripted.n === 1`：
-          // 种了 20 轮历史 + resume 之后，主循环第一发的序号不一定是 1（实测 `--fake` 下
-          // 一次召回都没发，冒烟跑的是「不召回直接答」那条路）。
-          if (hasRecallTools && !hasToolResults && scripted.recalled !== true) {
-            scripted.recalled = true;
-            return { content: [{ type: "tool_use", id: `t${scripted.n}`, name: "recall_ask", input: { question: "之前的关键事实是什么", fromRound: 1, toRound: 8 } }], stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 } };
-          }
-          return { content: [{ type: "text", text: `假答案 ${factForLeakCheck ?? ""}` }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
-        },
-      },
-    };
-  }
   const base = createOpenAIProvider({
     endpoint: slot.endpoint,
     apiKey: slot.apiKey,
@@ -348,7 +317,7 @@ function systemPrompt(group) {
   return base + "直接依据你看到的对话记录回答。";
 }
 
-async function runOne({ scenario, group, slot, fake, maxRounds }) {
+async function runOne({ scenario, group, slot, maxRounds }) {
   const store = createMemoryTranscriptStore();
   const runId = `recall-eval-s${scenario.id}-${group}-${Date.now().toString(36)}`;
   // 种子轮：每轮一条 {round, dedupKey:"<runId>:round:<n>"} 轮记录（appendUserTurn 同款载体形状）。
@@ -404,7 +373,7 @@ async function runOne({ scenario, group, slot, fake, maxRounds }) {
   const recallTools = createBuiltinRecallTools({ readLedgerRows });
   const recallAsk = createRecallAskTool({ readLedgerRows });
 
-  const { log, provider, setFact } = makeMeteredProvider(slot, fake, { hasRecallTools: group === "B" });
+  const { log, provider, setFact } = makeMeteredProvider(slot);
   setFact(scenario.fact);
 
   const toolCalls = [];
@@ -589,7 +558,6 @@ const { values: cli } = parseArgs({
     groups: { type: "string", default: "A,B" },
     slot: { type: "string", default: "default" },
     out: { type: "string", default: "/tmp/recall-eval-results.json" },
-    fake: { type: "boolean", default: false },
     "max-rounds": { type: "string", default: "12" },
   },
 });
@@ -599,9 +567,9 @@ if (!Number.isSafeInteger(maxRounds) || maxRounds <= 0) throw new Error("--max-r
 const wantScenarios = cli.scenarios.split(",").map((s) => Number(s.trim())).filter(Number.isSafeInteger);
 const wantGroups = cli.groups.split(",").map((s) => s.trim().toUpperCase()).filter((g) => g === "A" || g === "B");
 
-const slotInfo = cli.fake ? { configPath: "(fake)", slot: { model: "fake-provider", endpoint: "-", apiKey: "***" } } : readSlot(cli.slot);
+const slotInfo = readSlot(cli.slot);
 console.log(`#896 §5 recall-eval · slot=${cli.slot} model=${slotInfo.slot.model} endpoint=${slotInfo.slot.endpoint} config=${slotInfo.configPath}`);
-console.log(`scenarios=[${wantScenarios}] groups=[${wantGroups}] maxRounds=${maxRounds} fake=${cli.fake}`);
+console.log(`scenarios=[${wantScenarios}] groups=[${wantGroups}] maxRounds=${maxRounds}`);
 
 const results = [];
 for (const s of wantScenarios) {
@@ -609,7 +577,7 @@ for (const s of wantScenarios) {
   if (scenario === undefined) { console.error(`未知场景 ${s}`); continue; }
   for (const g of wantGroups) {
     process.stdout.write(`▶ 场景 ${s}（${scenario.name}）组 ${g} … `);
-    const r = await runOne({ scenario, group: g, slot: slotInfo.slot, fake: cli.fake, maxRounds });
+    const r = await runOne({ scenario, group: g, slot: slotInfo.slot, maxRounds });
     results.push(r);
     if (r.disqualified !== null) {
       console.log(`   ⚠ 取消资格（${r.disqualified}）：这一格测不出召回，不计入汇总`);
@@ -650,6 +618,6 @@ console.log(`\n汇总（已排除 ${summary.disqualified} 个取消资格的场�
   + Object.entries(summary.byGroup)
     .map(([g, v]) => `${g} ${v.correct}/${v.scenarios} 召回 ${v.recallCalls} 次 ↑${v.inputTokens}`)
     .join("｜"));
-console.log(`总量：model=${totals.model} ↑${totals.input} ↓${totals.output} 墙钟=${totals.wallMs}ms fake=${cli.fake}`);
-writeFileSync(cli.out, JSON.stringify({ slot: slotInfo.slot.model, fake: cli.fake, totals, summary, results }, null, 2));
+console.log(`总量：model=${totals.model} ↑${totals.input} ↓${totals.output} 墙钟=${totals.wallMs}ms`);
+writeFileSync(cli.out, JSON.stringify({ slot: slotInfo.slot.model, totals, summary, results }, null, 2));
 console.log(`结果 JSON：${cli.out}`);
