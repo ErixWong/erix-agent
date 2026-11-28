@@ -25,7 +25,12 @@
  * @property {string} [runId] `run_id`：入参给才有（`foldedFacts` 自己不带 run 身份）
  * @property {number} [seq] `seq`：取 `foldedFacts.seq`（run 内单调，由写入方分配）
  * @property {string} foldId `fold_id`：**幂等键**（UNIQUE(run_id, fold_id)），拿不到即 `TypeError`
- * @property {number} [cutRound] `cut_round`：切点，只能由调用方给（在轮记录上，不在 `foldedFacts` 里）
+ * @property {number} [cutRound] `cut_round`：切点（本折覆盖的**最后**一轮），只能由调用方给
+ * @property {number} [fromRound] `from_round`：本折覆盖的**第一**轮。**必须有**（261128-13 补）：
+ *   切点单独表达不了「这一折吃了哪些轮」——真机现场 `1–5, 6–6, 8–8` 有口子（第 7 轮一轮未折，
+ *   `fold-statistical.js:834` 那个例子的原始数据），只按「上一折切点 + 1」推会把第 7 轮误报成已折
+ * @property {number} [rounds] `rounds`：本折**轮数**。它不总等于区间长度（`buildFoldedFacts` 单独收
+ *   `input.rounds`，统计折的真实计数可能不同）⇒ 单独存，不靠算术推
  * @property {number} [cutMsgSeq] `cut_msg_seq`：同上
  * @property {string} [title] `title`：**模型写的**短标题；`NULL` = 模型没给（不许用正文首行顶替）
  * @property {string} description `description`：not null，拿不到即 `TypeError`
@@ -42,6 +47,8 @@
  * @property {number} [seq] 仅当 `foldedFacts.seq` 缺席时兜底（写入方分配的号）
  * @property {number} [cutRound] 本折切点所在轮（今天的写点在轮记录上：`foldedRoundRange.to`）
  * @property {number} [cutMsgSeq] 该轮的 `msg_seq`
+ * @property {number} [fromRound] 本折覆盖的第一轮（`foldedRoundRange.from`）
+ * @property {number} [rounds] 本折轮数（`foldedFacts.rounds`）
  * @property {number} [tokensBefore]
  * @property {number} [tokensAfter]
  * @property {string} [createdAt]
@@ -122,6 +129,8 @@ export function toFoldRecord(foldedFacts, extras = {}) {
   const cutRound = intColumn(extras.cutRound);
   const cutMsgSeq = intColumn(extras.cutMsgSeq);
   const runId = textColumn(extras.runId) ?? textColumn(facts.runId);
+  const fromRound = intColumn(extras.fromRound);
+  const rounds = intColumn(extras.rounds);
   const tokensBefore = intColumn(extras.tokensBefore);
   const tokensAfter = intColumn(extras.tokensAfter);
   const createdAt = textColumn(extras.createdAt) ?? textColumn(facts.createdAt);
@@ -137,6 +146,8 @@ export function toFoldRecord(foldedFacts, extras = {}) {
     foldId,
     ...(cutRound === undefined ? {} : { cutRound }),
     ...(cutMsgSeq === undefined ? {} : { cutMsgSeq }),
+    ...(fromRound === undefined ? {} : { fromRound }),
+    ...(rounds === undefined ? {} : { rounds }),
     ...(modelTitle === undefined ? {} : { title: modelTitle }),
     description,
     ...(tokensBefore === undefined ? {} : { tokensBefore }),
@@ -187,10 +198,13 @@ export function fromFoldRecords(records, extras = {}) {
   // 上一折切点是 `previousCutRound`，所以 `from = previousCutRound + 1`；`rounds = to - from + 1`。
   // 按「from = 上一折切点」算会整体错一位（实测：`覆盖第 0–34 轮` vs 真值 `第 1–34`）。
   const previousCut = intColumn(extras.previousCutRound);
-  const from = to !== undefined && previousCut !== undefined && previousCut >= 0
-    ? previousCut + 1
-    : undefined;
-  const rounds = to !== undefined && from !== undefined && to >= from ? to - from + 1 : undefined;
+  // 列里有 `from_round` 就用它（**唯一忠实来源**）；缺席才退回「上一折切点 + 1」——那只是
+  // 连续区间下的兜底，遇到口子会误报（真机现场 `1–5, 6–6, 8–8`）。
+  const from = intColumn(last.record.fromRound)
+    ?? (to !== undefined && previousCut !== undefined && previousCut >= 0 ? previousCut + 1 : undefined);
+  // 同理：`rounds` 优先取列值，缺席才按区间长度推。
+  const rounds = intColumn(last.record.rounds)
+    ?? (to !== undefined && from !== undefined && to >= from ? to - from + 1 : undefined);
   const foldId = textColumn(last.record.foldId);
   const seq = intColumn(last.record.seq, 1);
 

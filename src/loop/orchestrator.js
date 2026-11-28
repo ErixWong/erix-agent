@@ -6628,6 +6628,11 @@ export async function runToolLoop(options) {
                 ...(compaction.foldedRoundRange?.to !== undefined
                   && runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) !== undefined
                   ? { cutMsgSeq: runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) } : {}),
+                // `from_round` / `rounds`（261128-13）：切点单独表达不了「这一折吃了哪些轮」。
+                ...(Number.isSafeInteger(compaction.foldedRoundRange?.from)
+                  ? { fromRound: compaction.foldedRoundRange.from } : {}),
+                ...(Number.isSafeInteger(compaction.foldedFacts?.rounds)
+                  ? { rounds: compaction.foldedFacts.rounds } : {}),
                 ...(foldStat?.tokensBefore !== undefined ? { tokensBefore: foldStat.tokensBefore } : {}),
                 ...(foldStat?.tokensAfter !== undefined ? { tokensAfter: foldStat.tokensAfter } : {}),
                 // `created_at` 是形状稿 §1.4 的 not null 列（copilot 复审 #993 ③）。信封时刻由**调用方**

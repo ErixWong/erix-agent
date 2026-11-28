@@ -17,12 +17,12 @@ import { tmpdir } from "node:os";
 
 // ========== 判据 1：FOLD_RECORD_COLUMNS 恰好十项 ==========
 
-test("判据1: FOLD_RECORD_COLUMNS 恰好是九列+幂等键的十项", () => {
+test("判据1: FOLD_RECORD_COLUMNS 恰好是九列+幂等键+区间两列的十二项", () => {
   const expected = [
-    "runId", "seq", "foldId", "cutRound", "cutMsgSeq",
+    "runId", "seq", "foldId", "cutRound", "cutMsgSeq", "fromRound", "rounds",
     "title", "description", "tokensBefore", "tokensAfter", "createdAt",
   ];
-  assert.equal(FOLD_RECORD_COLUMNS.size, 10);
+  assert.equal(FOLD_RECORD_COLUMNS.size, 12);
   for (const col of expected) {
     assert.ok(FOLD_RECORD_COLUMNS.has(col), `缺少列: ${col}`);
   }

@@ -23,6 +23,10 @@ import { fromFoldRecords } from "./fold-record.js";
  */
 export const FOLD_RECORD_COLUMNS = new Set([
   "runId", "seq", "foldId", "cutRound", "cutMsgSeq",
+  // `from_round` / `rounds` 是 261128-13 补的两列：**切点单独表达不了「这一折吃了哪些轮」**。
+  // 真机现场 `1–5, 6–6, 8–8`（`fold-statistical.js:834` 的原始数据）有口子——第 7 轮一轮未折，
+  // 而只按「上一折切点 + 1」推会把第 7 轮误报成已折。`rounds` 同理：它不总等于区间长度。
+  "fromRound", "rounds",
   "title", "description", "tokensBefore", "tokensAfter", "createdAt",
 ]);
 

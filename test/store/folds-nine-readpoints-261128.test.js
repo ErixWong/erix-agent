@@ -102,3 +102,25 @@ test("261128-12 判据2：重建账本真的走了「账本路径」（不是退
   // 分段渲染（两折 ⇒ `formatSegmentedFoldSummary`）的骨架也在。
   assert.match(block, /共折叠|覆盖第|近期|更早/u);
 });
+
+// ── 261128-13：**有口子的区间**（copilot 复审抓到的阻断项）─────────────────────────
+// 真机现场 `1–5, 6–6, 8–8`（`fold-statistical.js:834` 引的那份原始数据）：第 7 轮一轮未折。
+// 只按「上一折切点 + 1」推 `from` 会把第 7 轮误报成已折 ⇒ 必须把 `from_round` 存成列。
+test("261128-13 判据3：区间有口子时 from 取列值，不按「上一折切点+1」猜", async () => {
+  const store = createMemoryTranscriptStore();
+  // 三折：1–5 / 6–6 / 8–8 —— 第 7 轮没被任何一折吃掉。
+  const folds = [
+    { foldId: "g1", summary: "第一折", title: "第一折", origin: "semantic", fromRound: 1, cutRound: 5, rounds: 5 },
+    { foldId: "g2", summary: "第二折", title: "第二折", origin: "semantic", fromRound: 6, cutRound: 6, rounds: 1 },
+    { foldId: "g3", summary: "第三折", title: "第三折", origin: "semantic", fromRound: 8, cutRound: 8, rounds: 1 },
+  ];
+  for (const fold of folds) {
+    await store.appendFold("run-gap", toFoldRecord(fold, {
+      cutRound: fold.cutRound, fromRound: fold.fromRound, rounds: fold.rounds,
+    }));
+  }
+  const rebuilt = mergeFoldRecords({ channelRows: await store.loadFolds("run-gap"), roundFacts: [] });
+  assert.equal(rebuilt.length, 3);
+  assert.deepEqual(rebuilt.map((r) => [r.from, r.to, r.rounds]), [[1, 5, 5], [6, 6, 1], [8, 8, 1]],
+    "三折的区间必须逐字还原；按切点推的话第二折会变成 7–8、把第 7 轮误报成已折");
+});

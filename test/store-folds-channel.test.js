@@ -126,7 +126,7 @@ test("判据4a：落盘的是九列 —— buildFoldedFacts 的退役键一个�
 test("判据4b：列集合恰好是九列+幂等键；旧形状由 mergeFoldRecords 在边界上重建", async () => {
   assert.deepEqual(
     [...FOLD_RECORD_COLUMNS].sort(),
-    ["createdAt", "cutMsgSeq", "cutRound", "description", "foldId", "runId", "seq", "title", "tokensAfter", "tokensBefore"],
+    ["createdAt", "cutMsgSeq", "cutRound", "description", "foldId", "fromRound", "rounds", "runId", "seq", "title", "tokensAfter", "tokensBefore"],
   );
   const store = createMemoryTranscriptStore();
   const facts = richFacts();
