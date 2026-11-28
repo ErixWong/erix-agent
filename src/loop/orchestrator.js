@@ -186,6 +186,7 @@ import {
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
 import { foldRecordsFromRoundRecords, mergeFoldRecords } from "../store/folds.js";
+import { toFoldRecord } from "../store/fold-record.js";
 import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { foldWithinBudget, prependFoldSummary } from "../compact/budget-fit.js";
 // issue #892：派生预算需要把工具定义这一项扣掉，`computeBudget` 仍是公式的唯一之家。
@@ -6607,8 +6608,25 @@ export async function runToolLoop(options) {
         // 可检测的降级诊断（不静默）。
         if (typeof store?.appendFold === "function") {
           try {
-            const persistedFold = await store.appendFold(runId, cloneState(compaction.foldedFacts));
-            foldRecordLedger.push(cloneState(persistedFold ?? compaction.foldedFacts));
+            // 切片 2：持久化形状换成九列，边界仍给旧形状（由九列导出）。
+            // cutRound = foldedRoundRange.to；cutMsgSeq 从 messageSeqByRound 取（拿不到就不传）
+            const foldStat = compactionStats.slice(compactionStatsStart).at(-1);
+            const nineCol = toFoldRecord(compaction.foldedFacts, {
+              ...(compaction.foldedRoundRange?.to !== undefined
+                ? { cutRound: compaction.foldedRoundRange.to } : {}),
+              ...(compaction.foldedRoundRange?.to !== undefined
+                && runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) !== undefined
+                ? { cutMsgSeq: runLoopState.messageSeqByRound.get(compaction.foldedRoundRange.to) } : {}),
+              ...(foldStat?.tokensBefore !== undefined ? { tokensBefore: foldStat.tokensBefore } : {}),
+              ...(foldStat?.tokensAfter !== undefined ? { tokensAfter: foldStat.tokensAfter } : {}),
+              runId,
+            });
+            const persistedNineCol = await store.appendFold(runId, nineCol);
+            // 账本仍给旧形状（引擎边界 = 旧形状，持久化 = 九列）。
+            // seq 从通道返回的九列行取回（这是 appendFold 分配的那个）。
+            const ledgerEntry = /** @type {Record<string, any>} */ (cloneState(compaction.foldedFacts));
+            if (persistedNineCol?.seq !== undefined) ledgerEntry.seq = persistedNineCol.seq;
+            foldRecordLedger.push(ledgerEntry);
           } catch (foldChannelError) {
             // PR #971 终验：`appendFold` 的 fail-closed（播种读不动轮记录 ⇒ 拒绝发出可能被占用的 seq）
             // 落到这里。**折叠本身不失败**——事实仍写轮记录，账本仍推进；只是这次不落通道，并留痕。

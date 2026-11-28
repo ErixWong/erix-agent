@@ -68,12 +68,16 @@ test("261128-09 判据1: 输入是 buildFoldedFacts 真跑出的对象（单次 
 
   assert.equal(Object.keys(semantic).length, 19, "单次调用的最大键数（互斥掉一个）");
   const union = new Set([...Object.keys(semantic), ...Object.keys(dropped), ...Object.keys(fallback)]);
-  assert.equal(FOLD_RECORD_COLUMNS.size, 21, "buildFoldedFacts 可能产出的键名全集");
-  assert.deepEqual(
-    [...union].sort(),
-    [...FOLD_RECORD_COLUMNS].sort(),
-    "三个真实变体必须逐字覆盖全集——覆盖不到的话判据 2 的「恰好」是虚的",
-  );
+  // FOLD_RECORD_COLUMNS 现在是九列持久化形状（10 项），不再是 buildFoldedFacts 的键并集（21 项）。
+  // buildFoldedFacts 是引擎边界的旧形状；新列集合是存储形状。
+  assert.equal(FOLD_RECORD_COLUMNS.size, 10, "九列 + 幂等键 = 10 项");
+  // buildFoldedFacts 产出的键并集（旧形状）应多于新列集合
+  assert.ok(union.size > FOLD_RECORD_COLUMNS.size, "旧形状键并集应多于九列存储形状");
+  // 验证 toFoldRecord 产出是 FOLD_RECORD_COLUMNS 的子集
+  const recCheck = toFoldRecord(semantic, { seq: 1, cutRound: 2, runId: "r" });
+  for (const key of Object.keys(recCheck)) {
+    assert.ok(FOLD_RECORD_COLUMNS.has(key), `toFoldRecord 产出键 ${key} 不在 FOLD_RECORD_COLUMNS`);
+  }
 });
 
 test("261128-09 判据2: toFoldRecord 的结果键集合恰好是九列里拿得到的那些（多一个少一个都红）", () => {
