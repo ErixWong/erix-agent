@@ -63,6 +63,20 @@
   updated to match (`## 遗留` / `## 恢复提示` / `## 关键词` first, then `## 行动`). `reverseSignalWarningLine`
   now points at 「遗留」 instead of 「下一步」 — a warning that names a section the model no longer writes is a
   dead pointer.
+- **`examples/fold-605-real-e2e.mjs` is deleted.** It was the only real-machine script that exercised
+  `fold-statistical`, and it was **flaky by construction**: the run only folds when the model happens to
+  write enough to cross the 4000-token budget, and with zero folds `judgeBlock` computes
+  `Math.min(...[])` = `Infinity`, so a legitimate run (model wrote less) reddens the "header range matches
+  the per-fold records" cell. Measured on one commit: 0 folds → fail, 5 folds → pass, same model, same
+  code. Two independent reasons not to repair it: it is **not a gate** — this repository has no CI and no
+  `check:*` scripts since issue #968, so the script only ran when a human typed it — and the strategy it
+  covers (`fold-statistical`) is not the target strategy of the new shape
+  (`docs/design/2026-11-27-context-and-fold-shape.md` §1.4 / §3: the only compaction in the new shape is the
+  fold). The path itself stays reachable and covered — `examples/fold-default-real-e2e.mjs` still selects
+  the statistical arm and validates its block; what is no longer covered on a real model are the three
+  per-fold-detail cells the deleted script owned (recent tool list, title without a recovery hint, header
+  range versus hole count).
+  Real-machine coverage of the **default** fold path stays in `examples/fold-default-real-e2e.mjs`.
 - **`docs-drift-check --self-test` is deleted, together with the overlay machinery that only it used (task 261126-59).**
   The entry had exactly one consumer — the manual `npm run docs:pass` — and took ≈8.5 minutes over 219 cases; CI never
   ran it and neither did `npm test`. By the rule this repository already settled on in #908 R2 ("a step no event triggers
